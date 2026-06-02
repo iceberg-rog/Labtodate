@@ -1,0 +1,360 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Surfaces */
+    --background: 42 33% 97%;          /* #FAF8F2 warm cream */
+    --foreground: 200 28% 9%;          /* #11181C deep ink */
+    --card: 0 0% 100%;
+    --card-foreground: 200 28% 9%;
+    --muted: 40 25% 94%;
+    --muted-foreground: 200 12% 38%;
+
+    /* Brand */
+    --primary: 168 70% 18%;            /* #0E4F40 deep forest */
+    --primary-foreground: 0 0% 100%;
+    --accent: 82 76% 55%;              /* #A3E635 electric lime */
+    --accent-foreground: 200 30% 8%;   /* dark text on lime */
+    --accent-deep: 82 76% 38%;         /* deeper lime for text use */
+
+    /* Lines */
+    --border: 40 12% 84%;
+    --input: 40 12% 84%;
+    --ring: 168 70% 18%;
+    --ink: 200 30% 6%;
+
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  h1, h2, h3, h4 {
+    @apply tracking-tight;
+  }
+}
+
+@layer utilities {
+  .container-px {
+    @apply container px-4 sm:px-6 lg:px-8;
+  }
+
+  /* Premium gradient mesh background. Mounted on Hero. */
+  .gradient-mesh {
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(at 12% 18%, hsla(168, 70%, 38%, 0.18) 0px, transparent 50%),
+      radial-gradient(at 88% 24%, hsla(82, 76%, 55%, 0.22) 0px, transparent 45%),
+      radial-gradient(at 75% 88%, hsla(168, 60%, 32%, 0.16) 0px, transparent 50%),
+      radial-gradient(at 10% 90%, hsla(40, 60%, 88%, 0.5) 0px, transparent 50%);
+  }
+
+  /* Frosted glass cards used in Hero */
+  .glass {
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: saturate(160%) blur(12px);
+    -webkit-backdrop-filter: saturate(160%) blur(12px);
+  }
+
+  /* Subtle inner glow used on premium CTA cards */
+  .ring-glow {
+    box-shadow:
+      0 0 0 1px rgba(15, 79, 64, 0.06),
+      0 12px 32px -12px rgba(15, 79, 64, 0.22),
+      0 4px 12px -6px rgba(0, 0, 0, 0.08);
+  }
+
+  /* Animated subtle float for Hero accents */
+  @keyframes floaty {
+    0%, 100% { transform: translateY(0) rotate(var(--r, 0deg)); }
+    50% { transform: translateY(-8px) rotate(var(--r, 0deg)); }
+  }
+  .animate-floaty {
+    animation: floaty 6s ease-in-out infinite;
+  }
+  @keyframes floaty-slow {
+    0%, 100% { transform: translateY(0) rotate(var(--r, 0deg)); }
+    50% { transform: translateY(-10px) rotate(var(--r, 0deg)); }
+  }
+  .animate-floaty-slow {
+    animation: floaty-slow 9s ease-in-out infinite;
+  }
+
+  /* ── Premium hero background system ── */
+
+  /* Drifting aurora orbs */
+  @keyframes aurora-a {
+    0%, 100% { transform: translate3d(0,0,0) scale(1); }
+    33%      { transform: translate3d(8%, -6%, 0) scale(1.15); }
+    66%      { transform: translate3d(-6%, 5%, 0) scale(0.92); }
+  }
+  @keyframes aurora-b {
+    0%, 100% { transform: translate3d(0,0,0) scale(1); }
+    50%      { transform: translate3d(-10%, 8%, 0) scale(1.2); }
+  }
+  .aurora-orb {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(72px);
+    will-change: transform;
+  }
+  .aurora-a { animation: aurora-a 22s ease-in-out infinite; }
+  .aurora-b { animation: aurora-b 28s ease-in-out infinite; }
+
+  /* 3D perspective floor grid */
+  .persp-grid {
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 70%;
+    background-image:
+      linear-gradient(hsl(var(--primary) / 0.10) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--primary) / 0.10) 1px, transparent 1px);
+    background-size: 56px 56px;
+    transform: perspective(560px) rotateX(62deg);
+    transform-origin: bottom center;
+    -webkit-mask-image: linear-gradient(to top, black 0%, transparent 78%);
+    mask-image: linear-gradient(to top, black 0%, transparent 78%);
+  }
+
+  /* Faint molecular hex lattice texture */
+  .hex-lattice {
+    position: absolute;
+    inset: 0;
+    opacity: 0.4;
+    background-image: url("data:image/svg+xml,%3Csvg width='56' height='100' viewBox='0 0 56 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M28 0 L56 16 L56 50 L28 66 L0 50 L0 16 Z M28 66 L56 82 L56 116 M28 66 L0 82 L0 116' fill='none' stroke='%230E4F40' stroke-opacity='0.14' stroke-width='1'/%3E%3C/svg%3E");
+    background-size: 56px 100px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black, transparent 75%);
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black, transparent 75%);
+  }
+
+  /* Fine grain for premium texture */
+  .grain {
+    position: absolute;
+    inset: 0;
+    opacity: 0.4;
+    mix-blend-mode: soft-light;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  }
+
+  /* ── Precision Instrument language ── */
+
+  /* Mono data: prices, specs, stats, counts */
+  .data {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-feature-settings: 'tnum' 1, 'zero' 1;
+    letter-spacing: -0.02em;
+  }
+
+  /* Measurement ruler — horizontal tick scale */
+  .ruler {
+    height: 14px;
+    background-image:
+      linear-gradient(to right, hsl(var(--foreground) / 0.28) 1px, transparent 1px);
+    background-size: 16px 100%;
+    background-position: bottom;
+    border-bottom: 1px solid hsl(var(--foreground) / 0.2);
+  }
+  .ruler-major {
+    background-image:
+      linear-gradient(to right, hsl(var(--foreground) / 0.45) 1px, transparent 1px),
+      linear-gradient(to right, hsl(var(--foreground) / 0.2) 1px, transparent 1px);
+    background-size: 80px 100%, 16px 6px;
+    background-position: bottom, bottom;
+    background-repeat: repeat-x;
+  }
+
+  /* Corner crop marks (instrument framing) */
+  .crop-frame {
+    position: relative;
+  }
+  .crop-frame::before,
+  .crop-frame::after {
+    content: '';
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-color: hsl(var(--primary) / 0.5);
+    border-style: solid;
+  }
+  .crop-frame::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+  .crop-frame::after  { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+
+  /* Faint readout scanlines */
+  .scanlines {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      hsl(var(--foreground) / 0.035) 0px,
+      hsl(var(--foreground) / 0.035) 1px,
+      transparent 1px,
+      transparent 4px
+    );
+  }
+
+  /* Crisp blueprint grid (precise, not blurry) */
+  .blueprint {
+    background-image:
+      linear-gradient(hsl(var(--primary) / 0.06) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--primary) / 0.06) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  /* Logo electron orbit */
+  @keyframes logo-orbit {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  .logo-orbit {
+    transform-origin: 20px 20px;
+    animation: logo-orbit 9s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .logo-orbit { animation: none; }
+  }
+
+  /* Marquee for stat strip / category strip */
+  @keyframes marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+  .animate-marquee {
+    animation: marquee 40s linear infinite;
+  }
+
+  /* Dot grid background fragment */
+  .dot-grid {
+    background-image: radial-gradient(circle, hsl(var(--primary) / 0.18) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+}
+
+/* Tiptap + article body styles. */
+.prose-tiptap, .prose-article {
+  line-height: 1.75;
+}
+.prose-tiptap h2, .prose-article h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin-top: 1.75em;
+  margin-bottom: 0.5em;
+}
+.prose-tiptap h3, .prose-article h3 {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 1.5em;
+  margin-bottom: 0.4em;
+}
+.prose-tiptap p, .prose-article p {
+  margin-bottom: 1em;
+}
+.prose-tiptap ul, .prose-article ul {
+  list-style: disc;
+  padding-left: 1.5rem;
+  margin-bottom: 1em;
+}
+.prose-tiptap ol, .prose-article ol {
+  list-style: decimal;
+  padding-left: 1.5rem;
+  margin-bottom: 1em;
+}
+.prose-tiptap blockquote, .prose-article blockquote {
+  border-left: 3px solid hsl(var(--accent));
+  padding-left: 1rem;
+  margin: 1em 0;
+  color: hsl(var(--muted-foreground));
+  font-style: italic;
+}
+.prose-tiptap code, .prose-article code {
+  background: hsl(var(--muted));
+  padding: 0.15em 0.4em;
+  border-radius: 0.25em;
+  font-size: 0.9em;
+}
+.prose-tiptap pre, .prose-article pre {
+  background: hsl(var(--foreground));
+  color: hsl(var(--background));
+  padding: 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+.prose-tiptap pre code, .prose-article pre code {
+  background: transparent;
+  padding: 0;
+}
+.prose-tiptap a, .prose-article a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* ---- Long-form article enhancements ---- */
+.prose-article h2 {
+  padding-top: 0.4em;
+  border-top: 1px solid hsl(var(--border));
+}
+.prose-article h2:first-of-type { border-top: 0; }
+.prose-article strong { font-weight: 700; color: hsl(var(--foreground)); }
+.prose-article hr {
+  border: 0;
+  border-top: 1px solid hsl(var(--border));
+  margin: 2.5em 0;
+}
+.prose-article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5em 0;
+  font-size: 0.92rem;
+}
+.prose-article th {
+  text-align: left;
+  font-weight: 700;
+  background: hsl(var(--muted));
+  padding: 0.7em 0.9em;
+  border-bottom: 2px solid hsl(var(--border));
+}
+.prose-article td {
+  padding: 0.65em 0.9em;
+  border-bottom: 1px solid hsl(var(--border));
+  vertical-align: top;
+}
+.prose-article tbody tr:hover { background: hsl(var(--muted) / 0.5); }
+.prose-article .lead {
+  font-size: 1.2rem;
+  line-height: 1.7;
+  color: hsl(var(--muted-foreground));
+  font-weight: 500;
+  margin-bottom: 1.4em;
+}
+.prose-article .callout {
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  border-left: 4px solid hsl(var(--accent));
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  margin: 1.75em 0;
+}
+.prose-article .callout p:last-child { margin-bottom: 0; }
+.prose-article .callout strong { color: hsl(var(--primary)); }
+.prose-article .faq h3 {
+  font-size: 1.05rem;
+  margin-top: 1.2em;
+}
+.prose-article .faq h3::before {
+  content: "Q. ";
+  color: hsl(var(--accent-deep));
+  font-weight: 800;
+}

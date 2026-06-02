@@ -1,0 +1,123 @@
+name: lab2date
+
+x-app-env: &app-env
+  env_file:
+    - ${LAB2DATE_ENV_FILE:-.env}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lab2date}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lab2date}
+      POSTGRES_DB: ${POSTGRES_DB:-lab2date}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-16543}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-lab2date} -d $${POSTGRES_DB:-lab2date}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-lab2date}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-lab2date-secret}
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-19000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-lab2date}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-lab2date-secret}
+      S3_BUCKET: ${S3_BUCKET:-lab2date-media}
+    entrypoint: >
+      /bin/sh -ec '
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          sleep 2;
+        done;
+        mc mb --ignore-existing "local/$$S3_BUCKET";
+        mc anonymous set download "local/$$S3_BUCKET/products";
+      '
+
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-11025}:1025"
+      - "127.0.0.1:${MAILPIT_UI_PORT:-18025}:8025"
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_DATABASE: /data/mailpit.db
+    volumes:
+      - mailpit_data:/data
+
+  setup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: setup
+    image: lab2date-setup:latest
+    restart: "no"
+    <<: *app-env
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    command: ["sh", "-c", "npm run db:deploy && npm run db:seed:all"]
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    image: lab2date-web:latest
+    restart: unless-stopped
+    <<: *app-env
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  cron:
+    image: alpine:3.20
+    restart: unless-stopped
+    <<: *app-env
+    depends_on:
+      web:
+        condition: service_started
+    command: >
+      sh -ec '
+        if [ -z "$$CRON_SECRET" ]; then
+          echo "CRON_SECRET is empty; SLA cron disabled.";
+          sleep infinity;
+        fi;
+        apk add --no-cache curl >/dev/null 2>&1;
+        printf "*/15 * * * * curl -fsS -X POST -H \"X-Cron-Secret: %s\" http://web:3000/api/cron/sla-sweep >> /var/log/cron.log 2>&1\n" "$$CRON_SECRET" > /etc/crontabs/root;
+        exec crond -f -L /var/log/cron.log;
+      '
+
+volumes:
+  pg_data:
+  minio_data:
+  mailpit_data:

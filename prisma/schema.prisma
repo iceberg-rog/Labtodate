@@ -1,0 +1,1046 @@
+// lab2date — Phase 1 schema.
+// Better-Auth tables (User, Session, Account, Verification) + domain models.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  BUYER
+  SELLER
+  ADMIN
+}
+
+enum ProductCondition {
+  NEW
+  REFURBISHED
+  USED
+}
+
+enum ProductMode {
+  BUY_NOW
+  QUOTE_ONLY
+  HYBRID
+}
+
+enum ProductStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ShopPricingMode {
+  PASS_THROUGH
+  MARKUP_PERCENT
+  FORCE_QUOTE
+  HIDE_PRICE
+}
+
+enum QuoteStatus {
+  PENDING
+  RESPONDED
+  ACCEPTED
+  DECLINED
+  CLOSED
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELED
+  REFUNDED
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum SellerType {
+  INDIVIDUAL
+  COMPANY
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+enum TicketStatus {
+  OPEN
+  PENDING                // legacy alias — kept so old rows still parse
+  WAITING_ON_CUSTOMER    // we replied; awaiting buyer
+  WAITING_ON_SUPPORT     // buyer replied; awaiting us
+  RESOLVED
+  CLOSED
+  SPAM
+}
+
+model SupportTicket {
+  id      String       @id @default(cuid())
+  ref     String       @unique
+  name    String
+  email   String
+  subject String
+  category String?
+  status  TicketStatus @default(OPEN)
+
+  submittedById String?
+  submittedBy   User?   @relation("TicketSubmitter", fields: [submittedById], references: [id])
+
+  // Slice A — customer intel + lifecycle.
+  // priority: LOW | NORMAL | HIGH | URGENT | VIP — VIP is a customer-tier
+  // override that always wins over computed urgency.
+  priority         String   @default("NORMAL")
+  dueAt            DateTime?
+  slaBreachAt      DateTime?
+  // Assignment: at most one admin owns the ticket. Claim/transfer flow.
+  assignedToId     String?
+  assignedTo       User?    @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  // GUEST tickets get a per-ticket accessToken so they can view + reply via
+  // a magic link without ever creating an account. REGISTERED tickets bind
+  // to the User via submittedById.
+  customerType     String   @default("REGISTERED") // REGISTERED | GUEST
+  accessToken      String?  @unique
+  // TTL on the magic link. Null = legacy (no expiry); for new guest tickets
+  // this is set 14 days out. Admin can reissue to rotate the token + extend.
+  accessTokenExpiresAt DateTime?
+  accessTokenIssuedAt  DateTime?
+  // Soft archive — preserved forever, hidden from default queues. Hard
+  // delete (slice E) is super-admin-only with `tickets:delete` cap.
+  archivedAt       DateTime?
+  archivedById     String?
+  // Linked commerce — auto-detected from submission body or set explicitly.
+  // Drives the right-sidebar quick-actions on the detail page.
+  orderId          String?
+  sourcingRequestId String?
+  productId        String?
+  // Latest reply pointer — used by the SLA timer + "awaiting reply" badge.
+  lastReplyAt       DateTime?
+  lastReplyByStaff  Boolean  @default(false)
+  // Free-form tags (urgent, refund, complaint, ...). Admin-curated.
+  tags             String[] @default([])
+
+  messages  SupportMessage[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([email])
+  @@index([submittedById])
+  @@index([priority])
+  @@index([assignedToId])
+  @@index([archivedAt])
+  @@index([dueAt])
+  @@index([orderId])
+  @@index([sourcingRequestId])
+  @@index([lastReplyAt])
+}
+
+model SupportMessage {
+  id       String @id @default(cuid())
+  ticketId String
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  fromStaff   Boolean  @default(false)
+  authorId    String?
+  body        String
+  attachments String[] @default([])
+  // Internal notes are admin-only — never sent to the customer's email and
+  // never rendered in the magic-link guest viewer.
+  isInternalNote Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+model Testimonial {
+  id        String   @id @default(cuid())
+  quote     String
+  author    String
+  role      String?
+  company   String?
+  rating    Int      @default(5)
+  sortOrder Int      @default(0)
+  published Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([published, sortOrder])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorEmail String?
+  action     String
+  target     String?
+  meta       String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// Outbound notification webhooks (Slack / Discord / Telegram). Admin-only,
+/// configured in /admin/settings. Dispatcher runs after every notifyAdmins()
+/// call and is fail-safe — webhook errors never break the originating action.
+model WebhookConfig {
+  id        String   @id @default(cuid())
+  name      String
+  kind      String   // SLACK | DISCORD | TELEGRAM
+  url       String   // Slack/Discord incoming-webhook URL OR Telegram bot endpoint
+  chatId    String?  // Telegram chat_id, ignored for Slack/Discord
+  events    String[] @default(["*"]) // event filter: ["*"] = everything; otherwise array of kinds
+  isActive  Boolean  @default(true)
+  lastError String?  // last failure message (truncated). Cleared on next success.
+  lastOkAt  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ErrorLog {
+  id        String   @id @default(cuid())
+  where     String
+  message   String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Review {
+  id        String  @id @default(cuid())
+  productId String
+  product   Product @relation("ProductReviews", fields: [productId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User    @relation("UserReviews", fields: [userId], references: [id], onDelete: Cascade)
+  rating    Int
+  body      String
+  createdAt DateTime @default(now())
+
+  @@unique([productId, userId])
+  @@index([productId])
+}
+
+model CartItem {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation("UserCart", fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation("ProductCartItems", fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int     @default(1)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@index([userId])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  href      String?
+  kind      String    @default("ANNOUNCEMENT") // ANNOUNCEMENT | OFFER | SYSTEM
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+}
+
+/// Conversation between a customer (or guest) and our on-site assistant.
+/// The conversation starts in AI mode — the LLM answers within site scope.
+/// If the user clicks "Talk to a human" we flip status to AWAITING_HUMAN and
+/// notify admins; once an admin claims, status moves to WITH_HUMAN. After
+/// admin closes, the user is invited to leave a 1-5 star rating, after
+/// which we archive the conversation. Guest users are tracked by a signed
+/// cookie token; logged-in users are linked via userId.
+model AssistantConversation {
+  id           String   @id @default(cuid())
+
+  /// Logged-in user — null for anonymous guests.
+  userId       String?
+  user         User?    @relation("AssistantUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Guest-side identification — opaque random token stored on the device
+  /// in a httpOnly cookie. Lets a guest come back later in the same browser
+  /// and see their previous conversation history.
+  guestToken   String?
+  /// Optional contact info we collect from guests on escalation.
+  guestName    String?
+  guestEmail   String?
+
+  /// Lifecycle state. See enum-like values in the action layer:
+  ///   AI               — AI is replying (default)
+  ///   AWAITING_HUMAN   — user asked for a human; queued for admin
+  ///   WITH_HUMAN       — an admin claimed it; humans are talking
+  ///   CLOSED           — admin closed; awaiting user rating
+  ///   ARCHIVED         — terminal; either rated or auto-archived after N days
+  status       String   @default("AI")
+
+  /// Subject — derived from the first user message (60 chars) for queue list.
+  subject      String?
+
+  /// Admin currently handling (or last to handle) the conversation.
+  assignedToId String?
+
+  /// Closing metadata.
+  closedAt     DateTime?
+  closedById   String?
+
+  /// User feedback after admin closes.
+  rating       Int?     // 1..5
+  ratingNote   String?
+  ratedAt      DateTime?
+
+  /// Archived (terminal). Set when user submits rating OR after N days idle.
+  archivedAt   DateTime?
+
+  startedAt    DateTime @default(now())
+  lastMessageAt DateTime @default(now())
+
+  messages     AssistantMessage[]
+
+  @@index([userId])
+  @@index([guestToken])
+  @@index([status, lastMessageAt])
+}
+
+/// One turn in an AssistantConversation. role discriminates who said it:
+///   user      — the customer (guest or logged-in)
+///   assistant — the LLM
+///   admin     — a human operator who took over
+model AssistantMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  conversation   AssistantConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  role           String   // user | assistant | admin | system
+  authorId       String?  // for admin/user messages, the user.id
+
+  body           String
+  /// Image/file attachments — public S3 URLs (image/* and PDF only, < 8 MB).
+  attachments    String[] @default([])
+
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId])
+}
+
+/// Outbound email audit. Every sendEmail() attempt records one row whether
+/// the transport succeeded or threw — gives ops a trail when a buyer/admin
+/// says "I never got the email" without depending on the upstream provider's
+/// dashboard. status="sent" → transport accepted (messageId from nodemailer);
+/// "failed" → transport threw (reason captured in `error`).
+model EmailLog {
+  id        String   @id @default(cuid())
+  toAddr    String
+  subject   String
+  status    String   // sent | failed
+  error     String?
+  messageId String?
+  createdAt DateTime @default(now())
+
+  @@index([toAddr])
+  @@index([createdAt])
+}
+
+// -------- Better-Auth managed tables --------
+// Schema follows the Better-Auth Prisma adapter convention.
+// We extend User with role + companyId via auth config additionalFields.
+
+model User {
+  id            String   @id
+  email         String   @unique
+  name          String
+  image         String?
+  emailVerified Boolean  @default(false)
+
+  // Custom fields (mapped from Better-Auth additionalFields)
+  role      UserRole @default(BUYER)
+  // Granular admin capabilities (additive). '*' = super-admin (all caps).
+  // Examples: ['tickets:*', 'orders:view']. Only meaningful for role=ADMIN.
+  adminCaps String[] @default([])
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+
+  // Soft-suspend: sign-in is blocked while non-null and sessions are wiped.
+  // Reason is shown to the user on the sign-in error and stored for audit.
+  suspendedAt     DateTime?
+  suspendedReason String?
+
+  /// Saved bank-payout details for sellers — auto-filled on subsequent
+  /// equipment-offer acceptances so they don't re-type IBAN/account/holder
+  /// every time. Free-form JSON: { holder, iban?, swift?, bankName?, country?, notes? }
+  sellerBankDetails Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions      Session[]
+  accounts      Account[]
+  productsOwned Product[] @relation("ProductSeller")
+
+  sourcingRequestsSubmitted SourcingRequest[] @relation("SourcingSubmitter")
+  sourcingRequestsAssigned  SourcingRequest[] @relation("SourcingAssignee")
+  quoteMessagesAuthored     QuoteMessage[]    @relation("QuoteAuthor")
+  ordersAsBuyer             Order[]           @relation("OrderBuyer")
+  threadsAsBuyer            MessageThread[]   @relation("ThreadBuyer")
+  threadsAsSeller           MessageThread[]   @relation("ThreadSeller")
+  messagesSent              Message[]         @relation("MessageAuthor")
+  wishlistItems             WishlistItem[]    @relation("WishlistOwner")
+  blogPosts                 BlogPost[]        @relation("BlogAuthor")
+  wikiArticles              WikiArticle[]     @relation("WikiAuthor")
+  sellSubmissions           SellSubmission[]  @relation("SellSubmitter")
+  notifications             Notification[]    @relation("UserNotifications")
+  assistantConversations    AssistantConversation[] @relation("AssistantUser")
+  supportTickets            SupportTicket[]   @relation("TicketSubmitter")
+  assignedTickets           SupportTicket[]   @relation("TicketAssignee")
+  cartItems                 CartItem[]        @relation("UserCart")
+  reviews                   Review[]          @relation("UserReviews")
+
+  @@index([role])
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id         String @id
+  accountId  String
+  providerId String
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// -------- Domain models --------
+
+model Company {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  logoUrl     String?
+  country     String?
+  website     String?
+  description String?
+  isVerified  Boolean  @default(false)
+  isFeatured  Boolean  @default(false)
+
+  // Per-shop pricing controls applied at marketplace display time.
+  //  - PASS_THROUGH:    show imported price as-is.
+  //  - MARKUP_PERCENT:  show imported price * (1 + markupBp / 10000).
+  //  - FORCE_QUOTE:     hide price, force quote-only mode regardless of priceCents.
+  //  - HIDE_PRICE:      hide price but still allow Buy-Now if priceCents present (rare).
+  // markupBp is stored in basis points (5% → 500). Negative values discount.
+  pricingMode      ShopPricingMode @default(PASS_THROUGH)
+  pricingMarkupBp  Int             @default(0)
+
+  // Used by the import-woo trigger to remember which Cloud API base URL
+  // this shop was imported from. Lets the admin re-sync without re-typing.
+  importSourceUrl  String?
+  lastImportedAt   DateTime?
+
+  // AI risk-analysis + suggestion fields (used by /admin/companies preview).
+  // suggestedByAi=true means this shop is a CANDIDATE — fetched from AI's
+  // recommendations but not yet imported. The admin reviews preview, optionally
+  // imports. aiRiskScore is 0-100; <50 is flagged in the UI.
+  suggestedByAi    Boolean   @default(false)
+  aiRiskScore      Int?
+  aiRiskNotes      String?
+  aiAnalyzedAt     DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users      User[]
+  products   Product[]
+  facilities LabFacility[] @relation("FacilityOwner")
+
+  @@index([isFeatured])
+}
+
+model Category {
+  id          String     @id @default(cuid())
+  slug        String     @unique
+  name        String
+  description String?
+  icon        String?
+  parentId    String?
+  parent      Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryTree")
+  products    Product[]
+  sortOrder   Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([parentId])
+}
+
+model Brand {
+  id        String    @id @default(cuid())
+  slug      String    @unique
+  name      String
+  logoUrl   String?
+  products  Product[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model Product {
+  id           String           @id @default(cuid())
+  slug         String           @unique
+  // Original source URL when the product came from the URL importer or the
+  // shop browser. NULL for manually-created products. Unique to prevent
+  // accidental duplicate imports — the importer checks this before insert.
+  sourceUrl    String?          @unique
+  title        String
+  summary      String?
+  description  String?
+  condition    ProductCondition @default(NEW)
+  mode         ProductMode      @default(HYBRID)
+  status       ProductStatus    @default(DRAFT)
+  priceCents   Int?
+  currency     String           @default("EUR")
+  quantity     Int              @default(1)
+  specs        Json?
+  images       String[]
+  hasImages    Boolean  @default(false)
+  illustration String?
+  yearMade     Int?
+  warrantyText String?
+
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  brandId String?
+  brand   Brand?  @relation(fields: [brandId], references: [id])
+
+  sellerId String
+  seller   User   @relation("ProductSeller", fields: [sellerId], references: [id])
+
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+
+  sourcingRequests SourcingRequest[]
+  orderItems       OrderItem[]
+  threads          MessageThread[]
+  wishlistedBy     WishlistItem[]
+  cartItems        CartItem[]        @relation("ProductCartItems")
+  reviews          Review[]          @relation("ProductReviews")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([sellerId])
+}
+
+// ─── Sourcing / Quotes ──────────────────────────────────────
+
+model SourcingRequest {
+  id              String      @id @default(cuid())
+  buyerEmail      String
+  buyerName       String
+  companyName     String?
+  productCategory String?
+  budget          String?
+  timeframe       String?
+  description     String
+
+  // Price quoted back to the buyer (proforma)
+  quotedPriceCents Int?
+  quotedCurrency   String?
+  quotedNote       String?
+  quotedAt         DateTime?
+
+  // Persisted proforma metadata so the document is stable + auditable. Once
+  // `sendProforma` is called these are immutable for the life of the request.
+  proformaNumber              String?  @unique
+  proformaIssuedAt            DateTime?
+  validUntilAt                DateTime?
+  paymentInstructionsSnapshot String?
+
+  // Optional product anchor (per-product "Request Quote")
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  // If user was signed in at submission
+  submittedById String?
+  submittedBy   User?   @relation("SourcingSubmitter", fields: [submittedById], references: [id])
+
+  // Routed to a seller (per-product) or null (Let Us Find It → admin)
+  assignedToId String?
+  assignedTo   User?   @relation("SourcingAssignee", fields: [assignedToId], references: [id])
+
+  status    QuoteStatus    @default(PENDING)
+  messages  QuoteMessage[]
+
+  // === SupportTicket-parity fields (production-hardening pass) ===
+  // Priority + SLA — same enum vocabulary as SupportTicket.
+  priority         String   @default("NORMAL")  // LOW | NORMAL | HIGH | URGENT | VIP
+  dueAt            DateTime?
+  slaBreachAt      DateTime?
+  // Soft archive — preserved forever, hidden from default queues.
+  archivedAt       DateTime?
+  archivedById     String?
+  // Guest follow-up: customerType=GUEST + accessToken + TTL (14d, rotatable
+  // by admin). Null for REGISTERED quotes (user dashboard does the follow-up).
+  customerType     String   @default("REGISTERED") // REGISTERED | GUEST
+  accessToken      String?  @unique
+  accessTokenIssuedAt   DateTime?
+  accessTokenExpiresAt  DateTime?
+  // Free-form tags for ops categorization.
+  tags             String[] @default([])
+  // Latest reply pointer (mirrors SupportTicket).
+  lastReplyAt      DateTime?
+  lastReplyByStaff Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([submittedById])
+  @@index([assignedToId])
+  @@index([archivedAt])
+  @@index([priority])
+  @@index([dueAt])
+  @@index([lastReplyAt])
+}
+
+// (SupportTicket-parity additions on SourcingRequest follow below this comment)
+
+model QuoteMessage {
+  id          String @id @default(cuid())
+  body        String
+  attachments String[]
+
+  sourcingRequestId String
+  sourcingRequest   SourcingRequest @relation(fields: [sourcingRequestId], references: [id], onDelete: Cascade)
+
+  authorId String?
+  author   User?   @relation("QuoteAuthor", fields: [authorId], references: [id])
+
+  // Mirror of SupportMessage.isInternalNote — flagged messages are admin/seller
+  // chatter that MUST NEVER reach the buyer's view or magic-link.
+  isInternalNote Boolean @default(false)
+  fromStaff      Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([sourcingRequestId])
+}
+
+// ─── Orders ─────────────────────────────────────────────────
+
+model Order {
+  id          String      @id @default(cuid())
+  orderNumber String      @unique
+
+  buyerId String
+  buyer   User   @relation("OrderBuyer", fields: [buyerId], references: [id])
+
+  status        OrderStatus @default(PENDING_PAYMENT)
+  subtotalCents Int
+  shippingCents Int         @default(0)
+  taxCents      Int         @default(0)
+  totalCents    Int
+  currency      String      @default("EUR")
+
+  stripeSessionId       String? @unique
+  stripePaymentIntentId String? @unique
+  sourcingRequestId     String? @unique
+
+  shippingAddress Json?
+  billingAddress  Json?      // separate from shipping; from Stripe charge.billing_details
+  trackingCarrier String?
+  trackingNumber  String?
+  shippedAt       DateTime?
+  deliveredAt     DateTime?
+
+  // Payment + provenance enrichment (filled at checkout / by Stripe webhook).
+  paymentMethodBrand   String?  // visa, mastercard, amex, sepa_debit, ...
+  paymentMethodLast4   String?  // last 4 digits / IBAN suffix
+  paymentMethodWallet  String?  // apple_pay, google_pay, link, null
+  buyerIp              String?  // captured at checkout start
+  buyerCountry         String?  // ISO 2-letter, geo-derived or from Stripe
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  paidAt    DateTime?
+
+  // Free-text staff notes (hold reasons, buyer phone-call summaries, etc.)
+  adminNotes String?
+
+  // Manual-paid flow (bank transfer / invoice / receipt upload). Filled when
+  // an admin marks an order paid without Stripe in the loop.
+  paidByAdminId       String?
+  paymentMethodManual String?  // BANK_TRANSFER | INVOICE | RECEIPT | OTHER
+  paymentProofUrl     String?  // MinIO URL to receipt image/PDF
+  paymentNote         String?  // free-text reason / transfer reference
+
+  // Soft archive — operator-only hide from default queues. Reversible. Orders
+  // are never hard-deleted; rows are retained for compliance + dispute defence.
+  archivedAt   DateTime?
+  archivedById String?
+
+  // Two-step payment verification (buyer-submitted, admin-verified).
+  // Distinct from `paidByAdminId` (the legacy admin-marks-paid path).
+  // Flow: buyer uploads proof → AWAITING_VERIFICATION → admin VERIFIED (→ status PAID)
+  //                                                  → admin REJECTED (status stays PENDING_PAYMENT, buyer can resubmit).
+  paymentSubmittedAt        DateTime?
+  paymentVerificationStatus String?   // null | AWAITING_VERIFICATION | VERIFIED | REJECTED
+  paymentVerifiedAt         DateTime?
+  paymentVerifiedById       String?
+  paymentRejectionReason    String?
+
+  items OrderItem[]
+
+  @@index([buyerId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([archivedAt])
+  @@index([paymentVerificationStatus])
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  titleSnapshot      String
+  brandSnapshot      String?
+  priceCentsSnapshot Int
+  quantity           Int     @default(1)
+
+  @@index([orderId])
+}
+
+// ─── Messaging ───────────────────────────────────────────────
+
+model MessageThread {
+  id      String  @id @default(cuid())
+  subject String?
+
+  buyerId  String
+  buyer    User   @relation("ThreadBuyer", fields: [buyerId], references: [id])
+  sellerId String
+  seller   User   @relation("ThreadSeller", fields: [sellerId], references: [id])
+
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastMessageAt DateTime @default(now())
+
+  messages Message[]
+
+  @@index([buyerId])
+  @@index([sellerId])
+}
+
+model Message {
+  id   String @id @default(cuid())
+  body String
+
+  threadId String
+  thread   MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  authorId String
+  author   User   @relation("MessageAuthor", fields: [authorId], references: [id])
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([threadId])
+  @@index([createdAt])
+}
+
+// ─── Wishlist ────────────────────────────────────────────────
+
+model WishlistItem {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation("WishlistOwner", fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@index([userId])
+}
+
+// ─── Content (Blog + Wiki) ───────────────────────────────────
+
+model BlogPost {
+  id            String        @id @default(cuid())
+  slug          String        @unique
+  title         String
+  excerpt       String?
+  body          String        // HTML from Tiptap
+  category      String?
+  illustration  String?       // fallback SVG to use when no coverImage uploaded
+  coverImage    String?       // real cover image URL (uploaded photo), wins over illustration
+  coverGradient String?       // tailwind gradient classes
+  readMinutes   Int           @default(5)
+  viewCount     Int           @default(0)
+
+  authorId String
+  author   User   @relation("BlogAuthor", fields: [authorId], references: [id])
+
+  status      ContentStatus @default(DRAFT)
+  publishedAt DateTime?
+
+  comments  BlogComment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([publishedAt])
+}
+
+model BlogComment {
+  id         String   @id @default(cuid())
+  postId     String
+  post       BlogPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorName String
+  authorEmail String
+  body       String
+  approved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([postId])
+  @@index([approved])
+}
+
+model WikiArticle {
+  id       String @id @default(cuid())
+  slug     String @unique
+  title    String
+  body     String // HTML from Tiptap
+  category String?
+
+  authorId String
+  author   User   @relation("WikiAuthor", fields: [authorId], references: [id])
+
+  status      ContentStatus @default(DRAFT)
+  publishedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
+// ─── Lab Rental & Case Studies ──────────────────────────────
+
+model LabFacility {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  city            String
+  country         String
+  description     String
+  hourlyRateCents Int?
+  dailyRateCents  Int?
+  capabilities    String[]
+  illustration    String?
+
+  ownerCompanyId String?
+  ownerCompany   Company? @relation("FacilityOwner", fields: [ownerCompanyId], references: [id])
+
+  isPublished Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isPublished])
+}
+
+model CaseStudy {
+  id            String        @id @default(cuid())
+  slug          String        @unique
+  title         String
+  customer      String
+  outcomeMetric String
+  excerpt       String
+  body          String
+  illustration  String?
+
+  status      ContentStatus @default(DRAFT)
+  publishedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
+// ─── Sell-to-us equipment submissions ───────────────────────
+
+model SellSubmission {
+  id String @id @default(cuid())
+
+  // Who is selling
+  sellerType  SellerType @default(INDIVIDUAL)
+  contactName String
+  email       String
+  phone       String?
+  companyName String?
+  country     String?
+
+  // What they are selling
+  itemTitle    String
+  brand        String?
+  model        String?
+  category     String?
+  condition    ProductCondition @default(USED)
+  yearMade     Int?
+  quantity     Int              @default(1)
+  askingPrice  String?
+  location     String?
+  description  String
+  accessories  String?
+  reason       String?
+  availability String?
+  photosUrl    String?
+  images       String[] @default([])
+
+  // If submitter was signed in
+  submittedById String?
+  submittedBy   User?   @relation("SellSubmitter", fields: [submittedById], references: [id])
+
+  status     QuoteStatus @default(PENDING)
+  adminNotes String?
+
+  /// Post-accept lifecycle (only meaningful once status=ACCEPTED). Drives the
+  /// seller-side timeline UI: bank details → ship to us → in transit →
+  /// received & inspecting → completed & paid. Null for un-accepted offers.
+  acquisitionStage String? // AWAITING_BANK | AWAITING_SHIPPING | IN_TRANSIT | RECEIVED | COMPLETED
+
+  /// Final price agreed between the parties (may differ from sellers
+  /// askingPrice after counter-offers). Used as the wire-transfer amount.
+  agreedPriceCents Int?
+  agreedCurrency   String?
+
+  /// Seller's bank details for receiving the wire (snapshot at submission time).
+  /// Free-form JSON so adding fields (BIC, IBAN, IFSC, …) doesn't need a migration.
+  sellerBankDetails Json?
+
+  /// Seller's outbound shipment to us — they enter this after they post the device.
+  sellerShippingCarrier String?
+  sellerShippingTracking String?
+  sellerShippedAt        DateTime?
+
+  /// Stamped by admin when the package physically arrives at our warehouse.
+  receivedAt DateTime?
+  receivedById String?
+
+  /// Stamped when QC is done + payment wired. paymentReceiptUrl is the
+  /// PDF/image of the bank transfer confirmation we send to the seller.
+  completedAt DateTime?
+  paymentReceiptUrl String?
+
+  messages SellMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([email])
+  @@index([submittedById])
+  @@index([acquisitionStage])
+}
+
+model SellMessage {
+  id           String         @id @default(cuid())
+  submissionId String
+  submission   SellSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  fromStaff   Boolean  @default(false)
+  authorId    String?
+  body        String
+  attachments String[] @default([])
+
+  /// Message kind: TEXT (default chat), PRICE_PROPOSAL (sender proposes a
+  /// new price in priceCents/currency below), PRICE_ACCEPTED (informational
+  /// "we agreed"), SYSTEM (auto-generated lifecycle events).
+  kind         String   @default("TEXT")
+  priceCents   Int?
+  currency     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([submissionId])
+}
+
+
+/// Permanent blocklist for AI shop discovery. When an operator rejects an
+/// AI-suggested shop, its hostname is added here so future AI suggest runs
+/// never propose it again. Keyed by hostname (lowercased, no www.) — the
+/// suggested URL is normalised before comparison.
+model BlockedSupplier {
+  id        String   @id @default(cuid())
+  hostname  String   @unique
+  reason    String?
+  blockedBy String?
+  blockedAt DateTime @default(now())
+
+  @@index([blockedAt])
+}
