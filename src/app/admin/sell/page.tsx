@@ -63,11 +63,12 @@ function initials(name: string | null | undefined): string {
   return name.trim().split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase() ?? '').join('') || '?';
 }
 
-export default async function AdminSellPage({
-  searchParams,
-}: {
-  searchParams: { tab?: string; q?: string; page?: string };
-}) {
+export default async function AdminSellPage(
+  props: {
+    searchParams: Promise<{ tab?: string; q?: string; page?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('sell:view');
 
   const tab = TAB_DEFS.find((t) => t.key === searchParams.tab) ?? TAB_DEFS[0];
@@ -136,9 +137,7 @@ export default async function AdminSellPage({
           {totalPages > 1 ? ` · page ${page}/${totalPages}` : ''}
         </p>
       </div>
-
       <AdminSearch basePath="/admin/sell" q={q} placeholder="Search seller, email, brand, model, item…" />
-
       <div className="flex gap-2 flex-wrap">
         {TAB_DEFS.map((t) => {
           const active = t.key === tab.key;
@@ -158,7 +157,6 @@ export default async function AdminSellPage({
           );
         })}
       </div>
-
       {subs.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <div className="mx-auto h-14 w-14 rounded-full bg-primary/10 text-primary inline-flex items-center justify-center mb-4">
@@ -193,7 +191,7 @@ export default async function AdminSellPage({
                     <div className="h-16 w-16 rounded-xl bg-gradient-to-br from-[hsl(82_55%_95%)] to-[hsl(168_30%_94%)] border border-border flex items-center justify-center overflow-hidden flex-shrink-0">
                       {photo ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={photo} alt="" className="w-full h-full object-cover" />
+                        (<img src={photo} alt="" className="w-full h-full object-cover" />)
                       ) : (
                         <ImageIcon className="h-6 w-6 text-muted-foreground" />
                       )}
@@ -273,7 +271,6 @@ export default async function AdminSellPage({
           })}
         </ul>
       )}
-
       <AdminPager basePath="/admin/sell" page={page} totalPages={totalPages} total={total} q={q} tab={tab.key !== 'open' ? tab.key : undefined} />
     </div>
   );

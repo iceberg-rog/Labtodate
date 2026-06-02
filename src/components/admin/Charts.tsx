@@ -175,7 +175,12 @@ export function Donut({
   if (total === 0) return <EmptyCard caption={caption} reason="No data yet." />;
   const r = 50;
   const c = 2 * Math.PI * r;
-  let offset = 0;
+  const segments = data.reduce<Array<{ label: string; value: number; color: string; len: number; offset: number }>>((acc, d) => {
+    const len = (d.value / total) * c;
+    const offset = acc.length === 0 ? 0 : acc[acc.length - 1].offset + acc[acc.length - 1].len;
+    return [...acc, { ...d, len, offset }];
+  }, []);
+
   return (
     <div className="rounded-2xl border border-border bg-card p-5">
       {caption && <h3 className="text-sm font-bold mb-3">{caption}</h3>}
@@ -183,23 +188,18 @@ export function Donut({
         <svg viewBox="0 0 140 140" width="140" height="140" className="flex-shrink-0">
           <g transform="translate(70,70)">
             <circle r={r} fill="none" stroke="currentColor" strokeOpacity="0.05" strokeWidth="16" />
-            {data.map((d, i) => {
-              const len = (d.value / total) * c;
-              const el = (
+            {segments.map((d, i) => (
                 <circle
                   key={i}
                   r={r}
                   fill="none"
                   stroke={d.color}
                   strokeWidth="16"
-                  strokeDasharray={`${len.toFixed(2)} ${(c - len).toFixed(2)}`}
-                  strokeDashoffset={(-offset).toFixed(2)}
+                  strokeDasharray={`${d.len.toFixed(2)} ${(c - d.len).toFixed(2)}`}
+                  strokeDashoffset={(-d.offset).toFixed(2)}
                   transform="rotate(-90)"
                 />
-              );
-              offset += len;
-              return el;
-            })}
+            ))}
             <text textAnchor="middle" dy="-2" fontSize="13" fontWeight="700" fill="currentColor">
               {total}
             </text>

@@ -53,7 +53,7 @@ const FIELD_LABELS: Record<string, string> = {
 export type SellResult = { ok: true; id: string } | { ok: false; error: string };
 
 export async function submitSellSubmission(input: SellInputType): Promise<SellResult> {
-  rateLimit('sell');
+  await rateLimit('sell');
   await ensureSettingsLoaded();
   const OPS_EMAIL = process.env.SELL_INTAKE_EMAIL || OPS_EMAIL_FALLBACK;
 

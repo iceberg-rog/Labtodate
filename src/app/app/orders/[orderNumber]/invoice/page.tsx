@@ -8,7 +8,8 @@ import { PrintButton } from '@/components/util/PrintButton';
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Invoice' };
 
-export default async function InvoicePage({ params }: { params: { orderNumber: string } }) {
+export default async function InvoicePage(props: { params: Promise<{ orderNumber: string }> }) {
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}/invoice` });
   await ensureSettingsLoaded();
 

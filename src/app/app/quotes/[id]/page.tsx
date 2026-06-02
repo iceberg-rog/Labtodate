@@ -7,13 +7,14 @@ import { computeDealState } from '@/lib/quotes/deal-state';
 
 export const dynamic = 'force-dynamic';
 
-export default async function BuyerQuoteDetailPage({
-  params,
-  searchParams,
-}: {
-  params: { id: string };
-  searchParams: { history?: string };
-}) {
+export default async function BuyerQuoteDetailPage(
+  props: {
+    params: Promise<{ id: string }>;
+    searchParams: Promise<{ history?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/quotes/${params.id}` });
 
   const sr = await prisma.sourcingRequest.findUnique({

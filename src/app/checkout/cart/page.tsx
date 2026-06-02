@@ -55,11 +55,12 @@ const FIELD_LABEL: Record<string, string> = {
  * was off (the current production posture). This route is the canonical
  * place to collect address before the order row exists.
  */
-export default async function CartCheckoutPage({
-  searchParams,
-}: {
-  searchParams: { missing?: string };
-}) {
+export default async function CartCheckoutPage(
+  props: {
+    searchParams: Promise<{ missing?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const session = await requireSession({ redirectTo: '/checkout/cart' });
 
   const items = await prisma.cartItem.findMany({
@@ -98,7 +99,6 @@ export default async function CartCheckoutPage({
       >
         <ChevronLeft className="h-4 w-4" /> Back to cart
       </Link>
-
       <div className="grid lg:grid-cols-[1fr_360px] gap-6 items-start">
         <form action={startCartCheckoutWithAddress} className="space-y-5">
           <div>
@@ -191,7 +191,7 @@ export default async function CartCheckoutPage({
                   <div className="h-10 w-10 rounded-lg bg-primary/10 flex-shrink-0 overflow-hidden">
                     {i.product.images[0] && (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={i.product.images[0]} alt="" className="w-full h-full object-cover" />
+                      (<img src={i.product.images[0]} alt="" className="w-full h-full object-cover" />)
                     )}
                   </div>
                   <div className="flex-1 min-w-0">

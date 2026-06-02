@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button';
 
 export const metadata = { title: 'Request received' };
 
-export default function ThanksPage({ searchParams }: { searchParams: { id?: string } }) {
+export default async function ThanksPage(props: { searchParams: Promise<{ id?: string }> }) {
+  const searchParams = await props.searchParams;
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
       <div className="mx-auto h-16 w-16 rounded-full bg-accent/15 flex items-center justify-center mb-6">

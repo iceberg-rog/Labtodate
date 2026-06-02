@@ -1,5 +1,6 @@
 import { cache } from 'react';
 import { prisma } from '@/lib/db';
+import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
 
 export interface Marketing {
@@ -27,6 +28,7 @@ const D = {
  *  the same render. Safe-fails when called during `next build` static export
  *  (no DB connection) — returns zeros so the page can still pre-render. */
 const getRealCounts = cache(async () => {
+  if (isBuildPhase()) return { listings: 0, suppliers: 0 };
   try {
     const [listings, suppliers] = await Promise.all([
       prisma.product.count({ where: { status: 'PUBLISHED' } }),

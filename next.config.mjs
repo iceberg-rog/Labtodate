@@ -10,12 +10,6 @@ const MINIO_INTERNAL = 'http://minio:9000';
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
-  // ESLint runs as a separate step (`npm run lint`) — don't fail production
-  // builds on stylistic rules like react/no-unescaped-entities. TypeScript
-  // errors still block (typescript.ignoreBuildErrors stays unset by design).
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   images: {
     // optimizer fetches /media/* via the rewrite below (same origin).
     // For Product.images that point at external suppliers (lab2.nl,

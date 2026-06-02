@@ -57,7 +57,7 @@ const SourcingInput = z.object({
 export type SourcingInputType = z.infer<typeof SourcingInput>;
 
 export async function submitSourcingRequest(input: SourcingInputType) {
-  rateLimit('quote');
+  await rateLimit('quote');
   await ensureSettingsLoaded();
   const parsed = SourcingInput.parse(input);
   const session = await getServerSession();

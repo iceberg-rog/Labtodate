@@ -7,7 +7,8 @@ import { getMarketing } from '@/lib/marketing';
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
 
-export default async function LetUsFindItPage({ searchParams }: { searchParams: { product?: string } }) {
+export default async function LetUsFindItPage(props: { searchParams: Promise<{ product?: string }> }) {
+  const searchParams = await props.searchParams;
   const mk = await getMarketing();
   const slug = searchParams.product;
   const anchor = slug

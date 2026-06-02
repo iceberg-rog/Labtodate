@@ -46,13 +46,14 @@ const FIELD_LABEL: Record<string, string> = {
   country: 'Country',
 };
 
-export default async function CheckoutAddressPage({
-  params,
-  searchParams,
-}: {
-  params: { slug: string };
-  searchParams: { missing?: string };
-}) {
+export default async function CheckoutAddressPage(
+  props: {
+    params: Promise<{ slug: string }>;
+    searchParams: Promise<{ missing?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/checkout/${params.slug}` });
   const product = await prisma.product.findUnique({
     where: { slug: params.slug },
@@ -91,7 +92,6 @@ export default async function CheckoutAddressPage({
       >
         <ChevronLeft className="h-4 w-4" /> Back to product
       </Link>
-
       <div className="grid lg:grid-cols-[1fr_360px] gap-6 items-start">
         {/* Form */}
         <form
@@ -186,7 +186,7 @@ export default async function CheckoutAddressPage({
               <div className="h-16 w-16 rounded-xl bg-foreground/5 border border-border overflow-hidden flex-shrink-0">
                 {product.images?.[0] && (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={product.images[0]} alt="" className="w-full h-full object-cover" />
+                  (<img src={product.images[0]} alt="" className="w-full h-full object-cover" />)
                 )}
               </div>
               <div className="flex-1 min-w-0">

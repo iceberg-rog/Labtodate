@@ -26,7 +26,8 @@ async function updateRole(formData: FormData) {
   await setUserRole(String(formData.get('userId')), formData.get('role') as UserRole);
 }
 
-export default async function AdminUserDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminUserDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   await requireCapability('users:view');
   const canManageUsers = await hasCapability('users:manage');
 
@@ -97,7 +98,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
         <ChevronRight className="h-3 w-3" />
         <span className="text-foreground">{user.name}</span>
       </nav>
-
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{user.name}</h1>
@@ -121,7 +121,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
           <RoleSelect userId={user.id} current={user.role} action={updateRole} />
         </div>
       </div>
-
       {user.suspendedAt && (
         <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-900 flex items-start gap-3">
           <AlertOctagon className="h-5 w-5 flex-shrink-0 mt-0.5" />
@@ -141,7 +140,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
           </div>
         </div>
       )}
-
       {canManageUsers && (
         <AdminUserDangerZone
           userId={user.id}
@@ -150,7 +148,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
           isAdmin={user.role === 'ADMIN'}
         />
       )}
-
       {canManageUsers && user.role === 'ADMIN' && (
         <div className="rounded-2xl border border-border bg-card p-5">
           <p className="text-sm font-bold mb-1">Admin capabilities</p>
@@ -209,7 +206,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
           </form>
         </div>
       )}
-
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Stat label="Lifetime spend" value={formatPrice(spend, orders[0]?.currency ?? 'EUR')} />
         <Stat label="Orders" value={String(orders.length)} />
@@ -220,7 +216,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
         <Stat label="Reviews" value={String(reviews.length)} />
         <Stat label="Wishlist · cart" value={`${wishlist} · ${carts}`} />
       </div>
-
       <Section title={`Orders (${orders.length})`}>
         {orders.length === 0 ? <Empty /> : orders.map((o) => (
           <Row key={o.id} href={`/admin/orders?q=${o.orderNumber}`}
@@ -230,7 +225,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
             date={o.createdAt} />
         ))}
       </Section>
-
       <Section title={`Quote / sourcing requests (${sourcing.length})`}>
         {sourcing.length === 0 ? <Empty /> : sourcing.map((s) => (
           <Row key={s.id} href={`/app/quotes/${s.id}`}
@@ -239,14 +233,12 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
             right={s.status.toLowerCase()} date={s.createdAt} />
         ))}
       </Section>
-
       <Section title={`Sell offers (${sells.length})`}>
         {sells.length === 0 ? <Empty /> : sells.map((s) => (
           <Row key={s.id} href={`/admin/sell?q=${encodeURIComponent(s.itemTitle)}`}
             main={s.itemTitle} sub="" right={s.status.toLowerCase()} date={s.createdAt} />
         ))}
       </Section>
-
       <Section title={`Support tickets (${tickets.length})`}>
         {tickets.length === 0 ? <Empty /> : tickets.map((t) => (
           <Row
@@ -259,7 +251,6 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
           />
         ))}
       </Section>
-
       <Section title={`Seller conversations (${threads.length})`}>
         {threads.length === 0 ? <Empty /> : threads.map((th) => (
           <Row key={th.id} href={`/admin/messages?q=${encodeURIComponent(th.subject ?? '')}`}
@@ -267,14 +258,12 @@ export default async function AdminUserDetailPage({ params }: { params: { id: st
             right="" date={th.lastMessageAt} />
         ))}
       </Section>
-
       <Section title={`Reviews (${reviews.length})`}>
         {reviews.length === 0 ? <Empty /> : reviews.map((r) => (
           <Row key={r.id} href={`/marketplace/${r.product.slug}`}
             main={r.product.title} sub={r.body.slice(0, 80)} right={`★ ${r.rating}`} date={r.createdAt} />
         ))}
       </Section>
-
       <div className="rounded-2xl border border-border bg-foreground/[0.02] p-5 text-sm text-muted-foreground">
         <p className="font-semibold text-foreground mb-1">Not tracked</p>
         Page views, product-search history and AI-assistant chats are <strong>not recorded</strong> by

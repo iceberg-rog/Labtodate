@@ -24,13 +24,14 @@ const CUSTOMER_STATUS_LABEL: Record<string, string> = {
   CLOSED: 'Closed',
 };
 
-export default async function GuestQuotePage({
-  params,
-  searchParams,
-}: {
-  params: { token: string };
-  searchParams: { ok?: string; err?: string };
-}) {
+export default async function GuestQuotePage(
+  props: {
+    params: Promise<{ token: string }>;
+    searchParams: Promise<{ ok?: string; err?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   await ensureSettingsLoaded();
   if (!params.token || params.token.length < 16) notFound();
 
@@ -78,7 +79,6 @@ export default async function GuestQuotePage({
       <a href="/let-us-find-it" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4">
         <ChevronLeft className="h-4 w-4" /> Submit a new request
       </a>
-
       <div className="rounded-2xl border border-border bg-card p-6 mb-4">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <span className="font-mono text-[11px] text-muted-foreground">{ref}</span>
@@ -108,7 +108,6 @@ export default async function GuestQuotePage({
           </p>
         )}
       </div>
-
       {searchParams.ok === '1' && (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 mb-4 inline-flex items-center gap-2 text-sm text-emerald-900">
           <ShieldCheck className="h-4 w-4" /> Reply sent — we&rsquo;ll respond shortly.
@@ -119,7 +118,6 @@ export default async function GuestQuotePage({
           This quote is closed. Open a new request to continue.
         </div>
       )}
-
       {/* Conversation — original request first, then replies */}
       <section className="rounded-2xl border border-border bg-card overflow-hidden mb-4">
         <ul className="p-5 space-y-3 bg-foreground/[0.02]">
@@ -151,7 +149,6 @@ export default async function GuestQuotePage({
           ))}
         </ul>
       </section>
-
       {/* Guest reply */}
       {sr.status !== 'CLOSED' && sr.status !== 'DECLINED' && (
         <section className="rounded-2xl border border-border bg-card overflow-hidden">

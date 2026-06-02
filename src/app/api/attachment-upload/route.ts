@@ -23,7 +23,7 @@ const ALLOWED = [
  */
 export async function POST(req: Request) {
   try {
-    rateLimit('attachment-upload');
+    await rateLimit('attachment-upload');
   } catch {
     return NextResponse.json({ error: 'Too many uploads, slow down.' }, { status: 429 });
   }

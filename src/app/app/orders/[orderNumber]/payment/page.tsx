@@ -22,13 +22,14 @@ const ERR_MSG: Record<string, string> = {
   closed: 'This order is no longer accepting payment proof.',
 };
 
-export default async function PaymentWorkspacePage({
-  params,
-  searchParams,
-}: {
-  params: { orderNumber: string };
-  searchParams: { ok?: string; err?: string };
-}) {
+export default async function PaymentWorkspacePage(
+  props: {
+    params: Promise<{ orderNumber: string }>;
+    searchParams: Promise<{ ok?: string; err?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}/payment` });
   await ensureSettingsLoaded();
 

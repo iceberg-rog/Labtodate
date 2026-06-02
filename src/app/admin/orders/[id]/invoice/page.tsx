@@ -27,7 +27,8 @@ function fmtAddrLines(a: unknown): { name?: string; lines: string[] } | null {
   return { name: typeof o.name === 'string' ? o.name : undefined, lines };
 }
 
-export default async function InvoicePage({ params }: { params: { id: string } }) {
+export default async function InvoicePage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   await requireCapability('orders:view');
   await ensureSettingsLoaded();
 
@@ -96,18 +97,16 @@ export default async function InvoicePage({ params }: { params: { id: string } }
           transform: rotate(-6deg);
         }
       ` }} />
-
       <div className="no-print sticky top-0 z-50 bg-foreground/[0.04] border-b border-border px-4 py-2.5">
         <InvoiceActions backHref={`/admin/orders/${order.id}`} />
       </div>
-
       <main className="invoice-sheet">
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 32 }}>
           <div>
             {company.logo ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={company.logo} alt={company.legal} style={{ maxHeight: 48, marginBottom: 12 }} />
+              (<img src={company.logo} alt={company.legal} style={{ maxHeight: 48, marginBottom: 12 }} />)
             ) : (
               <p style={{ fontSize: 22, fontWeight: 800, color: '#0E4F40', letterSpacing: '-0.02em' }}>{company.legal}</p>
             )}

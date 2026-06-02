@@ -7,7 +7,8 @@ import type { WikiInputType } from '@/lib/content/actions';
 
 export const dynamic = 'force-dynamic';
 
-export default async function EditWikiPage({ params }: { params: { slug: string } }) {
+export default async function EditWikiPage(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   await requireCapability('content:write');
   const article = await prisma.wikiArticle.findUnique({ where: { slug: params.slug } });
   if (!article) notFound();

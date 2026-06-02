@@ -111,7 +111,8 @@ async function rejectPaymentAction(formData: FormData): Promise<void> {
   await rejectPayment(formData);
 }
 
-export default async function AdminOrderDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminOrderDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   await requireCapability('orders:view');
 
   const order = await prisma.order.findUnique({
@@ -243,7 +244,6 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
         <span className="opacity-50">/</span>
         <span className="text-foreground font-mono">{order.orderNumber}</span>
       </nav>
-
       <div className="sticky top-16 z-30 -mx-2 px-2 py-3 bg-background/95 backdrop-blur border-b border-border flex items-start justify-between gap-4 flex-wrap">
         <div>
           <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Order</p>
@@ -273,7 +273,6 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
           </div>
         </div>
       </div>
-
       <div className="grid lg:grid-cols-[1fr_360px] gap-6 items-start">
         {/* === Left column === */}
         <div className="space-y-5 min-w-0">
@@ -586,11 +585,11 @@ export default async function AdminOrderDetailPage({ params }: { params: { id: s
                           </a>
                           {isImg && (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img
+                            (<img
                               src={proxyUrl}
                               alt="Payment receipt"
                               className="max-w-md max-h-96 rounded-lg border border-amber-200 bg-white"
-                            />
+                            />)
                           )}
                         </dd>
                       </>

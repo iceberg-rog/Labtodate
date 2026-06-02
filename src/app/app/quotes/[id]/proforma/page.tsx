@@ -9,7 +9,8 @@ import { PrintButton } from '@/components/util/PrintButton';
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Proforma invoice' };
 
-export default async function ProformaPage({ params }: { params: { id: string } }) {
+export default async function ProformaPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/quotes/${params.id}/proforma` });
   await ensureSettingsLoaded();
 

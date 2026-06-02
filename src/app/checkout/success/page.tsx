@@ -8,11 +8,12 @@ import { formatPrice } from '@/lib/utils';
 export const metadata = { title: 'Order received' };
 export const dynamic = 'force-dynamic';
 
-export default async function CheckoutSuccessPage({
-  searchParams,
-}: {
-  searchParams: { order?: string; dev?: string; pending?: string };
-}) {
+export default async function CheckoutSuccessPage(
+  props: {
+    searchParams: Promise<{ order?: string; dev?: string; pending?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   if (!searchParams.order) notFound();
 
   const order = await prisma.order.findUnique({

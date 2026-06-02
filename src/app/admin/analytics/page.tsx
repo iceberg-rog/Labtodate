@@ -27,11 +27,12 @@ function bucketsFor(range: Range): { since: Date; days: number; granularityDays:
   return { since: new Date(Date.now() - days * 864e5), days, granularityDays };
 }
 
-export default async function AdminAnalyticsPage({
-  searchParams,
-}: {
-  searchParams: { range?: string };
-}) {
+export default async function AdminAnalyticsPage(
+  props: {
+    searchParams: Promise<{ range?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('analytics:view');
   const range = (searchParams.range === '7d' || searchParams.range === '90d' ? searchParams.range : '30d') as Range;
   const { since, days, granularityDays } = bucketsFor(range);

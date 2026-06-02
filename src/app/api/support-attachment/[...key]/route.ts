@@ -19,10 +19,8 @@ export const dynamic = 'force-dynamic';
  * On success: 302 redirect to a 60s-presigned S3 URL.
  * Otherwise: 404 (never reveal whether the key exists vs is forbidden).
  */
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { key: string[] } },
-) {
+export async function GET(req: NextRequest, props: { params: Promise<{ key: string[] }> }) {
+  const params = await props.params;
   const segments = params.key ?? [];
   if (segments.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const key = segments.join('/');

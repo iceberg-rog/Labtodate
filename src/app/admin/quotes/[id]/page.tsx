@@ -42,7 +42,8 @@ function fmtMoney(cents: number, ccy = 'EUR'): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 }).format(cents / 100);
 }
 
-export default async function AdminQuoteDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminQuoteDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   await requireCapability('quotes:view');
   const session = await getServerSession();
 
@@ -96,7 +97,6 @@ export default async function AdminQuoteDetailPage({ params }: { params: { id: s
       >
         <ChevronLeft className="h-4 w-4" /> Back to deals
       </Link>
-
       {/* Stuck-state warning: status=ACCEPTED but no linked order. Surfaces
           legacy quotes where admin replied with a text price and buyer
           clicked the (old) Accept button. New flow prevents this entirely
@@ -116,7 +116,6 @@ export default async function AdminQuoteDetailPage({ params }: { params: { id: s
           </div>
         </div>
       )}
-
       {/* ============ HERO: amount + deal state + ownership ============ */}
       <div className={`rounded-2xl border-2 bg-card overflow-hidden ${dealTone.ring} ring-1 ring-inset`}>
         <div className="p-6 grid lg:grid-cols-[1fr_auto] gap-6 items-start">
@@ -197,7 +196,6 @@ export default async function AdminQuoteDetailPage({ params }: { params: { id: s
           </div>
         </div>
       </div>
-
       {/* ============ MAIN: conversation-centric + sidebar ============ */}
       <div className="grid xl:grid-cols-[1fr_340px] gap-4 items-start">
         {/* LEFT — original request, conversation, composer */}

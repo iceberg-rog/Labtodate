@@ -6,7 +6,8 @@ import { ThreadView } from '@/components/messages/ThreadView';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ThreadPage({ params }: { params: { id: string } }) {
+export default async function ThreadPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/inbox/${params.id}` });
 
   const thread = await prisma.messageThread.findUnique({

@@ -12,7 +12,7 @@ const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 // Rate-limited and strictly constrained because it is unauthenticated.
 export async function POST(req: Request) {
   try {
-    rateLimit('sell-upload');
+    await rateLimit('sell-upload');
   } catch {
     return NextResponse.json({ error: 'Too many uploads, slow down.' }, { status: 429 });
   }

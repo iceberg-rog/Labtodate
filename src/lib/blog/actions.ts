@@ -47,7 +47,7 @@ export async function submitBlogComment(
     return { ok: true, message: 'Thanks — your comment will appear after review.' };
   }
   try {
-    rateLimit(`blogcomment:${parsed.data.authorEmail.toLowerCase()}`, 5, 60_000);
+    await rateLimit(`blogcomment:${parsed.data.authorEmail.toLowerCase()}`, 5, 60_000);
   } catch {
     return { ok: false, message: 'Too many comments — please wait a minute before posting again.' };
   }

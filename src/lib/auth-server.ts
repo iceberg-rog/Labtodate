@@ -9,7 +9,7 @@ import { capsAllow, type Capability } from './capabilities';
  * Returns null if not signed in.
  */
 export async function getServerSession(): Promise<Session | null> {
-  const session = await auth.api.getSession({ headers: headers() });
+  const session = await auth.api.getSession({ headers: await headers() });
   return session;
 }
 

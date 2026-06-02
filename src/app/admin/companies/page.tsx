@@ -10,11 +10,12 @@ export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 50;
 
-export default async function AdminCompaniesPage({
-  searchParams,
-}: {
-  searchParams: { q?: string; page?: string; created?: string; imported?: string };
-}) {
+export default async function AdminCompaniesPage(
+  props: {
+    searchParams: Promise<{ q?: string; page?: string; created?: string; imported?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('companies:manage');
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);

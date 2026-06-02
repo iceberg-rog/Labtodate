@@ -8,7 +8,8 @@ import type { ProductInputType } from '../../actions';
 
 export const dynamic = 'force-dynamic';
 
-export default async function EditProductPage({ params }: { params: { slug: string } }) {
+export default async function EditProductPage(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: `/app/seller/products/${params.slug}/edit` });
 
   const product = await prisma.product.findUnique({ where: { slug: params.slug } });

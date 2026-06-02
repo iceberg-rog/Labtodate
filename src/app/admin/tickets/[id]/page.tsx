@@ -80,7 +80,8 @@ function fmtAddr(raw: unknown): string[] {
   ].filter((x): x is string => !!x && x.trim().length > 0);
 }
 
-export default async function AdminTicketDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminTicketDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   await requireCapability('tickets:view');
   const session = await getServerSession();
 
@@ -185,7 +186,6 @@ export default async function AdminTicketDetailPage({ params }: { params: { id: 
       >
         <ChevronLeft className="h-4 w-4" /> Back to queue
       </Link>
-
       {/* === Header card === */}
       <div className="rounded-2xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -240,7 +240,6 @@ export default async function AdminTicketDetailPage({ params }: { params: { id: 
           />
         </div>
       </div>
-
       {/* === Split layout === */}
       <div className="grid xl:grid-cols-[1fr_360px] gap-4 items-start">
         {/* === LEFT: conversation + reply forms === */}

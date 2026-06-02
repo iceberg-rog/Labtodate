@@ -40,13 +40,14 @@ function fmtAddr(a: unknown): string | null {
   return parts.length ? parts.join(', ') : null;
 }
 
-export default async function OrderDetailPage({
-  params,
-  searchParams,
-}: {
-  params: { orderNumber: string };
-  searchParams: { returned?: string };
-}) {
+export default async function OrderDetailPage(
+  props: {
+    params: Promise<{ orderNumber: string }>;
+    searchParams: Promise<{ returned?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}` });
 
   const order = await prisma.order.findUnique({

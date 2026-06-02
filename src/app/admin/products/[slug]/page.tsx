@@ -11,7 +11,8 @@ import type { IllustrationName } from '@/components/illustrations/instruments';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AdminProductEditPage({ params }: { params: { slug: string } }) {
+export default async function AdminProductEditPage(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   await requireCapability('products:edit');
 
   const product = await prisma.product.findUnique({ where: { slug: params.slug } });

@@ -54,11 +54,12 @@ function smartDate(d: Date | null | undefined): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-export default async function AdminMessagesPage({
-  searchParams,
-}: {
-  searchParams: { tab?: string; q?: string; page?: string };
-}) {
+export default async function AdminMessagesPage(
+  props: {
+    searchParams: Promise<{ tab?: string; q?: string; page?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('messages:view');
   const tab = TAB_DEFS.find((t) => t.key === searchParams.tab) ?? TAB_DEFS[0];
   const q = (searchParams.q ?? '').trim();

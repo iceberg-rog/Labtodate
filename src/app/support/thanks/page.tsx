@@ -6,7 +6,8 @@ import { getServerSession } from '@/lib/auth-server';
 export const metadata = { title: 'Ticket received' };
 export const dynamic = 'force-dynamic';
 
-export default async function SupportThanksPage({ searchParams }: { searchParams: { ref?: string } }) {
+export default async function SupportThanksPage(props: { searchParams: Promise<{ ref?: string }> }) {
+  const searchParams = await props.searchParams;
   const session = await getServerSession();
   const signedIn = !!session?.user;
 

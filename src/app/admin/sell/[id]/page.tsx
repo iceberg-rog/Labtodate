@@ -51,7 +51,8 @@ async function closeAction(formData: FormData): Promise<void> {
   await setSellStatus(String(formData.get('id') ?? ''), 'CLOSED');
 }
 
-export default async function AdminSellDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminSellDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   await requireCapability('sell:view');
   await getServerSession();
 
@@ -104,7 +105,6 @@ export default async function AdminSellDetailPage({ params }: { params: { id: st
       >
         <ChevronLeft className="h-4 w-4" /> Back to acquisitions
       </Link>
-
       {/* HERO ========================================================== */}
       <section className={`rounded-2xl border-2 bg-card overflow-hidden ${tone.ring} ring-1 ring-inset`}>
         <div className="p-6 grid lg:grid-cols-[1fr_auto] gap-6 items-start">
@@ -159,7 +159,6 @@ export default async function AdminSellDetailPage({ params }: { params: { id: st
           </div>
         </div>
       </section>
-
       <div className="grid xl:grid-cols-[1fr_320px] gap-4 items-start">
         {/* LEFT: item + photos + conversation + composer + actions */}
         <div className="space-y-4">
@@ -199,9 +198,9 @@ export default async function AdminSellDetailPage({ params }: { params: { id: st
               <div className="flex gap-2 flex-wrap">
                 {sub.images.map((src) => (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <a key={src} href={src} target="_blank" rel="noreferrer">
+                  (<a key={src} href={src} target="_blank" rel="noreferrer">
                     <img src={src} alt="" className="h-24 w-24 rounded-lg object-cover border border-border hover:opacity-80 transition" />
-                  </a>
+                  </a>)
                 ))}
               </div>
             </section>

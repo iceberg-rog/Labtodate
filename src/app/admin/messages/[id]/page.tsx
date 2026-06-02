@@ -39,7 +39,8 @@ const STATUS_VIS: Record<string, { ring: string; pill: string; label: string }> 
   ARCHIVED:       { ring: 'ring-slate-200',   pill: 'bg-slate-50 text-slate-600 border-slate-200',        label: 'Archived' },
 };
 
-export default async function AdminConversationDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminConversationDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   await requireCapability('messages:view');
   const session = await getServerSession();
 
@@ -245,9 +246,9 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
               {m.attachments.map((url: string) => (
                 /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url) ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <a key={url} href={url} target="_blank" rel="noreferrer">
+                  (<a key={url} href={url} target="_blank" rel="noreferrer">
                     <img src={url} alt="" className="h-20 w-20 rounded-md object-cover border border-border" />
-                  </a>
+                  </a>)
                 ) : (
                   <a key={url} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] underline">
                     <Paperclip className="h-3 w-3" /> attachment

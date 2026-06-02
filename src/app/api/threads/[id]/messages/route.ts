@@ -4,7 +4,8 @@ import { getServerSession } from '@/lib/auth-server';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const session = await getServerSession();
   if (!session) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 

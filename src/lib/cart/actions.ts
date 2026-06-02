@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
+import { headers } from 'next/headers';
 import { prisma } from '@/lib/db';
 import { requireSession } from '@/lib/auth-server';
 import { getStripe, stripeConfigured } from '@/lib/stripe/client';
@@ -102,7 +103,7 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
     redirect(`/checkout/cart?missing=${missing.join(',')}`);
   }
 
-  const hdrs = await import('next/headers').then((m) => m.headers());
+  const hdrs = await headers();
   const buyerIp =
     (hdrs.get('cf-connecting-ip') ||
       hdrs.get('x-forwarded-for')?.split(',')[0] ||

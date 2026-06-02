@@ -10,11 +10,12 @@ import { deleteProduct, publishProduct } from './actions';
 
 export const dynamic = 'force-dynamic';
 
-export default async function SellerProductsPage({
-  searchParams,
-}: {
-  searchParams: { created?: string; updated?: string };
-}) {
+export default async function SellerProductsPage(
+  props: {
+    searchParams: Promise<{ created?: string; updated?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller/products' });
 
   const products = await prisma.product.findMany({

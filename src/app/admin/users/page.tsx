@@ -25,11 +25,12 @@ const ROLE_LABEL: Record<UserRole, string> = {
   SELLER: 'internal supplier',
 };
 
-export default async function AdminUsersPage({
-  searchParams,
-}: {
-  searchParams: { q?: string; page?: string; role?: string };
-}) {
+export default async function AdminUsersPage(
+  props: {
+    searchParams: Promise<{ q?: string; page?: string; role?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('users:view');
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);

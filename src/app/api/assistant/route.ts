@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
-    rateLimit('assistant', 20, 5 * 60_000);
+    await rateLimit('assistant', 20, 5 * 60_000);
   } catch {
     return NextResponse.json(
       { reply: 'You’re sending messages too fast — please wait a moment.' },

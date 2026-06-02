@@ -35,7 +35,7 @@ async function resolveActor(): Promise<{
       userEmail: session.user.email,
     };
   }
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   let token = cookieStore.get(GUEST_COOKIE)?.value;
   if (!token) {
     token = randomBytes(24).toString('hex');

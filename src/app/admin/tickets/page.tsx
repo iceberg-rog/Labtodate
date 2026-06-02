@@ -39,11 +39,12 @@ const STATUS_WEIGHT: Record<string, number> = {
   OPEN: 0, WAITING_ON_SUPPORT: 0, WAITING_ON_CUSTOMER: 1, PENDING: 1, RESOLVED: 2, CLOSED: 3, SPAM: 4,
 };
 
-export default async function AdminTicketsPage({
-  searchParams,
-}: {
-  searchParams: { tab?: string; q?: string; view?: string; assignee?: string; priority?: string; sort?: string };
-}) {
+export default async function AdminTicketsPage(
+  props: {
+    searchParams: Promise<{ tab?: string; q?: string; view?: string; assignee?: string; priority?: string; sort?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('tickets:view');
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();

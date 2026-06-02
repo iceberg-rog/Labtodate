@@ -33,11 +33,12 @@ function rangeWhere(range: Range): Prisma.OrderWhereInput {
   return { createdAt: { gte: new Date(Date.now() - days * 864e5) } };
 }
 
-export default async function AdminOrdersPage({
-  searchParams,
-}: {
-  searchParams: { q?: string; page?: string; status?: string; awaiting?: string; range?: string; view?: string };
-}) {
+export default async function AdminOrdersPage(
+  props: {
+    searchParams: Promise<{ q?: string; page?: string; status?: string; awaiting?: string; range?: string; view?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('orders:view');
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);

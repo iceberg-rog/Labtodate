@@ -1,4 +1,5 @@
 import { prisma } from './db';
+import { isBuildPhase } from './build-phase';
 
 /**
  * Admin-configurable base settings. Stored in the DB so they can be set
@@ -101,6 +102,7 @@ const TTL_MS = 5000;
 
 /** Idempotent, cheap (5s cache): copy DB settings into process.env. */
 export async function ensureSettingsLoaded(): Promise<void> {
+  if (isBuildPhase()) return;
   if (Date.now() - lastLoad < TTL_MS) return;
   if (inflight) return inflight;
   inflight = (async () => {

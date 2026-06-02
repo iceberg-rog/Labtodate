@@ -27,13 +27,14 @@ export const metadata = { title: 'Support ticket', robots: { index: false } };
  * makes guessing computationally infeasible. We never expose internal notes
  * here — they're filtered in the query.
  */
-export default async function GuestTicketPage({
-  params,
-  searchParams,
-}: {
-  params: { token: string };
-  searchParams: { ok?: string };
-}) {
+export default async function GuestTicketPage(
+  props: {
+    params: Promise<{ token: string }>;
+    searchParams: Promise<{ ok?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   await ensureSettingsLoaded();
   if (!params.token || params.token.length < 16) notFound();
 
@@ -94,7 +95,6 @@ export default async function GuestTicketPage({
       <a href="/support" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4">
         <ChevronLeft className="h-4 w-4" /> Open a new ticket
       </a>
-
       <div className="rounded-2xl border border-border bg-card p-6 mb-4">
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <span className="font-mono text-[11px] text-muted-foreground">{t.ref}</span>
@@ -112,13 +112,11 @@ export default async function GuestTicketPage({
           From {t.name} &lt;{t.email}&gt; · opened {t.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
         </p>
       </div>
-
       {searchParams.ok === '1' && (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 mb-4 inline-flex items-center gap-2 text-sm text-emerald-900">
           <ShieldCheck className="h-4 w-4" /> Reply sent — we’ll respond shortly.
         </div>
       )}
-
       {/* Conversation */}
       <section className="rounded-2xl border border-border bg-card overflow-hidden mb-4">
         <ul className="p-5 space-y-3 bg-foreground/[0.02]">
@@ -142,7 +140,6 @@ export default async function GuestTicketPage({
           ))}
         </ul>
       </section>
-
       {/* Guest reply */}
       {t.status !== 'CLOSED' && t.status !== 'SPAM' && (
         <section className="rounded-2xl border border-border bg-card overflow-hidden">

@@ -160,7 +160,7 @@ export async function withUniqueTicketRef<T>(
 export async function submitTicket(input: z.infer<typeof TicketInput>) {
   const p = TicketInput.parse(input);
   if (p.hp && p.hp.trim()) return { ref: 'TKT-OK' }; // honeypot: silently drop bots
-  rateLimit('ticket');
+  await rateLimit('ticket');
   await ensureSettingsLoaded();
   const session = await getServerSession();
 

@@ -8,6 +8,7 @@ import { Testimonials } from '@/components/home/Testimonials';
 import { CTASection } from '@/components/home/CTASection';
 import { Reveal } from '@/components/motion/Reveal';
 import { prisma } from '@/lib/db';
+import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { HOME_SECTIONS, type HomeSection, getHomeContent, type HomeStat } from '@/lib/home-sections';
 
@@ -20,7 +21,7 @@ export default async function HomePage() {
   // If admin hasn't overridden HERO_STATS in settings, replace the seed values
   // with REAL counts so the headline never lies. process.env.HERO_STATS is set
   // by saveHomepage when (and only when) admin types real numbers in.
-  if (!process.env.HERO_STATS?.trim()) {
+  if (!isBuildPhase() && !process.env.HERO_STATS?.trim()) {
     const [listings, suppliers, countriesRow] = await Promise.all([
       prisma.product.count({ where: { status: 'PUBLISHED' } }),
       prisma.company.count(),

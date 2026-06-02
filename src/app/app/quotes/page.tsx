@@ -118,7 +118,8 @@ function resolveIllustration(category: string | null | undefined): IllustrationN
   return 'detector';
 }
 
-export default async function BuyerQuotesPage({ searchParams }: { searchParams: { filter?: string } }) {
+export default async function BuyerQuotesPage(props: { searchParams: Promise<{ filter?: string }> }) {
+  const searchParams = await props.searchParams;
   const session = await requireSession({ redirectTo: '/app/quotes' });
   const filter = searchParams.filter ?? 'all';
 
@@ -206,7 +207,6 @@ export default async function BuyerQuotesPage({ searchParams }: { searchParams: 
           }
         </p>
       </div>
-
       {counts.all > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
           {filterTabs.map((t) => {
@@ -228,7 +228,6 @@ export default async function BuyerQuotesPage({ searchParams }: { searchParams: 
           })}
         </div>
       )}
-
       {counts.all === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <div className="mx-auto h-14 w-14 rounded-full bg-primary/10 text-primary inline-flex items-center justify-center mb-4">
@@ -302,7 +301,7 @@ export default async function BuyerQuotesPage({ searchParams }: { searchParams: 
                   <div className="h-16 w-16 rounded-xl bg-gradient-to-br from-[hsl(82_55%_95%)] to-[hsl(168_30%_94%)] border border-border flex items-center justify-center overflow-hidden flex-shrink-0">
                     {imgUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={imgUrl} alt="" className="w-full h-full object-cover" />
+                      (<img src={imgUrl} alt="" className="w-full h-full object-cover" />)
                     ) : (
                       <InstrumentIllustration name={illust} className="h-12 w-12" />
                     )}
@@ -335,7 +334,6 @@ export default async function BuyerQuotesPage({ searchParams }: { searchParams: 
                     </p>
                   </div>
                 </div>
-
                 <div className="border-t border-border bg-foreground/[0.015] px-5 py-2.5 flex items-center justify-between gap-3 flex-wrap">
                   <div className="flex items-center gap-2 flex-wrap">
                     {vis.ctaLabel && vis.ctaHref && (

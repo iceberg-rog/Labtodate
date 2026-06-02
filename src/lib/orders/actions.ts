@@ -2,6 +2,7 @@
 
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
+import { headers } from 'next/headers';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { requireSession } from '@/lib/auth-server';
@@ -289,7 +290,7 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
 
   // Capture buyer IP + country at order creation. Cheap forensic trail —
   // useful for chargeback dispute + fraud review. CF tunnel forwards CF-IPCountry.
-  const hdrs = await import('next/headers').then((m) => m.headers());
+  const hdrs = await headers();
   const buyerIp =
     (hdrs.get('cf-connecting-ip') ||
       hdrs.get('x-forwarded-for')?.split(',')[0] ||

@@ -9,11 +9,12 @@ import { setCartQty, removeFromCart } from '@/lib/cart/actions';
 
 export const dynamic = 'force-dynamic';
 
-export default async function CartPage({
-  searchParams,
-}: {
-  searchParams: { added?: string };
-}) {
+export default async function CartPage(
+  props: {
+    searchParams: Promise<{ added?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const session = await requireSession({ redirectTo: '/app/cart' });
   const items = await prisma.cartItem.findMany({
     where: { userId: session.user.id },

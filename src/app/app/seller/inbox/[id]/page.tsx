@@ -6,7 +6,8 @@ import { QuoteThread } from '@/components/quotes/QuoteThread';
 
 export const dynamic = 'force-dynamic';
 
-export default async function SellerQuoteDetailPage({ params }: { params: { id: string } }) {
+export default async function SellerQuoteDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: `/app/seller/inbox/${params.id}` });
   const role = (session.user as { role?: string }).role;
   const sellerIsAdmin = role === 'ADMIN';

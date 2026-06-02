@@ -9,12 +9,14 @@ import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
-export async function generateMetadata({ params }: { params: { slug: string } }) {
+export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const f = await prisma.labFacility.findUnique({ where: { slug: params.slug } });
   return { title: f?.name ?? 'Not found' };
 }
 
-export default async function FacilityPage({ params }: { params: { slug: string } }) {
+export default async function FacilityPage(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const facility = await prisma.labFacility.findUnique({
     where: { slug: params.slug },
     include: { ownerCompany: true },

@@ -29,11 +29,12 @@ import { getServerSession } from '@/lib/auth-server';
 import { formatPrice } from '@/lib/utils';
 
 interface PageProps {
-  params: { slug: string };
-  searchParams?: { review?: string; sold?: string; quoteonly?: string };
+  params: Promise<{ slug: string }>;
+  searchParams?: Promise<{ review?: string; sold?: string; quoteonly?: string }>;
 }
 
-export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
+export async function generateMetadata(props: PageProps): Promise<Metadata> {
+  const params = await props.params;
   const product = await getProductBySlug(params.slug);
   if (!product) return { title: 'Not found' };
   const description = product.summary ?? `${product.brand?.name ?? ''} ${product.title}`;
@@ -50,7 +51,9 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   };
 }
 
-export default async function ProductDetailPage({ params, searchParams }: PageProps) {
+export default async function ProductDetailPage(props: PageProps) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const product = await getProductBySlug(params.slug);
   if (!product) notFound();
   const reviewNote = searchParams?.review === 'needpurchase';

@@ -29,7 +29,8 @@ interface SearchParams {
   page?: string;
 }
 
-export default async function MarketplacePage({ searchParams }: { searchParams: SearchParams }) {
+export default async function MarketplacePage(props: { searchParams: Promise<SearchParams> }) {
+  const searchParams = await props.searchParams;
   const page = parseInt(searchParams.page ?? '1', 10) || 1;
   const mk = await getMarketing();
 

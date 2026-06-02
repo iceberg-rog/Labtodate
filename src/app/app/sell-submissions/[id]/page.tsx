@@ -80,7 +80,8 @@ function lifecycleIndex(sub: {
   return { current: 0, lost: false };
 }
 
-export default async function SellSubmissionDetailPage({ params }: { params: { id: string } }) {
+export default async function SellSubmissionDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/sell-submissions/${params.id}` });
   await ensureSettingsLoaded();
 
@@ -121,7 +122,6 @@ export default async function SellSubmissionDetailPage({ params }: { params: { i
         <ChevronRight className="h-3 w-3" />
         <span className="text-foreground font-mono">{ref}</span>
       </nav>
-
       {/* ── HERO ────────────────────────────────────────────────────── */}
       <div className="rounded-2xl border-2 border-primary/30 bg-gradient-to-br from-primary/[0.04] to-accent/[0.05] p-6">
         <div className="flex items-start justify-between gap-6 flex-wrap">
@@ -152,7 +152,6 @@ export default async function SellSubmissionDetailPage({ params }: { params: { i
           </div>
         </div>
       </div>
-
       {/* ── TIMELINE ─────────────────────────────────────────────────── */}
       <section className="rounded-2xl border border-border bg-card p-6">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground mb-5">Lifecycle</p>
@@ -200,7 +199,6 @@ export default async function SellSubmissionDetailPage({ params }: { params: { i
           </ol>
         )}
       </section>
-
       {/* ── STAGE-SPECIFIC ACTION CARD ──────────────────────────────── */}
       <StageCard
         sub={sub}
@@ -209,7 +207,6 @@ export default async function SellSubmissionDetailPage({ params }: { params: { i
         latestProposalCents={latestProposal?.priceCents ?? null}
         latestProposalCurrency={latestProposal?.currency ?? null}
       />
-
       {/* ── EQUIPMENT DETAILS ──────────────────────────────────────── */}
       <section className="rounded-2xl border border-border bg-card p-6">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground mb-3 inline-flex items-center gap-1.5">
@@ -243,15 +240,14 @@ export default async function SellSubmissionDetailPage({ params }: { params: { i
             <div className="flex gap-2 flex-wrap">
               {sub.images.map((src) => (
                 // eslint-disable-next-line @next/next/no-img-element
-                <a key={src} href={src} target="_blank" rel="noreferrer">
+                (<a key={src} href={src} target="_blank" rel="noreferrer">
                   <img src={src} alt="" className="h-24 w-24 rounded-lg object-cover border border-border hover:opacity-80 transition" />
-                </a>
+                </a>)
               ))}
             </div>
           </div>
         )}
       </section>
-
       {/* ── CONVERSATION ────────────────────────────────────────────── */}
       <section className="rounded-2xl border border-border bg-card overflow-hidden">
         <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">

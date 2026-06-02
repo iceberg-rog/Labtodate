@@ -56,13 +56,14 @@ const STATUS_WEIGHT: Record<string, number> = {
   PENDING: 0, RESPONDED: 1, ACCEPTED: 2, DECLINED: 3, CLOSED: 4,
 };
 
-export default async function AdminQuotesPage({
-  searchParams,
-}: {
-  searchParams: {
-    tab?: string; q?: string; view?: string; assignee?: string; priority?: string; sort?: string;
-  };
-}) {
+export default async function AdminQuotesPage(
+  props: {
+    searchParams: Promise<{
+      tab?: string; q?: string; view?: string; assignee?: string; priority?: string; sort?: string;
+    }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('quotes:view');
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();

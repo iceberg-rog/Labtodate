@@ -18,7 +18,7 @@ export async function POST(req: Request) {
   if (!secret) return NextResponse.json({ error: 'webhook secret missing' }, { status: 500 });
 
   const body = await req.text();
-  const sig = headers().get('stripe-signature');
+  const sig = (await headers()).get('stripe-signature');
   if (!sig) return NextResponse.json({ error: 'no signature' }, { status: 400 });
 
   let event;

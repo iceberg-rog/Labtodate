@@ -8,11 +8,12 @@ import { setBlogCommentApproved, deleteBlogComment } from '@/lib/blog/actions';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AdminBlogCommentsPage({
-  searchParams,
-}: {
-  searchParams?: { filter?: string };
-}) {
+export default async function AdminBlogCommentsPage(
+  props: {
+    searchParams?: Promise<{ filter?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('content:write');
   const filter = (searchParams?.filter ?? 'pending').toLowerCase();
 

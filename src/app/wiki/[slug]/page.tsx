@@ -6,12 +6,14 @@ import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
-export async function generateMetadata({ params }: { params: { slug: string } }) {
+export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const article = await prisma.wikiArticle.findUnique({ where: { slug: params.slug } });
   return { title: article?.title ?? 'Not found' };
 }
 
-export default async function WikiArticlePage({ params }: { params: { slug: string } }) {
+export default async function WikiArticlePage(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const article = await prisma.wikiArticle.findUnique({
     where: { slug: params.slug },
     include: { author: { select: { name: true } } },

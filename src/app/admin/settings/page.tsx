@@ -59,11 +59,12 @@ const TAB_NOTE: Partial<Record<string, string>> = {
     'Powers the on-site chat widget. OpenAI-compatible — any provider that follows OpenAI’s /v1/chat/completions shape works.',
 };
 
-export default async function AdminSettingsPage({
-  searchParams,
-}: {
-  searchParams?: { tab?: string };
-}) {
+export default async function AdminSettingsPage(
+  props: {
+    searchParams?: Promise<{ tab?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('settings:view');
   const current = await getEffectiveSettings();
   const groups = Array.from(new Set(SETTING_DEFS.map((d) => d.group)));
@@ -195,11 +196,11 @@ export default async function AdminSettingsPage({
         <div className="h-20 w-48 rounded-lg border border-border bg-white flex items-center justify-center overflow-hidden">
           {current['COMPANY_LOGO_URL'] ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img
+            (<img
               src={current['COMPANY_LOGO_URL']}
               alt="Company logo"
               className="max-h-16 max-w-[180px] object-contain"
-            />
+            />)
           ) : (
             <span className="text-xs text-muted-foreground">No logo</span>
           )}

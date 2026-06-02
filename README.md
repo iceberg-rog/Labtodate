@@ -4,7 +4,7 @@ B2B marketplace for laboratory and biotech equipment.
 
 ## Docker Install
 
-Requirements: Docker Engine with Docker Compose.
+Requirements: Docker Engine with Docker Compose. The image runs on Node.js 22.
 
 ```bash
 cp .env.docker.example .env
@@ -64,6 +64,8 @@ npm run dev
 
 Open <http://localhost:3000>.
 
+Use Node.js 22 for local development, or any Node.js version supported by Next.js 16.
+
 Local development uses the same support services as Docker install, exposed on `127.0.0.1:16543` for Postgres, `127.0.0.1:19000` for MinIO, and `127.0.0.1:11025` for Mailpit SMTP. Those values are already set in `.env.example`.
 
 Common scripts:
@@ -106,7 +108,7 @@ If you keep MinIO private behind the app, leave object URLs on the `/media/<buck
 
 ## Stack
 
-- Next.js 14 App Router, React 18, TypeScript, Tailwind CSS
+- Next.js 16 App Router, React 18, TypeScript, Tailwind CSS
 - Postgres 16 and Prisma
 - Better Auth
 - MinIO or any S3-compatible object storage

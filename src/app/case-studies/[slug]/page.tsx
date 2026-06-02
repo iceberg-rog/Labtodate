@@ -7,12 +7,14 @@ import { InstrumentIllustration, type IllustrationName } from '@/components/illu
 
 export const dynamic = 'force-dynamic';
 
-export async function generateMetadata({ params }: { params: { slug: string } }) {
+export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const c = await prisma.caseStudy.findUnique({ where: { slug: params.slug } });
   return { title: c?.title ?? 'Not found' };
 }
 
-export default async function CaseStudyPage({ params }: { params: { slug: string } }) {
+export default async function CaseStudyPage(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   const c = await prisma.caseStudy.findUnique({ where: { slug: params.slug } });
   if (!c || c.status !== 'PUBLISHED') notFound();
 

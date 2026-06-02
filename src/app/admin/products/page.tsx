@@ -10,11 +10,12 @@ export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 60;
 
-export default async function AdminProductsPage({
-  searchParams,
-}: {
-  searchParams: { status?: string; q?: string; page?: string; category?: string; qty?: string; shop?: string; created?: string; deleted?: string };
-}) {
+export default async function AdminProductsPage(
+  props: {
+    searchParams: Promise<{ status?: string; q?: string; page?: string; category?: string; qty?: string; shop?: string; created?: string; deleted?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   await requireCapability('products:view');
 
   const status = searchParams.status as ProductStatus | undefined;

@@ -15,10 +15,8 @@ export const dynamic = 'force-dynamic';
  * On success: streams the bytes with a private cache header.
  * Otherwise:  404 (never reveal whether the key exists vs is forbidden).
  */
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: { key: string[] } },
-) {
+export async function GET(_req: NextRequest, props: { params: Promise<{ key: string[] }> }) {
+  const params = await props.params;
   const segments = params.key ?? [];
   if (segments.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const key = segments.join('/');

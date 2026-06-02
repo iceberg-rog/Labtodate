@@ -7,7 +7,8 @@ import type { BlogInputType } from '@/lib/content/actions';
 
 export const dynamic = 'force-dynamic';
 
-export default async function EditBlogPostPage({ params }: { params: { slug: string } }) {
+export default async function EditBlogPostPage(props: { params: Promise<{ slug: string }> }) {
+  const params = await props.params;
   await requireCapability('content:write');
   const post = await prisma.blogPost.findUnique({ where: { slug: params.slug } });
   if (!post) notFound();

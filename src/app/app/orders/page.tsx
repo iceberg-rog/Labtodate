@@ -85,7 +85,8 @@ function smartDate(d: Date | null | undefined): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default async function OrdersPage({ searchParams }: { searchParams: { filter?: string } }) {
+export default async function OrdersPage(props: { searchParams: Promise<{ filter?: string }> }) {
+  const searchParams = await props.searchParams;
   const session = await requireSession({ redirectTo: '/app/orders' });
   const filter = searchParams.filter ?? 'all';
 
@@ -144,7 +145,6 @@ export default async function OrdersPage({ searchParams }: { searchParams: { fil
           }
         </p>
       </div>
-
       {counts.all > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
           {filterTabs.map((t) => {
@@ -166,7 +166,6 @@ export default async function OrdersPage({ searchParams }: { searchParams: { fil
           })}
         </div>
       )}
-
       {counts.all === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <div className="mx-auto h-14 w-14 rounded-full bg-primary/10 text-primary inline-flex items-center justify-center mb-4">
@@ -234,7 +233,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: { fil
                   <div className="h-16 w-16 rounded-xl bg-gradient-to-br from-[hsl(82_55%_95%)] to-[hsl(168_30%_94%)] border border-border flex items-center justify-center overflow-hidden flex-shrink-0">
                     {imgUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={imgUrl} alt="" className="w-full h-full object-cover" />
+                      (<img src={imgUrl} alt="" className="w-full h-full object-cover" />)
                     ) : (
                       <InstrumentIllustration name={illust} className="h-12 w-12" />
                     )}
@@ -264,7 +263,6 @@ export default async function OrdersPage({ searchParams }: { searchParams: { fil
                     <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{o.items.length} item{o.items.length === 1 ? '' : 's'}</p>
                   </div>
                 </div>
-
                 {/* Action bar — context-aware CTAs separated from the
                     informational row so the click target is unambiguous. */}
                 <div className="border-t border-border bg-foreground/[0.015] px-5 py-2.5 flex items-center justify-between gap-3 flex-wrap">
