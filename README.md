@@ -64,6 +64,8 @@ npm run dev
 
 Open <http://localhost:3000>.
 
+Local development uses the same support services as Docker install, exposed on `127.0.0.1:16543` for Postgres, `127.0.0.1:19000` for MinIO, and `127.0.0.1:11025` for Mailpit SMTP. Those values are already set in `.env.example`.
+
 Common scripts:
 
 ```bash
