@@ -87,6 +87,25 @@ echo "[7/7] building + starting web (first build ~4 min on a fresh host)"
 docker compose build web
 docker compose up -d
 
+# ---------- install ops cron + nginx (idempotent) ----------
+
+if [[ -f "$REPO_ROOT/scripts/backup.sh" && -f "$REPO_ROOT/scripts/uptime.sh" ]]; then
+  echo "[+] installing ops crons (daily db backup + 5-min healthcheck)"
+  chmod +x "$REPO_ROOT/scripts/backup.sh" "$REPO_ROOT/scripts/uptime.sh"
+  ( crontab -l 2>/dev/null | grep -v 'lab2date/scripts/' ; \
+    echo "0 3 * * * $REPO_ROOT/scripts/backup.sh >> /var/log/lab2date-backup.log 2>&1" ; \
+    echo "*/5 * * * * $REPO_ROOT/scripts/uptime.sh" \
+  ) | crontab -
+fi
+
+if [[ -f "$REPO_ROOT/nginx/lab2date.conf" ]] && command -v nginx >/dev/null 2>&1; then
+  echo "[+] installing nginx vhost (you still need to install TLS cert + run 'systemctl reload nginx')"
+  cp "$REPO_ROOT/nginx/lab2date.conf" /etc/nginx/sites-available/lab2date 2>/dev/null \
+    || cp "$REPO_ROOT/nginx/lab2date.conf" /etc/nginx/conf.d/lab2date.conf 2>/dev/null
+  [[ -d /etc/nginx/sites-enabled ]] && ln -sf /etc/nginx/sites-available/lab2date /etc/nginx/sites-enabled/lab2date
+  nginx -t 2>&1 | tail -2 || echo "  [warn] nginx config test failed — review vhost and TLS cert paths"
+fi
+
 # ---------- smoke check ----------
 
 echo
