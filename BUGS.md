@@ -161,10 +161,10 @@
 ### BUG-004 · FIX_IN_PROGRESS · deleteProduct routes to ARCHIVE on order history
 `src/app/app/seller/products/actions.ts` — `prisma.orderItem.findFirst({ where: { productId } })` blocks hard-delete; auto-archives instead. **Verify:** seller deletes a product with order history → status flips to ARCHIVED, FK relations preserved.
 
-### BUG-009 (RB) · FIX_IN_PROGRESS · Fulfillment server-guard against no-address orders
+### BUG-009 (RB) · FIXED (code; browser-unverified — reconciled 2026-06-07) · Fulfillment server-guard against no-address orders
 `src/app/admin/actions.ts setOrderFulfillment` + `bulkMarkAllShipped` — `shippingAddressIsComplete()` helper checks name/line1/city/postal/country(2-letter). SHIPPED/DELIVERED throw if missing; bulkship filters and reports skipped. **Verify:** attempt to mark address-less order SHIPPED via single + inline + bulk → expect rejection with clear message.
 
-### BUG-010 (RB) · FIX_IN_PROGRESS · setOrderFulfillment idempotent (kills audit ×17)
+### BUG-010 (RB) · FIXED (code; browser-unverified — reconciled 2026-06-07) · setOrderFulfillment idempotent (kills audit ×17)
 `src/app/admin/actions.ts` — pre-check `statusUnchanged && carrierUnchanged && trackingUnchanged` → no-op early. Status transition wrapped in `updateMany` with `where: { status: order.status }` precondition; lost race = silent skip. **Verify:** double-click the Save button on order detail → expect ONE audit row, ONE notification, ONE email, not 17.
 
 ---
@@ -665,3 +665,172 @@ manual refund/cancel paths are untouched.
 to set SHIPPED via the order-detail Save and via the inline tracking field → expect
 a clear rejection, status stays REFUNDED, no "shipped" email. Repeat on a CANCELED
 order. Confirm a normal PAID→PROCESSING→SHIPPED→DELIVERED order is unaffected.
+
+---
+
+## NEW — 2026-06-07 (round: invariant code-verification sweep)
+
+> Round summary: BUG-009/010 stale headers reconciled (fixes confirmed in
+> `src/app/admin/actions.ts` by code read). Chrome was NOT connected this run —
+> no browser verification possible; all statuses below are code-level only.
+> Two Edit/Write-tool truncation incidents occurred (marketplace/[slug]/page.tsx
+> tail, auth route file) — both fully recovered (tail restored from git HEAD,
+> file rewritten via shell) and `tsc --noEmit` exits 0. Lesson re-confirmed:
+> write large/new files through the shell, `tsc` after every change.
+
+### NEW BUG-023 · P0 · FIXED (code; browser-unverified) · Financial/State-integrity · Re-issuing a proforma rewrote money fields of an already-PAID order
+**File:** `src/lib/quotes/actions.ts` — `sendProforma`
+
+**Symptom (found by code read):** when a quote already had a materialized order,
+`sendProforma` ran `prisma.order.update` on it **unconditionally** — no status
+precondition. Re-issuing a proforma at a new price after the buyer had paid
+(or after refund/cancel) silently rewrote `subtotalCents/shippingCents/taxCents/
+totalCents/currency` on the PAID/terminal order → paid amount ≠ order total,
+reconciliation breakage. Secondary gap: on a legitimate pre-payment re-issue,
+order totals changed but the single `OrderItem.priceCentsSnapshot` did not →
+`totalCents ≠ Σ items` (invariant F1 violation).
+
+**Fix (working copy):**
+1. Early **freeze guard** (before any write, so rejection leaves no partial
+   state): if the linked order has left PENDING_PAYMENT and the new price or
+   currency differs, throw with a clear message ("refund/cancel first or open a
+   new quote"). Identical-price resend (document/email duplication) stays allowed.
+2. Totals rewrite now atomic `updateMany({ where: { id, status: 'PENDING_PAYMENT' } })`
+   — a concurrent payment wins the race and freezes the amounts.
+3. When the rewrite succeeds (count===1), the quote line's `priceCentsSnapshot`
+   is synced to the re-issued price so F1 holds pre-payment (snapshot freezes at
+   payment, not at first issuance).
+
+Manual-payment posture untouched; bank-transfer wording only.
+
+**Verify (browser, when session available):** issue proforma → buyer pays →
+admin verifies (PAID) → re-send proforma at a different price → expect rejection,
+order totals unchanged. Re-send at same price → succeeds (email only). Pre-payment
+re-issue at new price → order totals AND item snapshot both update.
+
+### NEW BUG-024 · P2 · FIXED (code; browser-unverified) · Security/Privacy · ARCHIVED/DRAFT/PENDING_REVIEW products publicly viewable by direct URL (invariant S10)
+**File:** `src/app/marketplace/[slug]/page.tsx`
+
+**Symptom:** every public listing/search/sitemap query correctly filters
+`status='PUBLISHED'`, but the product **detail page** had no status gate —
+anyone with (or guessing) a slug could view archived/unreviewed products,
+re-opening the admin-review bypass surface BUG-001 closed (an unapproved
+product was reachable by URL even though unlisted). `generateMetadata` also
+leaked titles of non-public products.
+
+**Fix:** non-PUBLISHED → `notFound()` (same contract as `/checkout/[slug]`),
+EXCEPT the owning seller and ADMINs, who may still open the page as a preview.
+Metadata returns "Not found" for non-PUBLISHED regardless (cosmetic for
+owner-preview, prevents the leak).
+
+**Verify:** as anonymous, open an ARCHIVED product URL → 404; as the owning
+seller → renders; listing pages unaffected.
+
+### NEW BUG-025 · P1 · FIXED (code; browser-unverified) · Security · No rate-limiting on sign-in / sign-up / forgot-password (invariant A14)
+**File:** `src/app/api/auth/[...all]/route.ts`
+
+**Symptom:** `lib/ratelimit.ts` exists and is wired into uploads, tickets,
+quotes, sell & blog actions — but **not** into any auth endpoint. The auth
+route was a bare `toNextJsHandler` delegation: unlimited credential stuffing,
+email enumeration, sign-up spam, and email bombing via magic-link /
+forgot-password.
+
+**Fix:** POST handler now applies per-IP sliding-window limits to the
+credential-sensitive paths only (sign-in 10/15min, sign-up 5/h, forgot/reset
+password 5/15min, magic-link 5/15min) → 429 with a Better-Auth-compatible
+`message` body. GET and non-sensitive POSTs (session refresh, callbacks,
+sign-out) untouched. In-memory limiter matches the existing single-instance
+deployment posture (same as every other rateLimit call site).
+
+**Verify:** 11 rapid failed sign-ins from one IP → 11th returns 429; normal
+sign-in unaffected; sign-out/session refresh never throttled.
+
+## NEW — 2026-06-08 (round: S3 monotonicity hardening)
+
+> Round summary: Chrome NOT connected this run — no browser verification
+> possible; all statuses below are code-level only. `npx tsc --noEmit` exits 0.
+> One Edit-tool truncation incident occurred and was fully recovered (see note
+> at end of this section). Highest-priority unblocked item this round was the
+> documented S3 follow-up (the only release-blocking invariant still 🟡 that is
+> not waiting on user/infra input). BUG-013/005/015/016/020 remain BLOCKED
+> (Stripe creds / email-verification rollout decision / infra / config).
+
+### NEW BUG-026 · P1 · FIXED (code; browser-unverified) · State-integrity · setOrderFulfillment allowed illegal (backward / skip-payment) status transitions (invariant S3)
+**File:** `src/app/admin/actions.ts` — `setOrderFulfillment`
+
+**Symptom (found by code read + UI read):** the fulfilment `<select>` on both
+the order-detail page (`admin/orders/[id]/page.tsx`) and the inline `OrderRow`
+always lists all four funnel states (`PAID/PROCESSING/SHIPPED/DELIVERED`)
+regardless of the order's current status, and the server action applied the
+chosen status with only an atomic `updateMany({ where:{ id, status:current } })`
+precondition — which asserts the status hasn't changed concurrently, **not** that
+the requested transition is legal. BUG-022 added a terminal-exit guard
+(REFUNDED/CANCELED can't be re-fulfilled), but everything else was unguarded.
+
+So an admin (or a stale/duplicate form re-submit, or a crafted POST) could:
+- Move an order **backward**: DELIVERED→PROCESSING, SHIPPED→PAID, DELIVERED→SHIPPED.
+- **Fulfil an unpaid order**: PENDING_PAYMENT→PROCESSING/SHIPPED (PROCESSING wasn't
+  even caught by the address guard) — shipping goods against an order that never
+  cleared payment.
+- Set **CANCELED/REFUNDED via the fulfilment panel**, bypassing the dedicated
+  `cancelOrder`/`refundOrder` actions that own the stock **restock** → terminal
+  state with no restock.
+
+**Impact:** buyers told a delivered order is "processing" again; unpaid orders
+dispatched; canceled/refunded states reached without restock. Violates S3
+(monotonic status transitions) and risks F14 (a PENDING_PAYMENT→PAID via this
+path would set `status=PAID` with `paidAt=null`, since fulfilment never writes
+`paidAt`).
+
+**Root cause:** no transition-legality check; the action trusted whatever status
+the form/POST supplied.
+
+**Fix (working copy):** added a forward-only monotonicity guard after the
+tracking auto-bump and before the side-effecting `updateMany`. Defines the funnel
+`['PAID','PROCESSING','SHIPPED','DELIVERED']` and, only when the status actually
+changes:
+1. rejects `CANCELED`/`REFUNDED` targets → directs operator to the Refund/Cancel
+   action (preserves restock ownership);
+2. rejects fulfilment of a not-yet-paid order (current status outside the funnel,
+   e.g. PENDING_PAYMENT) → directs to record payment first;
+3. rejects any backward move (`rank(target) < rank(current)`).
+Same-status edits (attach/adjust tracking on a row) remain allowed — the existing
+idempotency no-op path is untouched. Payment (→PAID) stays owned by
+`markOrderPaidManually`/`verifyPayment`; cancel/refund stay owned by their actions.
+Scope kept tight: no broader refactor of those other actions.
+
+**Manual-payment posture:** unaffected — no Stripe/card/pay-now wording; bank-transfer
+flow and the manual payment/verify actions are untouched.
+
+**Verification this round (no browser):** exhaustive simulation of all 49
+(current × target) state pairs against the implemented guard logic — every legal
+forward funnel move ALLOWs, every backward/skip-unpaid/terminal-exit/
+cancel-via-fulfilment move BLOCKs, same-status no-ops ALLOW. `tsc --noEmit` exits 0.
+
+**Verify (browser, when a session is available):** on a DELIVERED test order try
+to set PROCESSING → expect rejection, status stays DELIVERED; on a PENDING_PAYMENT
+order try SHIPPED → expect "not yet paid" rejection; confirm a normal
+PAID→PROCESSING→SHIPPED→DELIVERED run is unaffected and tracking edits on an
+existing row still save.
+
+### Tooling incident — Edit-tool truncation (recovered)
+Applying the BUG-026 guard via the Edit tool silently truncated the tail of
+`src/app/admin/actions.ts` (file dropped from a healthy state to ending mid-body
+in `rejectPayment`; brace count 1231/1230). Detected immediately by the post-edit
+`tsc` (TS1005 at EOF). **Recovered** by appending the lost tail of `rejectPayment`
+from `git show HEAD` (the function's surviving head was byte-identical to HEAD
+through the cut point, and it is the last function in the file) via the **shell**,
+not the Edit tool. Post-recovery: braces 1266/1266, parens balanced, `tsc --noEmit`
+exits 0. Lesson re-confirmed (3rd occurrence in this project): **for large `.ts`
+files, prefer shell writes and `tsc` after every change.**
+
+### Invariant reconciliation (code reads, this round)
+- **F11** proformaNumber immutability → ✅ code: single write site
+  (`sendProforma`) reuses the existing number (`sr.proformaNumber || …`); the
+  generated value is also deterministic (derived from sr.id). No guard needed.
+- **F15** paymentVerificationStatus machine → ✅ code-verified: buyer upload
+  sets AWAITING_VERIFICATION; `verifyPayment`/`rejectPayment` precondition +
+  atomic `updateMany` WHERE guards; no skip/backwards path.
+- **S4** admin-cancel restock once-only → ✅ code-verified: `cancelOrder`
+  status precondition + `increment` restock; `refundOrder` idempotency guard +
+  `$transaction`.

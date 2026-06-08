@@ -35,7 +35,10 @@ interface PageProps {
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const product = await getProductBySlug(params.slug);
-  if (!product) return { title: 'Not found' };
+  // BUG-024 / S10: don't leak titles of non-public (DRAFT/PENDING_REVIEW/
+  // ARCHIVED) products via metadata. Owner/admin preview still renders the
+  // page itself; generic metadata is acceptable there.
+  if (!product || product.status !== 'PUBLISHED') return { title: 'Not found' };
   const description = product.summary ?? `${product.brand?.name ?? ''} ${product.title}`;
   return {
     title: product.title,
@@ -57,6 +60,16 @@ export default async function ProductDetailPage({ params, searchParams }: PagePr
   const mk = await getMarketing();
 
   const session = await getServerSession();
+
+  // ─── BUG-024 / invariant S10 ──────────────────────────────────────────
+  // Non-PUBLISHED products (DRAFT / PENDING_REVIEW / ARCHIVED) are not
+  // public: direct-URL access 404s, same contract as /checkout/[slug].
+  // The owning seller and ADMINs may still open the page as a preview.
+  const viewerRole = (session?.user as { role?: string } | undefined)?.role;
+  const canPreviewUnpublished =
+    viewerRole === 'ADMIN' || (!!session?.user.id && session.user.id === product.sellerId);
+  if (product.status !== 'PUBLISHED' && !canPreviewUnpublished) notFound();
+
   const saved = await isWishlisted(session?.user.id ?? null, product.id);
   const similar = await getSimilarProducts(product.categoryId, product.slug, 4);
   const companyListings = product.companyId

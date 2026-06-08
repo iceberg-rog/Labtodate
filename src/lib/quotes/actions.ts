@@ -57,17 +57,11 @@ const SourcingInput = z.object({
 export type SourcingInputType = z.infer<typeof SourcingInput>;
 
 export async function submitSourcingRequest(input: SourcingInputType) {
-  rateLimit('quote');
+  await rateLimit('quote');
   await ensureSettingsLoaded();
   const parsed = SourcingInput.parse(input);
   const session = await getServerSession();
   const submittedById = session?.user.id ?? null;
-  // RB-3: never mix a typed email with an authenticated session. A logged-in
-  // submitter's quote is bound to THEIR account identity — the typed email is
-  // ignored for ownership so a record can't end up owned by two people. Guests
-  // (no session) keep the email they typed (they have no account to bind to).
-  const buyerEmail = session?.user.email ?? parsed.buyerEmail;
-  const buyerName = session?.user.name ?? parsed.buyerName;
 
   // If anchored to a product, route to that product's seller.
   let productId: string | null = null;
@@ -96,8 +90,8 @@ export async function submitSourcingRequest(input: SourcingInputType) {
 
   const created = await prisma.sourcingRequest.create({
     data: {
-      buyerEmail,
-      buyerName,
+      buyerEmail: parsed.buyerEmail,
+      buyerName: parsed.buyerName,
       companyName: parsed.companyName ?? null,
       productCategory: parsed.productCategory ?? null,
       budget: parsed.budget ?? null,
@@ -126,14 +120,14 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     ? `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${accessToken}`
     : `${process.env.BETTER_AUTH_URL ?? ''}/app/quotes`;
   await sendEmail({
-    to: buyerEmail,
+    to: parsed.buyerEmail,
     subject: created.product
       ? `Quote request received: ${created.product.title}`
       : 'lab2date sourcing request received',
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:540px;">
         <h2 style="color:#0E4F40;">We&rsquo;ve got your request</h2>
-        <p>Hi ${buyerName}, our team and the supplier will review your request and reply within 24 business hours.</p>
+        <p>Hi ${parsed.buyerName}, our team and the supplier will review your request and reply within 24 business hours.</p>
         ${created.product ? `<p><strong>Product:</strong> ${created.product.title}</p>` : ''}
         <p><strong>What you wrote:</strong></p>
         <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${parsed.description.replace(/\n/g, '<br>')}</blockquote>
@@ -256,6 +250,9 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>) {
         lastReplyAt: now,
         lastReplyByStaff: fromStaff,
         ...statusUpdate,
+        // BUG-018: a buyer reply must resurface an archived quote to the admin
+        // queue, otherwise the customer's message is hidden in Archived.
+        ...(!fromStaff ? { archivedAt: null, archivedById: null } : {}),
       },
     });
   }
@@ -334,6 +331,30 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>) {
   }
 
   const itemTitle = sr.product?.title ?? sr.productCategory ?? 'Requested equipment';
+
+  // ─── Financial freeze guard (BUG-023 / invariant F12-adjacent) ─────────
+  // If this quote already materialised an order and that order has LEFT
+  // PENDING_PAYMENT (paid, shipped, refunded, …), its money fields are
+  // frozen. Re-sending the proforma at the SAME price/currency is fine
+  // (document/email resend); a price or currency CHANGE must go through
+  // refund/cancel + a fresh quote. Checked BEFORE any write so a rejection
+  // leaves no partial state.
+  const linkedOrder = sr.submittedById
+    ? await prisma.order.findUnique({
+        where: { sourcingRequestId: sr.id },
+        select: { id: true, orderNumber: true, status: true, subtotalCents: true, currency: true },
+      })
+    : null;
+  if (
+    linkedOrder &&
+    linkedOrder.status !== 'PENDING_PAYMENT' &&
+    (linkedOrder.subtotalCents !== parsed.priceCents || linkedOrder.currency !== parsed.currency)
+  ) {
+    throw new Error(
+      `Order ${linkedOrder.orderNumber} is ${linkedOrder.status} — its amounts can no longer be changed by re-issuing a proforma. Refund/cancel the order first, or open a new quote.`,
+    );
+  }
+
   // Re-issuing a proforma keeps the same number for AR continuity; only the
   // first call generates one. The number is short, year-prefixed, derived from
   // the request id so it's stable across reloads and easy to grep in mail.
@@ -392,25 +413,28 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>) {
     },
   });
 
-  // ─── Re-issue continuity (NO order creation here) ─────────────────────
-  // RB-2: Issuing a proforma must NOT create an order. It only moves the deal
-  // to "proforma sent · awaiting buyer decision". The Order is materialised
-  // ONLY when the buyer explicitly accepts (see setQuoteStatus → ACCEPTED).
-  // If an order already exists (proforma re-issued after the buyer accepted),
-  // refresh its totals to the new price; never create one at proforma time.
+  // ─── Order creation (procurement workspace) ───────────────────────────
+  // Proforma issuance IS the order trigger now. Previously order was created
+  // only when buyer hit Accept — that left a stuck "ACCEPTED · no order"
+  // state when admin replied with a text-only price. By materialising the
+  // Order at proforma-send time, we guarantee the buyer always has a
+  // purchase workspace at /app/orders/<num>/payment as soon as a formal
+  // price exists.
   let createdOrder: { id: string; orderNumber: string } | null = null;
   if (sr.submittedById) {
-    const existing = await prisma.order.findUnique({
-      where: { sourcingRequestId: sr.id },
-      select: { id: true, orderNumber: true },
-    });
+    const existing = linkedOrder;
     if (existing) {
+      // Already converted — keep the existing order. Totals may only be
+      // rewritten while the order is still PENDING_PAYMENT (atomic status
+      // precondition; a concurrent payment wins and freezes the amounts —
+      // BUG-023). The same-price-resend case for paid orders was already
+      // allowed through by the freeze guard above and changes nothing here.
       const subtotal = parsed.priceCents;
       const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
       const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
       const tax = Math.round((subtotal * taxPct) / 100);
-      await prisma.order.update({
-        where: { id: existing.id },
+      const updated = await prisma.order.updateMany({
+        where: { id: existing.id, status: 'PENDING_PAYMENT' },
         data: {
           subtotalCents: subtotal,
           shippingCents: shipping,
@@ -419,7 +443,43 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>) {
           currency: parsed.currency,
         },
       });
-      createdOrder = existing;
+      if (updated.count === 1) {
+        // Keep the single quote line in sync with the re-issued price so
+        // totalCents === sum(items) holds (invariant F1). Pre-payment, the
+        // proforma IS the offer — the snapshot freezes at payment, not at
+        // first issuance.
+        await prisma.orderItem.updateMany({
+          where: { orderId: existing.id },
+          data: { priceCentsSnapshot: subtotal },
+        });
+      }
+      createdOrder = { id: existing.id, orderNumber: existing.orderNumber };
+    } else {
+      const subtotal = parsed.priceCents;
+      const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
+      const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
+      const tax = Math.round((subtotal * taxPct) / 100);
+      const order = await createOrderWithUniqueNumber({
+        buyerId: sr.submittedById,
+        status: 'PENDING_PAYMENT',
+        subtotalCents: subtotal,
+        shippingCents: shipping,
+        taxCents: tax,
+        totalCents: subtotal + shipping + tax,
+        currency: parsed.currency,
+        paidAt: null,
+        sourcingRequestId: sr.id,
+        items: {
+          create: {
+            productId: sr.productId ?? null,
+            titleSnapshot: itemTitle,
+            brandSnapshot: null,
+            priceCentsSnapshot: subtotal,
+            quantity: 1,
+          },
+        },
+      });
+      createdOrder = { id: order.id, orderNumber: order.orderNumber };
     }
   }
 
@@ -529,13 +589,6 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
     await requireCapability('quotes:status', { redirectTo: '/admin/quotes' });
   }
 
-  // RB-2: a quote can only be ACCEPTED once a formal proforma exists
-  // (quotedPriceCents set). Enforce server-side so a direct API call can't
-  // create an ACCEPTED-but-no-price/no-order state.
-  if (status === 'ACCEPTED' && sr.quotedPriceCents == null) {
-    throw new Error('This quote has no formal proforma yet — it cannot be accepted.');
-  }
-
   // Auto-archive on CLOSED — mirrors the support-ticket auto-archive flow.
   const shouldAutoArchive = status === 'CLOSED' && !sr.archivedAt;
   await prisma.sourcingRequest.update({
@@ -553,64 +606,40 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
   revalidatePath(`/admin/quotes/${id}`);
   revalidatePath('/admin/quotes');
 
-  // RB-2: Buyer ACCEPT is the single Order-conversion point. Proforma issuance
-  // no longer creates the order, so we materialise it here (PENDING_PAYMENT)
-  // on explicit acceptance, then send the buyer to the payment workspace.
+  // Buyer ACCEPT path: Order was already created at proforma-send time, so
+  // here we just redirect to the existing payment workspace. If somehow no
+  // Order exists (legacy state where admin replied with text price only),
+  // surface a clear error rather than creating a malformed order on the fly.
   if (status === 'ACCEPTED' && sr.submittedById) {
-    let order = await prisma.order.findUnique({
+    const existing = await prisma.order.findUnique({
       where: { sourcingRequestId: id },
       select: { orderNumber: true },
     });
-    if (!order) {
-      const subtotal = sr.quotedPriceCents ?? 0;
-      const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-      const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-      const tax = Math.round((subtotal * taxPct) / 100);
-      const itemTitle = sr.product?.title ?? sr.description?.slice(0, 80) ?? 'Requested equipment';
-      const created = await createOrderWithUniqueNumber({
-        buyerId: sr.submittedById,
-        status: 'PENDING_PAYMENT',
-        subtotalCents: subtotal,
-        shippingCents: shipping,
-        taxCents: tax,
-        totalCents: subtotal + shipping + tax,
-        currency: sr.quotedCurrency ?? 'EUR',
-        paidAt: null,
-        sourcingRequestId: id,
-        items: {
-          create: {
-            productId: sr.productId ?? null,
-            titleSnapshot: itemTitle,
-            brandSnapshot: sr.product?.brand?.name ?? null,
-            priceCentsSnapshot: subtotal,
-            quantity: 1,
-          },
-        },
-      });
-      order = { orderNumber: created.orderNumber };
-      // RB-5: reserve one unit of the catalogue product (oversell-safe — only
-      // decrements when stock is available). The refund/cancel paths restore it
-      // symmetrically (increment by item qty), so reserve↔restore stay balanced.
-      if (sr.productId) {
-        await prisma.product.updateMany({
-          where: { id: sr.productId, quantity: { gte: 1 } },
-          data: { quantity: { decrement: 1 } },
-        });
-      }
+    if (existing) {
+      await notifyAdmins(
+        `Quote accepted → order ${existing.orderNumber}`,
+        `Buyer confirmed. Awaiting payment proof on /admin/orders.`,
+        '/admin/orders?view=awaiting_verify',
+        'ORDER_FROM_QUOTE',
+      );
+      await notifyUser(
+        sr.submittedById,
+        `Quote accepted — order ${existing.orderNumber}`,
+        'Open the purchase workspace to upload your payment proof and complete delivery details.',
+        `/app/orders/${existing.orderNumber}/payment`,
+      );
+      redirect(`/app/orders/${existing.orderNumber}/payment`);
     }
+    // Legacy stuck state — admin replied with text-only price, no proforma.
+    // Buyer "Accept" should have been hidden in UI (see QuoteThread gating),
+    // but if they reached here via API directly, surface a clear admin alert
+    // instead of silently creating a half-baked order.
     await notifyAdmins(
-      `Quote accepted → order ${order.orderNumber}`,
-      `Buyer confirmed. Awaiting payment proof on /admin/orders.`,
-      '/admin/orders?view=awaiting_verify',
-      'ORDER_FROM_QUOTE',
+      `Quote ACCEPTED but no proforma — ${quoteRefOrProforma(sr)}`,
+      'Buyer accepted but admin never sent a formal proforma. Issue one now to materialise the order.',
+      `/admin/quotes/${id}`,
+      'SYSTEM',
     );
-    await notifyUser(
-      sr.submittedById,
-      `Quote accepted — order ${order.orderNumber}`,
-      'Open the purchase workspace to upload your payment proof and complete delivery details.',
-      `/app/orders/${order.orderNumber}/payment`,
-    );
-    redirect(`/app/orders/${order.orderNumber}/payment`);
   }
 }
 

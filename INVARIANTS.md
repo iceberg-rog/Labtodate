@@ -20,11 +20,11 @@ Legend: ✅ verified · 🟡 partial · ❌ broken · ⏳ untested
 | F8 | Proforma TTL — buyer cannot submit payment proof after `validUntilAt` passed | `payment/actions.buyerSubmitPaymentProof` (defense-in-depth) + cron sweep | ✅ |
 | F9 | Two-step payment verification — proof can only be uploaded while order is `PENDING_PAYMENT` | `payment/actions` status guard | ✅ |
 | F10 | `OrderItem.priceCentsSnapshot` is immutable — frozen at order time | OrderItem schema | ✅ schema |
-| F11 | `proformaNumber` immutable once issued | comment in schema; **needs code-level guard** | 🟡 |
+| F11 | `proformaNumber` immutable once issued | ✅ by construction: single write site `sendProforma` reuses existing (`sr.proformaNumber \|\| …`); value deterministic from sr.id (verified 2026-06-07) | ✅ code |
 | F12 | Refund flow — refunded order doesn't allow re-fulfilment | `setOrderFulfillment` terminal-state guard (BUG-022) | ✅ code; browser-unverified |
 | F13 | Currency display matches order currency (no hardcoded €) in notifications | `notifyAdmins` in webhook, cart & orders actions | ✅ code (BUG-003; browser-unverified) |
 | F14 | No order can exist with `status=PAID` and `paidAt=null` (or vice versa) | webhook sets both atomically | ✅ |
-| F15 | `paymentVerificationStatus` transitions: null → AWAITING_VERIFICATION → VERIFIED|REJECTED; no skipping | server actions | ⏳ verify in admin actions |
+| F15 | `paymentVerificationStatus` transitions: null → AWAITING_VERIFICATION → VERIFIED|REJECTED; no skipping | `verifyPayment`/`rejectPayment` precondition + atomic `updateMany` WHERE guard (admin/actions.ts:2295-2392); buyer upload resets cleanly | ✅ code-verified 2026-06-07 |
 
 ## 2. Permissions / Auth (P0 — security)
 
@@ -43,7 +43,7 @@ Legend: ✅ verified · 🟡 partial · ❌ broken · ⏳ untested
 | A11 | Stripe webhook requires valid signature | `stripe.webhooks.constructEvent` | ✅ |
 | A12 | Password min length 12 | `auth.ts` | ✅ raised 8→12 (BUG-006) |
 | A13 | Email verification not required on sign-up (`requireEmailVerification: false`) | `auth.ts` | 🟡 **risk** — anyone can register with another's email |
-| A14 | Rate-limit on sign-up / sign-in / forgot-password to stop credential stuffing | `lib/ratelimit.ts` — needs verification | ⏳ |
+| A14 | Rate-limit on sign-up / sign-in / forgot-password to stop credential stuffing | was ❌ (auth route had NO limits — BUG-025); now per-IP limits in `api/auth/[...all]/route.ts` POST | ✅ code (BUG-025; browser-unverified) |
 | A15 | `deleteProduct` does not allow seller to nuke products with order history | routes to ARCHIVED if any OrderItem exists (BUG-004) | ✅ code; browser-unverified |
 
 ## 3. State Consistency (P0/P1)
@@ -52,14 +52,14 @@ Legend: ✅ verified · 🟡 partial · ❌ broken · ⏳ untested
 |---|---|---|---|
 | S1 | `CartItem` quantity ≤ `Product.quantity` at all times read | cart actions clamp via `Math.min(want, product.quantity, 99)` | ✅ at write time; **stale on subsequent reads** |
 | S2 | At checkout, cart re-validates stock and rolls back partial reservations | `checkoutCart` reservation loop | ✅ |
-| S3 | Order status transitions are monotonic per business rule: PENDING_PAYMENT → PAID → PROCESSING → SHIPPED → DELIVERED; or → CANCELED/REFUNDED | partial: `setOrderFulfillment` now blocks exit from terminal REFUNDED/CANCELED (BUG-022); full forward-only monotonicity still TODO | 🟡 |
-| S4 | Cancelling an order returns stock once and only once | `webhook expired` branch | ✅ for expired path; ⏳ for admin-cancel path |
+| S3 | Order status transitions are monotonic per business rule: PENDING_PAYMENT → PAID → PROCESSING → SHIPPED → DELIVERED; or → CANCELED/REFUNDED | `setOrderFulfillment` now enforces full forward-only monotonicity (BUG-026): blocks exit from terminal REFUNDED/CANCELED (BUG-022), backward funnel moves (DELIVERED→PROCESSING etc.), fulfilling an unpaid order (PENDING_PAYMENT→ship), and CANCELED/REFUNDED set via the fulfilment panel (bounced to refund/cancel actions). Payment→PAID still owned by markOrderPaidManually/verifyPayment. | ✅ code (BUG-026; browser-unverified) |
+| S4 | Cancelling an order returns stock once and only once | `webhook expired` branch; admin `cancelOrder` status precondition + `increment` restock, `refundOrder` idempotency guard + `$transaction` (admin/actions.ts:2399-2485) | ✅ both paths code-verified 2026-06-07 |
 | S5 | Proforma expiry cron closes sourcing AND linked order in a single transaction | `sla-sweep` uses `prisma.$transaction` | ✅ |
 | S6 | `lastReplyAt` / `lastReplyByStaff` on tickets/quotes always reflect the newest message | server actions | ✅ browser-VERIFIED (staff reply on TEST ticket 2026-05-29) |
 | S7 | Notification `readAt` only flips forward (no un-read after batch-mark-read) | needs check | ⏳ |
 | S8 | Cart cleared on successful order creation (no leftover items in another tab) | `checkoutCart` does `cartItem.deleteMany` | ✅ |
 | S9 | Multi-tab cart — refreshing tab B after tab A checked out shows empty cart | ⏳ browser audit |
-| S10 | Product `status=ARCHIVED` removes it from marketplace listings but keeps order history | needs verification | ⏳ |
+| S10 | Product `status=ARCHIVED` removes it from marketplace listings but keeps order history | all list/search/sitemap queries filter PUBLISHED ✅; detail page had NO gate (BUG-024) — now 404s non-PUBLISHED except owner/admin preview; order history keeps product (intentional, verified) | ✅ code (BUG-024; browser-unverified) |
 
 ## 4. UX / Notifications (P1)
 
