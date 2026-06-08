@@ -13,7 +13,7 @@ export default async function TermsPage() {
       </p>
       <h2>1. The marketplace</h2>
       <p>
-        {c.site} sells refurbished and surplus laboratory equipment sourced through its verified
+        {c.site} sells refurbished and surplus laboratory equipment sourced through its
         supply network. Listings, specifications and availability may change without notice.
       </p>
       <h2>2. Quotes &amp; proforma invoices</h2>
@@ -29,7 +29,7 @@ export default async function TermsPage() {
       </p>
       <h2>4. Inspection &amp; warranty</h2>
       <p>
-        Refurbished units pass a 14-point inspection and ship with a 90-day limited warranty
+        Refurbished units are checked before shipping; warranty terms, if any,
         covering functional defects, unless a different term is stated on the listing.
       </p>
       <h2>5. Shipping &amp; risk</h2>

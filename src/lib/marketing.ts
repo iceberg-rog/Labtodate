@@ -1,6 +1,5 @@
 import { cache } from 'react';
 import { prisma } from '@/lib/db';
-import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
 
 export interface Marketing {
@@ -14,13 +13,15 @@ export interface Marketing {
   social: { linkedin: string; twitter: string; github: string };
 }
 
+// Defaults are intentionally empty so unset settings render nothing rather
+// than an unsupported claim. Admin can populate these from /admin/settings.
 const D = {
-  quoteTurnaround: '5 business days',
-  warranty: '90-day warranty',
-  inspection: '14-point inspection',
-  financing: 'Financing available · 0% for 12 months on approved business credit',
+  quoteTurnaround: '',
+  warranty: '',
+  inspection: '',
+  financing: '',
   footerTagline:
-    'B2B marketplace for new & certified refurbished laboratory and biotech equipment. Pairing business with science.',
+    'B2B marketplace for laboratory and analytical equipment.',
 };
 
 /** Cached per-request: real DB counts for marketing fallbacks. Cheap, but
@@ -28,7 +29,6 @@ const D = {
  *  the same render. Safe-fails when called during `next build` static export
  *  (no DB connection) — returns zeros so the page can still pre-render. */
 const getRealCounts = cache(async () => {
-  if (isBuildPhase()) return { listings: 0, suppliers: 0 };
   try {
     const [listings, suppliers] = await Promise.all([
       prisma.product.count({ where: { status: 'PUBLISHED' } }),

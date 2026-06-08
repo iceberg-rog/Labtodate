@@ -3,6 +3,7 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
 import { CreateShopButton } from '@/components/admin/CreateShopButton';
+import { BrowseSupplierButton } from '@/components/admin/BrowseSupplierButton';
 import { AiSuggestShopsButton } from '@/components/admin/AiSuggestShopsButton';
 import { CompaniesBoard, type ShopRow } from '@/components/admin/CompaniesBoard';
 
@@ -10,12 +11,11 @@ export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 50;
 
-export default async function AdminCompaniesPage(
-  props: {
-    searchParams: Promise<{ q?: string; page?: string; created?: string; imported?: string }>;
-  }
-) {
-  const searchParams = await props.searchParams;
+export default async function AdminCompaniesPage({
+  searchParams,
+}: {
+  searchParams: { q?: string; page?: string; created?: string; imported?: string };
+}) {
   await requireCapability('companies:manage');
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
@@ -28,7 +28,7 @@ export default async function AdminCompaniesPage(
         ],
       }
     : {};
-  const [total, companies] = await Promise.all([
+  const [total, companies, categories] = await Promise.all([
     prisma.company.count({ where }),
     prisma.company.findMany({
       where,
@@ -43,6 +43,7 @@ export default async function AdminCompaniesPage(
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
     }),
+    prisma.category.findMany({ orderBy: { name: 'asc' }, select: { slug: true, name: true } }),
   ]);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -93,6 +94,7 @@ export default async function AdminCompaniesPage(
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <AiSuggestShopsButton />
+          <BrowseSupplierButton />
           <CreateShopButton />
         </div>
       </div>
@@ -107,7 +109,7 @@ export default async function AdminCompaniesPage(
 
       <AdminSearch basePath="/admin/companies" q={q} placeholder="Search company, country, slug…" />
 
-      <CompaniesBoard shops={shops} />
+      <CompaniesBoard shops={shops} categories={categories} />
 
       <AdminPager basePath="/admin/companies" page={page} totalPages={totalPages} total={total} q={q} />
 

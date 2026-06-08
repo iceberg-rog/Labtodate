@@ -1,5 +1,4 @@
 import type { Metadata } from 'next';
-import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import { Header } from '@/components/site/Header';
 import { Footer } from '@/components/site/Footer';
@@ -8,27 +7,20 @@ import { Assistant } from '@/components/site/Assistant';
 import { PublicChrome } from '@/components/site/PublicChrome';
 import { getMarketing } from '@/lib/marketing';
 
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter',
-  display: 'swap',
-});
-
-const mono = JetBrains_Mono({
-  subsets: ['latin'],
-  variable: '--font-mono',
-  display: 'swap',
-  weight: ['400', '500', '700'],
-});
+// next/font/google requires fonts.gstatic.com at build time, which is
+// blocked from this host. Fall back to system fonts — CSS variables stay
+// undefined and css falls through to system-ui/monospace defaults.
+const inter = { variable: '' };
+const mono = { variable: '' };
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://lab2date.com'),
+  metadataBase: new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com'),
   title: {
     default: 'lab2date — Find the right lab equipment, faster',
     template: '%s · lab2date',
   },
   description:
-    'B2B marketplace for laboratory & biotech equipment. New and certified refurbished instruments from verified suppliers, with up to 50% savings.',
+    'B2B marketplace for laboratory & biotech equipment — new, refurbished and surplus instruments with end-to-end quote, proforma and shipping support.',
   openGraph: {
     title: 'lab2date',
     description: 'Find the right lab equipment, faster.',

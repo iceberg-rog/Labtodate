@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Image from 'next/image';
-import { ShieldCheck, X, ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
 export function ProductGallery({
@@ -64,9 +64,6 @@ export function ProductGallery({
         </div>
         <div className="absolute top-5 right-5 h-9 w-9 rounded-full bg-white/90 backdrop-blur flex items-center justify-center text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
           <ZoomIn className="h-4 w-4" />
-        </div>
-        <div className="absolute bottom-5 left-5 inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold shadow-md">
-          <ShieldCheck className="h-4 w-4 text-accent" /> 14-point inspection
         </div>
       </button>
 

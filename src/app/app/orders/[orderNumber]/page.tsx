@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { Package, ChevronRight } from 'lucide-react';
+import { Package, ChevronRight, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
@@ -40,14 +40,13 @@ function fmtAddr(a: unknown): string | null {
   return parts.length ? parts.join(', ') : null;
 }
 
-export default async function OrderDetailPage(
-  props: {
-    params: Promise<{ orderNumber: string }>;
-    searchParams: Promise<{ returned?: string }>;
-  }
-) {
-  const searchParams = await props.searchParams;
-  const params = await props.params;
+export default async function OrderDetailPage({
+  params,
+  searchParams,
+}: {
+  params: { orderNumber: string };
+  searchParams: { returned?: string };
+}) {
   const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}` });
 
   const order = await prisma.order.findUnique({
@@ -84,7 +83,7 @@ export default async function OrderDetailPage(
             Placed {new Date(order.createdAt).toLocaleDateString('en-US', { dateStyle: 'long' })}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           {order.sourcingRequestId && (
             <a
               href={`/app/quotes/${order.sourcingRequestId}?history=1`}
@@ -93,12 +92,21 @@ export default async function OrderDetailPage(
               Quote history
             </a>
           )}
-          <a
-            href={`/app/orders/${order.orderNumber}/invoice`}
-            className="text-sm font-semibold text-primary hover:underline"
-          >
-            Invoice
-          </a>
+          {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as string[]).includes(order.status) ? (
+            <a
+              href={`/app/orders/${order.orderNumber}/invoice`}
+              className="inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-3.5 py-1.5 text-sm font-semibold hover:bg-primary/90 shadow-sm"
+            >
+              <FileText className="h-4 w-4" /> Invoice
+            </a>
+          ) : order.sourcingRequestId ? (
+            <a
+              href={`/app/quotes/${order.sourcingRequestId}/proforma`}
+              className="inline-flex items-center gap-1.5 rounded-full border border-primary text-primary px-3.5 py-1.5 text-sm font-semibold hover:bg-primary/5"
+            >
+              <FileText className="h-4 w-4" /> Proforma
+            </a>
+          ) : null}
           <Badge variant={STATUS_VARIANT[order.status]}>{STATUS_LABEL[order.status]}</Badge>
         </div>
       </div>

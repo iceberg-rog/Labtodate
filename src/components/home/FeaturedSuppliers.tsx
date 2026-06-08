@@ -1,4 +1,4 @@
-import { ShieldCheck, PackageCheck, Globe2, BadgeCheck } from 'lucide-react';
+import { PackageCheck, Globe2, BadgeCheck } from 'lucide-react';
 import { prisma } from '@/lib/db';
 import { WaveCanvas } from '@/components/home/WaveCanvas';
 
@@ -30,20 +30,18 @@ export async function FeaturedSuppliers() {
             className="text-3xl md:text-5xl font-bold text-foreground"
             style={{ letterSpacing: '-0.035em' }}
           >
-            One vetted supply network.<br />
-            <span className="text-muted-foreground">Every unit inspected.</span>
+            One supply network.<br />
+            <span className="text-muted-foreground">One accountable counterparty.</span>
           </h2>
           <p className="mt-5 text-muted-foreground leading-relaxed">
-            Every listing is sourced through lab2date&apos;s verified supply network and passes a
-            14-point inspection before it ships. You buy and are protected through lab2date —
-            one accountable counterparty, end to end.
+            Every listing is handled through lab2date end to end — quote, proforma, payment and
+            shipping. You buy from one accountable counterparty.
           </p>
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 max-w-4xl mx-auto">
-          <Stat icon={PackageCheck} value={listings.toLocaleString()} label="Verified listings" />
-          <Stat icon={BadgeCheck} value={`${brands}+`} label="Instrument brands" />
-          <Stat icon={ShieldCheck} value="14-point" label="Inspection on every unit" />
+          <Stat icon={PackageCheck} value={listings.toLocaleString()} label="Listings" />
+          <Stat icon={BadgeCheck} value={`${brands}`} label="Instrument brands" />
           <Stat icon={Globe2} value="Worldwide" label="Crated &amp; insured shipping" />
         </div>
       </div>

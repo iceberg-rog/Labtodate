@@ -48,8 +48,17 @@ export function ProfileForm({ initialName }: { initialName: string }) {
     const fd = new FormData(e.currentTarget);
     const currentPassword = String(fd.get('current') ?? '');
     const newPassword = String(fd.get('next') ?? '');
+    const confirmPassword = String(fd.get('confirm') ?? '');
     if (newPassword.length < 8) {
       setPwMsg({ kind: 'err', msg: 'New password must be at least 8 characters' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPwMsg({ kind: 'err', msg: 'New password and confirmation do not match' });
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setPwMsg({ kind: 'err', msg: 'New password must differ from current password' });
       return;
     }
     const form = e.currentTarget;
@@ -101,12 +110,21 @@ export function ProfileForm({ initialName }: { initialName: string }) {
           </p>
         </div>
         <label className="block">
-          <span className="block text-sm font-semibold mb-1.5">Current password</span>
-          <input name="current" type="password" required className={field} />
+          <div className="flex items-baseline justify-between gap-2 mb-1.5">
+            <span className="block text-sm font-semibold">Current password</span>
+            <a href="/auth/forgot-password" className="text-xs font-semibold text-primary hover:underline">
+              Forgot your password?
+            </a>
+          </div>
+          <input name="current" type="password" required className={field} autoComplete="current-password" />
         </label>
         <label className="block">
           <span className="block text-sm font-semibold mb-1.5">New password</span>
-          <input name="next" type="password" required minLength={8} className={field} />
+          <input name="next" type="password" required minLength={8} className={field} autoComplete="new-password" />
+        </label>
+        <label className="block">
+          <span className="block text-sm font-semibold mb-1.5">Confirm new password</span>
+          <input name="confirm" type="password" required minLength={8} className={field} autoComplete="new-password" />
         </label>
         {pwMsg && <Notice {...pwMsg} />}
         <Button type="submit" disabled={savingPw} variant="outline" className="rounded-full font-semibold">

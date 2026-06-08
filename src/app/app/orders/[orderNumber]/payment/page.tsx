@@ -10,6 +10,7 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { ensureSettingsLoaded } from '@/lib/settings';
+import { renderInvoiceHtml } from '@/lib/invoice';
 import { buyerSubmitPaymentProof } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -22,14 +23,13 @@ const ERR_MSG: Record<string, string> = {
   closed: 'This order is no longer accepting payment proof.',
 };
 
-export default async function PaymentWorkspacePage(
-  props: {
-    params: Promise<{ orderNumber: string }>;
-    searchParams: Promise<{ ok?: string; err?: string }>;
-  }
-) {
-  const searchParams = await props.searchParams;
-  const params = await props.params;
+export default async function PaymentWorkspacePage({
+  params,
+  searchParams,
+}: {
+  params: { orderNumber: string };
+  searchParams: { ok?: string; err?: string };
+}) {
   const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}/payment` });
   await ensureSettingsLoaded();
 
@@ -48,9 +48,30 @@ export default async function PaymentWorkspacePage(
   const sourcing = order.sourcingRequestId
     ? await prisma.sourcingRequest.findUnique({
         where: { id: order.sourcingRequestId },
-        select: { id: true, status: true, validUntilAt: true, proformaNumber: true },
+        include: { product: { select: { title: true } } },
       })
     : null;
+
+  let proformaHtml: string | null = null;
+  if (sourcing && sourcing.quotedPriceCents != null) {
+    const proformaNumber = sourcing.proformaNumber
+      ?? `PRO-${new Date(sourcing.quotedAt ?? sourcing.createdAt).getFullYear()}-${sourcing.id.slice(-6).toUpperCase()}`;
+    const issuedAt = sourcing.proformaIssuedAt ?? sourcing.quotedAt ?? sourcing.createdAt;
+    const rendered = renderInvoiceHtml({
+      kind: 'PROFORMA',
+      number: proformaNumber,
+      dateISO: issuedAt.toISOString(),
+      currency: sourcing.quotedCurrency || 'EUR',
+      buyer: { name: sourcing.buyerName, email: sourcing.buyerEmail, company: sourcing.companyName },
+      lines: [{
+        title: sourcing.product?.title ?? sourcing.productCategory ?? 'Requested equipment',
+        qty: 1,
+        unitCents: sourcing.quotedPriceCents,
+      }],
+      note: sourcing.quotedNote ?? null,
+    });
+    proformaHtml = rendered.html;
+  }
   const isProformaExpired =
     !!sourcing?.validUntilAt &&
     sourcing.validUntilAt.getTime() < Date.now() &&
@@ -205,6 +226,39 @@ export default async function PaymentWorkspacePage(
         <div className="rounded-2xl border border-red-200 bg-red-50 p-3 mb-6 text-sm text-red-900 inline-flex items-center gap-2">
           <XCircle className="h-4 w-4" /> {err}
         </div>
+      )}
+
+      {/* === Proforma (compact summary; expand inline or open standalone) === */}
+      {proformaHtml && sourcing && sourcing.quotedPriceCents != null && (
+        <section className="mb-6 rounded-2xl border border-border bg-card overflow-hidden">
+          <div className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="h-9 w-9 rounded-xl bg-primary/10 inline-flex items-center justify-center flex-shrink-0">
+                <FileText className="h-4 w-4 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-bold leading-tight">Your proforma</p>
+                <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                  <span className="font-mono">{sourcing.proformaNumber ?? `PRO-${new Date(sourcing.quotedAt ?? sourcing.createdAt).getFullYear()}-${sourcing.id.slice(-6).toUpperCase()}`}</span>
+                  {' · '}
+                  {formatPrice(sourcing.quotedPriceCents, sourcing.quotedCurrency || 'EUR')}
+                </p>
+              </div>
+            </div>
+            <Link
+              href={`/app/quotes/${sourcing.id}/proforma`}
+              className="inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:bg-primary/90 flex-shrink-0"
+            >
+              Open / print →
+            </Link>
+          </div>
+          <details className="border-t border-border">
+            <summary className="cursor-pointer px-4 py-2 text-xs font-semibold text-primary/90 hover:bg-foreground/[0.02]">
+              Show preview
+            </summary>
+            <div className="px-4 py-4 bg-white border-t border-border" dangerouslySetInnerHTML={{ __html: proformaHtml }} />
+          </details>
+        </section>
       )}
 
       {/* === Payment instructions ====================================== */}

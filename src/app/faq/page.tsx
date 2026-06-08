@@ -9,7 +9,7 @@ export default async function FaqPage() {
     <LegalShell title="Frequently asked questions">
       <div className="faq">
         <h3>Is the equipment tested?</h3>
-        <p>Yes. Every unit passes a 14-point inspection and ships with a 90-day warranty unless otherwise stated.</p>
+        <p>Yes. Each unit is checked before shipping; specific warranty terms are stated on the listing.</p>
         <h3>How does pricing work?</h3>
         <p>Some items have a list price (buy now); others are quote-only. Request a quote and we send a proforma invoice with the price and terms.</p>
         <h3>Do you ship internationally?</h3>

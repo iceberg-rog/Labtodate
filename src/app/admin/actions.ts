@@ -8,6 +8,7 @@ import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
 import { UserRole } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
+import { decodeEntities } from '@/lib/text/decode-entities';
 import { sendEmail } from '@/lib/email';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getStripe } from '@/lib/stripe/client';
@@ -572,6 +573,14 @@ export async function getAdminUserSummary(id: string): Promise<{
 
 export async function setUserRole(userId: string, role: UserRole) {
   await requireCap('users:manage');
+  // RB-9 guard: never let an E2E/test-domain account hold ADMIN in production,
+  // so seeded test admins can't be (re)granted admin and linger as a backdoor.
+  if (role === 'ADMIN') {
+    const u = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    if (u && /@lab2date-e2e\.local$|@lab2date\.test$/i.test(u.email)) {
+      throw new Error('Refusing to grant ADMIN to an E2E/test-domain account (@lab2date-e2e.local / @lab2date.test).');
+    }
+  }
   await prisma.user.update({ where: { id: userId }, data: { role } });
   await audit('user.role', userId, `role=${role}`);
   revalidatePath('/admin/users');
@@ -785,9 +794,14 @@ export async function testIntegration(
         headers: { Authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(15000),
       });
-      return r.ok
-        ? { ok: true, message: 'Resend key is valid — email delivery is live.' }
-        : { ok: false, message: `Resend rejected the key (HTTP ${r.status}).` };
+      if (r.ok) return { ok: true, message: 'Resend key is valid — email delivery is live.' };
+      // Send-only restricted keys can't list /domains but DO send fine.
+      // Recognise that case and report green instead of a misleading "rejected".
+      const body = await r.text().catch(() => '');
+      if (r.status === 401 && /restricted_api_key/i.test(body)) {
+        return { ok: true, message: 'Resend key is valid (send-only scope) — email delivery is live, but this key cannot list verified domains.' };
+      }
+      return { ok: false, message: `Resend rejected the key (HTTP ${r.status}).` };
     }
     if (kind === 'stripe') {
       const stripe = getStripe();
@@ -833,7 +847,10 @@ export async function verifySetting(
 
   try {
     if (verify === 'email') {
-      const m = val.match(/^[^@\s]+@([^@\s]+\.[^@\s]+)$/);
+      // Accept both bare "x@y.z" and RFC5322 display-name "Name <x@y.z>".
+      const bracketMatch = val.match(/<([^>\s]+@[^>\s]+)>/);
+      const candidate = bracketMatch ? bracketMatch[1] : val;
+      const m = candidate.match(/^[^@\s]+@([^@\s]+\.[^@\s]+)$/);
       if (!m) return { ok: false, message: `“${val}” is not a valid email address.` };
       const dns = await import('dns');
       const mx = await dns.promises.resolveMx(m[1]).catch(() => [] as { exchange: string }[]);
@@ -890,7 +907,7 @@ export async function uploadCompanyLogo(formData: FormData) {
   const ext = (f.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
   const buf = Buffer.from(await f.arrayBuffer());
   const { url } = await uploadObject(
-    `branding/logo-${Date.now()}.${ext}`,
+    `products/branding/logo-${Date.now()}.${ext}`,
     buf,
     f.type || 'image/png',
   );
@@ -1153,11 +1170,7 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     return { ok: false, message: `Order is already ${order.status.toLowerCase()}.` };
   }
 
-  // Manual-mode integrity (per launch posture): a receipt/proof file MUST
-  // accompany every admin-marked PAID transition for BANK_TRANSFER and
-  // RECEIPT methods. INVOICE / OTHER are operator-attested but still
-  // strongly encouraged. Without proof for BANK_TRANSFER/RECEIPT, refuse.
-  // Every PAID transition leaves an audit row (line below).
+  // Optional file upload — uses the same MinIO path as ticket attachments.
   const file = formData.get('proof');
   let proofUrl: string | null = null;
   if (file && typeof file !== 'string' && (file as File).size > 0) {
@@ -1174,46 +1187,40 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     );
     proofUrl = url;
   }
-  if ((method === 'BANK_TRANSFER' || method === 'RECEIPT') && !proofUrl) {
-    return {
-      ok: false,
-      message: `${method.toLowerCase().replace('_', ' ')} payments require a receipt upload — please attach the bank-transfer PDF or screenshot.`,
-    };
-  }
 
-  // Atomic conditional update — concurrent admin clicks both decrement;
-  // only one wins. Lost-race admin sees a clean message rather than
-  // double-firing the audit + email + notification.
-  const updateRes = await prisma.order.updateMany({
-    where: { id, status: 'PENDING_PAYMENT' },
+  // RB-6: recording an off-platform payment does NOT mark the order PAID (that
+  // would inflate revenue without verification). It moves the order into the
+  // same AWAITING_VERIFICATION gate as buyer-uploaded proofs; an admin then
+  // verifies it (verifyPayment) to flip it to PAID. Manual payments stay
+  // distinct + auditable (paidByAdminId, method, note, optional proof) and only
+  // count toward revenue once explicitly verified.
+  await prisma.order.update({
+    where: { id },
     data: {
-      status: 'PAID',
-      paidAt: new Date(),
+      paymentVerificationStatus: 'AWAITING_VERIFICATION',
+      paymentSubmittedAt: new Date(),
       paidByAdminId: session.user.id,
       paymentMethodManual: method,
       paymentNote: note,
       ...(proofUrl ? { paymentProofUrl: proofUrl } : {}),
     },
   });
-  if (updateRes.count !== 1) {
-    return { ok: false, message: 'Order is no longer pending — refresh and check the current status.' };
-  }
   await notifyUser(
     order.buyer.id,
-    `Payment received — order ${order.orderNumber}`,
-    `Your payment has been confirmed${method === 'BANK_TRANSFER' ? ' (bank transfer)' : method === 'INVOICE' ? ' (invoice)' : ''}. We'll prepare your order for shipping.`,
+    `Payment recorded — order ${order.orderNumber}`,
+    `We've recorded your ${method === 'BANK_TRANSFER' ? 'bank transfer' : method === 'INVOICE' ? 'invoice payment' : 'payment'} and are verifying it. You'll be notified once it's confirmed.`,
     `/app/orders/${order.orderNumber}`,
   );
   await notifyAdmins(
-    `Order ${order.orderNumber} marked PAID manually — ${(order.totalCents / 100).toFixed(2)} ${order.currency}`,
-    `Method: ${method.toLowerCase().replace('_', ' ')}${proofUrl ? ' · receipt attached' : ''}${note ? ` · note: ${note.slice(0, 80)}` : ''}`,
+    `Order ${order.orderNumber}: manual payment recorded — awaiting verification (${(order.totalCents / 100).toFixed(2)} ${order.currency})`,
+    `Method: ${method.toLowerCase().replace('_', ' ')}${proofUrl ? ' · receipt attached' : ''}${note ? ` · note: ${note.slice(0, 80)}` : ''}. Verify it on the order to confirm payment + count revenue.`,
     `/admin/orders/${id}`,
     'ORDER_PAID',
   );
-  await audit('order.paid.manual', order.orderNumber, `${method}${proofUrl ? ' +proof' : ''}${note ? ` "${note.slice(0, 60)}"` : ''}`);
+  await audit('order.paid.manual.recorded', order.orderNumber, `${method}${proofUrl ? ' +proof' : ''} → AWAITING_VERIFICATION${note ? ` "${note.slice(0, 60)}"` : ''}`);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
-  return { ok: true, message: 'Marked as paid.' };
+  return { ok: true, message: 'Payment recorded — awaiting verification. Verify it on the order to confirm.' };
 }
 
 /** Bulk cancel a list of order IDs (PENDING_PAYMENT only — safe). */
@@ -1249,82 +1256,34 @@ export async function bulkCancelOrders(formData: FormData): Promise<{ ok: boolea
   return { ok: true, count: orders.length, message: `Canceled ${orders.length} order${orders.length === 1 ? '' : 's'}.` };
 }
 
-/**
- * Predicate: does this Order.shippingAddress JSON have everything the
- * warehouse needs to actually dispatch a parcel?
- *
- * RB-fix: previously SHIPPED/DELIVERED transitions accepted any order,
- * including null-address rows (evidence: Q6BEQM, 5LX2KB, TATSIL).
- */
-function shippingAddressIsComplete(sa: unknown): boolean {
-  if (!sa || typeof sa !== 'object') return false;
-  const o = sa as Record<string, unknown>;
-  const addr = (o.address as Record<string, unknown> | undefined) ?? o;
-  const name = String(o.name ?? '').trim();
-  const line1 = String((addr as Record<string, unknown>).line1 ?? '').trim();
-  const city = String((addr as Record<string, unknown>).city ?? '').trim();
-  const postal = String(
-    (addr as Record<string, unknown>).postal_code ??
-      (addr as Record<string, unknown>).postal ??
-      '',
-  ).trim();
-  const country = String((addr as Record<string, unknown>).country ?? '').trim();
-  return Boolean(name && line1 && city && postal && country.length === 2);
-}
-
-export async function bulkMarkAllShipped(): Promise<{ ok: boolean; count: number; skipped: number; message?: string }> {
+export async function bulkMarkAllShipped(): Promise<{ ok: boolean; count: number }> {
   await requireCap('orders:fulfil');
-  const candidates = await prisma.order.findMany({
+  const orders = await prisma.order.findMany({
     where: { status: { in: ['PAID', 'PROCESSING'] } },
-    select: { id: true, orderNumber: true, shippingAddress: true, buyer: { select: { id: true } } },
+    select: { id: true, orderNumber: true, shippingAddress: true, trackingCarrier: true, trackingNumber: true, buyer: { select: { id: true } } },
   });
-  if (candidates.length === 0) return { ok: true, count: 0, skipped: 0 };
-
-  // RB-fix: address-less orders cannot ship. Filter them out and surface
-  // the skip count so the operator knows to chase those buyers first.
-  const eligible = candidates.filter((o) => shippingAddressIsComplete(o.shippingAddress));
-  const skipped = candidates.length - eligible.length;
-  if (eligible.length === 0) {
-    return {
-      ok: false,
-      count: 0,
-      skipped,
-      message: `${skipped} order${skipped === 1 ? '' : 's'} missing a complete shipping address — cannot bulk-ship.`,
-    };
-  }
-
-  // RB-fix: status precondition kills double-fire. Concurrent admin
-  // clicks both decrement, only the first wins (count===N), the second
-  // sees the rows already moved out of PAID/PROCESSING.
-  const res = await prisma.order.updateMany({
-    where: { id: { in: eligible.map((o) => o.id) }, status: { in: ['PAID', 'PROCESSING'] } },
+  // RB-4: an order can only become SHIPPED once it has a shipping address +
+  // carrier + tracking on file. Bulk-ship only flips orders that satisfy the
+  // invariant; the rest are left for per-order fulfilment (where tracking is set).
+  const shippable = orders.filter((o) => o.shippingAddress != null && !!o.trackingCarrier && !!o.trackingNumber);
+  const skipped = orders.length - shippable.length;
+  if (shippable.length === 0) return { ok: true, count: 0 };
+  await prisma.order.updateMany({
+    where: { id: { in: shippable.map((o) => o.id) } },
     data: { status: 'SHIPPED', shippedAt: new Date() },
   });
-  // Only fan-out notifications for rows we actually moved.
-  if (res.count > 0) {
-    // Re-query to learn which IDs flipped (updateMany doesn't return rows).
-    const shipped = await prisma.order.findMany({
-      where: { id: { in: eligible.map((o) => o.id) }, status: 'SHIPPED' },
-      select: { id: true, orderNumber: true, buyer: { select: { id: true } } },
-    });
-    for (const o of shipped) {
-      await notifyUser(
-        o.buyer.id,
-        `Order ${o.orderNumber}: shipped`,
-        'Your order has shipped. Tracking number will follow.',
-        `/app/orders/${o.orderNumber}`,
-      );
-    }
-    await audit('order.bulkship', undefined, `${res.count} orders${skipped ? ` (skipped ${skipped} address-less)` : ''}`);
+  for (const o of shippable) {
+    await notifyUser(
+      o.buyer.id,
+      `Order ${o.orderNumber}: shipped`,
+      `Your order has shipped${o.trackingNumber ? ` (tracking ${o.trackingNumber})` : ''}.`,
+      `/app/orders/${o.orderNumber}`,
+    );
   }
+  await audit('order.bulkship', undefined, `${shippable.length} shipped, ${skipped} skipped (missing address/tracking)`);
   revalidatePath('/admin');
   revalidatePath('/admin/orders');
-  return {
-    ok: true,
-    count: res.count,
-    skipped,
-    message: skipped > 0 ? `Shipped ${res.count}; skipped ${skipped} (no address).` : undefined,
-  };
+  return { ok: true, count: shippable.length };
 }
 
 export async function setOrderFulfillment(formData: FormData) {
@@ -1339,32 +1298,9 @@ export async function setOrderFulfillment(formData: FormData) {
 
   const order = await prisma.order.findUnique({
     where: { id },
-    select: {
-      status: true,
-      orderNumber: true,
-      shippingAddress: true,
-      trackingCarrier: true,
-      trackingNumber: true,
-      buyer: { select: { id: true, name: true, email: true } },
-    },
+    select: { status: true, orderNumber: true, shippingAddress: true, buyer: { select: { id: true, name: true, email: true } } },
   });
   if (!order) throw new Error('Order not found');
-
-  // F12 / S3 guard: REFUNDED and CANCELED are terminal money-states. Once an
-  // order is refunded or canceled, no fulfilment transition may move it back
-  // into an active state (PROCESSING/SHIPPED/DELIVERED) — that would ship goods
-  // against money already returned, or resurrect a canceled order. The atomic
-  // updateMany below only checks status==current, so without this guard an
-  // admin could flip REFUNDED→SHIPPED. Refund/cancel have dedicated actions
-  // (refundOrder/cancelOrder) that own those transitions and the restock.
-  // Same-status edits (e.g. attaching tracking to a refunded row) are still
-  // allowed; only a status CHANGE out of a terminal state is blocked.
-  const TERMINAL_ORDER_STATES = new Set(['REFUNDED', 'CANCELED']);
-  if (TERMINAL_ORDER_STATES.has(order.status) && status !== order.status) {
-    throw new Error(
-      `Cannot change order ${order.orderNumber} to ${status.toLowerCase()} — it is ${order.status.toLowerCase()} (terminal). Refunded or canceled orders cannot be re-fulfilled.`,
-    );
-  }
 
   // Admin entered a tracking number on a not-yet-shipped order → that IS the
   // shipping action. Auto-bump status to SHIPPED so the funnel reflects reality
@@ -1373,34 +1309,22 @@ export async function setOrderFulfillment(formData: FormData) {
     status = 'SHIPPED';
   }
 
-  // RB-fix: address-less orders cannot ship/deliver. Both Q6BEQM and
-  // 5LX2KB shipped without an address through single + bulk + inline
-  // paths. Block the transition server-side instead of trusting the UI.
-  if ((status === 'SHIPPED' || status === 'DELIVERED') && !shippingAddressIsComplete(order.shippingAddress)) {
-    throw new Error(
-      `Cannot mark order ${order.orderNumber} as ${status.toLowerCase()} — no complete shipping address on file. Capture the buyer's address first.`,
-    );
+  // RB-4: enforce a legal order state machine server-side — block impossible
+  // transitions regardless of what the form submits.
+  if (status === 'SHIPPED') {
+    if (!carrier || !trackingNumber) {
+      throw new Error('Cannot mark SHIPPED without both a carrier and a tracking number.');
+    }
+    if (order.shippingAddress == null) {
+      throw new Error('Cannot ship — this order has no shipping address on file.');
+    }
+  }
+  if (status === 'DELIVERED' && order.status !== 'SHIPPED') {
+    throw new Error('Cannot mark DELIVERED — the order must be SHIPPED first.');
   }
 
-  // RB-fix: idempotency. Previously the action wrote + audited even when
-  // the requested status was identical to the current status, causing
-  // the order.fulfillment audit to fire ×17 on Q6BEQM and ×2 on 5LX2KB.
-  // Now: if status, carrier, and tracking are unchanged, no-op silently.
-  const statusUnchanged = status === order.status;
-  const carrierUnchanged = (carrier ?? null) === (order.trackingCarrier ?? null);
-  const trackingUnchanged = (trackingNumber ?? null) === (order.trackingNumber ?? null);
-  if (statusUnchanged && carrierUnchanged && trackingUnchanged) {
-    // Pure no-op — no write, no audit, no notification, no email.
-    revalidatePath(`/admin/orders/${id}`);
-    return;
-  }
-
-  // RB-fix: atomic transition. updateMany with the precondition that the
-  // current status matches what we read above. If a concurrent admin
-  // already moved the row, count===0 → we treat as no-op rather than
-  // overwriting their change (and re-firing all side effects).
-  const res = await prisma.order.updateMany({
-    where: { id, status: order.status },
+  await prisma.order.update({
+    where: { id },
     data: {
       status,
       trackingCarrier: carrier,
@@ -1409,11 +1333,6 @@ export async function setOrderFulfillment(formData: FormData) {
       ...(status === 'DELIVERED' ? { deliveredAt: new Date() } : {}),
     },
   });
-  if (res.count !== 1) {
-    // Lost the race; another admin moved the row. Skip side effects.
-    revalidatePath(`/admin/orders/${id}`);
-    return;
-  }
 
   if (status === 'SHIPPED' && order.status !== 'SHIPPED') {
     const site = process.env.SITE_NAME || 'lab2date';
@@ -1699,7 +1618,21 @@ export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; m
   await requireCap('products:edit');
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
   if (!existing) return { ok: false, message: 'Product not found.' };
-  await prisma.product.delete({ where: { id: existing.id } });
+  try {
+    // Detach history-bearing references (nullable FKs with no cascade) so the
+    // delete doesn't hit a foreign-key constraint. OrderItem keeps its
+    // title/price snapshots, so order history stays intact after the product
+    // is gone. Cart / wishlist / review rows are onDelete: Cascade — the DB
+    // clears them automatically.
+    await prisma.$transaction([
+      prisma.orderItem.updateMany({ where: { productId: existing.id }, data: { productId: null } }),
+      prisma.messageThread.updateMany({ where: { productId: existing.id }, data: { productId: null } }),
+      prisma.sourcingRequest.updateMany({ where: { productId: existing.id }, data: { productId: null } }),
+      prisma.product.delete({ where: { id: existing.id } }),
+    ]);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? `Delete failed: ${e.message.slice(0, 180)}` : 'Delete failed.' };
+  }
   await audit('product.admin.delete', slug);
   revalidatePath('/admin/products');
   return { ok: true, message: 'Deleted.' };
@@ -1837,6 +1770,7 @@ export async function previewShopFromDb(
 ): Promise<{ ok: boolean; message?: string; items: PreviewProductCard[]; total: number }> {
   await requireAdmin();
   await requireCap('companies:manage');
+console.log('[DBG previewShopFromDb] slug=' + slug + ' page=' + page);
   const co = await prisma.company.findUnique({ where: { slug } });
   if (!co) return { ok: false, message: 'Company not found.', items: [], total: 0 };
   const [items, total] = await Promise.all([
@@ -1914,7 +1848,7 @@ export async function previewShopLive(
       return {
         slug,
         sourceSlug: slug,
-        title: w.name.replace(/<[^>]+>/g, ' ').slice(0, 200),
+        title: decodeEntities(w.name.replace(/<[^>]+>/g, ' ')).slice(0, 200),
         brand: (w.categories ?? [])[0]?.name ?? null,
         image: (w.images ?? [])[0]?.src ?? null,
         priceCents: priceNum > 0 ? Math.round(priceNum) : null,
@@ -2230,9 +2164,9 @@ export async function createDraftFromExtraction(input: DraftFromExtractionInput)
     data: {
       slug,
       sourceUrl: parsed.sourceUrl,
-      title: parsed.title,
-      summary: parsed.summary ?? null,
-      description: parsed.description ?? null,
+      title: decodeEntities(parsed.title),
+      summary: parsed.summary ? decodeEntities(parsed.summary) : null,
+      description: parsed.description ? decodeEntities(parsed.description) : null,
       condition: parsed.condition,
       mode: parsed.priceCents ? 'HYBRID' : 'QUOTE_ONLY',
       status: 'DRAFT',                  // ALWAYS draft from URL importer
@@ -2470,14 +2404,7 @@ export async function bulkDeleteOrders(formData: FormData): Promise<{ ok: boolea
   return { ok: true, count: targets.length, message: `Deleted ${targets.length} order${targets.length === 1 ? '' : 's'}.` };
 }
 
-/**
- * Admin verifies a buyer-submitted payment proof → status PAID.
- *
- * BUG-019 fix: race-protection. Concurrent admin Verify clicks used to
- * both fire side effects (audit + email + notification). Now wraps the
- * write in updateMany with the AWAITING_VERIFICATION precondition;
- * only one wins (count===1), the other gets a friendly message.
- */
+/** Admin verifies a buyer-submitted payment proof → status PAID. */
 export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; message: string }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('orders:fulfil');
@@ -2489,7 +2416,6 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     select: {
       id: true, orderNumber: true, status: true, totalCents: true, currency: true,
       paymentVerificationStatus: true, paymentSubmittedAt: true,
-      paymentMethodManual: true,
       sourcingRequestId: true,
       buyer: { select: { id: true, email: true, name: true } },
     },
@@ -2501,13 +2427,13 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
   if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
     return { ok: false, message: `Order is already ${order.status.toLowerCase()}.` };
   }
-  const verifyRes = await prisma.$transaction(async (tx) => {
-    const res = await tx.order.updateMany({
-      where: {
-        id,
-        paymentVerificationStatus: 'AWAITING_VERIFICATION',
-        status: 'PENDING_PAYMENT',
-      },
+  // Single transaction: bump Order to PAID AND advance the originating
+  // SourcingRequest to ACCEPTED so the quote-side views stop showing
+  // "AWAITING DECISION" + the buyer-side "Complete your purchase" CTA
+  // disappears (the deal is no longer in their court).
+  await prisma.$transaction(async (tx) => {
+    await tx.order.update({
+      where: { id },
       data: {
         status: 'PAID',
         paidAt: new Date(),
@@ -2515,39 +2441,30 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
         paymentVerifiedAt: new Date(),
         paymentVerifiedById: session.user.id,
         paymentRejectionReason: null,
-        // BUG-014 defensive: manual posture has no Stripe brand; ensure a
-        // verified order always records a method so it never renders '—'.
-        paymentMethodManual: order.paymentMethodManual ?? 'BANK_TRANSFER',
       },
     });
-    if (res.count === 1 && order.sourcingRequestId) {
+    if (order.sourcingRequestId) {
       await tx.sourcingRequest.updateMany({
+        // updateMany so we don't throw if the SR was already CLOSED/etc.
         where: { id: order.sourcingRequestId, status: { in: ['PENDING', 'RESPONDED'] } },
         data: { status: 'ACCEPTED' },
       });
     }
-    return res;
   });
-  if (verifyRes.count !== 1) {
-    return {
-      ok: false,
-      message: 'Verification race — another admin acted on this order. Refresh to see the current state.',
-    };
-  }
   await notifyUser(
     order.buyer.id,
     `Payment verified — order ${order.orderNumber}`,
-    "Your payment has been verified. We will prepare your order for shipping.",
+    `Your payment has been verified. We'll prepare your order for shipping.`,
     `/app/orders/${order.orderNumber}`,
   );
   try {
     await sendEmail({
       to: order.buyer.email,
       subject: `Payment verified — order ${order.orderNumber}`,
-      html: `<p>Hi ${order.buyer.name ?? 'there'},</p><p>Your payment for order <strong>${order.orderNumber}</strong> has been verified. We will arrange shipping shortly.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}">View order</a></p>`,
+      html: `<p>Hi ${order.buyer.name ?? 'there'},</p><p>Your payment for order <strong>${order.orderNumber}</strong> has been verified. We'll arrange shipping shortly.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}">View order</a></p>`,
       text: `Your payment for order ${order.orderNumber} has been verified. We will arrange shipping shortly.`,
     });
-  } catch { /* email failure non-fatal */ }
+  } catch {/* email failure non-fatal */}
   await notifyAdmins(
     `Payment verified — order ${order.orderNumber} (${(order.totalCents / 100).toFixed(2)} ${order.currency})`,
     `Verified by ${session.user.email}.`,
@@ -2587,6 +2504,7 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
   if (order.paymentVerificationStatus !== 'AWAITING_VERIFICATION') {
     return { ok: false, message: `Cannot reject — current state: ${order.paymentVerificationStatus ?? 'none'}.` };
   }
+  // Order status STAYS PENDING_PAYMENT — buyer can resubmit.
   await prisma.order.update({
     where: { id },
     data: {
@@ -2610,7 +2528,7 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
       html: `<p>Hi ${order.buyer.name ?? 'there'},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${reason}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
       text: `We need a corrected receipt for order ${order.orderNumber}. Reason: ${reason}\nResubmit: ${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment`,
     });
-  } catch { /* email failure non-fatal */ }
+  } catch {/* email failure non-fatal */}
   await notifyAdmins(
     `Payment rejected — order ${order.orderNumber}`,
     `Reason: ${reason.slice(0, 120)} (by ${session.user.email}).`,

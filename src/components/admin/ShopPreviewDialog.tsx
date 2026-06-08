@@ -6,6 +6,7 @@ import Link from 'next/link';
 import {
   X, Loader2, RefreshCw, ExternalLink, CheckCircle2, XCircle, AlertTriangle,
   ShieldCheck, Database, Cloud, Sparkles, Eye, Package, Trash2, BadgeCheck,
+  Link2 as Link2Icon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,9 +15,11 @@ import {
   aiAnalyzeShop,
   importShopProducts,
   blockSupplier,
+  quickUpdateProduct,
+  adminDeleteProduct,
   type PreviewProductCard,
 } from '@/app/admin/actions';
-import { ShopBrowser } from '@/components/admin/ShopBrowser';
+import { PasteUrlImporter } from '@/components/admin/PasteUrlImporter';
 
 type Tab = 'current' | 'source' | 'ai' | 'browser';
 
@@ -34,6 +37,7 @@ interface Props {
     aiAnalyzedAt: string | null;
     lastImportedAt: string | null;
   } | null;
+  categories?: { slug: string; name: string }[];
   onClose: () => void;
 }
 
@@ -43,7 +47,7 @@ function fmtPrice(cents: number | null, currency: string): string {
   catch { return `${currency} ${(cents / 100).toFixed(2)}`; }
 }
 
-export function ShopPreviewDialog({ open, shop, onClose }: Props) {
+export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Props) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('current');
   const [dbItems, setDbItems] = useState<PreviewProductCard[]>([]);
@@ -86,7 +90,7 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
   const runAi = useCallback(async () => {
     if (!shop?.importSourceUrl) return;
     setAiLoading(true); setAiError(null);
-    const r = await aiAnalyzeShop(shop.importSourceUrl, shop.slug);
+    const r = await aiAnalyzeShop(shop.importSourceUrl, shop.slug || undefined);
     setAiLoading(false);
     if (!r.ok) { setAiError(r.message ?? 'AI analysis failed.'); return; }
     setAiResult(r.result ?? null);
@@ -133,6 +137,9 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
 
   if (!open || !shop) return null;
 
+  // An ephemeral shop (manual "browse any supplier") has no DB row yet — we
+  // mark it with an empty slug. DB-only actions are hidden for it.
+  const ephemeral = !shop.slug;
   const dbTotalPages = Math.max(1, Math.ceil(dbTotal / 24));
   const liveDeltaImported = liveItems.filter((p) => p.alreadyImported).length;
   const liveDeltaNew = liveItems.length - liveDeltaImported;
@@ -220,6 +227,11 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
                   ✓ Imported
                 </span>
               )}
+              {ephemeral && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-bold uppercase tracking-wider">
+                  Unsaved preview
+                </span>
+              )}
             </div>
             <p className="text-xs text-muted-foreground mt-1 flex items-center gap-3 flex-wrap">
               {shop.importSourceUrl && (
@@ -239,7 +251,7 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
         {/* Tabs */}
         <div className="border-b border-border px-5 flex gap-1 overflow-x-auto">
           <TabBtn active={tab === 'current'} onClick={() => setTab('current')} icon={<Database className="h-3.5 w-3.5" />} label={`Imported (${shop.productCount})`} disabled={shop.productCount === 0} />
-          <TabBtn active={tab === 'browser'} onClick={() => setTab('browser')} icon={<Cloud className="h-3.5 w-3.5" />} label="Browse & add" disabled={!shop.importSourceUrl} />
+          <TabBtn active={tab === 'browser'} onClick={() => setTab('browser')} icon={<Link2Icon className="h-3.5 w-3.5" />} label="Add by URL" />
           <TabBtn active={tab === 'source'} onClick={() => setTab('source')} icon={<Cloud className="h-3.5 w-3.5" />} label="Cloud API preview" disabled={!shop.importSourceUrl} />
           <TabBtn active={tab === 'ai'} onClick={() => setTab('ai')} icon={<Sparkles className="h-3.5 w-3.5" />} label={aiResult ? `AI risk · ${aiResult.score}/100` : 'AI risk analysis'} disabled={!shop.importSourceUrl} />
         </div>
@@ -266,18 +278,12 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
             </section>
           )}
 
-          {tab === 'browser' && shop.importSourceUrl && (
-            <section className="space-y-3">
-              <div>
-                <h3 className="text-sm font-bold">Browse the supplier site</h3>
-                <p className="text-xs text-muted-foreground">
-                  Navigate the supplier just like a real browser. Every page is fetched through our admin proxy
-                  (no scripts, no cookies leak). When you land on a product page, hit <strong>Add via AI</strong> in
-                  the green toolbar — the URL importer extracts a draft. Already-imported URLs are flagged.
-                </p>
-              </div>
-              <ShopBrowser initialUrl={shop.importSourceUrl} companySlug={shop.slug} />
-            </section>
+          {tab === 'browser' && (
+            <PasteUrlImporter
+              companySlug={shop.slug}
+              initialUrl={shop.importSourceUrl}
+              categories={categories}
+            />
           )}
 
           {tab === 'source' && (
@@ -327,27 +333,39 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
                       <Button size="sm" variant="outline" onClick={selectNone} className="rounded-full text-xs">None</Button>
                     </span>
                   </div>
-                  <CardGrid items={liveItems} onPreview={setPreviewProduct} selectable selected={selected} onToggle={toggleSelected} />
-                  <div className="sticky bottom-0 -mx-5 -mb-5 mt-4 border-t border-border bg-card/95 backdrop-blur px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
-                    <p className="text-xs">
-                      <strong className="tabular-nums">{selected.size}</strong> product{selected.size === 1 ? '' : 's'} selected
-                      {importMsg && (
-                        <span className={`ml-3 ${importMsg.ok ? 'text-emerald-700' : 'text-red-700'} font-semibold`}>
-                          {importMsg.ok ? <CheckCircle2 className="h-3.5 w-3.5 inline" /> : <XCircle className="h-3.5 w-3.5 inline" />} {importMsg.message}
-                        </span>
-                      )}
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="outline" onClick={runImportAll} disabled={importing} className="rounded-full font-semibold">
-                        {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cloud className="h-3.5 w-3.5" />}
-                        Import all {liveTotal}
-                      </Button>
-                      <Button size="sm" onClick={runImportSelected} disabled={importing || selected.size === 0} className="rounded-full font-semibold">
-                        {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
-                        Import {selected.size} selected
-                      </Button>
-                    </div>
-                  </div>
+                  {ephemeral ? (
+                    <>
+                      <CardGrid items={liveItems} onPreview={setPreviewProduct} />
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-xs">
+                        Unsaved preview — bulk import needs a saved supplier. Use <strong>Add shop</strong> to create it,
+                        or open a product in <strong>Browse &amp; add</strong> and hit <strong>Add via AI</strong>.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <CardGrid items={liveItems} onPreview={setPreviewProduct} selectable selected={selected} onToggle={toggleSelected} />
+                      <div className="sticky bottom-0 -mx-5 -mb-5 mt-4 border-t border-border bg-card/95 backdrop-blur px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
+                        <p className="text-xs">
+                          <strong className="tabular-nums">{selected.size}</strong> product{selected.size === 1 ? '' : 's'} selected
+                          {importMsg && (
+                            <span className={`ml-3 ${importMsg.ok ? 'text-emerald-700' : 'text-red-700'} font-semibold`}>
+                              {importMsg.ok ? <CheckCircle2 className="h-3.5 w-3.5 inline" /> : <XCircle className="h-3.5 w-3.5 inline" />} {importMsg.message}
+                            </span>
+                          )}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" variant="outline" onClick={runImportAll} disabled={importing} className="rounded-full font-semibold">
+                            {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Cloud className="h-3.5 w-3.5" />}
+                            Import all {liveTotal}
+                          </Button>
+                          <Button size="sm" onClick={runImportSelected} disabled={importing || selected.size === 0} className="rounded-full font-semibold">
+                            {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                            Import {selected.size} selected
+                          </Button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
             </section>
@@ -411,12 +429,14 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
             </Button>
           ) : <span />}
           <div className="flex items-center gap-2">
-            <Link
-              href={`/admin/products?shop=${shop.slug}`}
-              className="inline-flex items-center gap-1.5 px-3 h-9 rounded-full border border-border font-semibold text-xs hover:bg-foreground/5"
-            >
-              <Eye className="h-3.5 w-3.5" /> View in product list
-            </Link>
+            {!ephemeral && (
+              <Link
+                href={`/admin/products?shop=${shop.slug}`}
+                className="inline-flex items-center gap-1.5 px-3 h-9 rounded-full border border-border font-semibold text-xs hover:bg-foreground/5"
+              >
+                <Eye className="h-3.5 w-3.5" /> View in product list
+              </Link>
+            )}
             <Button variant="ghost" onClick={onClose} className="rounded-full">Close</Button>
           </div>
         </div>
@@ -424,7 +444,26 @@ export function ShopPreviewDialog({ open, shop, onClose }: Props) {
 
       {/* Per-product preview modal */}
       {previewProduct && (
-        <ProductCardPreview product={previewProduct} onClose={() => setPreviewProduct(null)} />
+        <ProductCardPreview
+          product={previewProduct}
+          onClose={() => setPreviewProduct(null)}
+          onMutated={async (next) => {
+            if (next === 'deleted') {
+              setPreviewProduct(null);
+              await loadDb(dbPage);
+              router.refresh();
+            } else {
+              await loadDb(dbPage);
+              router.refresh();
+              // re-fetch and re-target the modal at the same slug
+              const r = await previewShopFromDb(shop!.slug, dbPage, 24);
+              if (r.ok) {
+                const updated = r.items.find((it) => it.slug === previewProduct.slug);
+                if (updated) setPreviewProduct(updated);
+              }
+            }
+          }}
+        />
       )}
     </div>
   );
@@ -518,14 +557,77 @@ function EmptyState({ icon, title, body }: { icon: React.ReactNode; title: strin
   );
 }
 
-function ProductCardPreview({ product, onClose }: { product: PreviewProductCard; onClose: () => void }) {
+function ProductCardPreview({
+  product,
+  onClose,
+  onMutated,
+}: {
+  product: PreviewProductCard;
+  onClose: () => void;
+  onMutated: (kind: 'updated' | 'deleted') => Promise<void> | void;
+}) {
+  const [pending, start] = useTransition();
+  const [editingPrice, setEditingPrice] = useState(false);
+  const [priceInput, setPriceInput] = useState<string>(product.priceCents != null ? String(product.priceCents) : '');
+  const [error, setError] = useState<string | null>(null);
+  const isPublished = product.status === 'PUBLISHED';
+  const isDraft = product.status === 'DRAFT';
+
+  function togglePublish() {
+    setError(null);
+    start(async () => {
+      const next = isPublished ? 'DRAFT' : 'PUBLISHED';
+      const r = await quickUpdateProduct(product.slug, { status: next });
+      if (!r.ok) setError(r.message);
+      else await onMutated('updated');
+    });
+  }
+
+  function savePrice() {
+    setError(null);
+    const raw = priceInput.trim();
+    const cents = raw === '' ? null : Math.round(Number(raw));
+    if (cents !== null && (!Number.isFinite(cents) || cents < 0)) {
+      setError('Price must be a non-negative integer in cents.');
+      return;
+    }
+    start(async () => {
+      const r = await quickUpdateProduct(product.slug, { priceCents: cents });
+      if (!r.ok) { setError(r.message); return; }
+      setEditingPrice(false);
+      await onMutated('updated');
+    });
+  }
+
+  function del() {
+    if (!window.confirm(`Delete “${product.title}” permanently? This cannot be undone.`)) return;
+    setError(null);
+    start(async () => {
+      const r = await adminDeleteProduct(product.slug);
+      if (!r.ok) setError(r.message);
+      else await onMutated('deleted');
+    });
+  }
+
+  const statusBadge =
+    isPublished ? 'bg-emerald-100 text-emerald-900 border-emerald-200' :
+    isDraft     ? 'bg-amber-100 text-amber-900 border-amber-200' :
+                  'bg-foreground/[0.04] text-muted-foreground border-border';
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center" role="dialog" aria-modal>
       <button type="button" onClick={onClose} className="absolute inset-0 bg-black/60 backdrop-blur-sm" aria-label="Close" />
       <div className="relative w-full max-w-2xl bg-card border border-border rounded-2xl shadow-xl m-4 overflow-hidden">
         <div className="p-4 border-b border-border flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-lg font-bold">Marketplace card preview</h3>
+          <div className="min-w-0">
+            <h3 className="text-lg font-bold inline-flex items-center gap-2">
+              Marketplace card preview
+              {product.status && (
+                <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wider rounded-full border px-2 py-0.5 ${statusBadge}`}>
+                  {product.status}
+                </span>
+              )}
+            </h3>
             <p className="text-xs text-muted-foreground mt-0.5">How buyers will see this product on the catalogue grid.</p>
           </div>
           <button type="button" onClick={onClose} className="p-1.5 rounded-lg hover:bg-foreground/5"><X className="h-5 w-5" /></button>
@@ -551,17 +653,79 @@ function ProductCardPreview({ product, onClose }: { product: PreviewProductCard;
             </div>
           </div>
         </div>
-        <div className="p-4 border-t border-border flex items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground truncate">slug: <code>{product.slug}</code></p>
-          {!product.alreadyImported ? (
-            <span className="text-xs font-semibold text-amber-700 inline-flex items-center gap-1">
-              <AlertTriangle className="h-3.5 w-3.5" /> Not in catalogue yet
-            </span>
-          ) : (
-            <Link href={`/marketplace/${product.slug}`} target="_blank" className="text-xs font-semibold text-primary hover:underline inline-flex items-center gap-1">
-              <ExternalLink className="h-3.5 w-3.5" /> Open on marketplace
+
+        {/* Quick-edit price inline */}
+        {editingPrice && (
+          <div className="px-4 py-3 border-t border-border bg-amber-50/40 flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-muted-foreground">Price (cents):</span>
+            <input
+              value={priceInput}
+              onChange={(e) => setPriceInput(e.target.value.replace(/[^0-9]/g, ''))}
+              inputMode="numeric"
+              placeholder="e.g. 450000 = €4,500"
+              className="flex-1 min-w-[160px] h-8 px-2 rounded-md border border-input bg-background text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+            />
+            <Button type="button" onClick={savePrice} disabled={pending} className="rounded-md h-8 px-3 text-xs">
+              {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+              Save
+            </Button>
+            <Button type="button" variant="outline" onClick={() => { setEditingPrice(false); setPriceInput(product.priceCents != null ? String(product.priceCents) : ''); setError(null); }} className="rounded-md h-8 px-3 text-xs">
+              Cancel
+            </Button>
+            <span className="basis-full text-[11px] text-muted-foreground">Leave blank = quote-only. {priceInput && Number(priceInput) > 0 && <>Preview: <strong className="tabular-nums">{fmtPrice(parseInt(priceInput, 10), product.currency)}</strong></>}</span>
+          </div>
+        )}
+
+        {error && (
+          <div className="px-4 py-2 border-t border-red-200 bg-red-50 text-red-900 text-xs inline-flex items-start gap-2">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Action toolbar */}
+        <div className="p-3 border-t border-border bg-foreground/[0.015] flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              type="button"
+              variant={isPublished ? 'outline' : 'default'}
+              onClick={togglePublish}
+              disabled={pending}
+              className="rounded-full h-8 px-3 text-xs font-semibold"
+            >
+              {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : isPublished ? <Eye className="h-3 w-3" /> : <CheckCircle2 className="h-3 w-3" />}
+              {isPublished ? 'Unpublish' : 'Publish'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setEditingPrice((v) => !v)}
+              disabled={pending}
+              className="rounded-full h-8 px-3 text-xs font-semibold"
+            >
+              <Package className="h-3 w-3" /> {editingPrice ? 'Close price' : 'Edit price'}
+            </Button>
+            <Link
+              href={`/admin/products/${product.slug}`}
+              className="inline-flex items-center gap-1 rounded-full h-8 px-3 text-xs font-semibold border border-input bg-background hover:bg-muted"
+            >
+              <ExternalLink className="h-3 w-3" /> Open editor
             </Link>
-          )}
+            {product.status === 'PUBLISHED' && (
+              <Link href={`/marketplace/${product.slug}`} target="_blank" className="text-[11px] font-semibold text-primary hover:underline inline-flex items-center gap-1">
+                <ExternalLink className="h-3 w-3" /> View on site
+              </Link>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={del}
+            disabled={pending}
+            className="rounded-full h-8 px-3 text-xs font-semibold text-red-700 border-red-200 hover:bg-red-50"
+          >
+            <Trash2 className="h-3 w-3" /> Delete
+          </Button>
         </div>
       </div>
     </div>

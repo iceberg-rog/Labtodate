@@ -109,9 +109,12 @@ export function AdminNotificationBell({ initialCount }: { initialCount: number }
   }
 
   function handleMarkAll() {
+    if (!window.confirm('Mark all notifications as read?')) return;
     setCount(0);
     setItems((arr) => arr.map((x) => x.readAt ? x : { ...x, readAt: new Date().toISOString() }));
-    start(() => markAllNotificationsRead().catch(() => {}));
+    // RB-7: optimistic clear above is instant; the action persists it, then
+    // router.refresh() re-pulls the layout so the badge clears across pages too.
+    start(async () => { await markAllNotificationsRead().catch(() => {}); router.refresh(); });
   }
 
   return (

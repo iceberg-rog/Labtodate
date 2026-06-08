@@ -1,11 +1,11 @@
-import { Tag, Banknote, Truck, Globe, ShieldCheck, Clock, Search, FileCheck2, Handshake } from 'lucide-react';
+import { Tag, Banknote, Truck, ShieldCheck, Clock, Search, FileCheck2, Handshake } from 'lucide-react';
 import { SellForm } from './SellForm';
 import { getMarketing } from '@/lib/marketing';
 
 export const metadata = {
   title: 'Sell your lab equipment',
   description:
-    'Sell surplus, refurbished or decommissioned laboratory and analytical equipment to a vetted global buyer network. Free valuation, no listing fees, we handle logistics.',
+    'Sell surplus, refurbished or decommissioned laboratory and analytical equipment. We come back with a valuation; we handle shipping and payment.',
 };
 export const dynamic = 'force-dynamic';
 
@@ -29,15 +29,14 @@ export default async function SellPage() {
           </h1>
           <p className="mt-6 text-lg text-muted-foreground leading-relaxed max-w-2xl">
             Whether you&apos;re an individual, a lab, a dealer, or an institution clearing a facility —
-            submit your equipment and our acquisitions team comes back with a free valuation and a
-            route to a vetted buyer. No listing fees, no guesswork.
+            submit your equipment and our acquisitions team comes back with a valuation. No listing
+            fees, no guesswork.
           </p>
 
-          <div className="mt-10 grid grid-cols-2 lg:grid-cols-4 gap-px rounded-2xl overflow-hidden border border-border bg-border">
-            <Stat value={mk.suppliers} label="Vetted buyers worldwide" />
-            <Stat value="2 days" label="Average valuation time" />
+          <div className="mt-10 grid grid-cols-2 lg:grid-cols-3 gap-px rounded-2xl overflow-hidden border border-border bg-border">
             <Stat value="0%" label="Listing fees" />
             <Stat value="Global" label="Logistics handled for you" />
+            <Stat value="One" label="Accountable counterparty" />
           </div>
         </div>
       </section>
@@ -51,10 +50,9 @@ export default async function SellPage() {
                 Why sell through us
               </h2>
               <ul className="mt-6 space-y-5">
-                <Bullet icon={Banknote} title="Free, fair valuation" body="We benchmark against real refurbished-market transactions — not guesswork." />
-                <Bullet icon={Globe} title="A vetted buyer network" body="Labs, dealers and institutions across the EU, US and Asia-Pacific." />
+                <Bullet icon={Banknote} title="Valuation, no listing fees" body="We come back with a number based on what the unit can realistically sell for." />
                 <Bullet icon={Truck} title="We handle logistics" body="Crating, freight, insurance and customs — coordinated for you." />
-                <Bullet icon={ShieldCheck} title="Secure payment" body="Funds are protected until the buyer confirms the unit as described." />
+                <Bullet icon={ShieldCheck} title="Payment after receipt" body="You get paid once the buyer confirms the unit as described." />
               </ul>
             </div>
 
@@ -65,7 +63,7 @@ export default async function SellPage() {
               <ol className="mt-6 space-y-5">
                 <Step n={1} icon={FileCheck2} title="Submit your equipment" body="Tell us what you have — the form on the right takes a few minutes." />
                 <Step n={2} icon={Search} title="Free valuation" body="Our acquisitions team replies within 2 business days with a market-based valuation." />
-                <Step n={3} icon={Handshake} title="We match a buyer" body="We route your item to vetted buyers and negotiate on agreed terms." />
+                <Step n={3} icon={Handshake} title="We match a buyer" body="We route your item and negotiate on agreed terms." />
                 <Step n={4} icon={Clock} title="Ship & get paid" body="We coordinate logistics; you get paid once the buyer confirms receipt." />
               </ol>
             </div>

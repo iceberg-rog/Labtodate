@@ -5,20 +5,17 @@ import { nextCookies } from 'better-auth/next-js';
 import { createAuthMiddleware, APIError } from 'better-auth/api';
 import { prisma } from './db';
 import { sendEmail } from './email';
-import { isBuildPhase } from './build-phase';
-
-const buildPhase = isBuildPhase();
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
-  secret: process.env.BETTER_AUTH_SECRET || (buildPhase ? 'build-time-placeholder-secret-for-next-build' : undefined),
-  baseURL: process.env.BETTER_AUTH_URL || (buildPhase ? 'http://localhost:3000' : undefined),
+  secret: process.env.BETTER_AUTH_SECRET,
+  baseURL: process.env.BETTER_AUTH_URL,
   appName: 'lab2date',
 
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: false,
-    minPasswordLength: 12, // raised from 8 (BUG-006) — payment-handling marketplace
+    minPasswordLength: 8,
     sendResetPassword: async ({ user, url }) => {
       await sendEmail({
         to: user.email,
@@ -40,6 +37,32 @@ export const auth = betterAuth({
       });
     },
     resetPasswordTokenExpiresIn: 60 * 60, // 1 hour
+  },
+
+  emailVerification: {
+    sendOnSignUp: false,
+    autoSignInAfterVerification: true,
+    expiresIn: 60 * 60, // 1 hour
+    sendVerificationEmail: async ({ user, url }) => {
+      await sendEmail({
+        to: user.email,
+        subject: 'Verify your lab2date email',
+        html: `
+          <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
+            <h2 style="color:#0E4F40;">Confirm your email</h2>
+            <p>Hi ${user.name || 'there'},</p>
+            <p>Click the button below to confirm that this email belongs to you. The link expires in 1 hour.</p>
+            <p style="margin:24px 0;">
+              <a href="${url}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
+                Verify my email
+              </a>
+            </p>
+            <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
+          </div>
+        `,
+        text: `Verify your lab2date email: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.`,
+      });
+    },
   },
 
   user: {

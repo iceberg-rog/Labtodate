@@ -29,12 +29,11 @@ import { getServerSession } from '@/lib/auth-server';
 import { formatPrice } from '@/lib/utils';
 
 interface PageProps {
-  params: Promise<{ slug: string }>;
-  searchParams?: Promise<{ review?: string; sold?: string; quoteonly?: string }>;
+  params: { slug: string };
+  searchParams?: { review?: string; sold?: string; quoteonly?: string };
 }
 
-export async function generateMetadata(props: PageProps): Promise<Metadata> {
-  const params = await props.params;
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const product = await getProductBySlug(params.slug);
   if (!product) return { title: 'Not found' };
   const description = product.summary ?? `${product.brand?.name ?? ''} ${product.title}`;
@@ -51,9 +50,7 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
   };
 }
 
-export default async function ProductDetailPage(props: PageProps) {
-  const searchParams = await props.searchParams;
-  const params = await props.params;
+export default async function ProductDetailPage({ params, searchParams }: PageProps) {
   const product = await getProductBySlug(params.slug);
   if (!product) notFound();
   const reviewNote = searchParams?.review === 'needpurchase';
@@ -138,8 +135,7 @@ export default async function ProductDetailPage(props: PageProps) {
           />
 
           {/* Trust strip */}
-          <div className="mt-6 grid grid-cols-3 gap-3">
-            <TrustItem icon={ShieldCheck} title={mk.warranty} subtitle="On all refurbished" />
+          <div className="mt-6 grid grid-cols-2 gap-3">
             <TrustItem icon={Truck} title="Worldwide shipping" subtitle="Crated & insured" />
             <TrustItem icon={RotateCcw} title="Buyer protection" subtitle="Refund if not as described" />
           </div>
@@ -249,9 +245,9 @@ export default async function ProductDetailPage(props: PageProps) {
             <Fact
               icon={MapPin}
               label="Supplier"
-              value="lab2date Verified Supplier"
+              value="lab2date"
             />
-            <Fact icon={ShieldCheck} label="Warranty" value={mk.warranty} />
+            {mk.warranty && <Fact icon={ShieldCheck} label="Warranty" value={mk.warranty} />}
           </dl>
         </div>
       </div>
@@ -285,10 +281,10 @@ export default async function ProductDetailPage(props: PageProps) {
               <DetailRow label="Condition" value={conditionLabel} />
               <DetailRow label="Brand" value={product.brand?.name ?? '—'} />
               <DetailRow label="Category" value={product.category.name} />
-              <DetailRow label="Supplier" value="lab2date Verified Supplier" />
+              <DetailRow label="Supplier" value="lab2date" />
               <DetailRow label="Location" value={product.company?.country ?? 'EU'} />
               {product.yearMade && <DetailRow label="Year" value={String(product.yearMade)} />}
-              <DetailRow label="Warranty" value={mk.warranty} />
+              {mk.warranty && <DetailRow label="Warranty" value={mk.warranty} />}
               {specs &&
                 Object.entries(specs).map(([k, v]) => (
                   <DetailRow key={k} label={k} value={String(v)} />
@@ -296,16 +292,17 @@ export default async function ProductDetailPage(props: PageProps) {
             </dl>
           </section>
 
-          <section>
-            <h2 className="text-2xl font-bold mb-3" style={{ letterSpacing: '-0.025em' }}>
-              Inspection &amp; warranty
-            </h2>
-            <p className="text-base text-muted-foreground leading-relaxed">
-              Every item passes a {mk.inspection} by qualified technicians — calibration
-              verification, mechanical wear, and component-level diagnostics — and ships with a{' '}
-              {mk.warranty} and buyer protection.
-            </p>
-          </section>
+          {(mk.inspection || mk.warranty) && (
+            <section>
+              <h2 className="text-2xl font-bold mb-3" style={{ letterSpacing: '-0.025em' }}>
+                {mk.warranty ? 'Inspection & warranty' : 'Inspection'}
+              </h2>
+              <p className="text-base text-muted-foreground leading-relaxed">
+                {mk.inspection && <>Every item passes a {mk.inspection}. </>}
+                {mk.warranty && <>Ships with a {mk.warranty} and buyer protection.</>}
+              </p>
+            </section>
+          )}
 
           <section>
             <div className="flex items-center gap-3 mb-4">
@@ -392,7 +389,7 @@ export default async function ProductDetailPage(props: PageProps) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-foreground truncate">
-                  lab2date Verified Supplier
+                  lab2date
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Inspected &amp; warrantied · ships worldwide
@@ -435,7 +432,7 @@ export default async function ProductDetailPage(props: PageProps) {
                   slug: s.slug,
                   title: s.title,
                   brand: s.brand?.name ?? '—',
-                  supplier: 'lab2date Verified Supplier',
+                  supplier: 'lab2date',
                   illustration: (s.illustration ?? 'balance') as IllustrationName,
                   imageUrl: s.images?.[0] ?? null,
                   condition: s.condition,

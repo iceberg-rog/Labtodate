@@ -43,21 +43,23 @@ export interface HomeContent {
 
 export const HOME_DEFAULTS: HomeContent = {
   popular: ['Centrifuges', 'HPLC', 'PCR', 'Microscopes', 'Mass Spec'],
-  heroBadge: 'Up to 50% off · certified refurbished',
+  heroBadge: 'Refurbished lab equipment',
   heroTitle: 'The marketplace for',
   heroAccent: 'science.',
   heroSubtitle:
-    'Source new & certified-refurbished laboratory equipment from vetted suppliers worldwide — quote to delivery in days, not months.',
+    'Source refurbished and surplus laboratory equipment — quote, proforma and shipping handled end to end.',
+  // Counts are computed live from the DB at request time (see src/app/page.tsx);
+  // these defaults are placeholders for the admin editor and never shipped.
   stats: [
-    { value: 12400, suffix: '+', label: 'instruments listed' },
-    { value: 840, suffix: '+', label: 'verified suppliers' },
-    { value: 95, suffix: '+', label: 'countries served' },
+    { value: 0, suffix: '', label: 'instruments listed' },
+    { value: 0, suffix: '', label: 'suppliers' },
+    { value: 0, suffix: '', label: 'countries served' },
   ],
-  testHeading: 'Loved by people who buy expensive things.',
-  testMeta: '4.9 / 5 · 410+ verified buyers',
-  ctaHeading: 'Discontinued. Rare. Out of budget. We find it.',
+  testHeading: 'What buyers say.',
+  testMeta: '',
+  ctaHeading: 'Discontinued. Rare. Out of budget. We try to find it.',
   ctaSubtitle:
-    "Tell our sourcing team what you need. We'll come back with vetted quotes from up to 8 suppliers — typically within 5 business days.",
+    "Tell us what you need. We'll come back with quotes — typically within a few business days.",
 };
 
 /** Parse "12400|+|instruments listed" lines; fall back to defaults. */

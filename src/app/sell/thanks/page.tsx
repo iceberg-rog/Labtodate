@@ -4,8 +4,7 @@ import { Button } from '@/components/ui/button';
 
 export const metadata = { title: 'Submission received' };
 
-export default async function SellThanksPage(props: { searchParams: Promise<{ id?: string }> }) {
-  const searchParams = await props.searchParams;
+export default function SellThanksPage({ searchParams }: { searchParams: { id?: string } }) {
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
       <div className="mx-auto h-16 w-16 rounded-full bg-accent/15 flex items-center justify-center mb-6">
@@ -26,7 +25,7 @@ export default async function SellThanksPage(props: { searchParams: Promise<{ id
         <p className="text-sm font-bold">What happens next</p>
         <NextStep icon={Mail} text="You receive a confirmation email with your reference number." />
         <NextStep icon={Search} text="We benchmark your item against the refurbished market and prepare a valuation." />
-        <NextStep icon={Handshake} text="We come back with a valuation and route your item to vetted buyers." />
+        <NextStep icon={Handshake} text="We come back with a valuation and the next step." />
       </div>
 
       <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">

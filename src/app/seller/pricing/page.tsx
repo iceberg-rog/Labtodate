@@ -24,7 +24,7 @@ export default async function SellerPricingPage() {
       <h2>How it works</h2>
       <ol>
         <li>List your equipment (or submit it via <a href="/sell">Sell equipment</a> for a managed listing).</li>
-        <li>We vet and publish it to a verified buyer network — no listing fee.</li>
+        <li>We publish it to the marketplace — no listing fee.</li>
         <li>When it sells, {c.site} handles payment, logistics and buyer protection.</li>
         <li>You receive your payout ({payout}), minus the {commission}% commission.</li>
       </ol>

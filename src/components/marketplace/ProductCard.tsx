@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import Image from 'next/image';
-import { BadgeCheck, ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { formatPrice } from '@/lib/utils';
 import { productImage } from '@/lib/images';
@@ -52,10 +52,6 @@ export function ProductCard({ p }: { p: ProductCardData }) {
         <div className="absolute top-3 right-3">
           <Badge variant="secondary">{CONDITION_LABEL[p.condition]}</Badge>
         </div>
-        <div className="absolute bottom-3 left-3 flex items-center gap-1.5 text-white text-xs font-semibold">
-          <BadgeCheck className="h-4 w-4 drop-shadow" />
-          14-pt inspected
-        </div>
         <div className="absolute bottom-3 right-3 h-9 w-9 rounded-full bg-white/90 backdrop-blur flex items-center justify-center text-foreground translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all duration-300">
           <ArrowUpRight className="h-4 w-4" />
         </div>
@@ -67,7 +63,7 @@ export function ProductCard({ p }: { p: ProductCardData }) {
           {p.title}
         </h3>
         <p className="text-xs text-muted-foreground">
-          lab2date Verified Supplier
+          lab2date
           {p.yearMade && ` · ${p.yearMade}`}
         </p>
         <div className="flex items-center justify-between pt-3 border-t mt-auto">

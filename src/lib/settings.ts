@@ -1,5 +1,4 @@
 import { prisma } from './db';
-import { isBuildPhase } from './build-phase';
 
 /**
  * Admin-configurable base settings. Stored in the DB so they can be set
@@ -32,7 +31,7 @@ export const SETTING_DEFS = [
     hint: 'Tells buyer what to put in transfer reference, e.g. “Use order number”.' },
   { key: 'PROFORMA_VALID_DAYS', label: 'Proforma validity (days)', secret: false, group: 'Payments', verify: 'number',
     hint: 'How long a proforma stays valid before auto-expiring to Lost. Default: 14.' },
-  { key: 'COMPANY_RECEIVING_ADDRESS', label: 'Receiving warehouse address', secret: false, group: 'Acquisitions',
+  { key: 'COMPANY_RECEIVING_ADDRESS', label: 'Receiving warehouse address', secret: false, group: 'Acquisitions', multiline: true,
     hint: 'Full address sellers ship accepted equipment to. Multi-line OK. Shown in their shipping form once we accept their offer.' },
   { key: 'EMAIL_THROTTLE_HOURS', label: 'Email throttle (hours)', secret: false, group: 'Acquisitions', verify: 'number',
     hint: 'When we reply to a seller/buyer, skip the email if we already emailed them in the last N hours (the in-app notification still fires). Stops chat-rapid-fire spam. Default: 2.' },
@@ -42,7 +41,7 @@ export const SETTING_DEFS = [
     hint: 'Shown in the footer “contact us” link.' },
   { key: 'COMPANY_LEGAL_NAME', label: 'Legal company name', secret: false, group: 'Company',
     hint: 'Registered name printed on invoices & proformas.' },
-  { key: 'COMPANY_ADDRESS', label: 'Company address', secret: false, group: 'Company',
+  { key: 'COMPANY_ADDRESS', label: 'Company address', secret: false, group: 'Company', multiline: true,
     hint: 'Full registered address (one line or comma-separated).' },
   { key: 'COMPANY_COUNTRY', label: 'Country', secret: false, group: 'Company',
     hint: 'e.g. Netherlands.' },
@@ -52,38 +51,14 @@ export const SETTING_DEFS = [
     hint: 'Billing/accounts contact; also BCC’d on invoices.' },
   { key: 'COMPANY_VAT', label: 'VAT / reg. number', secret: false, group: 'Company',
     hint: 'VAT or company registration number for invoices.' },
-  { key: 'STAT_LISTINGS', label: 'Listings count (display)', secret: false, group: 'Marketing', preview: '/',
-    hint: 'Shown in search bar & headings, e.g. “12,400+”. Blank = real live count.' },
-  { key: 'STAT_SUPPLIERS', label: 'Suppliers count (display)', secret: false, group: 'Marketing', preview: '/sell',
-    hint: 'e.g. “840+”. Used in copy. Keep honest.' },
-  { key: 'QUOTE_TURNAROUND', label: 'Quote turnaround', secret: false, group: 'Marketing', preview: '/let-us-find-it',
-    hint: 'e.g. “5 business days”.' },
-  { key: 'WARRANTY_TEXT', label: 'Warranty text', secret: false, group: 'Marketing', preview: '/marketplace',
-    hint: 'e.g. “90-day warranty”. Shown on product pages.' },
-  { key: 'INSPECTION_TEXT', label: 'Inspection text', secret: false, group: 'Marketing', preview: '/marketplace',
-    hint: 'e.g. “14-point inspection”.' },
-  { key: 'FINANCING_TEXT', label: 'Financing line', secret: false, group: 'Marketing', preview: '/marketplace',
-    hint: 'Product page financing note. Blank = hide it.' },
-  { key: 'FOOTER_TAGLINE', label: 'Footer tagline', secret: false, group: 'Marketing', preview: '/',
-    hint: 'Short description under the logo in the footer.' },
-  { key: 'SOCIAL_LINKEDIN', label: 'LinkedIn URL', secret: false, group: 'Marketing', verify: 'url',
-    hint: 'Full URL. Blank = hide the icon.' },
-  { key: 'SOCIAL_TWITTER', label: 'Twitter/X URL', secret: false, group: 'Marketing', verify: 'url',
-    hint: 'Full URL. Blank = hide the icon.' },
-  { key: 'SOCIAL_GITHUB', label: 'GitHub URL', secret: false, group: 'Marketing', verify: 'url',
-    hint: 'Full URL. Blank = hide the icon.' },
+  { key: 'COMPANY_KVK', label: 'KvK / trade register number', secret: false, group: 'Company',
+    hint: 'Chamber-of-commerce number printed on invoices (NL: KvK, BE: KBO, DE: HRB…). Leave blank to hide.' },
+  { key: 'COMPANY_WEBSITE', label: 'Website', secret: false, group: 'Company',
+    hint: 'e.g. samparsbenelux.com. Shown next to the “i” icon in the invoice header.' },
+  { key: 'COMPANY_CITY', label: 'Issuing city', secret: false, group: 'Company',
+    hint: 'City shown before the date on proformas (e.g. “Zoetermeer, 30-05-2026”).' },
   { key: 'COMPANY_LOGO_URL', label: 'Company logo URL', secret: false, group: 'Company', verify: 'image',
     hint: 'Auto-filled when you upload a logo below. Used on invoices & proformas.' },
-  { key: 'DEFAULT_TAX_PERCENT', label: 'Default tax %', secret: false, group: 'Commerce', verify: 'number',
-    hint: 'Applied to checkout subtotal, e.g. 21 for 21% VAT. Blank = 0.' },
-  { key: 'DEFAULT_SHIPPING_CENTS', label: 'Flat shipping (cents)', secret: false, group: 'Commerce', verify: 'number',
-    hint: 'Flat shipping added at checkout, in cents (e.g. 4500 = €45). Blank = free.' },
-  { key: 'SELLER_COMMISSION_PCT', label: 'Seller commission %', secret: false, group: 'Selling', verify: 'number',
-    hint: 'Commission on a completed sale, e.g. 8. Shown on the Pricing & fees page.' },
-  { key: 'SELLER_LISTING_FEE', label: 'Listing fee', secret: false, group: 'Selling', preview: '/seller/pricing',
-    hint: 'e.g. “Free” or “€0”. Shown on the Pricing & fees page.' },
-  { key: 'SELLER_PAYOUT_DAYS', label: 'Payout time', secret: false, group: 'Selling', preview: '/seller/pricing',
-    hint: 'e.g. “3 business days after delivery”.' },
   { key: 'AI_API_KEY', label: 'AI API key', secret: true, group: 'AI assistant',
     hint: 'OpenAI-compatible key (sk-…). Powers the on-site assistant.' },
   { key: 'AI_BASE_URL', label: 'AI base URL', secret: false, group: 'AI assistant', verify: 'url',
@@ -102,7 +77,6 @@ const TTL_MS = 5000;
 
 /** Idempotent, cheap (5s cache): copy DB settings into process.env. */
 export async function ensureSettingsLoaded(): Promise<void> {
-  if (isBuildPhase()) return;
   if (Date.now() - lastLoad < TTL_MS) return;
   if (inflight) return inflight;
   inflight = (async () => {

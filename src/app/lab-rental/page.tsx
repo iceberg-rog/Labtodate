@@ -24,7 +24,7 @@ export default async function LabRentalIndexPage() {
           <span className="text-primary">Not the whole lab.</span>
         </h1>
         <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
-          Vetted partner facilities offering hourly and daily access to specific instruments — perfect for one-off
+          Partner facilities offering hourly and daily access to specific instruments — useful for one-off
           experiments or method development before committing to purchase.
         </p>
       </header>

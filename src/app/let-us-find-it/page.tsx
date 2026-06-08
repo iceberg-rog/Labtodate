@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { Sparkles, Clock, ShieldCheck, Globe } from 'lucide-react';
+import { Sparkles, Clock, ShieldCheck } from 'lucide-react';
 import { SourcingForm } from './SourcingForm';
 import { prisma } from '@/lib/db';
 import { getMarketing } from '@/lib/marketing';
@@ -7,8 +7,7 @@ import { getMarketing } from '@/lib/marketing';
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
 
-export default async function LetUsFindItPage(props: { searchParams: Promise<{ product?: string }> }) {
-  const searchParams = await props.searchParams;
+export default async function LetUsFindItPage({ searchParams }: { searchParams: { product?: string } }) {
   const mk = await getMarketing();
   const slug = searchParams.product;
   const anchor = slug
@@ -31,13 +30,11 @@ export default async function LetUsFindItPage(props: { searchParams: Promise<{ p
             <span className="text-primary">We&apos;ll find it.</span>
           </h1>
           <p className="mt-6 text-lg text-muted-foreground leading-relaxed">
-            Our sourcing team works with {mk.suppliers} suppliers worldwide. Most requests get matched within{' '}
-            <strong className="text-foreground">{mk.quoteTurnaround}</strong> with vetted quotes from multiple suppliers.
+            Tell us the make, model or use-case and we&apos;ll come back with a quote{mk.quoteTurnaround ? <>{' '}within <strong className="text-foreground">{mk.quoteTurnaround}</strong></> : null}.
           </p>
 
           <ul className="mt-8 space-y-4">
-            <Bullet icon={Clock}      title="5-day turnaround" body="Average time to first vetted quote." />
-            <Bullet icon={Globe}      title="Global supplier network" body="EU, US, and Asia-Pacific coverage." />
+            <Bullet icon={Clock} title="Quote turnaround" body="We come back as soon as we have something solid — typically a few business days." />
             <Bullet icon={ShieldCheck} title="Free for buyers" body="No commission until you accept a quote." />
           </ul>
         </div>

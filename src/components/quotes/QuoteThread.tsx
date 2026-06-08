@@ -239,13 +239,17 @@ export function QuoteThread(p: Props) {
             {p.viewerRole === 'BUYER' && p.status === 'RESPONDED' && (
               p.hasProforma ? (
                 <div className="flex gap-2 items-center">
-                  {p.orderPaymentHref && (
+                  {p.orderPaymentHref ? (
                     <a
                       href={p.orderPaymentHref}
                       className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:bg-primary/90 shadow-sm"
                     >
                       <Check className="h-4 w-4" /> Complete your purchase
                     </a>
+                  ) : (
+                    <Button type="button" onClick={() => decide('ACCEPTED')} disabled={pending} className="rounded-full font-semibold shadow-sm">
+                      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Accept proforma &amp; pay
+                    </Button>
                   )}
                   <Button type="button" variant="outline" onClick={() => decide('DECLINED')} className="rounded-full font-semibold" disabled={pending}>
                     <X className="h-4 w-4" /> Decline

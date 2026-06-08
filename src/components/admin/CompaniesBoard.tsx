@@ -39,7 +39,7 @@ function bucketOf(s: ShopRow): Bucket {
   return 'manual';
 }
 
-export function CompaniesBoard({ shops }: { shops: ShopRow[] }) {
+export function CompaniesBoard({ shops, categories }: { shops: ShopRow[]; categories: { slug: string; name: string }[] }) {
   const [openShop, setOpenShop] = useState<ShopRow | null>(null);
   const [pricingShop, setPricingShop] = useState<ShopRow | null>(null);
 
@@ -94,7 +94,7 @@ export function CompaniesBoard({ shops }: { shops: ShopRow[] }) {
         </div>
       )}
 
-      <ShopPreviewDialog open={!!openShop} shop={openShop} onClose={() => setOpenShop(null)} />
+      <ShopPreviewDialog open={!!openShop} shop={openShop} categories={categories} onClose={() => setOpenShop(null)} />
       <ShopPricingDialog open={!!pricingShop} shop={pricingShop} onClose={() => setPricingShop(null)} />
     </div>
   );

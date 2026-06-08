@@ -2,8 +2,8 @@ import { Mail, User, Shield, Calendar } from 'lucide-react';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ProfileForm } from './ProfileForm';
-import { Button } from '@/components/ui/button';
-import { deleteMyAccount } from '@/lib/account/actions';
+import { EmailVerifyButton } from './EmailVerifyButton';
+import { AvatarUploader } from './AvatarUploader';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,15 +25,7 @@ export default async function ProfilePage() {
 
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
         <div className="p-6 flex items-center gap-5 border-b border-border">
-          <div className="h-16 w-16 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xl font-bold" style={{ letterSpacing: '-0.04em' }}>
-            {me.name
-              .split(/\s+/)
-              .map((s) => s[0])
-              .filter((c) => c.match(/[A-Z]/i))
-              .slice(0, 2)
-              .join('')
-              .toUpperCase()}
-          </div>
+          <AvatarUploader name={me.name} image={me.image} />
           <div>
             <h2 className="text-lg font-bold">{me.name}</h2>
             <p className="text-sm text-muted-foreground">{me.email}</p>
@@ -42,7 +34,14 @@ export default async function ProfilePage() {
 
         <dl className="divide-y divide-border">
           <Row icon={User} label="Name" value={me.name} />
-          <Row icon={Mail} label="Email" value={me.email} />
+          <div className="p-5 flex items-center gap-4">
+            <Mail className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+            <dt className="text-sm font-medium text-muted-foreground w-32">Email</dt>
+            <dd className="text-sm font-semibold flex-1 flex items-center gap-3 flex-wrap">
+              <span>{me.email}</span>
+              <EmailVerifyButton email={me.email} verified={me.emailVerified} />
+            </dd>
+          </div>
           <Row icon={Shield} label="Role" value={me.role} />
           {me.company && <Row icon={User} label="Company" value={me.company.name} />}
           <Row icon={Calendar} label="Joined" value={new Date(me.createdAt).toLocaleDateString('en-US', { dateStyle: 'long' })} />
@@ -53,8 +52,8 @@ export default async function ProfilePage() {
 
       <div className="rounded-2xl border border-border bg-card p-6 space-y-4">
         <div>
-          <h2 className="font-bold">Privacy &amp; data</h2>
-          <p className="text-sm text-muted-foreground">Your data, your control (GDPR).</p>
+          <h2 className="font-bold">Your data</h2>
+          <p className="text-sm text-muted-foreground">Download a copy of everything we hold on your account.</p>
         </div>
         <a
           href="/app/privacy/export"
@@ -62,20 +61,6 @@ export default async function ProfilePage() {
         >
           Download my data (JSON)
         </a>
-        <form action={deleteMyAccount} className="border-t border-border pt-4 space-y-3">
-          <p className="text-sm font-semibold text-red-700">Delete account</p>
-          <p className="text-xs text-muted-foreground">
-            Permanent. If you have orders, invoice records are retained as required by law and your
-            profile is anonymised; otherwise the account is fully erased.
-          </p>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="confirm" required className="accent-red-600" />
-            I understand this cannot be undone.
-          </label>
-          <Button type="submit" variant="outline" className="rounded-full font-semibold text-red-700 hover:bg-red-50">
-            Delete my account
-          </Button>
-        </form>
       </div>
     </div>
   );

@@ -12,7 +12,7 @@ import type { IllustrationName } from '@/components/illustrations/instruments';
 
 export const metadata: Metadata = {
   title: 'Marketplace — Browse all instruments',
-  description: 'Browse 12,000+ new and certified refurbished lab instruments from 840+ verified suppliers.',
+  description: 'Browse new and refurbished laboratory instruments — chromatography, mass spectrometry, spectroscopy and more.',
 };
 
 export const dynamic = 'force-dynamic';
@@ -29,8 +29,7 @@ interface SearchParams {
   page?: string;
 }
 
-export default async function MarketplacePage(props: { searchParams: Promise<SearchParams> }) {
-  const searchParams = await props.searchParams;
+export default async function MarketplacePage({ searchParams }: { searchParams: SearchParams }) {
   const page = parseInt(searchParams.page ?? '1', 10) || 1;
   const mk = await getMarketing();
 
@@ -74,7 +73,7 @@ export default async function MarketplacePage(props: { searchParams: Promise<Sea
           {activeCategoryName ? activeCategoryName : 'All lab instruments'}
         </h1>
         <p className="mt-3 text-muted-foreground max-w-2xl">
-          {result.total.toLocaleString()} listings · verified suppliers · {mk.inspection} on every refurbished unit
+          {result.total.toLocaleString()} listings{mk.inspection ? ` · ${mk.inspection} on every refurbished unit` : ''}
         </p>
 
         {/* Inline search */}
@@ -104,7 +103,7 @@ export default async function MarketplacePage(props: { searchParams: Promise<Sea
          *  SSR/CSR hydration text mismatch (#418). */}
         <Suspense fallback={<div className="lg:sticky lg:top-24 h-10 rounded-lg bg-foreground/5 animate-pulse" />}>
           <Filters
-            categories={categories.map((c) => ({ slug: c.slug, name: c.name, count: c._count.products }))}
+            categories={categories.filter((c) => c._count.products > 0).map((c) => ({ slug: c.slug, name: c.name, count: c._count.products }))}
             brands={brands.map((b) => ({ slug: b.slug, name: b.name, count: b._count.products }))}
           />
         </Suspense>
@@ -134,7 +133,7 @@ export default async function MarketplacePage(props: { searchParams: Promise<Sea
                     slug: p.slug,
                     title: p.title,
                     brand: p.brand?.name ?? '—',
-                    supplier: 'lab2date Verified Supplier',
+                    supplier: 'lab2date',
                     illustration: (p.illustration ?? 'balance') as IllustrationName,
                     imageUrl: p.images?.[0] ?? null,
                     condition: p.condition,

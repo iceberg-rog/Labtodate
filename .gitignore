@@ -16,3 +16,4 @@ coverage
 tsconfig.tsbuildinfo
 prisma/migrations/dev
 /uploads
+.backups/
