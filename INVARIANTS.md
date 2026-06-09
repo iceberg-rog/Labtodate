@@ -93,6 +93,17 @@ Legend: ✅ verified · 🟡 partial · ❌ broken · ⏳ untested
 
 ---
 
+## Build health (added 2026-06-09)
+
+- **Hard gate: `tsc --noEmit` must exit 0.** On 2026-06-09 it exited 2 — the build
+  was broken on arrival by a mass filesystem-corruption event (35 files; see
+  BUG-027) compounded by a non-compiling duplicated block committed to HEAD
+  (BUG-028) and a wiped untracked component (BUG-029). All recovered; `tsc` = 0.
+- **A12** (password min length 12) was silently regressed to 8 in HEAD; re-applied
+  this round — now genuinely GREEN at code level.
+- Caveat: this round's recovery is **code-level only** (Chrome not connected). The
+  many `FIXED (code; browser-unverified)` items below remain browser-unverified.
+
 ## Release-Ready Definition
 
 - **Every P0 GREEN** (no ❌ in F1–F15, A1–A15, S1–S10)

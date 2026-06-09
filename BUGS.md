@@ -834,3 +834,54 @@ files, prefer shell writes and `tsc` after every change.**
 - **S4** admin-cancel restock once-only → ✅ code-verified: `cancelOrder`
   status precondition + `increment` restock; `refundOrder` idempotency guard +
   `$transaction`.
+
+## NEW — 2026-06-09 (round: mass filesystem-corruption recovery — BUILD WAS BROKEN ON ARRIVAL)
+
+> Chrome NOT connected → no browser verification. `tsc --noEmit` exited **2** at
+> the start of this run (build broken) and exits **0** at the end. This round was
+> entirely an emergency build-recovery; no new feature/flow work.
+
+### NEW BUG-027 · P0 · FIXED (code; build-green, browser-unverified) · Tooling/Integrity · Mass filesystem corruption broke the build across 35 source files
+**Symptom:** on arrival `tsc --noEmit` failed across ~34 files. Two corruption modes:
+- **17 files: trailing NUL-byte padding** (`0x00` appended past EOF → TS1127). Content
+  intact — 16 stripped to byte-identical to HEAD; the 17th was `marketplace/[slug]`
+  (BUG-024) and complete.
+- **17 files: hard truncation** (content cut mid-statement → unterminated literals /
+  missing close tags). 14 were exact **prefixes of HEAD** (lossless HEAD restore); 3
+  fix-bearing files (`admin/actions.ts`, `quotes/actions.ts`, `api/auth/[...all]/route.ts`)
+  recovered from git stash `user-local-edits-pre-server-sync` (clean blobs).
+
+**Recovery (all non-destructive; corrupted originals saved to
+`.backups/nul-corruption-2026-06-09/`):** de-padded the NUL files, restored the 14
+prefix-of-HEAD files from HEAD, restored the 3 fix-bearing files + `marketplace/[slug]`
+from the stash. Verified every security-fix marker survived
+(BUG-009/018/022/023/024/025/026 present). See `CHANGES-2026-06-09.md`.
+
+**Verify (when browser/build session available):** `next build` clean; smoke-test
+`/admin/companies`, recovered order/quote/auth flows.
+
+### NEW BUG-028 · P0 · FIXED (code) · State-integrity · HEAD `admin/actions.ts` shipped a non-compiling duplicated `rejectPayment` body
+**Symptom:** `admin/actions.ts` (byte-identical in HEAD and the stash) contained the
+`rejectPayment` body **twice** — the function closes at line 2657, then lines 2658–2704
+re-paste the same body, ending in a stray `}` (TS1128). This is a botched double-append
+from the 2026-06-08 BUG-026 Edit-tool truncation recovery; **HEAD never compiled**.
+Prior "tsc exits 0" claims were true of the *working copy at the time*, not of what
+got committed. **Fix:** removed the duplicate block (file now ends at line 2657);
+`tsc` clean. No logic change to the genuine `rejectPayment`/fulfilment guards.
+
+### NEW BUG-029 · P1 · FIXED (code; browser-unverified) · Build · `companies/page.tsx` imported a non-existent `BrowseSupplierButton`
+**Symptom:** `src/app/admin/companies/page.tsx` imports + renders
+`@/components/admin/BrowseSupplierButton`, but that source file never existed in git
+(untracked) and was destroyed by the corruption → TS2307 module-not-found.
+**Fix:** reconstructed `src/components/admin/BrowseSupplierButton.tsx` as a thin
+client button that opens the existing `ShopBrowser` in a dialog — faithful to the
+sibling `CreateShopButton`/`AiSuggestShopsButton` pattern. Admin-only, no new server
+actions, no data writes, no Stripe/manual-payment surface. **Verify:** open
+`/admin/companies` → "Browse supplier" button → enter URL → ShopBrowser iframe loads.
+
+### BUG-006 · REGRESSION re-applied · `minPasswordLength` was back to 8 in HEAD
+Ledger/invariant A12 list password min length = 12, but HEAD shipped
+`minPasswordLength: 8` (lost in an earlier "Sync server-deployed changes" commit, not
+by today's corruption — the pre-corruption working copy already had 8). Re-applied
+`8 → 12` in `src/lib/auth.ts`. Affects only newly-set passwords; no lockout. Invariant
+A12 restored at code level.
