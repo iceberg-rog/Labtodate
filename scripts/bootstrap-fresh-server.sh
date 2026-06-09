@@ -22,11 +22,12 @@ cd "$REPO_ROOT"
 # ---------- preflight ----------
 
 [[ "$EUID" -eq 0 ]] || { echo "[err] run as root: sudo bash $0" ; exit 1; }
-[[ -f .env.docker ]] || { echo "[err] .env.docker missing — copy from secure backup before running" ; exit 1; }
+[[ -f .env || -f .env.docker ]] || { echo "[err] .env (or .env.docker) missing — copy production secrets here first" ; exit 1; }
+[[ -f .env ]] || cp .env.docker .env
 [[ -f .backups/lab2date-prod.sql.gz ]] || { echo "[err] .backups/lab2date-prod.sql.gz missing — fetch from off-machine backup" ; exit 1; }
 [[ -f .backups/minio-mirror.tar.gz ]] || { echo "[err] .backups/minio-mirror.tar.gz missing — fetch from off-machine backup" ; exit 1; }
 
-echo "[1/7] preflight ok — env.docker + DB dump + MinIO mirror all present"
+echo "[1/7] preflight ok — .env + DB dump + MinIO mirror all present"
 
 # ---------- docker install (idempotent) ----------
 
