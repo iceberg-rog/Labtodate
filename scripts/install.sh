@@ -1,54 +1,74 @@
 #!/usr/bin/env bash
-# install.sh — one-shot lab2date installer for a fresh Ubuntu/Debian VPS.
+# install.sh — one-line lab2date installer for a fresh Ubuntu/Debian VPS.
 #
-# WORKFLOW (3 lines total):
+# THE EASY PATH — single curl|bash with bundle URL + password:
 #
-#   1)  on your laptop, upload the 3 secret/data files to the new server's /tmp:
-#         pscp .env                          root@NEW_IP:/tmp/lab2date.env
-#         pscp .backups/lab2date-prod.sql.gz root@NEW_IP:/tmp/
-#         pscp .backups/minio-mirror.tar.gz  root@NEW_IP:/tmp/
+#   curl -fsSL https://raw.githubusercontent.com/iceberg-rog/Labtodate/main/scripts/install.sh \
+#     | sudo BUNDLE_URL='https://.../lab2date-bundle.enc' BUNDLE_PASS='yourPassword' bash
 #
-#   2)  ssh root@NEW_IP
+#   Build the bundle once on your laptop with scripts/build-bundle.sh,
+#   then host it anywhere (Drive, Dropbox, transfer.sh, S3/R2/B2).
 #
-#   3)  on the new server, run THIS:
-#         curl -fsSL https://raw.githubusercontent.com/iceberg-rog/Labtodate/main/scripts/install.sh | sudo bash
+# THE FALLBACK — drop 3 files into /tmp first, then run with no env vars:
 #
-# That's it. ~6 min total (build is the slow part).
+#   pscp .env                          root@NEW:/tmp/lab2date.env
+#   pscp .backups/lab2date-prod.sql.gz root@NEW:/tmp/
+#   pscp .backups/minio-mirror.tar.gz  root@NEW:/tmp/
+#   curl -fsSL https://raw.githubusercontent.com/iceberg-rog/Labtodate/main/scripts/install.sh \
+#     | sudo bash
+#
+# Either path → ~6 min later you have a fully-restored lab2date on this
+# server (sample products + uploads + everything). Then point your DNS at
+# this server's IP and run certbot for TLS.
 
 set -euo pipefail
 
 REPO_URL="https://github.com/iceberg-rog/Labtodate.git"
 DEST="/opt/lab2date"
 
-[[ "$EUID" -eq 0 ]] || { echo "[err] run as root: sudo bash $0" ; exit 1; }
+[[ "$EUID" -eq 0 ]] || { echo "[err] run as root: sudo bash $0"; exit 1; }
 
-echo "==> preflight: looking for uploaded bundle files in /tmp/"
-for label in "lab2date.env"   "lab2date-prod.sql.gz"   "minio-mirror.tar.gz"; do
-  if [[ -f "/tmp/$label" ]]; then
-    echo "    ✓ /tmp/$label ($(du -h "/tmp/$label" | cut -f1))"
-  else
-    echo "    ✗ /tmp/$label MISSING"
-    MISSING=1
-  fi
-done
-[[ -z "${MISSING:-}" ]] || {
+echo "==> installing base tools (git, curl, openssl, ca-certificates)"
+apt-get update -qq
+apt-get install -y -qq git curl openssl ca-certificates
+
+# ---------- pick a source for the bundle: URL+password OR /tmp files ----------
+
+if [[ -n "${BUNDLE_URL:-}" && -n "${BUNDLE_PASS:-}" ]]; then
+  echo "==> downloading bundle from BUNDLE_URL"
+  curl -fsSL "$BUNDLE_URL" -o /tmp/lab2date-bundle.enc
+  echo "    bundle: $(du -h /tmp/lab2date-bundle.enc | cut -f1)"
+
+  echo "==> decrypting bundle"
+  openssl enc -d -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+    -in /tmp/lab2date-bundle.enc -out /tmp/lab2date-bundle.tar.gz -pass env:BUNDLE_PASS \
+    || { echo "[err] decrypt failed — wrong BUNDLE_PASS?"; exit 1; }
+  rm -f /tmp/lab2date-bundle.enc
+
+  echo "==> extracting bundle to /tmp"
+  mkdir -p /tmp/l2d-extract
+  tar xzf /tmp/lab2date-bundle.tar.gz -C /tmp/l2d-extract
+  rm -f /tmp/lab2date-bundle.tar.gz
+  cp /tmp/l2d-extract/.env                          /tmp/lab2date.env
+  cp /tmp/l2d-extract/.backups/lab2date-prod.sql.gz /tmp/
+  cp /tmp/l2d-extract/.backups/minio-mirror.tar.gz  /tmp/
+  rm -rf /tmp/l2d-extract
+elif [[ -f /tmp/lab2date.env && -f /tmp/lab2date-prod.sql.gz && -f /tmp/minio-mirror.tar.gz ]]; then
+  echo "==> using bundle files already in /tmp/"
+else
   cat <<MSG
-
-[err] one or more bundle files are missing from /tmp/.
-upload them from your laptop first:
-
-  pscp .env                          root@<this-server-ip>:/tmp/lab2date.env
-  pscp .backups/lab2date-prod.sql.gz root@<this-server-ip>:/tmp/
-  pscp .backups/minio-mirror.tar.gz  root@<this-server-ip>:/tmp/
-
-then re-run this script.
+[err] no bundle found. one of:
+  A) set BUNDLE_URL + BUNDLE_PASS env vars:
+     curl ... | sudo BUNDLE_URL='https://...' BUNDLE_PASS='...' bash
+  B) upload these 3 files into /tmp/ first via pscp:
+     /tmp/lab2date.env
+     /tmp/lab2date-prod.sql.gz
+     /tmp/minio-mirror.tar.gz
 MSG
   exit 1
-}
+fi
 
-echo "==> installing git + ca-certificates"
-apt-get update -qq
-apt-get install -y -qq git ca-certificates curl
+# ---------- clone + place files ----------
 
 echo "==> cloning repo to $DEST"
 if [[ -d "$DEST/.git" ]]; then
