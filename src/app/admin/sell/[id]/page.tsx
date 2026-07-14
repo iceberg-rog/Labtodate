@@ -115,12 +115,12 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
                 {deal.label}
               </span>
               {sub.sellerType === 'COMPANY' && (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.5">
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-violet-50 text-violet-800 border border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800 px-1.5 py-0.5">
                   <Building2 className="h-3 w-3" /> company
                 </span>
               )}
               {sellerHistory > 0 && (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 px-1.5 py-0.5">
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800 px-1.5 py-0.5">
                   repeat seller · {sellerHistory + 1}
                 </span>
               )}
@@ -148,7 +148,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
             <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">Asking price</p>
             {sub.askingPrice ? (
               <p className="text-3xl font-bold tabular-nums tracking-tight leading-none inline-flex items-center gap-2">
-                <Banknote className="h-6 w-6 text-emerald-600" />{sub.askingPrice}
+                <Banknote className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />{sub.askingPrice}
               </p>
             ) : (
               <p className="text-xl text-muted-foreground italic">— not stated</p>
@@ -229,7 +229,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
                     key={m.id}
                     className={`flex gap-2.5 ${m.fromStaff ? 'flex-row-reverse' : ''}`}
                   >
-                    <div className={`h-8 w-8 rounded-full inline-flex items-center justify-center text-[11px] font-bold flex-shrink-0 shadow-sm ${m.fromStaff ? 'bg-primary text-primary-foreground' : 'bg-slate-100 text-slate-700 border border-slate-200'}`}>
+                    <div className={`h-8 w-8 rounded-full inline-flex items-center justify-center text-[11px] font-bold flex-shrink-0 shadow-sm ${m.fromStaff ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground border border-border'}`}>
                       {m.fromStaff ? <ShieldCheck className="h-3.5 w-3.5" /> : (sub.contactName.charAt(0).toUpperCase() || '?')}
                     </div>
                     <div className={`flex flex-col gap-1 max-w-[80%] ${m.fromStaff ? 'items-end' : 'items-start'}`}>
@@ -309,8 +309,8 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
               )}
               {sub.acquisitionStage === 'IN_TRANSIT' && (
                 <>
-                  <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm inline-flex items-center gap-2">
-                    <Truck className="h-4 w-4 text-sky-700" />
+                  <div className="rounded-xl border border-sky-200 bg-sky-50 dark:bg-sky-950/40 dark:border-sky-800 p-3 text-sm inline-flex items-center gap-2">
+                    <Truck className="h-4 w-4 text-sky-700 dark:text-sky-300" />
                     <strong>{sub.sellerShippingCarrier}</strong>
                     <span className="font-mono">{sub.sellerShippingTracking}</span>
                     {sub.sellerShippedAt && <span className="text-xs text-muted-foreground">· shipped {smartDate(sub.sellerShippedAt)}</span>}
@@ -325,7 +325,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
               )}
               {sub.acquisitionStage === 'RECEIVED' && (
                 <>
-                  <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm">
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 p-3 text-sm">
                     Package received {smartDate(sub.receivedAt)}. Run QC, then complete with payment receipt below.
                   </div>
                   <form action={uploadReceiptAndComplete} encType="multipart/form-data" className="space-y-3 pt-2">
@@ -341,7 +341,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
                 </>
               )}
               {sub.acquisitionStage === 'COMPLETED' && (
-                <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 space-y-2">
+                <div className="rounded-xl border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 dark:border-emerald-800 p-3 text-sm text-emerald-900 dark:text-emerald-300 space-y-2">
                   <p>
                     <CheckCheck className="h-4 w-4 inline mr-1" />
                     Completed {smartDate(sub.completedAt)}. Payment of{' '}
@@ -351,7 +351,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
                     const m = sub.paymentReceiptUrl.match(/order-proofs\/[^?#]+/);
                     const proxyUrl = m ? `/api/order-proof/${m[0]}` : null;
                     return proxyUrl ? (
-                      <a href={proxyUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-emerald-800 font-semibold underline">
+                      <a href={proxyUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-emerald-800 dark:text-emerald-300 font-semibold underline">
                         <FileText className="h-3.5 w-3.5" /> Open the receipt we sent
                       </a>
                     ) : null;
@@ -396,7 +396,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
                 </form>
                 <form action={declineAction}>
                   <input type="hidden" name="id" value={sub.id} />
-                  <Button type="submit" variant="outline" className="rounded-full font-semibold border-red-300 text-red-700 hover:bg-red-50">
+                  <Button type="submit" variant="outline" className="rounded-full font-semibold border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40">
                     <X className="h-4 w-4" /> Decline
                   </Button>
                 </form>
@@ -415,7 +415,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
 
           {/* Closed-state explainer (DECLINED or CLOSED before lifecycle started) */}
           {(sub.status === 'DECLINED' || sub.status === 'CLOSED') && !sub.acquisitionStage && (
-            <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 flex items-start gap-3">
+            <section className="rounded-2xl border border-border bg-muted p-4 text-sm text-muted-foreground flex items-start gap-3">
               <X className="h-4 w-4 mt-0.5" />
               <p>
                 {sub.status === 'DECLINED'

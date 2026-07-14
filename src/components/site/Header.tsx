@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Logo } from '@/components/site/Logo';
 import { HeaderUserMenu } from '@/components/site/HeaderUserMenu';
 import { SearchTypeahead } from '@/components/site/SearchTypeahead';
+import { ThemeToggle } from '@/components/site/ThemeToggle';
 
 const NAV = [
   { label: 'Marketplace', href: '/marketplace' },
@@ -45,6 +46,7 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
         </div>
 
         <div className="ml-auto flex items-center gap-1.5">
+          <ThemeToggle className="hidden sm:inline-flex" />
           <Button variant="ghost" size="icon" className="hidden sm:flex" asChild>
             <Link href="/app/cart" aria-label="Cart">
               <ShoppingCart className="h-5 w-5" />
@@ -65,7 +67,10 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
 
       {open && (
         <div className="lg:hidden border-t border-foreground/5 bg-background">
-          <nav className="container-px py-4 flex flex-col gap-1">
+          <div className="container-px py-3 md:hidden">
+            <SearchTypeahead className="w-full" placeholder={searchPlaceholder} />
+          </div>
+          <nav className="container-px pb-4 flex flex-col gap-1">
             {NAV.map((item) => (
               <Link
                 key={item.href}
@@ -76,6 +81,16 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
                 {item.label}
               </Link>
             ))}
+            <div className="mt-2 flex items-center justify-between border-t border-foreground/5 pt-3">
+              <Link
+                href="/app/cart"
+                className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium hover:bg-foreground/5"
+                onClick={() => setOpen(false)}
+              >
+                <ShoppingCart className="h-4 w-4" /> Cart
+              </Link>
+              <ThemeToggle />
+            </div>
           </nav>
         </div>
       )}

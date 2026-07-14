@@ -35,7 +35,7 @@ export function ReissueMagicLink({ ticketId }: { ticketId: string }) {
         {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
         Reissue link
       </button>
-      {msg && <p className="text-[10px] text-emerald-700 font-semibold mt-1">{msg}</p>}
+      {msg && <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold mt-1">{msg}</p>}
     </div>
   );
 }

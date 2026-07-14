@@ -22,20 +22,20 @@ const ICON: Record<TimelineEvent['kind'], JSX.Element> = {
 };
 
 const TONE: Record<TimelineEvent['kind'], string> = {
-  submitted:             'bg-slate-200 text-slate-700',
+  submitted:             'bg-muted text-muted-foreground',
   assigned:              'bg-primary/15 text-primary',
-  staff_reply:           'bg-sky-100 text-sky-800',
-  buyer_reply:           'bg-amber-100 text-amber-800',
-  internal_note:         'bg-amber-50 text-amber-700 border border-amber-200',
-  proforma_sent:         'bg-purple-100 text-purple-800',
-  proforma_valid_until:  'bg-slate-100 text-slate-600',
-  sla_breached:          'bg-red-100 text-red-800',
-  accepted:              'bg-emerald-100 text-emerald-800',
-  declined:              'bg-red-100 text-red-800',
-  closed:                'bg-slate-100 text-slate-700',
-  order_created:         'bg-purple-100 text-purple-800',
-  order_paid:            'bg-emerald-100 text-emerald-900',
-  magic_link_reissued:   'bg-sky-100 text-sky-800',
+  staff_reply:           'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
+  buyer_reply:           'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  internal_note:         'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800',
+  proforma_sent:         'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
+  proforma_valid_until:  'bg-muted text-muted-foreground',
+  sla_breached:          'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  accepted:              'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
+  declined:              'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  closed:                'bg-muted text-muted-foreground',
+  order_created:         'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
+  order_paid:            'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300',
+  magic_link_reissued:   'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
 };
 
 function dtFmt(d: Date): string {

@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   if (!session) return NextResponse.json({ error: 'forbidden' }, { status: 401 });
 
   try {
-    rateLimit('avatar-upload');
+    await rateLimit('avatar-upload');
   } catch {
     return NextResponse.json({ error: 'Too many uploads, slow down.' }, { status: 429 });
   }

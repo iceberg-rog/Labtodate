@@ -52,6 +52,8 @@ const SourcingInput = z.object({
   timeframe: z.string().max(120).optional().nullable(),
   description: z.string().min(20).max(4000),
   productSlug: z.string().optional().nullable(),
+  // Honeypot — hidden in the UI; only bots fill it. Presence => silent drop.
+  company_url: z.string().optional().nullable(),
 });
 
 export type SourcingInputType = z.infer<typeof SourcingInput>;
@@ -60,6 +62,13 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   await rateLimit('quote');
   await ensureSettingsLoaded();
   const parsed = SourcingInput.parse(input);
+  // Honeypot: real users never fill the hidden `company_url` field. If it's
+  // set, silently drop (no DB row, no emails) but return a normal-looking
+  // shape so the bot gets the same thank-you as a human — no abuse signal.
+  if (parsed.company_url && parsed.company_url.trim()) {
+    await audit('quote.honeypot', 'blocked', parsed.buyerEmail || 'unknown').catch(() => {});
+    return { id: '', accessToken: null };
+  }
   const session = await getServerSession();
   const submittedById = session?.user.id ?? null;
 
@@ -377,6 +386,27 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>) {
     refHint: process.env.BANK_REFERENCE_HINT || 'Use the proforma number as transfer reference',
     company: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'lab2date',
   };
+  // BUG-031: the buyer must be instructed to transfer the SAME total the order
+  // records (subtotalCents + shippingCents + taxCents), never the bare subtotal.
+  // Computed here with the identical formula the order materialization below
+  // uses, so the proforma "Amount due" can never diverge from order.totalCents.
+  // With DEFAULT_SHIPPING_CENTS / DEFAULT_TAX_PERCENT both 0 (current posture)
+  // the total equals the subtotal and the single "Amount" line is unchanged.
+  const proformaSubtotalCents = parsed.priceCents;
+  const proformaShippingCents = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
+  const proformaTaxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
+  const proformaTaxCents = Math.round((proformaSubtotalCents * proformaTaxPct) / 100);
+  const proformaTotalCents = proformaSubtotalCents + proformaShippingCents + proformaTaxCents;
+  const fmtProformaMoney = (cents: number) => `${(cents / 100).toLocaleString()} ${parsed.currency}`;
+  const amountLines =
+    proformaTotalCents === proformaSubtotalCents
+      ? [`Amount: ${fmtProformaMoney(proformaTotalCents)}`]
+      : [
+          `Subtotal: ${fmtProformaMoney(proformaSubtotalCents)}`,
+          proformaShippingCents > 0 ? `Shipping: ${fmtProformaMoney(proformaShippingCents)}` : '',
+          proformaTaxCents > 0 ? `Tax: ${fmtProformaMoney(proformaTaxCents)}` : '',
+          `Amount due: ${fmtProformaMoney(proformaTotalCents)}`,
+        ].filter(Boolean);
   const paymentInstructionsSnapshot = bank.iban
     ? [
         `Beneficiary: ${bank.company}`,
@@ -384,7 +414,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>) {
         `IBAN: ${bank.iban}`,
         bank.swift ? `SWIFT/BIC: ${bank.swift}` : '',
         `Reference: ${number}`,
-        `Amount: ${(parsed.priceCents / 100).toLocaleString()} ${parsed.currency}`,
+        ...amountLines,
         `Hint: ${bank.refHint}`,
       ].filter(Boolean).join('\n')
     : `Bank details will be sent by email. Quote your proforma number "${number}" in any transfer.`;
@@ -591,14 +621,23 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
 
   // Auto-archive on CLOSED — mirrors the support-ticket auto-archive flow.
   const shouldAutoArchive = status === 'CLOSED' && !sr.archivedAt;
-  await prisma.sourcingRequest.update({
-    where: { id },
+  const statusChanged = sr.status !== status;
+  // BUG-041: atomic compare-and-set so a double-click / duplicate submit can't
+  // re-stamp state, double-audit, or double-notify the buyer. Side effects are
+  // gated on count === 1 (the request that actually won the transition).
+  const claim = await prisma.sourcingRequest.updateMany({
+    where: shouldAutoArchive
+      ? { id, OR: [{ status: { not: status } }, { archivedAt: null }] }
+      : { id, status: { not: status } },
     data: shouldAutoArchive
       ? { status, archivedAt: new Date(), archivedById: session.user.id }
       : { status },
   });
-  await audit('quote.status', quoteRefOrProforma(sr), `${sr.status} → ${status} by ${session.user.email}`);
-  if (shouldAutoArchive) {
+  const changed = claim.count === 1;
+  if (changed && statusChanged) {
+    await audit('quote.status', quoteRefOrProforma(sr), `${sr.status} → ${status} by ${session.user.email}`);
+  }
+  if (changed && shouldAutoArchive) {
     await audit('quote.archive', quoteRefOrProforma(sr), `auto on CLOSE by ${session.user.email}`);
   }
   revalidatePath(`/app/quotes/${id}`);
@@ -616,36 +655,43 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
       select: { orderNumber: true },
     });
     if (existing) {
-      await notifyAdmins(
-        `Quote accepted → order ${existing.orderNumber}`,
-        `Buyer confirmed. Awaiting payment proof on /admin/orders.`,
-        '/admin/orders?view=awaiting_verify',
-        'ORDER_FROM_QUOTE',
-      );
-      await notifyUser(
-        sr.submittedById,
-        `Quote accepted — order ${existing.orderNumber}`,
-        'Open the purchase workspace to upload your payment proof and complete delivery details.',
-        `/app/orders/${existing.orderNumber}/payment`,
-      );
+      if (changed) {
+        await notifyAdmins(
+          `Quote accepted → order ${existing.orderNumber}`,
+          `Buyer confirmed. Awaiting payment proof on /admin/orders.`,
+          '/admin/orders?view=awaiting_verify',
+          'ORDER_FROM_QUOTE',
+        );
+        await notifyUser(
+          sr.submittedById,
+          `Quote accepted — order ${existing.orderNumber}`,
+          'Open the purchase workspace to upload your payment proof and complete delivery details.',
+          `/app/orders/${existing.orderNumber}/payment`,
+        );
+      }
+      // Redirect unconditionally so a buyer who re-accepts still lands on their
+      // payment workspace (idempotent UX) without re-triggering notifications.
       redirect(`/app/orders/${existing.orderNumber}/payment`);
     }
     // Legacy stuck state — admin replied with text-only price, no proforma.
     // Buyer "Accept" should have been hidden in UI (see QuoteThread gating),
     // but if they reached here via API directly, surface a clear admin alert
     // instead of silently creating a half-baked order.
-    await notifyAdmins(
-      `Quote ACCEPTED but no proforma — ${quoteRefOrProforma(sr)}`,
-      'Buyer accepted but admin never sent a formal proforma. Issue one now to materialise the order.',
-      `/admin/quotes/${id}`,
-      'SYSTEM',
-    );
+    if (changed) {
+      await notifyAdmins(
+        `Quote ACCEPTED but no proforma — ${quoteRefOrProforma(sr)}`,
+        'Buyer accepted but admin never sent a formal proforma. Issue one now to materialise the order.',
+        `/admin/quotes/${id}`,
+        'SYSTEM',
+      );
+    }
   }
 }
 
 export async function submitAndRedirect(input: SourcingInputType) {
   const result = await submitSourcingRequest(input);
-  redirect(`/let-us-find-it/thanks?id=${result.id}`);
+  // Empty id => honeypot-dropped submission; still show the generic thanks.
+  redirect(result?.id ? `/let-us-find-it/thanks?id=${result.id}` : '/let-us-find-it/thanks');
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -206,7 +206,7 @@ export default async function AdminSellPage(
                           {deal.label}
                         </span>
                         {s.sellerType === 'COMPANY' && (
-                          <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-violet-50 text-violet-800 border border-violet-200 px-1.5 py-0.5">
+                          <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-300 border border-violet-200 dark:border-violet-800 px-1.5 py-0.5">
                             <Building2 className="h-3 w-3" /> company
                           </span>
                         )}
@@ -250,7 +250,7 @@ export default async function AdminSellPage(
                     <div className="text-right flex flex-col items-end gap-1 flex-shrink-0">
                       {s.askingPrice ? (
                         <p className="text-base font-bold tabular-nums leading-none inline-flex items-center gap-1.5">
-                          <Banknote className="h-4 w-4 text-emerald-600" />{s.askingPrice}
+                          <Banknote className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />{s.askingPrice}
                         </p>
                       ) : (
                         <p className="text-xs text-muted-foreground italic">no asking price</p>

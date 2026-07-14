@@ -1,11 +1,10 @@
-import { requireCapability } from '@/lib/auth-server';
+import { requireCapability, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { Badge } from '@/components/ui/badge';
-import { setUserRole } from '../actions';
+import { setUserRole, bulkDeleteUsers, bulkSuspendUsers } from '../actions';
 import { UserRole } from '@prisma/client';
-import { RoleSelect } from './RoleSelect';
 import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
-import { UserQuickView, UserQuickTrigger } from '@/components/admin/UserQuickView';
+import { UserQuickView } from '@/components/admin/UserQuickView';
+import { UsersBulkList } from '@/components/admin/UsersBulkList';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +31,7 @@ export default async function AdminUsersPage(
 ) {
   const searchParams = await props.searchParams;
   await requireCapability('users:view');
+  const canManage = await hasCapability('users:manage');
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
   const roleFilter = (searchParams.role as UserRole | undefined) ?? undefined;
@@ -96,59 +96,28 @@ export default async function AdminUsersPage(
 
       <AdminSearch basePath="/admin/users" q={q} placeholder="Search name, email, company…" />
 
-      <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-foreground/[0.02] text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <th className="px-5 py-3 font-bold">Name</th>
-              <th className="px-5 py-3 font-bold">Email</th>
-              <th className="px-5 py-3 font-bold">Company</th>
-              <th className="px-5 py-3 font-bold">Role</th>
-              <th className="px-5 py-3 font-bold">Joined</th>
-              <th className="px-5 py-3 font-bold text-right">Quick view</th>
-              <th className="px-5 py-3 font-bold">Set role</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {users.map((u) => (
-              <tr key={u.id} className="hover:bg-foreground/[0.02]">
-                <td className="px-5 py-3 font-medium">
-                  <UserQuickTrigger id={u.id} className="text-left hover:text-primary hover:underline">
-                    {u.name}
-                  </UserQuickTrigger>
-                </td>
-                <td className="px-5 py-3 text-muted-foreground">{u.email}</td>
-                <td className="px-5 py-3 text-muted-foreground">{u.company?.name ?? '—'}</td>
-                <td className="px-5 py-3">
-                  <Badge variant={u.role === 'ADMIN' ? 'accent' : u.role === 'SELLER' ? 'success' : 'secondary'}>
-                    {ROLE_LABEL[u.role]}
-                  </Badge>
-                </td>
-                <td className="px-5 py-3 text-muted-foreground tabular-nums">
-                  {new Date(u.createdAt).toLocaleDateString('en-US', { dateStyle: 'medium' })}
-                </td>
-                <td className="px-5 py-3 text-right">
-                  <UserQuickTrigger
-                    id={u.id}
-                    className="inline-flex items-center justify-center h-8 px-3 rounded-full border border-border text-xs font-semibold hover:bg-foreground/5"
-                  >
-                    Open card
-                  </UserQuickTrigger>
-                </td>
-                <td className="px-5 py-3">
-                  <RoleSelect userId={u.id} current={u.role} action={updateRole} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <UsersBulkList
+        users={users.map((u) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          company: u.company?.name ?? null,
+          role: u.role,
+          joinedLabel: new Date(u.createdAt).toLocaleDateString('en-US', { dateStyle: 'medium' }),
+        }))}
+        canManage={canManage}
+        roleAction={updateRole}
+        bulkDelete={bulkDeleteUsers}
+        bulkSuspend={bulkSuspendUsers}
+      />
 
       <AdminPager basePath="/admin/users" page={page} totalPages={totalPages} total={total} q={q} status={roleFilter} />
 
       <p className="text-[11px] text-muted-foreground -mt-2">
-        Click a name (or “Open card”) to see the user’s activity in a popup without leaving this page.
-        “Internal supplier” is our legacy ingestion role — there is no public seller signup.
+        {canManage
+          ? 'Tick the checkboxes to suspend or delete users in bulk. Click a name (or “Open card”) for full detail.'
+          : 'Click a name (or “Open card”) to see the user’s activity in a popup without leaving this page.'}
+        {' '}“Internal supplier” is our legacy ingestion role — there is no public seller signup.
       </p>
     </div>
   );
@@ -172,9 +141,9 @@ function RolePill({
   if (hidden && !active) return <span />;
   const tint =
     accent === 'violet'
-      ? 'text-violet-700'
+      ? 'text-violet-700 dark:text-violet-300'
       : accent === 'sky'
-        ? 'text-sky-700'
+        ? 'text-sky-700 dark:text-sky-300'
         : 'text-foreground';
   return (
     <a

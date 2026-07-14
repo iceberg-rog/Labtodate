@@ -40,6 +40,15 @@ export function computeDealState(sr: {
   lastReplyByStaff: boolean;
   proformaNumber: string | null;
   linkedOrder?: { status: string } | null;
+  /**
+   * BUG-019 (buyer-facing closure): pass the SR's archivedAt from BUYER
+   * surfaces only. When ops archives a still-"waiting" RFQ, the buyer must
+   * not read "Waiting for supplier" forever — we surface it as closed.
+   * A buyer reply auto-unarchives (BUG-018) and the state comes back to
+   * life. Admin surfaces deliberately do NOT pass this (they have their own
+   * ARCHIVED badge and need the true operational state).
+   */
+  archivedAt?: Date | string | null;
 }): DealStateBadge {
   const lo = sr.linkedOrder;
 
@@ -77,6 +86,13 @@ export function computeDealState(sr: {
   if (sr.proformaNumber && sr.status === 'RESPONDED') {
     return { state: 'proforma_sent', label: 'Proforma sent · awaiting decision', tone: 'sky', weight: 3, funnelStep: 3 };
   }
+  // BUG-019: archived while still in a "waiting" state (no proforma, no
+  // order) → buyer-facing closure instead of an eternal "waiting" promise.
+  // Proforma/order stages above are intentionally NOT overridden — those
+  // still carry a real buyer action (decide / pay).
+  if (sr.archivedAt) {
+    return { state: 'lost_closed', label: 'Closed by our team', tone: 'slate', weight: 9, funnelStep: 2 };
+  }
   if (sr.lastReplyByStaff) {
     return { state: 'awaiting_buyer', label: 'Waiting for buyer', tone: 'sky', weight: 4, funnelStep: 2 };
   }
@@ -85,11 +101,11 @@ export function computeDealState(sr: {
 
 export function toneClasses(tone: DealTone): { pill: string; dot: string; ring: string } {
   switch (tone) {
-    case 'amber':   return { pill: 'bg-amber-50 text-amber-900 border-amber-200',         dot: 'bg-amber-500',   ring: 'ring-amber-200' };
-    case 'sky':     return { pill: 'bg-sky-50 text-sky-900 border-sky-200',               dot: 'bg-sky-500',     ring: 'ring-sky-200' };
-    case 'emerald': return { pill: 'bg-emerald-50 text-emerald-900 border-emerald-200',   dot: 'bg-emerald-500', ring: 'ring-emerald-200' };
-    case 'purple':  return { pill: 'bg-purple-50 text-purple-900 border-purple-200',      dot: 'bg-purple-500',  ring: 'ring-purple-200' };
-    case 'red':     return { pill: 'bg-red-50 text-red-900 border-red-200',               dot: 'bg-red-500',     ring: 'ring-red-200' };
-    case 'slate':   return { pill: 'bg-slate-100 text-slate-700 border-slate-200',        dot: 'bg-slate-400',   ring: 'ring-slate-200' };
+    case 'amber':   return { pill: 'bg-amber-50 text-amber-900 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800',         dot: 'bg-amber-500',   ring: 'ring-amber-200 dark:ring-amber-800' };
+    case 'sky':     return { pill: 'bg-sky-50 text-sky-900 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800',               dot: 'bg-sky-500',     ring: 'ring-sky-200 dark:ring-sky-800' };
+    case 'emerald': return { pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',   dot: 'bg-emerald-500', ring: 'ring-emerald-200 dark:ring-emerald-800' };
+    case 'purple':  return { pill: 'bg-purple-50 text-purple-900 border-purple-200 dark:bg-purple-950/40 dark:text-purple-300 dark:border-purple-800',      dot: 'bg-purple-500',  ring: 'ring-purple-200 dark:ring-purple-800' };
+    case 'red':     return { pill: 'bg-red-50 text-red-900 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800',               dot: 'bg-red-500',     ring: 'ring-red-200 dark:ring-red-800' };
+    case 'slate':   return { pill: 'bg-muted text-muted-foreground border-border',        dot: 'bg-slate-400',   ring: 'ring-border' };
   }
 }

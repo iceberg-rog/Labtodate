@@ -101,9 +101,9 @@ export function CreateShopButton() {
   }
 
   const verdictTone = ai && (
-    ai.verdict === 'safe' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' :
-    ai.verdict === 'caution' ? 'border-amber-200 bg-amber-50 text-amber-900' :
-    'border-red-200 bg-red-50 text-red-900'
+    ai.verdict === 'safe' ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' :
+    ai.verdict === 'caution' ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300' :
+    'border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300'
   );
 
   return (
@@ -180,8 +180,8 @@ export function CreateShopButton() {
                     <>
                       <div className="rounded-xl border border-border bg-foreground/[0.02] p-3 flex items-center gap-4 flex-wrap text-xs">
                         <span><strong className="tabular-nums">{preview.total}</strong> products in source</span>
-                        <span className="text-emerald-700"><strong>{preview.existingCount}</strong> already in catalogue</span>
-                        <span className="text-amber-700"><strong>{preview.items.length - preview.existingCount}</strong> new on first page</span>
+                        <span className="text-emerald-700 dark:text-emerald-300"><strong>{preview.existingCount}</strong> already in catalogue</span>
+                        <span className="text-amber-700 dark:text-amber-300"><strong>{preview.items.length - preview.existingCount}</strong> new on first page</span>
                         <a href={importUrl} target="_blank" rel="noreferrer" className="ml-auto inline-flex items-center gap-1 text-primary hover:underline">
                           <ExternalLink className="h-3 w-3" /> open source
                         </a>
@@ -210,20 +210,20 @@ export function CreateShopButton() {
               )}
 
               {step === 'confirm' && (
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-center">
-                  <ShieldCheck className="h-10 w-10 mx-auto text-emerald-700 mb-2" />
-                  <p className="font-semibold text-emerald-900">Ready to create</p>
-                  <p className="text-sm text-emerald-800 mt-1">
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-center dark:border-emerald-800 dark:bg-emerald-950/40">
+                  <ShieldCheck className="h-10 w-10 mx-auto text-emerald-700 mb-2 dark:text-emerald-300" />
+                  <p className="font-semibold text-emerald-900 dark:text-emerald-300">Ready to create</p>
+                  <p className="text-sm text-emerald-800 mt-1 dark:text-emerald-300">
                     {importUrl
                       ? <>“{name}” will be created with import source <strong>{importUrl}</strong>{importNow ? ', and the catalogue will be imported immediately.' : ' — no products will be imported yet.'}</>
                       : <>“{name}” will be created as a manual shop with no auto-import.</>}
                   </p>
-                  {successMsg && <p className="text-xs text-emerald-900 font-semibold mt-3">{successMsg}</p>}
+                  {successMsg && <p className="text-xs text-emerald-900 font-semibold mt-3 dark:text-emerald-300">{successMsg}</p>}
                 </div>
               )}
 
               {error && (
-                <p className="rounded-lg border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-xs font-semibold flex items-start gap-2">
+                <p className="rounded-lg border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-xs font-semibold flex items-start gap-2 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
                   <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /> {error}
                 </p>
               )}

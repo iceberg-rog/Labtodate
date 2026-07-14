@@ -43,12 +43,12 @@ import { BuyerEmailReveal } from './BuyerEmailReveal';
 type Detail = NonNullable<Awaited<ReturnType<typeof getOrderQuickDetail>>>;
 
 const TONE_CLASS: Record<string, string> = {
-  amber: 'bg-amber-100 text-amber-800 border-amber-200',
-  sky: 'bg-sky-100 text-sky-800 border-sky-200',
-  emerald: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  violet: 'bg-violet-100 text-violet-800 border-violet-200',
-  red: 'bg-red-100 text-red-800 border-red-200',
-  slate: 'bg-slate-100 text-slate-700 border-slate-200',
+  amber: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',
+  sky: 'bg-sky-100 text-sky-800 border-sky-200 dark:bg-sky-900/40 dark:text-sky-300 dark:border-sky-800',
+  emerald: 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:border-emerald-800',
+  violet: 'bg-violet-100 text-violet-800 border-violet-200 dark:bg-violet-900/40 dark:text-violet-300 dark:border-violet-800',
+  red: 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',
+  slate: 'bg-muted text-muted-foreground border-border',
 };
 
 function fmt(cents: number, currency: string) {
@@ -176,7 +176,7 @@ export function OrderQuickView() {
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {smartDate(new Date(data.createdAtISO))} · {buyer?.primary}
                   {buyer?.anonymised && (
-                    <span className="ml-2 text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                    <span className="ml-2 text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border">
                       anonymised
                     </span>
                   )}
@@ -211,15 +211,15 @@ export function OrderQuickView() {
               <Loader2 className="h-4 w-4 animate-spin" /> Fetching order…
             </div>
           )}
-          {err && <p className="text-sm text-red-600">{err}</p>}
+          {err && <p className="text-sm text-red-600 dark:text-red-400">{err}</p>}
 
           {data && (
             <div className="space-y-5">
               {/* === Verification + archive banner === */}
               {data.archivedAt && (
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 flex items-center gap-3 text-xs flex-wrap">
-                  <Archive className="h-4 w-4 text-slate-600 flex-shrink-0" />
-                  <span className="flex-1 text-slate-700">
+                <div className="rounded-2xl border border-border bg-muted p-3 flex items-center gap-3 text-xs flex-wrap">
+                  <Archive className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                  <span className="flex-1 text-muted-foreground">
                     <strong>Archived</strong> {smartDate(new Date(data.archivedAt))} by {data.archivedByEmail ?? 'unknown'}. Hidden from the default queue.
                   </span>
                   <button
@@ -259,9 +259,9 @@ export function OrderQuickView() {
                 </div>
               )}
               {data.paymentVerificationStatus === 'AWAITING_VERIFICATION' && (
-                <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 flex items-center gap-3 text-xs">
-                  <ShieldAlert className="h-4 w-4 text-sky-700 flex-shrink-0" />
-                  <span className="flex-1 text-sky-900">
+                <div className="rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 p-3 flex items-center gap-3 text-xs">
+                  <ShieldAlert className="h-4 w-4 text-sky-700 dark:text-sky-300 flex-shrink-0" />
+                  <span className="flex-1 text-sky-900 dark:text-sky-300">
                     <strong>Payment proof submitted</strong>
                     {data.paymentSubmittedAt && ` ${smartDate(new Date(data.paymentSubmittedAt))}`}. Review the receipt and verify (or use the row-level reject control to ask the buyer for a corrected one).
                   </span>
@@ -283,18 +283,18 @@ export function OrderQuickView() {
                 </div>
               )}
               {data.paymentVerificationStatus === 'VERIFIED' && data.paymentVerifiedByEmail && (
-                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 flex items-center gap-2 text-xs text-emerald-900">
+                <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-3 flex items-center gap-2 text-xs text-emerald-900 dark:text-emerald-300">
                   <ShieldCheck className="h-4 w-4" />
                   <span><strong>Payment verified</strong> {data.paymentVerifiedAt ? smartDate(new Date(data.paymentVerifiedAt)) : ''} by {data.paymentVerifiedByEmail}.</span>
                 </div>
               )}
               {data.paymentVerificationStatus === 'REJECTED' && (
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-300">
                   <strong>Last receipt rejected.</strong> {data.paymentRejectionReason ? `Reason: "${data.paymentRejectionReason}"` : ''} Buyer can resubmit from their workspace.
                 </div>
               )}
               {actionMsg && (
-                <p className="text-[11px] text-emerald-700 font-semibold">{actionMsg}</p>
+                <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">{actionMsg}</p>
               )}
 
               {/* === Customer panel — full B2B contact + buyer intel === */}
@@ -417,7 +417,7 @@ export function OrderQuickView() {
                       {ship.lines.map((l, i) => <p key={i} className="text-muted-foreground text-xs">{l}</p>)}
                     </address>
                   ) : (
-                    <p className="text-xs text-red-700 font-semibold">⚠ No shipping address — close this and ask the buyer.</p>
+                    <p className="text-xs text-red-700 dark:text-red-300 font-semibold">⚠ No shipping address — close this and ask the buyer.</p>
                   )}
                 </Card>
                 <Card icon={<MapPin className="h-3.5 w-3.5 text-primary" />} title="Billing">
@@ -486,19 +486,19 @@ export function OrderQuickView() {
               </section>
 
               {data.adminNotes && (
-                <section className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 text-sm">
-                  <p className="text-[10px] uppercase tracking-wider font-bold text-amber-800 mb-1">
+                <section className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 p-3 text-sm">
+                  <p className="text-[10px] uppercase tracking-wider font-bold text-amber-800 dark:text-amber-300 mb-1">
                     Internal note
                   </p>
-                  <p className="whitespace-pre-wrap text-amber-900">{data.adminNotes}</p>
+                  <p className="whitespace-pre-wrap text-amber-900 dark:text-amber-300">{data.adminNotes}</p>
                 </section>
               )}
 
               {/* Manual paid + receipt — only when relevant */}
               {data.status === 'PENDING_PAYMENT' && (
-                <section className="rounded-xl border border-amber-200 bg-amber-50/40 p-3 flex items-center gap-3 flex-wrap">
-                  <CreditCard className="h-4 w-4 text-amber-700" />
-                  <span className="text-xs flex-1 text-amber-900">
+                <section className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/30 p-3 flex items-center gap-3 flex-wrap">
+                  <CreditCard className="h-4 w-4 text-amber-700 dark:text-amber-300" />
+                  <span className="text-xs flex-1 text-amber-900 dark:text-amber-300">
                     Buyer paid off-platform? Mark this as paid and attach the receipt.
                   </span>
                   <button
@@ -511,21 +511,21 @@ export function OrderQuickView() {
                 </section>
               )}
               {data.paymentProofUrl && (
-                <section className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 flex items-center gap-3 flex-wrap">
-                  <Receipt className="h-4 w-4 text-emerald-700" />
-                  <span className="text-xs flex-1 text-emerald-900">
+                <section className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-950/30 p-3 flex items-center gap-3 flex-wrap">
+                  <Receipt className="h-4 w-4 text-emerald-700 dark:text-emerald-300" />
+                  <span className="text-xs flex-1 text-emerald-900 dark:text-emerald-300">
                     <strong>Receipt on file</strong>
                     {data.paymentMethodManual && ` · ${data.paymentMethodManual.toLowerCase().replace('_', ' ')}`}
                     {data.paidByAdminEmail && ` · marked by ${data.paidByAdminEmail}`}
                     {data.paymentNote && (
-                      <span className="block text-[11px] text-emerald-800 mt-0.5">Note: {data.paymentNote}</span>
+                      <span className="block text-[11px] text-emerald-800 dark:text-emerald-300 mt-0.5">Note: {data.paymentNote}</span>
                     )}
                   </span>
                   <a
                     href={data.paymentProofUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-emerald-300 bg-white text-emerald-700 text-xs font-bold hover:bg-emerald-100"
+                    className="inline-flex items-center gap-1 h-8 px-3 rounded-md border border-emerald-300 bg-white text-emerald-700 text-xs font-bold hover:bg-emerald-100 dark:bg-transparent dark:text-emerald-300 dark:border-emerald-800"
                   >
                     <FileText className="h-3.5 w-3.5" /> View receipt
                   </a>
@@ -569,7 +569,7 @@ export function OrderQuickView() {
                         catch (e) { setActionMsg(e instanceof Error ? e.message : 'Failed'); }
                       });
                     }}
-                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50 disabled:opacity-50"
+                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted disabled:opacity-50"
                   >
                     <Archive className="h-3.5 w-3.5" /> Archive
                   </button>

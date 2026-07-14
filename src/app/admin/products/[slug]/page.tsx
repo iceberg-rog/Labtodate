@@ -78,7 +78,7 @@ export default async function AdminProductEditPage(props: { params: Promise<{ sl
               type="submit"
               variant="outline"
               size="sm"
-              className="rounded-full text-red-700 border-red-200 hover:bg-red-50"
+              className="rounded-full text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/40"
             >
               <Trash2 className="h-3.5 w-3.5" /> Delete
             </Button>

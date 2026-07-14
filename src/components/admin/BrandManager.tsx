@@ -120,14 +120,14 @@ export function BrandManager({ brands }: { brands: BrandRow[] }) {
           <div className="mt-3 flex items-center gap-2 text-xs">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={newLogo} alt="logo" className="h-8 w-8 rounded object-contain bg-muted border border-border" />
-            <button type="button" onClick={() => setNewLogo('')} className="text-red-600 hover:underline">Remove</button>
+            <button type="button" onClick={() => setNewLogo('')} className="text-red-600 dark:text-red-400 hover:underline">Remove</button>
           </div>
         )}
       </section>
 
       {/* Flash */}
-      {msg && <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-2 text-sm font-medium">{msg}</div>}
-      {error && <div className="rounded-xl border border-red-200 bg-red-50 text-red-700 px-4 py-2 text-sm font-medium">{error}</div>}
+      {msg && <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-2 text-sm font-medium">{msg}</div>}
+      {error && <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-4 py-2 text-sm font-medium">{error}</div>}
 
       {/* List */}
       <section className="rounded-2xl border border-border bg-card overflow-hidden">
@@ -200,7 +200,7 @@ export function BrandManager({ brands }: { brands: BrandRow[] }) {
                     variant="outline"
                     onClick={() => remove(b)}
                     disabled={b.productCount > 0}
-                    className="rounded-full text-red-700 border-red-200 hover:bg-red-50 disabled:opacity-40"
+                    className="rounded-full text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40"
                     title={b.productCount > 0 ? 'In use — cannot delete' : 'Delete'}
                   >
                     <Trash2 className="h-3.5 w-3.5" />

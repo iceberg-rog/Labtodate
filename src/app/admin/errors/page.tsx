@@ -21,7 +21,7 @@ export default async function AdminErrorsPage() {
       </div>
       {errs.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
-          <AlertTriangle className="h-8 w-8 mx-auto text-emerald-600 mb-3" />
+          <AlertTriangle className="h-8 w-8 mx-auto text-emerald-600 dark:text-emerald-400 mb-3" />
           <p className="text-lg font-semibold">No errors logged</p>
           <p className="text-sm text-muted-foreground mt-2">Captured server-side exceptions appear here.</p>
         </div>
@@ -30,7 +30,7 @@ export default async function AdminErrorsPage() {
           {errs.map((e) => (
             <li key={e.id} className="p-4">
               <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-xs font-bold text-red-700">{e.where}</span>
+                <span className="font-mono text-xs font-bold text-red-700 dark:text-red-300">{e.where}</span>
                 <span className="text-xs text-muted-foreground tabular-nums">
                   {new Date(e.createdAt).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' })}
                 </span>

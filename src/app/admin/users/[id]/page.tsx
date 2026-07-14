@@ -122,7 +122,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
         </div>
       </div>
       {user.suspendedAt && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-amber-900 flex items-start gap-3">
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-amber-900 dark:text-amber-300 flex items-start gap-3">
           <AlertOctagon className="h-5 w-5 flex-shrink-0 mt-0.5" />
           <div className="flex-1 text-sm">
             <p className="font-bold">This account is suspended</p>

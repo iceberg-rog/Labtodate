@@ -53,7 +53,7 @@ export default function ResetPasswordInner() {
     return (
       <div className="rounded-2xl border border-border bg-card p-8 shadow-sm">
         <div className="flex items-center gap-3">
-          <span className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-emerald-50 text-emerald-700">
+          <span className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
             <CheckCircle2 className="h-5 w-5" />
           </span>
           <h1 className="text-xl font-bold tracking-tight">Password updated</h1>
@@ -67,7 +67,7 @@ export default function ResetPasswordInner() {
 
   if (!token) {
     return (
-      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-amber-900">
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 p-6">
         <div className="flex items-center gap-3 mb-2">
           <AlertOctagon className="h-5 w-5" />
           <h1 className="font-bold">Reset link missing</h1>
@@ -127,7 +127,7 @@ export default function ResetPasswordInner() {
         </label>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-xs">
+          <div className="rounded-lg border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-xs">
             {error}
           </div>
         )}

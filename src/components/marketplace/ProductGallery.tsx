@@ -46,7 +46,7 @@ export function ProductGallery({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="group relative aspect-[5/4] w-full rounded-3xl overflow-hidden border border-border bg-white block cursor-zoom-in"
+        className="group relative aspect-[5/4] w-full rounded-3xl overflow-hidden border border-border bg-card block cursor-zoom-in"
         aria-label="Open image viewer"
       >
         <Image
@@ -62,7 +62,7 @@ export function ProductGallery({
           {mode === 'BUY_NOW' && <Badge variant="success">Buy now</Badge>}
           {mode === 'QUOTE_ONLY' && <Badge variant="accent">Quote only</Badge>}
         </div>
-        <div className="absolute top-5 right-5 h-9 w-9 rounded-full bg-white/90 backdrop-blur flex items-center justify-center text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute top-5 right-5 h-9 w-9 rounded-full bg-card/90 backdrop-blur flex items-center justify-center text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
           <ZoomIn className="h-4 w-4" />
         </div>
       </button>
@@ -75,7 +75,7 @@ export function ProductGallery({
               key={src + i}
               type="button"
               onClick={() => setActive(i)}
-              className={`relative h-20 w-24 rounded-xl overflow-hidden border-2 bg-white transition-colors ${
+              className={`relative h-20 w-24 rounded-xl overflow-hidden border-2 bg-card transition-colors ${
                 i === active ? 'border-primary' : 'border-border hover:border-primary/40'
               }`}
               aria-label={`View image ${i + 1}`}

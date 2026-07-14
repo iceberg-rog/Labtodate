@@ -112,7 +112,7 @@ export function HeaderUserMenu() {
             <button
               type="button"
               onClick={handleSignOut}
-              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-muted text-red-600"
+              className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-muted text-red-600 dark:text-red-400"
             >
               <LogOut className="h-4 w-4" />
               Sign out

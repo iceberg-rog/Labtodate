@@ -7,6 +7,7 @@ import { BlogTeasers } from '@/components/home/BlogTeasers';
 import { Testimonials } from '@/components/home/Testimonials';
 import { CTASection } from '@/components/home/CTASection';
 import { Reveal } from '@/components/motion/Reveal';
+import { JsonLd } from '@/components/seo/JsonLd';
 import { prisma } from '@/lib/db';
 import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
@@ -64,5 +65,40 @@ export default async function HomePage() {
     ),
   };
 
-  return <>{order.map((k) => render[k])}</>;
+  const base = process.env.BETTER_AUTH_URL ?? 'https://labtodate.com';
+  const orgLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    name: process.env.SITE_NAME || 'lab2date',
+    url: base,
+    logo: process.env.COMPANY_LOGO_URL || undefined,
+    description:
+      'B2B marketplace for refurbished and surplus laboratory & analytical equipment across Europe — HPLC, GC, mass spectrometry and more.',
+    email: process.env.SUPPORT_EMAIL || undefined,
+    address: process.env.COMPANY_ADDRESS
+      ? {
+          '@type': 'PostalAddress',
+          streetAddress: process.env.COMPANY_ADDRESS,
+          addressCountry: process.env.COMPANY_COUNTRY || 'NL',
+        }
+      : undefined,
+  };
+  const siteLd = {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: process.env.SITE_NAME || 'lab2date',
+    url: base,
+    potentialAction: {
+      '@type': 'SearchAction',
+      target: { '@type': 'EntryPoint', urlTemplate: `${base}/marketplace?q={search_term_string}` },
+      'query-input': 'required name=search_term_string',
+    },
+  };
+
+  return (
+    <>
+      <JsonLd data={[orgLd, siteLd]} />
+      {order.map((k) => render[k])}
+    </>
+  );
 }

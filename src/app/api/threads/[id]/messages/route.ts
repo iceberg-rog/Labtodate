@@ -27,11 +27,16 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
     if (!isNaN(date.getTime())) where.createdAt = { gt: date };
   }
 
+  // Cap the load: fetch the most-recent 200 (desc + take), then flip back to
+  // chronological order for display. Prevents an unbounded read on a thread
+  // that a participant inflates.
   const messages = await prisma.message.findMany({
     where,
-    orderBy: { createdAt: 'asc' },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
     include: { author: { select: { id: true, name: true, email: true } } },
   });
+  messages.reverse();
 
   // Mark inbound messages as read.
   await prisma.message.updateMany({

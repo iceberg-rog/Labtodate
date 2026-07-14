@@ -180,7 +180,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                       type="button"
                       onClick={() => setConfirm('cancel')}
                       disabled={pending}
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-white text-amber-800 text-xs font-bold hover:bg-amber-50"
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-white text-amber-800 text-xs font-bold hover:bg-amber-50 dark:bg-transparent dark:text-amber-300 dark:border-amber-800"
                     >
                       <XCircle className="h-3.5 w-3.5" /> Cancel {cancelable.length} pending
                     </button>
@@ -199,7 +199,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                       type="button"
                       onClick={() => setConfirm('archive')}
                       disabled={pending}
-                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50"
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted"
                     >
                       <Archive className="h-3.5 w-3.5" /> Archive {selected.size}
                     </button>
@@ -209,7 +209,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                         type="button"
                         onClick={() => setConfirm('unarchive')}
                         disabled={pending}
-                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50"
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted"
                       >
                         <ArchiveRestore className="h-3.5 w-3.5" /> Restore {selected.size}
                       </button>
@@ -217,7 +217,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                         type="button"
                         onClick={() => setConfirm('delete')}
                         disabled={pending}
-                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-red-300 bg-white text-red-800 text-xs font-bold hover:bg-red-50"
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-red-300 bg-white text-red-800 text-xs font-bold hover:bg-red-50 dark:bg-transparent dark:text-red-300 dark:border-red-800"
                       >
                         <Trash2 className="h-3.5 w-3.5" /> Delete {selected.size}
                       </button>
@@ -235,7 +235,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
             )}
           </div>
           {result && (
-            <p className="text-[11px] text-emerald-700 font-semibold mt-2">{result}</p>
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold mt-2">{result}</p>
           )}
         </div>
       </div>
@@ -280,7 +280,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                 : 'This is irreversible. Order rows, items, and notifications about them are wiped. An audit log entry preserves the order number, buyer, total, and item snapshot for forensic recovery, but the order itself cannot be recovered.'}
             </p>
             {confirm === 'delete' && (
-              <p className="text-[11px] text-red-700 font-semibold mt-2">
+              <p className="text-[11px] text-red-700 dark:text-red-300 font-semibold mt-2">
                 Buyers will no longer see this order in their history. Make sure that’s intended before proceeding.
               </p>
             )}

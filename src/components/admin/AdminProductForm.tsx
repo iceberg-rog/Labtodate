@@ -353,7 +353,7 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
       </section>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 text-red-700 px-4 py-3 text-sm">{error}</div>
+        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-4 py-3 text-sm">{error}</div>
       )}
 
       <div className="flex flex-col sm:flex-row gap-3 items-center sticky bottom-3 z-20 bg-background/80 backdrop-blur-sm border border-border rounded-2xl p-3 shadow-sm">
@@ -365,7 +365,7 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
           Cancel
         </Button>
         {savedMsg && (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-900 text-sm font-bold">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-300 text-sm font-bold">
             {savedMsg}
           </span>
         )}

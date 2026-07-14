@@ -90,7 +90,7 @@ export function AssigneeBadge({
             const fd = new FormData(); fd.set('quoteId', quoteId);
             call(() => claimQuote(fd));
           }}
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-amber-300 bg-amber-50 text-amber-900 text-[10px] font-bold hover:bg-amber-100 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-amber-300 bg-amber-50 text-amber-900 text-[10px] font-bold hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/40"
           title="Unassigned — claim this RFQ"
         >
           {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserPlus className="h-3 w-3" />}
@@ -101,12 +101,12 @@ export function AssigneeBadge({
     return (
       <span
         className={`inline-flex items-center gap-1.5 h-7 pl-1 pr-2.5 rounded-full text-[10px] font-bold ${
-          isMine ? 'bg-primary/15 text-primary border border-primary/30' : 'bg-slate-100 text-slate-700 border border-slate-200'
+          isMine ? 'bg-primary/15 text-primary border border-primary/30' : 'bg-muted text-muted-foreground border border-border'
         }`}
         title={`Assigned to ${assignee.name ?? assignee.email}`}
       >
         <span className={`h-5 w-5 rounded-full inline-flex items-center justify-center text-[9px] font-bold ${
-          isMine ? 'bg-primary text-primary-foreground' : 'bg-slate-300 text-slate-800'
+          isMine ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground'
         }`}>
           {initials(assignee.name, assignee.email)}
         </span>
@@ -128,15 +128,15 @@ export function AssigneeBadge({
             ? isMine
               ? 'bg-primary/10 border-primary/30 text-primary'
               : 'bg-card border-border'
-            : 'bg-amber-50 border-amber-300 text-amber-900'
+            : 'bg-amber-50 border-amber-300 text-amber-900 dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300'
         } font-bold text-xs`}
       >
         <span className={`h-7 w-7 rounded-full inline-flex items-center justify-center text-[10px] font-bold ${
           assignee
             ? isMine
               ? 'bg-primary text-primary-foreground'
-              : 'bg-slate-300 text-slate-800'
-            : 'bg-amber-200 text-amber-900'
+              : 'bg-muted text-foreground'
+            : 'bg-amber-200 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300'
         }`}>
           {assignee ? initials(assignee.name, assignee.email) : <UserPlus className="h-3.5 w-3.5" />}
         </span>
@@ -195,7 +195,7 @@ export function AssigneeBadge({
                   }}
                   className="w-full text-left inline-flex items-center gap-2 py-2 px-2 text-xs hover:bg-foreground/5 rounded-md disabled:opacity-50"
                 >
-                  <span className="h-6 w-6 rounded-full bg-slate-200 text-slate-800 text-[10px] font-bold inline-flex items-center justify-center shrink-0">
+                  <span className="h-6 w-6 rounded-full bg-muted text-foreground text-[10px] font-bold inline-flex items-center justify-center shrink-0">
                     {initials(a.name, a.email)}
                   </span>
                   <span className="font-semibold truncate flex-1 min-w-0">{a.name ?? a.email}</span>
@@ -212,7 +212,7 @@ export function AssigneeBadge({
         </div>
       )}
 
-      {msg && <p className="text-[10px] text-emerald-700 font-semibold">{msg}</p>}
+      {msg && <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold">{msg}</p>}
     </div>
   );
 }

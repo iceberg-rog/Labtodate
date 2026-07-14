@@ -69,7 +69,7 @@ export function HomepageReorder({ initial }: { initial: ModuleRow[] }) {
               onClick={() => toggle(i)}
               className={`inline-flex items-center gap-1.5 text-xs px-3 h-8 rounded-full font-semibold border ${
                 it.enabled
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800 dark:hover:bg-emerald-900/40'
                   : 'bg-foreground/5 text-muted-foreground border-border hover:bg-foreground/10'
               }`}
               aria-label={it.enabled ? 'Hide on homepage' : 'Show on homepage'}
@@ -126,7 +126,7 @@ export function HomepagePreview() {
         key={nonce}
         src={`/?adminpreview=1&_=${nonce}`}
         title="Homepage preview"
-        className="w-full h-[600px] bg-white"
+        className="w-full h-[600px] bg-card"
       />
       <p className="text-[10px] text-muted-foreground p-2.5 border-t border-border">
         Refresh after “Save homepage” to see your reorder + content updates immediately.

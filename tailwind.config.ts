@@ -39,8 +39,28 @@ const config: Config = {
         sm: 'calc(var(--radius) - 4px)',
       },
       fontFamily: {
-        sans: ['var(--font-inter)', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        // Inline var fallbacks (`var(--x, …)`) guarantee a valid sans/mono
+        // family even before next/font sets the vars — never falls through to
+        // the browser's default serif.
+        sans: [
+          'var(--font-inter, ui-sans-serif)',
+          'ui-sans-serif',
+          'system-ui',
+          '-apple-system',
+          'Segoe UI',
+          'Roboto',
+          'Helvetica Neue',
+          'Arial',
+          'sans-serif',
+        ],
+        mono: [
+          'var(--font-mono, ui-monospace)',
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Consolas',
+          'monospace',
+        ],
       },
     },
   },

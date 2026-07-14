@@ -33,12 +33,12 @@ import {
 export const dynamic = 'force-dynamic';
 
 const TONE_CLASS: Record<string, string> = {
-  amber: 'bg-amber-100 text-amber-800 border-amber-200',
-  sky: 'bg-sky-100 text-sky-800 border-sky-200',
-  emerald: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-  violet: 'bg-violet-100 text-violet-800 border-violet-200',
-  red: 'bg-red-100 text-red-800 border-red-200',
-  slate: 'bg-slate-100 text-slate-700 border-slate-200',
+  amber: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',
+  sky: 'bg-sky-100 text-sky-800 border-sky-200 dark:bg-sky-900/40 dark:text-sky-300 dark:border-sky-800',
+  emerald: 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:border-emerald-800',
+  violet: 'bg-violet-100 text-violet-800 border-violet-200 dark:bg-violet-900/40 dark:text-violet-300 dark:border-violet-800',
+  red: 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',
+  slate: 'bg-muted text-muted-foreground border-border',
 };
 
 function fmtAddr(a: unknown): { name?: string; lines: string[] } | null {
@@ -251,7 +251,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
           <p className="text-sm text-muted-foreground mt-1">
             {smartDate(order.createdAt)}
             {buyer.anonymised && (
-              <span className="ml-2 inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+              <span className="ml-2 inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground border border-border">
                 buyer anonymised
               </span>
             )}
@@ -514,7 +514,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   Deposited into
                 </p>
                 <p className="font-semibold inline-flex items-center gap-1.5">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-700" />
+                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
                   {process.env.STRIPE_SECRET_KEY?.startsWith('sk_live_')
                     ? 'lab2date Stripe account (live mode)'
                     : process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_')
@@ -544,11 +544,11 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
               to verify or reject. Reads paymentVerificationStatus, payment
               method, note (PO + bank ref), and the proof file. */}
           {order.paymentVerificationStatus === 'AWAITING_VERIFICATION' && (
-            <section className="rounded-2xl border-2 border-amber-300 bg-amber-50/60 overflow-hidden">
-              <div className="px-5 py-3 border-b border-amber-200 bg-amber-100/60 flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-amber-800" />
-                <h2 className="text-sm font-bold text-amber-900">Verify payment</h2>
-                <span className="ml-auto text-[10px] uppercase font-bold tracking-wider bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded-full">
+            <section className="rounded-2xl border-2 border-amber-300 bg-amber-50/60 dark:bg-amber-950/30 dark:border-amber-800 overflow-hidden">
+              <div className="px-5 py-3 border-b border-amber-200 bg-amber-100/60 dark:border-amber-800 dark:bg-amber-900/40 flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-amber-800 dark:text-amber-300" />
+                <h2 className="text-sm font-bold text-amber-900 dark:text-amber-300">Verify payment</h2>
+                <span className="ml-auto text-[10px] uppercase font-bold tracking-wider bg-amber-200 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300 px-1.5 py-0.5 rounded-full">
                   awaiting verification
                 </span>
               </div>
@@ -561,7 +561,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   {order.paymentNote && (
                     <>
                       <dt className="text-muted-foreground">Buyer note</dt>
-                      <dd className="text-foreground whitespace-pre-wrap font-mono text-[12px] bg-white border border-amber-200 rounded p-2">
+                      <dd className="text-foreground whitespace-pre-wrap font-mono text-[12px] bg-white border border-amber-200 dark:bg-transparent dark:border-amber-800 rounded p-2">
                         {order.paymentNote}
                       </dd>
                     </>
@@ -577,7 +577,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                             href={proxyUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-amber-100"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 dark:hover:bg-amber-900/40 px-3 py-1.5 text-xs font-semibold hover:bg-amber-100"
                           >
                             <FileText className="h-3.5 w-3.5" />
                             Open receipt
@@ -588,7 +588,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                             (<img
                               src={proxyUrl}
                               alt="Payment receipt"
-                              className="max-w-md max-h-96 rounded-lg border border-amber-200 bg-white"
+                              className="max-w-md max-h-96 rounded-lg border border-amber-200 dark:border-amber-800 bg-white"
                             />)
                           )}
                         </dd>
@@ -597,7 +597,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   })()}
                 </dl>
 
-                <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200">
+                <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200 dark:border-amber-800">
                   {/* Verify */}
                   <form action={verifyPaymentAction}>
                     <input type="hidden" name="orderId" value={order.id} />
@@ -615,9 +615,9 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                       minLength={4}
                       maxLength={500}
                       placeholder="Reason (e.g. wrong amount, illegible receipt)"
-                      className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white text-xs"
+                      className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 text-xs"
                     />
-                    <Button type="submit" size="sm" variant="outline" className="w-full rounded-full border-red-300 text-red-700 hover:bg-red-50">
+                    <Button type="submit" size="sm" variant="outline" className="w-full rounded-full border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40">
                       Reject &amp; ask for resubmit
                     </Button>
                   </form>
@@ -628,11 +628,11 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
 
           {/* === Verified payment summary (PAID state) ==================== */}
           {order.paymentVerificationStatus === 'VERIFIED' && order.paidByAdminId && (
-            <section className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4 text-sm flex items-start gap-3">
-              <ShieldCheck className="h-5 w-5 text-emerald-700 mt-0.5" />
+            <section className="rounded-2xl border border-emerald-200 bg-emerald-50/50 dark:bg-emerald-950/30 dark:border-emerald-800 p-4 text-sm flex items-start gap-3">
+              <ShieldCheck className="h-5 w-5 text-emerald-700 dark:text-emerald-300 mt-0.5" />
               <div className="flex-1">
-                <p className="font-bold text-emerald-900">Payment verified</p>
-                <p className="text-emerald-800 text-xs mt-1">
+                <p className="font-bold text-emerald-900 dark:text-emerald-300">Payment verified</p>
+                <p className="text-emerald-800 dark:text-emerald-300 text-xs mt-1">
                   Verified {order.paymentVerifiedAt ? smartDate(order.paymentVerifiedAt) : ''}.
                   {(() => {
                     const u = proxyProofUrl(order.paymentProofUrl);
@@ -645,14 +645,14 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
 
           {/* === Rejected payment summary ================================ */}
           {order.paymentVerificationStatus === 'REJECTED' && (
-            <section className="rounded-2xl border border-red-200 bg-red-50/50 p-4 text-sm flex items-start gap-3">
-              <CircleDollarSign className="h-5 w-5 text-red-700 mt-0.5" />
+            <section className="rounded-2xl border border-red-200 bg-red-50/50 dark:bg-red-950/30 dark:border-red-800 p-4 text-sm flex items-start gap-3">
+              <CircleDollarSign className="h-5 w-5 text-red-700 dark:text-red-300 mt-0.5" />
               <div className="flex-1">
-                <p className="font-bold text-red-900">Payment rejected — buyer notified</p>
+                <p className="font-bold text-red-900 dark:text-red-300">Payment rejected — buyer notified</p>
                 {order.paymentRejectionReason && (
-                  <p className="text-red-800 text-xs mt-1 italic">Reason: {order.paymentRejectionReason}</p>
+                  <p className="text-red-800 dark:text-red-300 text-xs mt-1 italic">Reason: {order.paymentRejectionReason}</p>
                 )}
-                <p className="text-red-800 text-xs mt-1">Waiting for the buyer to resubmit.</p>
+                <p className="text-red-800 dark:text-red-300 text-xs mt-1">Waiting for the buyer to resubmit.</p>
               </div>
             </section>
           )}
@@ -741,7 +741,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     </span>
                     <span
                       className={`text-[10px] font-bold uppercase tracking-wider ${
-                        n.readAt ? 'text-emerald-700' : 'text-amber-700'
+                        n.readAt ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'
                       }`}
                     >
                       {n.readAt ? 'read' : 'unread'}

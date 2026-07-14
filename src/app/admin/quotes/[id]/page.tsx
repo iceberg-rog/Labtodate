@@ -24,11 +24,11 @@ export const dynamic = 'force-dynamic';
 
 function priorityChip(priority: string) {
   const styles: Record<string, { cls: string; icon: JSX.Element; label: string }> = {
-    VIP:    { cls: 'bg-purple-100 text-purple-800 border-purple-300', icon: <Crown className="h-3 w-3" />,       label: 'VIP' },
-    URGENT: { cls: 'bg-red-100 text-red-800 border-red-300',          icon: <ShieldAlert className="h-3 w-3" />, label: 'URGENT' },
-    HIGH:   { cls: 'bg-amber-100 text-amber-800 border-amber-300',    icon: <AlertCircle className="h-3 w-3" />, label: 'HIGH' },
-    NORMAL: { cls: 'bg-slate-100 text-slate-700 border-slate-200',    icon: <></>,                              label: 'normal' },
-    LOW:    { cls: 'bg-slate-50 text-slate-600 border-slate-200',     icon: <></>,                              label: 'low' },
+    VIP:    { cls: 'bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-900/40 dark:text-purple-300 dark:border-purple-800', icon: <Crown className="h-3 w-3" />,       label: 'VIP' },
+    URGENT: { cls: 'bg-red-100 text-red-800 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',          icon: <ShieldAlert className="h-3 w-3" />, label: 'URGENT' },
+    HIGH:   { cls: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',    icon: <AlertCircle className="h-3 w-3" />, label: 'HIGH' },
+    NORMAL: { cls: 'bg-muted text-muted-foreground border-border',    icon: <></>,                              label: 'normal' },
+    LOW:    { cls: 'bg-muted text-muted-foreground border-border',     icon: <></>,                              label: 'low' },
   };
   const s = styles[priority] ?? styles.NORMAL;
   return (
@@ -103,11 +103,11 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
           (proforma-send is the order trigger) but legacy data may still
           present this state. */}
       {sr.status === 'ACCEPTED' && !linkedOrder && (
-        <div className="rounded-2xl border-2 border-red-300 bg-red-50 p-4 flex items-start gap-3">
-          <AlertCircle className="h-5 w-5 text-red-700 flex-shrink-0 mt-0.5" />
+        <div className="rounded-2xl border-2 border-red-300 bg-red-50 dark:bg-red-950/40 dark:border-red-800 p-4 flex items-start gap-3">
+          <AlertCircle className="h-5 w-5 text-red-700 dark:text-red-300 flex-shrink-0 mt-0.5" />
           <div className="flex-1">
-            <p className="font-bold text-red-900">This quote is accepted but no order exists.</p>
-            <p className="text-sm text-red-800 mt-1">
+            <p className="font-bold text-red-900 dark:text-red-300">This quote is accepted but no order exists.</p>
+            <p className="text-sm text-red-800 dark:text-red-300 mt-1">
               The buyer marked the quote as accepted, but no formal proforma was issued so
               no purchase workspace was created. Send a Proforma below with the agreed
               price — that will materialise the order and email the buyer the payment
@@ -124,12 +124,12 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               <span className="font-mono text-[11px] text-muted-foreground">{ref}</span>
               {priorityChip(sr.priority)}
               {sr.customerType === 'GUEST' && (
-                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5">
+                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   guest
                 </span>
               )}
               {sr.archivedAt && (
-                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.5">
+                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   archived
                 </span>
               )}
@@ -161,8 +161,8 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               </p>
               {sr.quotedPriceCents ? (
                 <p className={`text-4xl font-bold tabular-nums tracking-tight leading-none mt-1 ${
-                  deal.state === 'won_paid' ? 'text-emerald-700'
-                    : deal.state.startsWith('won_') ? 'text-purple-700'
+                  deal.state === 'won_paid' ? 'text-emerald-700 dark:text-emerald-300'
+                    : deal.state.startsWith('won_') ? 'text-purple-700 dark:text-purple-300'
                     : 'text-foreground'
                 }`}>
                   {fmtMoney(sr.quotedPriceCents, sr.quotedCurrency ?? 'EUR')}
@@ -187,7 +187,7 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
             {linkedOrder && (
               <Link
                 href={`/admin/orders/${linkedOrder.id}`}
-                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs font-bold hover:bg-emerald-100"
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-900 dark:bg-emerald-950/40 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-900/40 text-xs font-bold hover:bg-emerald-100"
               >
                 Open order {linkedOrder.orderNumber}
                 <ArrowRight className="h-3.5 w-3.5" />
@@ -235,7 +235,7 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
                       <div
                         className={`max-w-[88%] rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                           m.isInternalNote
-                            ? 'bg-amber-50 border border-amber-200 text-amber-900 mx-auto w-full max-w-[92%]'
+                            ? 'bg-amber-50 border border-amber-200 text-amber-900 dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300 mx-auto w-full max-w-[92%]'
                             : m.fromStaff
                             ? 'bg-primary text-primary-foreground ml-auto'
                             : 'bg-card border border-border'

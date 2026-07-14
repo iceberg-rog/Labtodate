@@ -84,7 +84,7 @@ export default async function AdminCategoriesPage() {
                   type="submit"
                   variant="ghost"
                   size="sm"
-                  className="rounded-full font-medium text-red-700 hover:bg-red-50"
+                  className="rounded-full font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40"
                   disabled={c._count.products > 0}
                   title={c._count.products > 0 ? 'Move/remove its products first' : 'Delete category'}
                 >

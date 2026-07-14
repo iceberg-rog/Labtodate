@@ -52,7 +52,7 @@ export function ProductCard({ p }: { p: ProductCardData }) {
         <div className="absolute top-3 right-3">
           <Badge variant="secondary">{CONDITION_LABEL[p.condition]}</Badge>
         </div>
-        <div className="absolute bottom-3 right-3 h-9 w-9 rounded-full bg-white/90 backdrop-blur flex items-center justify-center text-foreground translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all duration-300">
+        <div className="absolute bottom-3 right-3 h-9 w-9 rounded-full bg-card/90 backdrop-blur flex items-center justify-center text-foreground translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all duration-300">
           <ArrowUpRight className="h-4 w-4" />
         </div>
       </div>

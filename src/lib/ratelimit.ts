@@ -6,8 +6,19 @@ const buckets = new Map<string, { count: number; reset: number }>();
 
 export async function clientIp(): Promise<string> {
   const h = await headers();
-  const fwd = h.get('x-forwarded-for') || '';
-  return fwd.split(',')[0].trim() || h.get('x-real-ip') || 'unknown';
+  // SECURITY: trust X-Real-IP first — our nginx sets it to $remote_addr (the
+  // real TCP peer), which a client cannot forge. The LEFT-most X-Forwarded-For
+  // entry IS attacker-controlled, so keying rate limits off it lets anyone
+  // spoof a fresh IP per request and bypass every limit. Only fall back to the
+  // RIGHT-most XFF hop (the one our proxy appended) when X-Real-IP is absent
+  // (e.g. local dev without nginx).
+  const real = (h.get('x-real-ip') || '').trim();
+  if (real) return real;
+  const parts = (h.get('x-forwarded-for') || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts[parts.length - 1] || 'unknown';
 }
 
 /**

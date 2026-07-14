@@ -195,9 +195,9 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
 
   const verdict = aiResult?.verdict ?? null;
   const verdictTone =
-    verdict === 'safe' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' :
-    verdict === 'caution' ? 'border-amber-200 bg-amber-50 text-amber-900' :
-    verdict === 'risky' ? 'border-red-200 bg-red-50 text-red-900' :
+    verdict === 'safe' ? 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' :
+    verdict === 'caution' ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300' :
+    verdict === 'risky' ? 'border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300' :
     'border-border bg-card text-muted-foreground';
 
   return (
@@ -218,17 +218,17 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
                 </span>
               )}
               {shop.suggestedByAi && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-100 text-purple-900 text-[10px] font-bold uppercase tracking-wider">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-100 text-purple-900 dark:bg-purple-900/40 dark:text-purple-300 text-[10px] font-bold uppercase tracking-wider">
                   <Sparkles className="h-3 w-3" /> AI suggested
                 </span>
               )}
               {shop.lastImportedAt && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[10px] font-bold uppercase tracking-wider">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold uppercase tracking-wider">
                   ✓ Imported
                 </span>
               )}
               {ephemeral && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[10px] font-bold uppercase tracking-wider">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300 text-[10px] font-bold uppercase tracking-wider">
                   Unsaved preview
                 </span>
               )}
@@ -308,14 +308,14 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
               )}
 
               {liveError && !liveLoading && (
-                <div className="rounded-xl border border-red-200 bg-red-50 text-red-800 px-4 py-3 text-sm">
+                <div className="rounded-xl border border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-4 py-3 text-sm">
                   <p className="font-semibold flex items-center gap-1.5"><AlertTriangle className="h-4 w-4" /> Source preview unavailable</p>
                   <p className="text-xs mt-1.5 leading-relaxed">{liveError}</p>
-                  <p className="text-xs mt-1.5 leading-relaxed text-red-700/80">
+                  <p className="text-xs mt-1.5 leading-relaxed text-red-700/80 dark:text-red-300/80">
                     Most likely cause: this site is not a public WooCommerce store, or it blocks unauthenticated access. The AI suggestion may still be a real lab-equipment vendor — open the link in a new tab to verify by hand.
                   </p>
                   {shop.importSourceUrl && (
-                    <a href={shop.importSourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold mt-2 text-red-800 hover:underline">
+                    <a href={shop.importSourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold mt-2 text-red-800 dark:text-red-300 hover:underline">
                       <ExternalLink className="h-3 w-3" /> Open {new URL(shop.importSourceUrl).hostname.replace(/^www\./, '')}
                     </a>
                   )}
@@ -326,8 +326,8 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
                 <>
                   <div className="rounded-xl border border-border bg-foreground/[0.02] p-3 flex items-center gap-4 flex-wrap text-xs">
                     <span><strong>{liveTotal}</strong> available in source</span>
-                    <span className="text-emerald-700"><strong>{liveDeltaImported}</strong> already imported</span>
-                    <span className="text-amber-700"><strong>{liveDeltaNew}</strong> new on this page</span>
+                    <span className="text-emerald-700 dark:text-emerald-300"><strong>{liveDeltaImported}</strong> already imported</span>
+                    <span className="text-amber-700 dark:text-amber-300"><strong>{liveDeltaNew}</strong> new on this page</span>
                     <span className="ml-auto inline-flex gap-1.5">
                       <Button size="sm" variant="outline" onClick={selectAllNew} className="rounded-full text-xs">Select all new</Button>
                       <Button size="sm" variant="outline" onClick={selectNone} className="rounded-full text-xs">None</Button>
@@ -336,7 +336,7 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
                   {ephemeral ? (
                     <>
                       <CardGrid items={liveItems} onPreview={setPreviewProduct} />
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-xs">
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 px-4 py-3 text-xs">
                         Unsaved preview — bulk import needs a saved supplier. Use <strong>Add shop</strong> to create it,
                         or open a product in <strong>Browse &amp; add</strong> and hit <strong>Add via AI</strong>.
                       </div>
@@ -348,7 +348,7 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
                         <p className="text-xs">
                           <strong className="tabular-nums">{selected.size}</strong> product{selected.size === 1 ? '' : 's'} selected
                           {importMsg && (
-                            <span className={`ml-3 ${importMsg.ok ? 'text-emerald-700' : 'text-red-700'} font-semibold`}>
+                            <span className={`ml-3 ${importMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'} font-semibold`}>
                               {importMsg.ok ? <CheckCircle2 className="h-3.5 w-3.5 inline" /> : <XCircle className="h-3.5 w-3.5 inline" />} {importMsg.message}
                             </span>
                           )}
@@ -388,14 +388,14 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
               </div>
 
               {aiError && (
-                <p className="rounded-lg border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-xs font-semibold">{aiError}</p>
+                <p className="rounded-lg border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-xs font-semibold">{aiError}</p>
               )}
 
               {aiLoading && !aiResult && (
-                <div className="rounded-2xl border-2 border-dashed border-purple-200 bg-purple-50 p-10 text-center">
-                  <Loader2 className="h-8 w-8 animate-spin text-purple-600 mx-auto mb-2" />
-                  <p className="text-sm font-semibold text-purple-900">Claude is evaluating this source…</p>
-                  <p className="text-xs text-purple-800 mt-1">Usually takes 5-15 seconds.</p>
+                <div className="rounded-2xl border-2 border-dashed border-purple-200 bg-purple-50 dark:border-purple-800 dark:bg-purple-950/40 p-10 text-center">
+                  <Loader2 className="h-8 w-8 animate-spin text-purple-600 dark:text-purple-400 mx-auto mb-2" />
+                  <p className="text-sm font-semibold text-purple-900 dark:text-purple-300">Claude is evaluating this source…</p>
+                  <p className="text-xs text-purple-800 dark:text-purple-300 mt-1">Usually takes 5-15 seconds.</p>
                 </div>
               )}
 
@@ -424,7 +424,7 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
         {/* Footer with delete-suggested + close */}
         <div className="border-t border-border p-3 flex items-center justify-between gap-2 flex-wrap">
           {shop.suggestedByAi && shop.productCount === 0 ? (
-            <Button variant="outline" onClick={dropShop} disabled={importing} className="rounded-full text-red-700 border-red-200 hover:bg-red-50">
+            <Button variant="outline" onClick={dropShop} disabled={importing} className="rounded-full text-red-700 border-red-200 hover:bg-red-50 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-950/40">
               <Trash2 className="h-3.5 w-3.5" /> Block this supplier
             </Button>
           ) : <span />}
@@ -501,7 +501,7 @@ function CardGrid({
         const isSelected = selectable && selected?.has(key);
         return (
           <li key={key} className={`relative rounded-xl border bg-card overflow-hidden transition-colors ${
-            isSelected ? 'border-primary ring-2 ring-primary/30' : p.alreadyImported ? 'border-emerald-200' : 'border-border'
+            isSelected ? 'border-primary ring-2 ring-primary/30' : p.alreadyImported ? 'border-emerald-200 dark:border-emerald-800' : 'border-border'
           }`}>
             <div className="aspect-[4/3] bg-muted relative overflow-hidden">
               {p.image ? (
@@ -511,7 +511,7 @@ function CardGrid({
                 <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">no photo</div>
               )}
               {p.alreadyImported && (
-                <span className="absolute top-1 left-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[9px] font-bold uppercase">
+                <span className="absolute top-1 left-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300 text-[9px] font-bold uppercase">
                   ✓ in catalogue
                 </span>
               )}
@@ -610,8 +610,8 @@ function ProductCardPreview({
   }
 
   const statusBadge =
-    isPublished ? 'bg-emerald-100 text-emerald-900 border-emerald-200' :
-    isDraft     ? 'bg-amber-100 text-amber-900 border-amber-200' :
+    isPublished ? 'bg-emerald-100 text-emerald-900 border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:border-emerald-800' :
+    isDraft     ? 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800' :
                   'bg-foreground/[0.04] text-muted-foreground border-border';
 
   return (
@@ -656,7 +656,7 @@ function ProductCardPreview({
 
         {/* Quick-edit price inline */}
         {editingPrice && (
-          <div className="px-4 py-3 border-t border-border bg-amber-50/40 flex items-center gap-2 flex-wrap">
+          <div className="px-4 py-3 border-t border-border bg-amber-50/40 dark:bg-amber-950/30 flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-muted-foreground">Price (cents):</span>
             <input
               value={priceInput}
@@ -677,7 +677,7 @@ function ProductCardPreview({
         )}
 
         {error && (
-          <div className="px-4 py-2 border-t border-red-200 bg-red-50 text-red-900 text-xs inline-flex items-start gap-2">
+          <div className="px-4 py-2 border-t border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 text-xs inline-flex items-start gap-2">
             <AlertTriangle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
             <span>{error}</span>
           </div>
@@ -722,7 +722,7 @@ function ProductCardPreview({
             variant="outline"
             onClick={del}
             disabled={pending}
-            className="rounded-full h-8 px-3 text-xs font-semibold text-red-700 border-red-200 hover:bg-red-50"
+            className="rounded-full h-8 px-3 text-xs font-semibold text-red-700 border-red-200 hover:bg-red-50 dark:text-red-300 dark:border-red-800 dark:hover:bg-red-950/40"
           >
             <Trash2 className="h-3 w-3" /> Delete
           </Button>

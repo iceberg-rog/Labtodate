@@ -36,6 +36,26 @@ export function aiConfigured(): boolean {
   return !!process.env.AI_API_KEY;
 }
 
+// ── Global daily circuit-breaker ────────────────────────────────────────────
+// A hard ceiling on LLM calls per UTC day across ALL callers — a backstop
+// against a distributed abuse burst (many real IPs) running up the provider
+// bill even after per-IP rate limits. In-memory, single-instance; resets at
+// UTC midnight and on restart. Tune via AI_DAILY_CALL_CAP.
+const DAILY_AI_CALL_CAP = Number(process.env.AI_DAILY_CALL_CAP || 5000);
+let aiCallDay = '';
+let aiCallCount = 0;
+
+function withinDailyBudget(): boolean {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today !== aiCallDay) {
+    aiCallDay = today;
+    aiCallCount = 0;
+  }
+  if (aiCallCount >= DAILY_AI_CALL_CAP) return false;
+  aiCallCount += 1;
+  return true;
+}
+
 const SYSTEM = `You are the on-site assistant for lab2date, a B2B marketplace for refurbished and surplus laboratory & analytical equipment (HPLC, GC, mass spec, spectroscopy, centrifuges, parts).
 Be concise, professional and helpful. You can explain: how to request a quote (/let-us-find-it), buy now or add to cart, the proforma/invoice flow,  worldwide crated+insured shipping, how to sell equipment to lab2date (/sell), order tracking (/app/orders), returns/refunds, and support (/support).
 Never reveal internal suppliers or that listings are sourced from third-party shops — lab2date is the single counterparty. If unsure or for account-specific issues, advise opening a support ticket at /support. Keep answers under ~120 words unless asked for detail.`;
@@ -49,6 +69,9 @@ export async function aiChat(history: AIMessage[]): Promise<string> {
   const c = aiConfig();
   if (!c.key) {
     return "The assistant isn't configured yet. Please email support or open a ticket at /support and we'll help right away.";
+  }
+  if (!withinDailyBudget()) {
+    return "Our live assistant is at capacity right now. Please open a support ticket at /support and we'll get right back to you.";
   }
 
   // ── Anthropic Claude branch ──

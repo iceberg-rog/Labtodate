@@ -14,9 +14,9 @@ const KIND_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
 };
 
 const KIND_TINT: Record<string, string> = {
-  OFFER: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  ANNOUNCEMENT: 'bg-sky-50 text-sky-700 border-sky-200',
-  SYSTEM: 'bg-amber-50 text-amber-800 border-amber-200',
+  OFFER: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+  ANNOUNCEMENT: 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800',
+  SYSTEM: 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800',
 };
 
 export default async function AdminAnnouncementsPage() {

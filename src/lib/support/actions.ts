@@ -455,18 +455,29 @@ export async function setTicketStatus(formData: FormData): Promise<{ ok: boolean
   // Auto-archive on CLOSED — keeps the active queue lean. CLOSED tickets stay
   // restorable from the archive view; nothing is deleted.
   const shouldAutoArchive = status === 'CLOSED' && !t.archivedAt;
-  await prisma.supportTicket.update({
-    where: { id },
+  const statusChanged = t.status !== status;
+  // BUG-041: atomic compare-and-set; gate audit on the winning request so a
+  // double-click / duplicate submit can't re-stamp archivedAt or double-audit.
+  const claim = await prisma.supportTicket.updateMany({
+    where: shouldAutoArchive
+      ? { id, OR: [{ status: { not: status } }, { archivedAt: null }] }
+      : { id, status: { not: status } },
     data: shouldAutoArchive
       ? { status, archivedAt: new Date(), archivedById: session.user.id }
       : { status },
   });
-  await audit('ticket.status', t.ref, `${t.status} → ${status} by ${session.user.email}`);
-  if (shouldAutoArchive) {
+  const changed = claim.count === 1;
+  if (changed && statusChanged) {
+    await audit('ticket.status', t.ref, `${t.status} → ${status} by ${session.user.email}`);
+  }
+  if (changed && shouldAutoArchive) {
     await audit('ticket.archive', t.ref, `auto on CLOSE by ${session.user.email}`);
   }
   revalidatePath('/admin/tickets');
   revalidatePath(`/admin/tickets/${id}`);
+  if (!changed) {
+    return { ok: true, message: `Already ${status.toLowerCase().replace(/_/g, ' ')}.` };
+  }
   return {
     ok: true,
     message: shouldAutoArchive

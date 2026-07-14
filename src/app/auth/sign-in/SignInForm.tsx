@@ -6,11 +6,15 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Mail, Lock, Loader2, ArrowRight } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { Button } from '@/components/ui/button';
+import { safeRedirect } from '@/lib/safe-redirect';
 
 export default function SignInPage() {
   const router = useRouter();
   const params = useSearchParams();
-  const redirect = params.get('redirect') ?? '/app';
+  // Default to the role-aware dispatcher (/auth/continue) so admins land on
+  // /admin and everyone else on /app. An explicit ?redirect= still wins, but
+  // only if it's a same-origin relative path (blocks open-redirect phishing).
+  const redirect = safeRedirect(params.get('redirect'));
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -110,7 +114,7 @@ export default function SignInPage() {
         </div>
 
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 rounded-md px-3 py-2 border border-red-200">{error}</p>
+          <p className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2">{error}</p>
         )}
 
         <Button type="submit" disabled={!email || !password || loading !== null} className="w-full">
@@ -139,7 +143,7 @@ export default function SignInPage() {
 
       <p className="text-sm text-center text-muted-foreground mt-6">
         Don&apos;t have an account?{' '}
-        <Link href={`/auth/sign-up${redirect !== '/app' ? `?redirect=${encodeURIComponent(redirect)}` : ''}`} className="text-primary font-medium underline-offset-4 hover:underline">
+        <Link href={`/auth/sign-up${redirect !== '/auth/continue' ? `?redirect=${encodeURIComponent(redirect)}` : ''}`} className="text-primary font-medium underline-offset-4 hover:underline">
           Sign up
         </Link>
       </p>

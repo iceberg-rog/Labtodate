@@ -51,7 +51,7 @@ export function StartThreadButton({ productSlug, productTitle }: { productSlug: 
                 rows={5}
                 className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-y"
               />
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="ghost" onClick={() => setOpen(false)} className="rounded-full font-medium">Cancel</Button>
                 <Button type="submit" disabled={pending || body.trim().length < 2} className="rounded-full font-semibold">

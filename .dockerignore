@@ -13,3 +13,5 @@ npm-debug.log*
 .idea
 coverage
 tsconfig.tsbuildinfo
+.backups
+prisma/migrations-legacy

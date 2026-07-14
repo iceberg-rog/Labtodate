@@ -137,8 +137,8 @@ function ShopCard({
   const router = useRouter();
   const [pending, start] = useTransition();
   const bg =
-    bucket === 'imported' ? 'border-emerald-200 hover:border-emerald-400' :
-    bucket === 'suggested' ? 'border-purple-200 hover:border-purple-400' :
+    bucket === 'imported' ? 'border-emerald-200 dark:border-emerald-800 hover:border-emerald-400 dark:hover:border-emerald-600' :
+    bucket === 'suggested' ? 'border-purple-200 dark:border-purple-800 hover:border-purple-400 dark:hover:border-purple-600' :
     'border-border hover:border-foreground/30';
 
   let host = '';
@@ -182,12 +182,12 @@ function ShopCard({
                 )}
                 {shop.isFeatured && <Badge variant="accent">Featured</Badge>}
                 {bucket === 'imported' && (
-                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[9px] font-bold uppercase tracking-wider">
+                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-300 text-[9px] font-bold uppercase tracking-wider">
                     ✓ Imported
                   </span>
                 )}
                 {bucket === 'suggested' && (
-                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-900 text-[9px] font-bold uppercase tracking-wider">
+                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/40 text-purple-900 dark:text-purple-300 text-[9px] font-bold uppercase tracking-wider">
                     <Sparkles className="h-2.5 w-2.5" /> AI suggested
                   </span>
                 )}
@@ -203,9 +203,9 @@ function ShopCard({
               </p>
               {shop.aiRiskScore != null && shop.aiRiskNotes && (
                 <p className={`text-[11px] mt-1.5 inline-flex items-start gap-1 px-2 py-1 rounded-md ${
-                  shop.aiRiskScore >= 70 ? 'bg-emerald-50 text-emerald-900' :
-                  shop.aiRiskScore >= 40 ? 'bg-amber-50 text-amber-900' :
-                  'bg-red-50 text-red-900'
+                  shop.aiRiskScore >= 70 ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300' :
+                  shop.aiRiskScore >= 40 ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300' :
+                  'bg-red-50 dark:bg-red-950/40 text-red-900 dark:text-red-300'
                 }`}>
                   {shop.aiRiskScore >= 70 ? <ShieldCheck className="h-3 w-3 mt-0.5" /> : <AlertTriangle className="h-3 w-3 mt-0.5" />}
                   <span className="line-clamp-2"><strong>AI {shop.aiRiskScore}/100:</strong> {shop.aiRiskNotes}</span>
@@ -234,7 +234,7 @@ function ShopCard({
             </Button>
           )}
           {bucket === 'suggested' && (
-            <Button type="button" variant="outline" size="sm" onClick={block} disabled={pending} className="rounded-full text-xs text-red-700 border-red-200 hover:bg-red-50 ml-auto">
+            <Button type="button" variant="outline" size="sm" onClick={block} disabled={pending} className="rounded-full text-xs text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/40 ml-auto">
               <Ban className="h-3 w-3" /> Block
             </Button>
           )}
@@ -247,10 +247,10 @@ function ShopCard({
 function PricingChip({ mode, bp }: { mode: string; bp: number }) {
   if (mode === 'PASS_THROUGH') return null;
   const tone =
-    mode === 'FORCE_QUOTE' ? 'bg-amber-100 text-amber-900' :
+    mode === 'FORCE_QUOTE' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300' :
     mode === 'HIDE_PRICE'  ? 'bg-foreground/10 text-foreground' :
-    bp > 0 ? 'bg-emerald-100 text-emerald-900' :
-    bp < 0 ? 'bg-red-100 text-red-900' : 'bg-foreground/10 text-foreground';
+    bp > 0 ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-300' :
+    bp < 0 ? 'bg-red-100 dark:bg-red-900/40 text-red-900 dark:text-red-300' : 'bg-foreground/10 text-foreground';
   const label =
     mode === 'FORCE_QUOTE' ? 'Quote-only' :
     mode === 'HIDE_PRICE'  ? 'Hide price' :

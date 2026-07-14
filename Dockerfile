@@ -8,6 +8,14 @@ COPY package.json package-lock.json* ./
 COPY prisma ./prisma
 RUN npm ci
 
+# ---- setup: lean one-shot migration runner. Reuses `deps` (node_modules with
+# the prisma CLI + the copied prisma/ dir incl. migrations) — NO Next build, so
+# it is cheap to build and run. docker-compose runs `npm run db:deploy`
+# (= prisma migrate deploy). ----
+FROM deps AS setup
+WORKDIR /app
+CMD ["npm", "run", "db:deploy"]
+
 # ---- builder: prisma generate + next build (standalone) ----
 FROM node:20-bookworm-slim AS builder
 WORKDIR /app

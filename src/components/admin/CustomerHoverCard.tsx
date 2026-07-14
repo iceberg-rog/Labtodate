@@ -117,7 +117,7 @@ export function CustomerHoverCard({
           )}
 
           {info.isGuest && (
-            <p className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md p-2 mb-2">
+            <p className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 dark:text-amber-300 dark:bg-amber-950/40 dark:border-amber-800 rounded-md p-2 mb-2">
               Guest ticket — no account on file.
             </p>
           )}

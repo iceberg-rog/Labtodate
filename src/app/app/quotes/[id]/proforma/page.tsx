@@ -68,8 +68,8 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
         <div
           className={`rounded-2xl border p-3 mb-5 inline-flex items-start gap-2 text-sm print:hidden ${
             isExpired
-              ? 'border-red-200 bg-red-50 text-red-900'
-              : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              ? 'border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300'
+              : 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
           }`}
         >
           {isExpired ? <AlertTriangle className="h-4 w-4 mt-0.5" /> : <Clock className="h-4 w-4 mt-0.5" />}

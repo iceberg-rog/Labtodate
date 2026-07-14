@@ -45,7 +45,7 @@ export function AiSuggestShopsButton() {
         onClick={() => { setOpen(true); setSuggestions(null); setAdded(null); setError(null); }}
       >
         <Sparkles className="h-4 w-4" /> Find more shops with AI
-        <span className="ml-1 inline-flex items-center px-1.5 py-0 rounded-full bg-amber-100 text-amber-900 text-[9px] font-bold uppercase tracking-wider">Experimental</span>
+        <span className="ml-1 inline-flex items-center px-1.5 py-0 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wider">Experimental</span>
       </Button>
 
       {open && (
@@ -55,8 +55,8 @@ export function AiSuggestShopsButton() {
             <div className="p-5 border-b border-border flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-lg font-bold flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-purple-600" /> AI shop discovery
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[9px] font-bold uppercase tracking-wider">Experimental</span>
+                  <Sparkles className="h-5 w-5 text-purple-600 dark:text-purple-400" /> AI shop discovery
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wider">Experimental</span>
                 </h3>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Claude proposes refurb-lab-equipment suppliers from its training memory. <strong>Most suggestions will NOT have a WooCommerce import endpoint</strong> — open each one and use the live source preview to verify before clicking import. For one-off products from arbitrary websites, prefer <a href="/admin/products/import-url" className="text-primary hover:underline font-semibold">Import from URL</a> instead.
@@ -88,14 +88,14 @@ export function AiSuggestShopsButton() {
               )}
 
               {error && (
-                <div className="rounded-xl border border-red-200 bg-red-50 text-red-700 px-4 py-3 text-sm font-semibold flex items-start gap-2">
+                <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-4 py-3 text-sm font-semibold flex items-start gap-2">
                   <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" /> {error}
                 </div>
               )}
 
               {suggestions && (
                 <>
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-3 text-sm font-semibold flex items-start gap-2">
+                  <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm font-semibold flex items-start gap-2">
                     <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
                     <span>
                       AI returned <strong>{suggestions.length}</strong> proposal{suggestions.length === 1 ? '' : 's'}.
@@ -105,7 +105,7 @@ export function AiSuggestShopsButton() {
                     </span>
                   </div>
                   {skippedHosts.length > 0 && (
-                    <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-4 py-3 text-xs">
+                    <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 px-4 py-3 text-xs">
                       <p className="font-bold mb-1 inline-flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5" /> Skipped during pre-flight</p>
                       <ul className="list-disc ml-5 space-y-0.5">
                         {skippedHosts.map((h, i) => <li key={i}><code>{h}</code></li>)}

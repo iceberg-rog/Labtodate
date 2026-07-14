@@ -171,7 +171,7 @@ export function TicketHeaderControls({
               const fd = new FormData(); fd.set('ticketId', ticketId);
               return archiveTicket(fd);
             }, 'Archived.')}
-            className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50 disabled:opacity-50"
+            className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted disabled:opacity-50"
           >
             <Archive className="h-3.5 w-3.5" /> Archive
           </button>
@@ -183,7 +183,7 @@ export function TicketHeaderControls({
               const fd = new FormData(); fd.set('ticketId', ticketId);
               return unarchiveTicket(fd);
             }, 'Restored.')}
-            className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md bg-slate-700 hover:bg-slate-800 text-white text-xs font-bold disabled:opacity-50"
+            className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md bg-foreground hover:bg-foreground/90 text-background text-xs font-bold disabled:opacity-50"
           >
             <ArchiveRestore className="h-3.5 w-3.5" /> Restore
           </button>
@@ -191,7 +191,7 @@ export function TicketHeaderControls({
 
         {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
       </div>
-      {msg && <p className="text-[10px] text-emerald-700 font-semibold">{msg}</p>}
+      {msg && <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold">{msg}</p>}
     </div>
   );
 }

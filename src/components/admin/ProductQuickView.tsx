@@ -24,8 +24,8 @@ function fmt(cents: number | null, currency: string) {
 
 const STATUS_BADGE: Record<string, string> = {
   DRAFT: 'bg-foreground/10 text-foreground',
-  PENDING_REVIEW: 'bg-amber-100 text-amber-800',
-  PUBLISHED: 'bg-emerald-100 text-emerald-800',
+  PENDING_REVIEW: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  PUBLISHED: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
   ARCHIVED: 'bg-foreground/10 text-muted-foreground',
 };
 
@@ -108,7 +108,7 @@ export function ProductQuickView() {
               <Loader2 className="h-4 w-4 animate-spin" /> Fetching product…
             </div>
           )}
-          {err && <p className="text-sm text-red-600">{err}</p>}
+          {err && <p className="text-sm text-red-600 dark:text-red-400">{err}</p>}
 
           {data && (
             <div className="grid sm:grid-cols-[260px_1fr] gap-5">
@@ -179,7 +179,7 @@ export function ProductQuickView() {
                   />
                 </div>
 
-                <div className="flex items-center gap-2 pt-2 border-t border-border">
+                <div className="flex items-center gap-2 pt-2 border-t border-border flex-wrap">
                   <Link
                     href={`/marketplace/${data.slug}`}
                     target="_blank"

@@ -38,7 +38,7 @@ export function ProformaStepper({ badge }: { badge: DealStateBadge }) {
                       : done
                       ? 'bg-emerald-500 border-emerald-500 text-white'
                       : isLost && s.n <= badge.funnelStep
-                      ? 'bg-slate-200 border-slate-300 text-slate-500'
+                      ? 'bg-muted border-border text-muted-foreground'
                       : 'bg-card border-border text-muted-foreground'
                   }`}
                 >
@@ -46,7 +46,7 @@ export function ProformaStepper({ badge }: { badge: DealStateBadge }) {
                 </span>
                 {/* Desktop labels — hidden on narrow viewports. */}
                 <span className={`hidden sm:block text-[9px] uppercase tracking-wider font-bold mt-1 whitespace-nowrap ${
-                  current ? 'text-primary' : done ? 'text-emerald-700' : 'text-muted-foreground'
+                  current ? 'text-primary' : done ? 'text-emerald-700 dark:text-emerald-300' : 'text-muted-foreground'
                 }`}>
                   {s.label}
                 </span>

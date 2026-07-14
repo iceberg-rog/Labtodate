@@ -222,7 +222,7 @@ export function SellForm() {
       </div>
 
       {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
+        <p className="rounded-md border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm">
           {error}
         </p>
       )}
@@ -313,7 +313,7 @@ function Field({
     <label className="block">
       <span className="block text-sm font-semibold mb-1.5">
         {label}
-        {required && <span className="text-red-600"> *</span>}
+        {required && <span className="text-red-600 dark:text-red-400"> *</span>}
       </span>
       {textarea ? (
         <textarea

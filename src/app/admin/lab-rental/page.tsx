@@ -52,7 +52,7 @@ export default async function AdminLabRentalPage() {
       <ul className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
         {list.length === 0 && <li className="p-6 text-sm text-muted-foreground">No facilities yet.</li>}
         {list.map((f) => (
-          <li key={f.id} className="p-4 flex items-start gap-4">
+          <li key={f.id} className="p-4 flex items-start gap-4 flex-wrap">
             <div className="flex-1 min-w-0">
               <p className="font-semibold truncate">{f.name}</p>
               <p className="text-xs text-muted-foreground mt-1">

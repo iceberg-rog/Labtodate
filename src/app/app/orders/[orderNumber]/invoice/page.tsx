@@ -8,12 +8,13 @@ import { PrintButton } from '@/components/util/PrintButton';
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Invoice' };
 
-export default async function InvoicePage({ params }: { params: { orderNumber: string } }) {
-  const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}/invoice` });
+export default async function InvoicePage({ params }: { params: Promise<{ orderNumber: string }> }) {
+  const { orderNumber } = await params;
+  const session = await requireSession({ redirectTo: `/app/orders/${orderNumber}/invoice` });
   await ensureSettingsLoaded();
 
   const order = await prisma.order.findUnique({
-    where: { orderNumber: params.orderNumber },
+    where: { orderNumber: orderNumber },
     include: { items: true, buyer: { select: { name: true, email: true } } },
   });
   if (!order || order.buyerId !== session.user.id) notFound();

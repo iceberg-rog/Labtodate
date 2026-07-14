@@ -11,6 +11,9 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { sendEmail } from '@/lib/email';
 import { renderInvoiceHtml } from '@/lib/invoice';
 import { audit, logError, notifyAdmins, notifyUser } from '@/lib/observability';
+import { generateOrderNumber, reserveAndCreateOrder } from '@/lib/orders/checkout-tx';
+import { stripeCheckoutHandoff, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
+import { safeExpire } from '@/lib/stripe/session-api';
 import { withUniqueTicketRef } from '@/lib/support/actions';
 
 /**
@@ -188,10 +191,27 @@ export async function confirmDelivery(orderNumber: string): Promise<void> {
     }
     throw new Error(`Cannot confirm delivery — order is ${order.status.toLowerCase()}.`);
   }
-  await prisma.order.update({
-    where: { id: order.id },
+  // BUG-038: claim the SHIPPED->DELIVERED transition atomically. The status
+  // guard above reads a snapshot; an unconditional update could (a) on a buyer
+  // double-click, run twice -> double admin-notify + re-stamp deliveredAt, and
+  // (b) race a concurrent admin refundOrder (which claims any non-REFUNDED row,
+  // including SHIPPED): refund flips SHIPPED->REFUNDED + restocks + emails, then
+  // this write would overwrite it back to DELIVERED -> a terminal-state
+  // regression (REFUNDED->DELIVERED) violating S3/F12, with stock already
+  // returned and money refunded. The conditional updateMany makes the write the
+  // single source of truth: it only lands while the row is still SHIPPED. If we
+  // lost the race (count!==1) we skip every side effect, same posture as the
+  // admin siblings (setOrderFulfillment / cancelOrder / refundOrder).
+  const res = await prisma.order.updateMany({
+    where: { id: order.id, status: 'SHIPPED' },
     data: { status: 'DELIVERED', deliveredAt: new Date() },
   });
+  if (res.count !== 1) {
+    // Another writer (concurrent confirm, or an admin refund/cancel) already
+    // moved the row out of SHIPPED. Do not regress it or re-fire notifications.
+    revalidatePath(`/app/orders/${orderNumber}`);
+    return;
+  }
   await notifyAdmins(
     `Order ${orderNumber}: delivery confirmed by buyer`,
     `${order.trackingCarrier ?? '—'}${order.trackingNumber ? ` · ${order.trackingNumber}` : ''}`,
@@ -204,15 +224,12 @@ export async function confirmDelivery(orderNumber: string): Promise<void> {
   revalidatePath(`/admin/orders/${order.id}`);
 }
 
-function generateOrderNumber(): string {
-  const year = new Date().getFullYear();
-  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
-  return `L2D-${year}-${rand}`;
-}
-
 /**
- * Create an order, regenerating the order number on the (rare) unique
- * collision instead of throwing an unhandled 500 at checkout.
+ * Create a standalone order (no stock reservation — used by the quote/proforma
+ * path), regenerating the order number on the (rare) unique collision instead of
+ * throwing an unhandled 500. Each attempt is its own implicit transaction, so a
+ * P2002 on one create never poisons the next. Reserving checkout paths use
+ * reserveAndCreateOrder (transactional) instead.
  */
 export async function createOrderWithUniqueNumber(
   data: Omit<Prisma.OrderUncheckedCreateInput, 'orderNumber'>,
@@ -308,15 +325,6 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
     redirect(`/marketplace/${productSlug}?quoteonly=1`);
   }
 
-  // Atomically reserve the unit so the same used item can't be sold twice.
-  const res = await prisma.product.updateMany({
-    where: { id: product.id, quantity: { gte: 1 } },
-    data: { quantity: { decrement: 1 } },
-  });
-  if (res.count !== 1) {
-    redirect(`/marketplace/${productSlug}?sold=1`);
-  }
-
   const subtotal = product.priceCents;
   const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
   const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
@@ -337,30 +345,55 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
     },
   };
 
-  const order = await createOrderWithUniqueNumber({
-    buyerId: session.user.id,
-    status: 'PENDING_PAYMENT',
-    subtotalCents: subtotal,
-    shippingCents: shipping,
-    taxCents: tax,
-    totalCents: total,
-    currency: product.currency,
-    paidAt: null,
-    buyerIp,
-    buyerCountry,
-    shippingAddress: shippingAddressPayload,
-    items: {
-      create: {
+  // Reserve the unit AND create the order in ONE transaction (crash-safe). The
+  // old code decremented stock, committed, then created the order separately, so
+  // a throw or process death in that window leaked the unit forever (no Order
+  // row → no sweep/cancel/refund can restock it). reserveAndCreateOrder rolls the
+  // decrement back automatically on any failure and retries the WHOLE transaction
+  // on an orderNumber collision.
+  const result = await reserveAndCreateOrder(prisma, {
+    reservations: [
+      {
+        productId: product.id,
+        quantity: 1,
+        expectedPriceCents: product.priceCents,
+        expectedCurrency: product.currency,
+      },
+    ],
+    orderData: {
+      buyerId: session.user.id,
+      status: 'PENDING_PAYMENT',
+      subtotalCents: subtotal,
+      shippingCents: shipping,
+      taxCents: tax,
+      totalCents: total,
+      currency: product.currency,
+      paidAt: null,
+      buyerIp,
+      buyerCountry,
+      shippingAddress: shippingAddressPayload,
+    },
+    items: [
+      {
         productId: product.id,
         titleSnapshot: product.title,
         brandSnapshot: product.brand?.name ?? null,
         priceCentsSnapshot: product.priceCents,
         quantity: 1,
       },
-    },
+    ],
   });
+  if (!result.ok) {
+    // (single checkout has no cart snapshot, so 'cart-changed' can't occur here,
+    // but handle it for exhaustiveness before narrowing to the error case.)
+    if (result.reason === 'unavailable' || result.reason === 'cart-changed') {
+      redirect(`/marketplace/${productSlug}?sold=1`);
+    }
+    await logError('startCheckoutWithAddress.createOrder', result.error);
+    redirect(`/checkout/${productSlug}?err=order`);
+  }
+  const order = result.order;
 
-  // Operator + buyer must find out a sale happened — in-app + webhook.
   // Currency-aware total (no hardcoded € — closes invariant F13 / BUG-003).
   const fmtTotal = (() => {
     try {
@@ -373,71 +406,93 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
       return `${(product.currency || 'EUR').toUpperCase()} ${(total / 100).toFixed(2)}`;
     }
   })();
+
+  if (!STRIPE_CONFIGURED) {
+    // Manual mode: the order is committed, so announce it now (in-app + webhook)
+    // and follow up with a payment link out of band.
+    await notifyAdmins(
+      `New order ${order.orderNumber} — ${fmtTotal} awaiting payment`,
+      `${product.title} · send a payment link and arrange fulfilment.`,
+      `/admin/orders/${order.id}`,
+      'ORDER_NEW',
+    );
+    await notifyUser(
+      session.user.id,
+      `Order ${order.orderNumber} received`,
+      `We have your order for ${product.title}. We'll follow up with payment and delivery.`,
+      `/app/orders/${order.orderNumber}`,
+    );
+    await sendOrderReceived(order.id);
+    redirect(`/checkout/success?order=${order.orderNumber}&pending=1`);
+  }
+
+  // Stripe mode: hand off through the shared saga. It creates the session,
+  // persists stripeSessionId BEFORE any redirect, and on ANY failure guarantees
+  // no active payable session is left pointing at reserved/canceled stock and no
+  // confirmed failure silently strands the unit (see stripe-handoff.ts).
+  const stripe = getStripe();
+  const baseUrl = process.env.BETTER_AUTH_URL ?? 'http://localhost:3000';
+  const unitAmount = product.priceCents; // narrowed to number above; capture for the closure
+  const api: StripeSessionApi | null = stripe
+    ? {
+        create: async () => {
+          const s = await stripe.checkout.sessions.create({
+            mode: 'payment',
+            payment_method_types: ['card'], // synchronous card-only: `completed` implies captured funds
+            customer_email: session.user.email,
+            line_items: [
+              {
+                price_data: {
+                  currency: product.currency.toLowerCase(),
+                  unit_amount: unitAmount,
+                  product_data: { name: product.title, description: product.summary ?? undefined },
+                },
+                quantity: 1,
+              },
+            ],
+            metadata: { orderId: order.id, orderNumber: order.orderNumber },
+            phone_number_collection: { enabled: true },
+            shipping_address_collection: {
+              allowed_countries: [
+                'NL', 'DE', 'FR', 'BE', 'GB', 'IE', 'ES', 'IT', 'PT', 'AT', 'CH',
+                'SE', 'NO', 'DK', 'FI', 'PL', 'CZ', 'US', 'CA', 'AU', 'AE',
+              ],
+            },
+            success_url: `${baseUrl}/checkout/success?order=${order.orderNumber}&session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${baseUrl}/marketplace/${product.slug}?canceled=1`,
+          });
+          return { id: s.id, url: s.url };
+        },
+        // safeExpire confirms via retrieve(status==='expired'), never message regex.
+        expire: (id) => safeExpire(stripe, id),
+      }
+    : null;
+  // CAS persist: attach the session id only while the order is still a pending,
+  // unclaimed order (single winner vs a concurrent cancel/persist). Idempotent for
+  // a transient-error retry (matches null OR our own sid).
+  const handoff = await stripeCheckoutHandoff(prisma, api, order.id, async (sid) => {
+    const r = await prisma.order.updateMany({
+      where: { id: order.id, status: 'PENDING_PAYMENT', OR: [{ stripeSessionId: null }, { stripeSessionId: sid }] },
+      data: { stripeSessionId: sid },
+    });
+    return r.count;
+  });
+  if (!handoff.ok) {
+    await logError('startCheckout.stripe', new Error(`handoff ${handoff.reason} order=${order.orderNumber} session=${handoff.sessionId ?? 'none'}`));
+    redirect(`/marketplace/${product.slug}?payment=error`);
+  }
+  // Handoff succeeded — stripeSessionId already persisted; announce + redirect now.
   await notifyAdmins(
     `New order ${order.orderNumber} — ${fmtTotal} awaiting payment`,
-    `${product.title} · send a payment link and arrange fulfilment.`,
+    `${product.title} · buyer is completing card payment.`,
     `/admin/orders/${order.id}`,
     'ORDER_NEW',
   );
   await notifyUser(
     session.user.id,
     `Order ${order.orderNumber} received`,
-    `We have your order for ${product.title}. We'll follow up with payment and delivery.`,
+    `We have your order for ${product.title}. Complete payment to confirm.`,
     `/app/orders/${order.orderNumber}`,
   );
-
-  if (!STRIPE_CONFIGURED) {
-    // No online payment provider configured: record the order as awaiting
-    // payment (NOT paid) and let the team follow up with a payment link.
-    await sendOrderReceived(order.id);
-    redirect(`/checkout/success?order=${order.orderNumber}&pending=1`);
-  }
-
-  const stripe = getStripe();
-  if (!stripe) throw new Error('Stripe not configured');
-
-  const baseUrl = process.env.BETTER_AUTH_URL ?? 'http://localhost:3000';
-  let checkout;
-  try {
-    checkout = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: session.user.email,
-      line_items: [
-        {
-          price_data: {
-            currency: product.currency.toLowerCase(),
-            unit_amount: product.priceCents,
-            product_data: {
-              name: product.title,
-              description: product.summary ?? undefined,
-            },
-          },
-          quantity: 1,
-        },
-      ],
-      metadata: { orderId: order.id, orderNumber: order.orderNumber },
-      phone_number_collection: { enabled: true },
-      shipping_address_collection: {
-        allowed_countries: [
-          'NL', 'DE', 'FR', 'BE', 'GB', 'IE', 'ES', 'IT', 'PT', 'AT', 'CH',
-          'SE', 'NO', 'DK', 'FI', 'PL', 'CZ', 'US', 'CA', 'AU', 'AE',
-        ],
-      },
-      success_url: `${baseUrl}/checkout/success?order=${order.orderNumber}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${baseUrl}/marketplace/${product.slug}?canceled=1`,
-    });
-  } catch (e) {
-    // Stripe failed to start — don't strand the order or the reserved unit.
-    await prisma.product.update({
-      where: { id: product.id },
-      data: { quantity: { increment: 1 } },
-    });
-    await prisma.order.update({ where: { id: order.id }, data: { status: 'CANCELED' } });
-    logError('startCheckout.stripe', e);
-    redirect(`/marketplace/${product.slug}?payment=error`);
-  }
-
-  await prisma.order.update({ where: { id: order.id }, data: { stripeSessionId: checkout.id } });
-  if (!checkout.url) throw new Error('Stripe session URL missing');
-  redirect(checkout.url);
+  redirect(handoff.url);
 }

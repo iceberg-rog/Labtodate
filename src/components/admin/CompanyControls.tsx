@@ -55,7 +55,7 @@ export function CompanyControls({ slug, name, pricingMode, pricingMarkupBp, impo
         </Button>
       )}
       {importMsg && (
-        <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${importMsg.ok ? 'text-emerald-700' : 'text-red-700'}`}>
+        <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${importMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
           {importMsg.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
           {importMsg.message}
         </span>
@@ -151,7 +151,7 @@ function PricingDialog({
             </label>
           )}
           {res && (
-            <p className={`text-xs font-semibold ${res.ok ? 'text-emerald-700' : 'text-red-700'}`}>{res.message}</p>
+            <p className={`text-xs font-semibold ${res.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>{res.message}</p>
           )}
         </div>
         <div className="p-5 border-t border-border flex gap-2 justify-end">

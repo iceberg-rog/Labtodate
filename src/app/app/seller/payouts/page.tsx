@@ -40,17 +40,17 @@ export default async function SellerPayoutsPage() {
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="rounded-2xl border border-border bg-card p-5">
               <p className="text-2xl font-bold data">{formatPrice(gross, currency)}</p>
               <p className="text-xs text-muted-foreground mt-1">Gross sales</p>
             </div>
             <div className="rounded-2xl border border-border bg-card p-5">
-              <p className="text-2xl font-bold data text-red-700">−{formatPrice(commission, currency)}</p>
+              <p className="text-2xl font-bold data text-red-700 dark:text-red-300">−{formatPrice(commission, currency)}</p>
               <p className="text-xs text-muted-foreground mt-1">Commission ({pct}%)</p>
             </div>
             <div className="rounded-2xl border border-border bg-card p-5">
-              <p className="text-2xl font-bold data text-emerald-700">{formatPrice(net, currency)}</p>
+              <p className="text-2xl font-bold data text-emerald-700 dark:text-emerald-300">{formatPrice(net, currency)}</p>
               <p className="text-xs text-muted-foreground mt-1">Net payout</p>
             </div>
           </div>
@@ -59,6 +59,7 @@ export default async function SellerPayoutsPage() {
             <p className="text-sm text-muted-foreground">No sales yet.</p>
           ) : (
             <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-foreground/[0.02] text-left text-xs uppercase tracking-wider text-muted-foreground">
@@ -81,6 +82,7 @@ export default async function SellerPayoutsPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
           )}
         </>

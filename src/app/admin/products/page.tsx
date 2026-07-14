@@ -119,7 +119,7 @@ export default async function AdminProductsPage(
   return (
     <div className="space-y-6">
       {(searchParams.created || searchParams.deleted) && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-3 text-sm font-medium">
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm font-medium">
           {searchParams.created ? `✓ Product created — slug ${searchParams.created}.` : '✓ Product deleted.'}
         </div>
       )}
@@ -176,7 +176,7 @@ export default async function AdminProductsPage(
           <Link
             href={baseHref({ shop: 'own' })}
             className={`px-3 py-1.5 rounded-full text-xs font-semibold ${
-              shopSlug === 'own' ? 'bg-primary text-primary-foreground' : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100 ring-1 ring-emerald-200'
+              shopSlug === 'own' ? 'bg-primary text-primary-foreground' : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 ring-1 ring-emerald-200 dark:ring-emerald-800'
             }`}
           >
             ★ lab2date own <span className="opacity-60 ml-1 tabular-nums">{ownCount}</span>
@@ -251,9 +251,9 @@ function CountPill({
 }) {
   const tint =
     accent === 'amber'
-      ? 'text-amber-700'
+      ? 'text-amber-700 dark:text-amber-300'
       : accent === 'emerald'
-        ? 'text-emerald-700'
+        ? 'text-emerald-700 dark:text-emerald-300'
         : 'text-foreground';
   return (
     <Link

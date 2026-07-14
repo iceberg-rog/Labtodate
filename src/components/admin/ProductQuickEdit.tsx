@@ -47,8 +47,8 @@ const STATUS_LABEL: Record<Status, string> = {
 
 const STATUS_BADGE: Record<Status, string> = {
   DRAFT: 'bg-foreground/10 text-foreground',
-  PENDING_REVIEW: 'bg-amber-100 text-amber-800',
-  PUBLISHED: 'bg-emerald-100 text-emerald-800',
+  PENDING_REVIEW: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+  PUBLISHED: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
   ARCHIVED: 'bg-foreground/10 text-muted-foreground',
 };
 
@@ -235,11 +235,11 @@ export function ProductQuickEdit({
                 {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 Save changes
               </button>
-              {dirty && <span className="text-[11px] text-amber-700 font-semibold">unsaved</span>}
+              {dirty && <span className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold">unsaved</span>}
               {res && (
                 <span
                   className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-                    res.ok ? 'text-emerald-600' : 'text-red-600'
+                    res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
                   }`}
                 >
                   {res.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
@@ -379,7 +379,7 @@ export function ProductBrowser({ rows }: { rows: ProductRow[] }) {
                             {p.shop.name}
                           </span>
                         ) : (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold uppercase tracking-wider">
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px] font-bold uppercase tracking-wider">
                             Own
                           </span>
                         )}

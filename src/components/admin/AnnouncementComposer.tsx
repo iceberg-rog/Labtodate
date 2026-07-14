@@ -149,7 +149,7 @@ export function AnnouncementComposer({
                 {resendConfigured ? (
                   <>Will deliver via Resend to <strong>{recipients}</strong> recipient{recipients === 1 ? '' : 's'}.</>
                 ) : (
-                  <span className="text-amber-700">Resend key not configured — emails will hit the dev mailbox only.</span>
+                  <span className="text-amber-700 dark:text-amber-300">Resend key not configured — emails will hit the dev mailbox only.</span>
                 )}
               </span>
             </span>
@@ -206,7 +206,7 @@ export function AnnouncementComposer({
           </div>
         )}
 
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-300">
           <strong>About to send:</strong> {audience === 'ALL' ? 'every registered user' : audience === 'BUYER' ? 'buyers only' : 'internal suppliers only'} ·{' '}
           <strong className="tabular-nums">{recipients}</strong> recipient{recipients === 1 ? '' : 's'}.
           Once sent, notifications cannot be unsent.

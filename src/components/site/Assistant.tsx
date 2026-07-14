@@ -227,8 +227,8 @@ export function Assistant() {
               ? <>Signed in as <strong className="text-foreground">{identity.name}</strong></>
               : <>Browsing as guest</>
             }
-            {status === 'AWAITING_HUMAN' && <span className="ml-auto inline-flex items-center gap-1 text-amber-700 font-semibold"><Loader2 className="h-3 w-3 animate-spin" /> Finding an agent…</span>}
-            {status === 'WITH_HUMAN' && <span className="ml-auto inline-flex items-center gap-1 text-emerald-700 font-semibold"><ShieldCheck className="h-3 w-3" /> Live</span>}
+            {status === 'AWAITING_HUMAN' && <span className="ml-auto inline-flex items-center gap-1 text-amber-700 dark:text-amber-300 font-semibold"><Loader2 className="h-3 w-3 animate-spin" /> Finding an agent…</span>}
+            {status === 'WITH_HUMAN' && <span className="ml-auto inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-300 font-semibold"><ShieldCheck className="h-3 w-3" /> Live</span>}
           </div>
 
           {/* Messages */}
@@ -244,12 +244,12 @@ export function Assistant() {
 
           {/* Escalate flow / Rating flow / Composer */}
           {showEscalate ? (
-            <div className="p-3 border-t border-border bg-amber-50 space-y-2">
-              <p className="text-xs font-bold text-amber-900">Connect me with a human</p>
+            <div className="p-3 border-t border-border bg-amber-50 dark:bg-amber-950/40 space-y-2">
+              <p className="text-xs font-bold text-amber-900 dark:text-amber-300">Connect me with a human</p>
               {identity.kind === 'guest' && (
                 <>
-                  <input value={escName} onChange={(e) => setEscName(e.target.value)} placeholder="Your name (optional)" className="w-full h-9 px-2 rounded-md border border-input bg-white text-sm" />
-                  <input value={escEmail} onChange={(e) => setEscEmail(e.target.value)} type="email" placeholder="Email (so we can follow up)" className="w-full h-9 px-2 rounded-md border border-input bg-white text-sm" />
+                  <input value={escName} onChange={(e) => setEscName(e.target.value)} placeholder="Your name (optional)" className="w-full h-9 px-2 rounded-md border border-input bg-card text-sm" />
+                  <input value={escEmail} onChange={(e) => setEscEmail(e.target.value)} type="email" placeholder="Email (so we can follow up)" className="w-full h-9 px-2 rounded-md border border-input bg-card text-sm" />
                 </>
               )}
               <div className="flex gap-2 justify-end">
@@ -260,8 +260,8 @@ export function Assistant() {
               </div>
             </div>
           ) : status === 'CLOSED' && !ratingSent ? (
-            <div className="p-3 border-t border-border bg-emerald-50/60 space-y-2">
-              <p className="text-xs font-bold text-emerald-900">How was your chat? Rate us:</p>
+            <div className="p-3 border-t border-border bg-emerald-50/60 dark:bg-emerald-950/30 space-y-2">
+              <p className="text-xs font-bold text-emerald-900 dark:text-emerald-300">How was your chat? Rate us:</p>
               <div className="flex items-center justify-center gap-1.5">
                 {[1, 2, 3, 4, 5].map((s) => (
                   <button key={s} type="button" onClick={() => setStars(s)} aria-label={`${s} stars`} className="p-1">
@@ -269,15 +269,15 @@ export function Assistant() {
                   </button>
                 ))}
               </div>
-              <textarea value={ratingNote} onChange={(e) => setRatingNote(e.target.value)} rows={2} placeholder="Anything we could do better? (optional)" className="w-full px-2 py-1.5 rounded-md border border-input bg-white text-xs" maxLength={500} />
+              <textarea value={ratingNote} onChange={(e) => setRatingNote(e.target.value)} rows={2} placeholder="Anything we could do better? (optional)" className="w-full px-2 py-1.5 rounded-md border border-input bg-card text-xs" maxLength={500} />
               <button type="button" onClick={submitRating} disabled={busy || stars === 0} className="w-full h-9 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold disabled:opacity-50">
                 Submit rating
               </button>
             </div>
           ) : status === 'CLOSED' && ratingSent ? (
-            <div className="p-4 border-t border-border bg-emerald-50/60 text-center space-y-3">
-              <Check className="h-6 w-6 text-emerald-700 mx-auto" />
-              <p className="text-xs text-emerald-900">Thanks — rating submitted!</p>
+            <div className="p-4 border-t border-border bg-emerald-50/60 dark:bg-emerald-950/30 text-center space-y-3">
+              <Check className="h-6 w-6 text-emerald-700 dark:text-emerald-300 mx-auto" />
+              <p className="text-xs text-emerald-900 dark:text-emerald-300">Thanks — rating submitted!</p>
               <button
                 type="button"
                 onClick={async () => {
@@ -392,8 +392,8 @@ function Bubble({ m }: { m: WireMsg }) {
         isUser
           ? 'bg-primary text-primary-foreground'
           : isAdmin
-          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-          : 'bg-violet-100 text-violet-800 border border-violet-200'
+          ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+          : 'bg-violet-100 dark:bg-violet-900/40 text-violet-800 dark:text-violet-300 border border-violet-200 dark:border-violet-800'
       }`}>
         {isUser ? 'You' : isAdmin ? <ShieldCheck className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
       </div>
@@ -401,7 +401,7 @@ function Bubble({ m }: { m: WireMsg }) {
         isUser
           ? 'bg-primary text-primary-foreground rounded-tr-sm'
           : isAdmin
-          ? 'bg-emerald-50 border border-emerald-200 rounded-tl-sm'
+          ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-tl-sm'
           : 'bg-card border border-border rounded-tl-sm'
       }`}>
         {m.body}

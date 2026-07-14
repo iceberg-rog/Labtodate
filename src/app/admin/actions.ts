@@ -3,7 +3,10 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { requireSession, requireCapability } from '@/lib/auth-server';
+import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/delete-guard';
+import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
+import { expireOnlyApi } from '@/lib/stripe/session-api';
+import { requireSession, requireCapability, hasCapability } from '@/lib/auth-server';
 import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
 import { UserRole } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
@@ -22,7 +25,7 @@ async function requireAdmin() {
 // Sensitive-action gate. Use this at the top of any mutation that should
 // be limited to admins with a specific capability (e.g. 'orders:refund').
 async function requireCap(cap: string) {
-  await requireCapability(cap, { redirectTo: '/admin' });
+  return requireCapability(cap, { redirectTo: '/admin' });
 }
 
 const slugify = (s: string) =>
@@ -43,7 +46,7 @@ async function uniqueSlug(
 
 // ---- Testimonials CRUD ----
 export async function createTestimonial(formData: FormData) {
-  await requireAdmin();
+  await requireCap('content:cms');
   await prisma.testimonial.create({
     data: {
       quote: String(formData.get('quote') ?? '').trim(),
@@ -59,14 +62,14 @@ export async function createTestimonial(formData: FormData) {
   revalidatePath('/');
 }
 export async function deleteTestimonial(id: string) {
-  await requireAdmin();
+  await requireCap('content:cms');
   await prisma.testimonial.delete({ where: { id } });
   await audit('testimonial.delete', id);
   revalidatePath('/admin/testimonials');
   revalidatePath('/');
 }
 export async function toggleTestimonial(id: string, published: boolean) {
-  await requireAdmin();
+  await requireCap('content:cms');
   await prisma.testimonial.update({ where: { id }, data: { published } });
   revalidatePath('/admin/testimonials');
   revalidatePath('/');
@@ -74,7 +77,7 @@ export async function toggleTestimonial(id: string, published: boolean) {
 
 // ---- Case studies CRUD ----
 export async function createCaseStudy(formData: FormData) {
-  await requireAdmin();
+  await requireCap('content:cms');
   const title = String(formData.get('title') ?? '').trim();
   const slug = await uniqueSlug(title, async (s) =>
     !!(await prisma.caseStudy.findUnique({ where: { slug: s }, select: { id: true } })),
@@ -96,14 +99,14 @@ export async function createCaseStudy(formData: FormData) {
   revalidatePath('/case-studies');
 }
 export async function deleteCaseStudy(id: string) {
-  await requireAdmin();
+  await requireCap('content:cms');
   await prisma.caseStudy.delete({ where: { id } });
   await audit('casestudy.delete', id);
   revalidatePath('/admin/case-studies');
   revalidatePath('/case-studies');
 }
 export async function toggleCaseStudy(id: string, publish: boolean) {
-  await requireAdmin();
+  await requireCap('content:cms');
   await prisma.caseStudy.update({
     where: { id },
     data: { status: publish ? 'PUBLISHED' : 'DRAFT', publishedAt: publish ? new Date() : null },
@@ -114,7 +117,7 @@ export async function toggleCaseStudy(id: string, publish: boolean) {
 
 // ---- Lab facilities CRUD ----
 export async function createFacility(formData: FormData) {
-  await requireAdmin();
+  await requireCap('content:cms');
   const name = String(formData.get('name') ?? '').trim();
   const slug = await uniqueSlug(name, async (s) =>
     !!(await prisma.labFacility.findUnique({ where: { slug: s }, select: { id: true } })),
@@ -138,14 +141,14 @@ export async function createFacility(formData: FormData) {
   revalidatePath('/lab-rental');
 }
 export async function deleteFacility(id: string) {
-  await requireAdmin();
+  await requireCap('content:cms');
   await prisma.labFacility.delete({ where: { id } });
   await audit('facility.delete', id);
   revalidatePath('/admin/lab-rental');
   revalidatePath('/lab-rental');
 }
 export async function toggleFacility(id: string, isPublished: boolean) {
-  await requireAdmin();
+  await requireCap('content:cms');
   await prisma.labFacility.update({ where: { id }, data: { isPublished } });
   revalidatePath('/admin/lab-rental');
   revalidatePath('/lab-rental');
@@ -473,6 +476,9 @@ export async function getAdminUserSummary(id: string): Promise<{
   company: string | null;
   phone: string | null;
   caps: string[];
+  suspended: boolean;
+  /** Whether the CURRENT admin may suspend/delete (has users:manage). */
+  viewerCanManage: boolean;
   totals: {
     orders: number;
     spendCents: number;
@@ -493,6 +499,7 @@ export async function getAdminUserSummary(id: string): Promise<{
   };
 } | null> {
   await requireCap('users:view');
+  const viewerCanManage = await hasCapability('users:manage');
   const user = await prisma.user.findUnique({
     where: { id },
     include: { company: { select: { name: true } } },
@@ -543,6 +550,8 @@ export async function getAdminUserSummary(id: string): Promise<{
     company: user.company?.name ?? null,
     phone,
     caps: user.adminCaps,
+    suspended: !!user.suspendedAt,
+    viewerCanManage,
     totals: {
       orders: orders.length,
       spendCents,
@@ -572,6 +581,17 @@ export async function getAdminUserSummary(id: string): Promise<{
 
 export async function setUserRole(userId: string, role: UserRole) {
   await requireCap('users:manage');
+  // Never let the LAST admin be demoted — that locks everyone out of /admin
+  // with no in-app way back (recovery then needs a direct DB update).
+  if (role !== 'ADMIN') {
+    const target = await prisma.user.findUnique({ where: { id: userId }, select: { role: true } });
+    if (target?.role === 'ADMIN') {
+      const otherAdmins = await prisma.user.count({ where: { role: 'ADMIN', NOT: { id: userId } } });
+      if (otherAdmins === 0) {
+        throw new Error('Cannot change the last admin to a non-admin role — promote another admin first.');
+      }
+    }
+  }
   await prisma.user.update({ where: { id: userId }, data: { role } });
   await audit('user.role', userId, `role=${role}`);
   revalidatePath('/admin/users');
@@ -617,6 +637,77 @@ export async function unsuspendUser(formData: FormData): Promise<void> {
   await audit('user.unsuspend', id);
   revalidatePath('/admin/users');
   revalidatePath(`/admin/users/${id}`);
+}
+
+/**
+ * Bulk-delete selected users straight from the list. Guards: skips yourself and
+ * any admin (delete those from their card so the last-admin check applies), and
+ * skips anyone whose order/ticket history blocks a hard delete (FK) — those are
+ * reported so the operator can suspend them instead.
+ */
+export async function bulkDeleteUsers(
+  formData: FormData,
+): Promise<{ ok: boolean; count: number; message: string }> {
+  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  if (!(await hasCapability('users:manage'))) {
+    return { ok: false, count: 0, message: 'You lack the users:manage permission.' };
+  }
+  const ids = String(formData.get('ids') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) return { ok: false, count: 0, message: 'No users selected.' };
+  const meId = session.user.id;
+  const targets = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, email: true, role: true },
+  });
+  let deleted = 0;
+  const skipped: string[] = [];
+  for (const t of targets) {
+    if (t.id === meId) { skipped.push(`${t.email} (yourself)`); continue; }
+    if (t.role === 'ADMIN') { skipped.push(`${t.email} (admin — delete from their card)`); continue; }
+    try {
+      await prisma.user.delete({ where: { id: t.id } });
+      deleted++;
+      await audit('user.delete', t.id, t.email);
+    } catch {
+      skipped.push(`${t.email} (has orders/history — suspend instead)`);
+    }
+  }
+  revalidatePath('/admin/users');
+  const parts = [`Deleted ${deleted}.`];
+  if (skipped.length) {
+    parts.push(`Skipped ${skipped.length}: ${skipped.slice(0, 3).join('; ')}${skipped.length > 3 ? '…' : ''}`);
+  }
+  return { ok: deleted > 0, count: deleted, message: parts.join(' ') };
+}
+
+/** Bulk-suspend selected users (reversible; wipes their sessions). Skips you. */
+export async function bulkSuspendUsers(
+  formData: FormData,
+): Promise<{ ok: boolean; count: number; message: string }> {
+  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  if (!(await hasCapability('users:manage'))) {
+    return { ok: false, count: 0, message: 'You lack the users:manage permission.' };
+  }
+  const ids = String(formData.get('ids') ?? '')
+    .split(',').map((s) => s.trim()).filter(Boolean)
+    .filter((id) => id !== session.user.id);
+  if (!ids.length) return { ok: false, count: 0, message: 'No users selected (you can’t suspend yourself).' };
+  const [updated] = await prisma.$transaction([
+    prisma.user.updateMany({
+      where: { id: { in: ids }, suspendedAt: null },
+      data: { suspendedAt: new Date(), suspendedReason: 'Suspended by admin (bulk)' },
+    }),
+    prisma.session.deleteMany({ where: { userId: { in: ids } } }),
+  ]);
+  await audit('user.suspend', undefined, `bulk:${updated.count}`);
+  revalidatePath('/admin/users');
+  return {
+    ok: updated.count > 0,
+    count: updated.count,
+    message: updated.count > 0
+      ? `Suspended ${updated.count} account${updated.count === 1 ? '' : 's'}.`
+      : 'Nothing to suspend (already suspended?).',
+  };
 }
 
 /** Permanently delete a user and their owned data. Use only for GDPR
@@ -775,7 +866,7 @@ export async function setCompanyVerified(slug: string, verified: boolean) {
 export async function testIntegration(
   kind: 'resend' | 'stripe' | 'ai' | 'storage',
 ): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireCap('settings:view');
   await ensureSettingsLoaded();
   try {
     if (kind === 'resend') {
@@ -785,9 +876,27 @@ export async function testIntegration(
         headers: { Authorization: `Bearer ${key}` },
         signal: AbortSignal.timeout(15000),
       });
-      return r.ok
-        ? { ok: true, message: 'Resend key is valid — email delivery is live.' }
-        : { ok: false, message: `Resend rejected the key (HTTP ${r.status}).` };
+      if (r.ok) {
+        const data = (await r.json().catch(() => null)) as { data?: { name: string; status: string }[] } | null;
+        const verified = (data?.data ?? []).filter((d) => d.status === 'verified').map((d) => d.name);
+        return {
+          ok: true,
+          message: verified.length
+            ? `Resend key valid — verified domain(s): ${verified.join(', ')}.`
+            : 'Resend key valid — email delivery is live.',
+        };
+      }
+      // A Resend "Sending access" key CAN send but is not allowed to read
+      // /domains (401/403). That's expected, not a bad key — the real proof of
+      // delivery is the "Send test email" button, so surface it as a note
+      // rather than a red "rejected".
+      if (r.status === 401 || r.status === 403) {
+        return {
+          ok: true,
+          message: 'Sending-only key — can’t list domains here, but it can send. Use “Send test email” to confirm delivery.',
+        };
+      }
+      return { ok: false, message: `Resend rejected the key (HTTP ${r.status}).` };
     }
     if (kind === 'stripe') {
       const stripe = getStripe();
@@ -816,10 +925,49 @@ export async function testIntegration(
   }
 }
 
+/**
+ * End-to-end email test: sends a real message to the signed-in admin's own
+ * address through whatever transport is currently configured (Resend if a key
+ * is set, otherwise SMTP, otherwise the dev mailbox). Reports which path was
+ * used so the operator can tell Resend is overriding their SMTP config, and
+ * surfaces the raw transport error (auth failed / connection refused / etc.)
+ * when delivery fails. sendEmail() also writes an EmailLog row either way.
+ */
+export async function sendTestEmail(): Promise<{ ok: boolean; message: string }> {
+  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  await ensureSettingsLoaded();
+  const to = (session.user.email || '').trim();
+  if (!to) return { ok: false, message: 'Your admin account has no email address to send to.' };
+
+  const via = process.env.RESEND_API_KEY
+    ? 'Resend API'
+    : process.env.SMTP_USER
+      ? `SMTP (${process.env.SMTP_HOST || 'localhost'}:${process.env.SMTP_PORT || '465'})`
+      : 'the dev mailbox (Mailpit) — no Resend key or SMTP credentials set';
+
+  try {
+    await sendEmail({
+      to,
+      subject: 'lab2date — test email ✅',
+      html:
+        '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;">' +
+        '<h2 style="margin:0 0 8px;color:#0E4F40;">Your email is working 🎉</h2>' +
+        '<p style="color:#374151;line-height:1.6;">This is a test message from your lab2date admin settings. ' +
+        `Delivered via <strong>${via.replace(/</g, '&lt;')}</strong>.</p>` +
+        '<p style="color:#6b7280;font-size:13px;">If this landed in your inbox, outbound email is configured correctly.</p>' +
+        '</div>',
+      text: `Your lab2date email is working. Delivered via ${via}.`,
+    });
+    return { ok: true, message: `Sent to ${to} via ${via}. Check your inbox (and spam folder).` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message.slice(0, 220) : 'Send failed.' };
+  }
+}
+
 export async function verifySetting(
   key: string,
 ): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireCap('settings:view');
   await ensureSettingsLoaded();
   const def = SETTING_DEFS.find((d) => d.key === key) as
     | { key: string; verify?: string }
@@ -870,15 +1018,29 @@ export async function verifySetting(
   }
 }
 
-export async function saveAdminSettings(formData: FormData) {
-  await requireCap('settings:write');
+export async function saveAdminSettings(
+  _prev: { ok: boolean; message: string } | null,
+  formData: FormData,
+): Promise<{ ok: boolean; message: string }> {
+  // Must be an admin (redirect if not signed in), but a missing settings:write
+  // cap returns a clear message instead of a mysterious redirect to /admin —
+  // that redirect was the "save makes the page jump away" symptom.
+  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  if (!(await hasCapability('settings:write'))) {
+    return { ok: false, message: 'Your admin account lacks the “settings:write” permission — ask a super-admin to grant it.' };
+  }
   const input: Record<string, string> = {};
   for (const [k, v] of formData.entries()) {
     if (typeof v === 'string') input[k] = v;
   }
-  await persistSettings(input);
+  try {
+    await persistSettings(input);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? `Save failed: ${e.message.slice(0, 140)}` : 'Save failed.' };
+  }
   await audit('settings.save', undefined, Object.keys(input).join(','));
   revalidatePath('/admin/settings');
+  return { ok: true, message: 'Saved ✓' };
 }
 
 export async function uploadCompanyLogo(formData: FormData) {
@@ -965,9 +1127,12 @@ export async function sendAnnouncement(formData: FormData) {
       : audience === 'SELLER'
         ? { role: UserRole.SELLER }
         : {};
+  // Cap the broadcast so a single request can't fan out unboundedly as the
+  // user base grows (holds a connection open + can exhaust the mail provider).
   const users = await prisma.user.findMany({
     where,
     select: { id: true, email: true, name: true },
+    take: 5000,
   });
 
   await prisma.notification.createMany({
@@ -983,10 +1148,13 @@ export async function sendAnnouncement(formData: FormData) {
         : `${base}${href.startsWith('/') ? '' : '/'}${href}`
       : `${base}/app/notifications`;
     for (const u of users) {
-      await sendEmail({
-        to: u.email,
-        subject: title,
-        html: `
+      // Best-effort per recipient — one bad address must not abort the whole
+      // broadcast (and every notification row is already persisted above).
+      try {
+        await sendEmail({
+          to: u.email,
+          subject: title,
+          html: `
           <div style="font-family:system-ui,sans-serif;max-width:560px;">
             <h2 style="color:#0E4F40;">${title}</h2>
             <p>Hi ${u.name},</p>
@@ -996,7 +1164,10 @@ export async function sendAnnouncement(formData: FormData) {
             </p>
             <p style="color:#999;font-size:11px;">You receive this because you have a ${site} account.</p>
           </div>`,
-      });
+        });
+      } catch {
+        // swallow — logged in EmailLog by sendEmail; continue the broadcast
+      }
     }
   }
 
@@ -1023,7 +1194,25 @@ export async function refundOrder(formData: FormData) {
     },
   });
   if (!order) throw new Error('Order not found');
-  if (order.status === 'REFUNDED') return; // idempotent — don't double-restock
+  // BUG-043: refund is only meaningful once money has actually been captured.
+  // Positively allow-list the money-captured statuses (mirrors the UI's
+  // `canRefund` gate and every sibling money-path action) instead of the old
+  // negative `!= REFUNDED` guard. The old guard let refundOrder run on a
+  // CANCELED order (already restocked by cancelOrder / the proforma sweep) —
+  // restocking it AGAIN mints phantom inventory of a unique/used unit (the very
+  // oversell hazard the reserve logic guards against) — and on a PENDING_PAYMENT
+  // order (no money captured), where it would email the buyer "refund to your
+  // original payment method" and stamp REFUNDED (corrupting refund/revenue
+  // reporting). Not currently reachable through the shipped UI (a PAID-family
+  // order cannot reach a restock-already state), but a stale/direct server-action
+  // POST or any future caller could hit it; re-encode the precondition here and
+  // in the atomic WHERE below so the write itself is the single source of truth.
+  const REFUNDABLE = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const;
+  if (!REFUNDABLE.includes(order.status as (typeof REFUNDABLE)[number])) {
+    // Includes the already-REFUNDED case (idempotent no-op) and every
+    // non-captured status. No Stripe call, no restock, no email.
+    return;
+  }
 
   const stripe = getStripe();
   if (stripe && order.stripePaymentIntentId) {
@@ -1034,7 +1223,17 @@ export async function refundOrder(formData: FormData) {
       throw new Error('Stripe refund failed — check the payment in Stripe');
     }
   }
-  await prisma.order.update({ where: { id }, data: { status: 'REFUNDED' } });
+  // BUG-036: claim the REFUNDED transition atomically. The status guard at the
+  // top reads a snapshot; without an atomic write two concurrent refund clicks
+  // (or a manual order with no Stripe PI to natively dedupe) would each restock
+  // and re-email. Gate restock + notifications on count===1 so they fire exactly
+  // once. The Stripe refunds.create above is itself replay-safe (a second call
+  // on a fully-refunded intent errors and is caught before reaching here).
+  const flip = await prisma.order.updateMany({
+    where: { id, status: { in: [...REFUNDABLE] } },
+    data: { status: 'REFUNDED' },
+  });
+  if (flip.count !== 1) return; // a concurrent click already refunded + restocked
   // Return the reserved unit(s) to stock so the item can be sold again.
   for (const it of order.items) {
     if (it.productId) {
@@ -1068,6 +1267,17 @@ export async function refundOrder(formData: FormData) {
   revalidatePath(`/admin/orders/${id}`);
 }
 
+/** Build the expire-only Stripe adapter the cancel saga needs (create() is never
+ *  called for cancellation). Null when Stripe isn't configured — then only
+ *  session-less (manual) orders can be canceled; an order with an active session
+ *  would return `expire-failed` rather than be canceled behind a live session. */
+function stripeExpireApi(): StripeSessionApi | null {
+  const stripe = getStripe();
+  // expireOnlyApi confirms expiry by RETRIEVING the session (status==='expired'),
+  // never by error-message regex, so a "complete" session fails closed.
+  return stripe ? expireOnlyApi(stripe) : null;
+}
+
 /** Cancel an order that hasn't been paid (or is in PROCESSING). Releases
  *  reserved stock back to the catalog. Distinct from refundOrder which
  *  applies once money is taken. */
@@ -1081,6 +1291,7 @@ export async function cancelOrder(formData: FormData): Promise<void> {
     select: {
       status: true,
       orderNumber: true,
+      paymentSubmittedAt: true,
       buyer: { select: { id: true, name: true, email: true } },
       items: { select: { productId: true, quantity: true } },
     },
@@ -1090,15 +1301,23 @@ export async function cancelOrder(formData: FormData): Promise<void> {
   if (['PAID', 'PROCESSING', 'SHIPPED'].includes(order.status)) {
     throw new Error('Order has been paid — use Refund instead.');
   }
-  await prisma.order.update({ where: { id }, data: { status: 'CANCELED' } });
-  for (const it of order.items) {
-    if (it.productId) {
-      await prisma.product.update({
-        where: { id: it.productId },
-        data: { quantity: { increment: it.quantity } },
-      });
-    }
+  // BUG-035: a buyer receipt awaiting verification leaves status=PENDING_PAYMENT
+  // but paymentSubmittedAt set. Canceling here would bypass the verify/reject
+  // queue and tell the buyer "no charge was made" — false when they have paid.
+  // Decline via Reject first (which clears paymentSubmittedAt), then cancel.
+  // Keeps "admin verify is the ONLY path that changes payment state" intact.
+  if (order.paymentSubmittedAt) {
+    throw new Error('This order has a payment receipt awaiting verification — use Verify or Reject, not Cancel.');
   }
+  // Stripe-aware atomic cancel: expire any active payment session FIRST, then
+  // claim PENDING_PAYMENT + restock in ONE transaction (CAS on the same session id
+  // + no proof), so a concurrent session-persist / proof upload can't be raced and
+  // an active payable session is never left pointing at canceled/restocked stock.
+  const outcome = await cancelOrderSaga(prisma, stripeExpireApi(), id, { requireNoProof: true });
+  if (outcome === 'expire-failed') {
+    throw new Error("Could not expire the buyer's active payment session — the order was left reserved; please retry.");
+  }
+  if (outcome !== 'canceled') return; // already canceled / raced / receipt in flight
   await notifyUser(
     order.buyer.id,
     `Order ${order.orderNumber}: canceled`,
@@ -1221,22 +1440,45 @@ export async function bulkCancelOrders(formData: FormData): Promise<{ ok: boolea
   await requireCap('orders:fulfil');
   const ids = String(formData.get('ids') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) return { ok: false, count: 0, message: 'No orders selected.' };
+  // BUG-035: exclude orders with a receipt in flight (paymentSubmittedAt set).
+  // They sit at status=PENDING_PAYMENT but the buyer has paid and is awaiting
+  // admin verify; bulk-canceling them would bypass the verify/reject queue and
+  // tell the buyer "no charge was made" (false). Operator must Verify/Reject
+  // those individually. Mirrors the cron proforma-expiry + orphan-sweep guards.
   const orders = await prisma.order.findMany({
-    where: { id: { in: ids }, status: 'PENDING_PAYMENT' },
+    where: { id: { in: ids }, status: 'PENDING_PAYMENT', paymentSubmittedAt: null },
     select: { id: true, orderNumber: true, buyer: { select: { id: true } }, items: { select: { productId: true, quantity: true } } },
   });
-  if (orders.length === 0) return { ok: false, count: 0, message: 'None of the selected orders are cancelable.' };
-  await prisma.order.updateMany({
-    where: { id: { in: orders.map((o) => o.id) } },
-    data: { status: 'CANCELED' },
+  // Honest operator feedback: how many selected orders were held back purely
+  // because a buyer receipt is awaiting verification.
+  const inFlight = await prisma.order.count({
+    where: { id: { in: ids }, status: 'PENDING_PAYMENT', paymentSubmittedAt: { not: null } },
   });
-  // restore stock + notify buyers
-  for (const o of orders) {
-    for (const it of o.items) {
-      if (it.productId) {
-        await prisma.product.update({ where: { id: it.productId }, data: { quantity: { increment: it.quantity } } });
-      }
-    }
+  if (orders.length === 0) {
+    return {
+      ok: false,
+      count: 0,
+      message:
+        inFlight > 0
+          ? `None canceled — ${inFlight} selected order${inFlight === 1 ? ' has a receipt' : 's have receipts'} awaiting verification; use Verify or Reject.`
+          : 'None of the selected orders are cancelable.',
+    };
+  }
+  // Process each candidate through the Stripe-aware atomic cancel saga. Only the
+  // orders it actually CANCELS (its own authoritative guards win the race — status,
+  // no-proof, and session-CAS after a confirmed expire) are restocked (inside the
+  // tx) and notified. A proof/paid/session-race loser never mints stock or receives
+  // a false "canceled" notification. Replaces the old select→bulk-updateMany→
+  // restock-ALL shape whose subset-winning updateMany still restocked every row.
+  const api = stripeExpireApi();
+  const { canceled, expireFailed, errored } = await cancelOrdersBatch(
+    prisma,
+    api,
+    orders.map((o) => o.id),
+    { requireNoProof: true },
+  );
+  const winners = orders.filter((o) => canceled.includes(o.id));
+  for (const o of winners) {
     await notifyUser(
       o.buyer.id,
       `Order ${o.orderNumber}: canceled`,
@@ -1244,9 +1486,19 @@ export async function bulkCancelOrders(formData: FormData): Promise<{ ok: boolea
       `/app/orders/${o.orderNumber}`,
     );
   }
-  await audit('order.bulkcancel', undefined, `${orders.length} orders`);
+  await audit(
+    'order.bulkcancel',
+    undefined,
+    `${winners.length} canceled${inFlight > 0 ? `; ${inFlight} awaiting-verification` : ''}${expireFailed.length ? `; ${expireFailed.length} session-expire-failed` : ''}${errored.length ? `; ${errored.length} errored` : ''}`,
+  );
   revalidatePath('/admin/orders');
-  return { ok: true, count: orders.length, message: `Canceled ${orders.length} order${orders.length === 1 ? '' : 's'}.` };
+  // Surface every non-cancel outcome to the operator — nothing is silently dropped.
+  const parts: string[] = [];
+  if (inFlight > 0) parts.push(`skipped ${inFlight} with a receipt awaiting verification`);
+  if (expireFailed.length) parts.push(`${expireFailed.length} left reserved — payment session could not be expired; retry`);
+  if (errored.length) parts.push(`${errored.length} failed (see logs)`);
+  const note = parts.length ? ` ${parts.join('; ')}.` : '';
+  return { ok: winners.length > 0, count: winners.length, message: `Canceled ${winners.length} order${winners.length === 1 ? '' : 's'}.${note}` };
 }
 
 /**
@@ -1569,7 +1821,7 @@ export async function deleteCategory(id: string) {
 }
 
 export async function replyToThread(threadId: string, body: string) {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/messages' });
+  const session = await requireCap('messages:reply');
   const text = body.trim();
   if (!text) return;
   await prisma.message.create({
@@ -1585,7 +1837,7 @@ export async function replyToThread(threadId: string, body: string) {
 const BrandInput = z.object({ name: z.string().min(2).max(80), logoUrl: z.string().url().nullish() });
 
 export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string; slug?: string }> {
-  await requireAdmin();
+  await requireCap('products:edit');
   const parsed = BrandInput.parse(input);
   const baseSlug = parsed.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   if (baseSlug.length < 2) return { ok: false, message: 'Brand name produces an empty slug.' };
@@ -1600,7 +1852,7 @@ export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ 
 }
 
 export async function updateBrand(id: string, input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireCap('products:edit');
   const parsed = BrandInput.parse(input);
   const existing = await prisma.brand.findUnique({ where: { id } });
   if (!existing) return { ok: false, message: 'Brand not found.' };
@@ -1611,7 +1863,7 @@ export async function updateBrand(id: string, input: z.infer<typeof BrandInput>)
 }
 
 export async function deleteBrand(id: string): Promise<{ ok: boolean; message: string }> {
-  await requireAdmin();
+  await requireCap('products:edit');
   const usage = await prisma.product.count({ where: { brandId: id } });
   if (usage > 0) return { ok: false, message: `Cannot delete: ${usage} product${usage === 1 ? '' : 's'} still use this brand.` };
   const b = await prisma.brand.findUnique({ where: { id } });
@@ -1732,9 +1984,18 @@ export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; m
   await requireCap('products:edit');
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
   if (!existing) return { ok: false, message: 'Product not found.' };
-  await prisma.product.delete({ where: { id: existing.id } });
-  await audit('product.admin.delete', slug);
+  // A product with ANY order history is never hard-deleted: the OrderItem →
+  // Product FK is RESTRICT and order lines must retain their audit/analytics
+  // link (invoice regen, chargeback defence). The shared, TOCTOU-safe guard
+  // archives instead — same rule the seller path and import cleanup enforce.
+  const outcome = await deleteOrArchiveProduct(productDeleteDbFrom(prisma), existing.id);
   revalidatePath('/admin/products');
+  if (outcome === 'archived') {
+    await audit('product.admin.archive', slug, 'had order history — archived instead of hard-deleted');
+    revalidatePath(`/marketplace/${slug}`);
+    return { ok: true, message: 'Product has order history — archived instead of deleted.' };
+  }
+  await audit('product.admin.delete', slug);
   return { ok: true, message: 'Deleted.' };
 }
 
@@ -2366,10 +2627,16 @@ export async function archiveOrder(formData: FormData): Promise<{ ok: boolean; m
   const o = await prisma.order.findUnique({ where: { id }, select: { id: true, orderNumber: true, archivedAt: true } });
   if (!o) return { ok: false, message: 'Order not found.' };
   if (o.archivedAt) return { ok: false, message: 'Order already archived.' };
-  await prisma.order.update({
-    where: { id },
+  // BUG-040: atomic claim so a concurrent double-click archives (and audits) exactly once.
+  const claim = await prisma.order.updateMany({
+    where: { id, archivedAt: null },
     data: { archivedAt: new Date(), archivedById: session.user.id },
   });
+  if (claim.count !== 1) {
+    revalidatePath('/admin/orders');
+    revalidatePath(`/admin/orders/${id}`);
+    return { ok: false, message: 'Order already archived.' };
+  }
   await audit('order.archive', o.orderNumber, undefined);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
@@ -2385,7 +2652,16 @@ export async function unarchiveOrder(formData: FormData): Promise<{ ok: boolean;
   const o = await prisma.order.findUnique({ where: { id }, select: { id: true, orderNumber: true, archivedAt: true } });
   if (!o) return { ok: false, message: 'Order not found.' };
   if (!o.archivedAt) return { ok: false, message: 'Order is not archived.' };
-  await prisma.order.update({ where: { id }, data: { archivedAt: null, archivedById: null } });
+  // BUG-040: atomic claim so a concurrent double-click unarchives (and audits) exactly once.
+  const claim = await prisma.order.updateMany({
+    where: { id, archivedAt: { not: null } },
+    data: { archivedAt: null, archivedById: null },
+  });
+  if (claim.count !== 1) {
+    revalidatePath('/admin/orders');
+    revalidatePath(`/admin/orders/${id}`);
+    return { ok: false, message: 'Order is not archived.' };
+  }
   await audit('order.unarchive', o.orderNumber, undefined);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
@@ -2620,8 +2896,17 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
   if (order.paymentVerificationStatus !== 'AWAITING_VERIFICATION') {
     return { ok: false, message: `Cannot reject — current state: ${order.paymentVerificationStatus ?? 'none'}.` };
   }
-  await prisma.order.update({
-    where: { id },
+  // BUG-037: claim the transition atomically (mirror of verifyPayment). The
+  // in-memory AWAITING_VERIFICATION check above races a concurrent verify /
+  // buyer-resubmit / double-click reject. Re-encode the precondition in the
+  // write's WHERE and gate ALL side effects on count===1 so reject can never
+  // overwrite a just-verified PAID order (F15 regression) or double-notify.
+  const rejectRes = await prisma.order.updateMany({
+    where: {
+      id,
+      paymentVerificationStatus: 'AWAITING_VERIFICATION',
+      status: 'PENDING_PAYMENT',
+    },
     data: {
       paymentVerificationStatus: 'REJECTED',
       paymentRejectionReason: reason,
@@ -2630,6 +2915,12 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
       paymentVerifiedById: null,
     },
   });
+  if (rejectRes.count !== 1) {
+    return {
+      ok: false,
+      message: 'Rejection race — another admin already acted on this order (likely verified it). Refresh to see the current state.',
+    };
+  }
   await notifyUser(
     order.buyer.id,
     `Payment proof needs attention — order ${order.orderNumber}`,

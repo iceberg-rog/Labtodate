@@ -142,7 +142,7 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
             </p>
             <p className="text-3xl font-bold tabular-nums tracking-tight inline-flex items-center gap-2">
               {sub.agreedPriceCents != null ? (
-                <><Banknote className="h-6 w-6 text-emerald-600" />{fmtMoney(sub.agreedPriceCents, sub.agreedCurrency ?? 'EUR')}</>
+                <><Banknote className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />{fmtMoney(sub.agreedPriceCents, sub.agreedCurrency ?? 'EUR')}</>
               ) : sub.askingPrice ? (
                 <>{sub.askingPrice}</>
               ) : (
@@ -156,11 +156,11 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
       <section className="rounded-2xl border border-border bg-card p-6">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground mb-5">Lifecycle</p>
         {lost ? (
-          <div className="rounded-xl border border-red-200 bg-red-50 p-4 flex items-start gap-3">
-            <XCircle className="h-5 w-5 text-red-700 mt-0.5" />
+          <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-4 flex items-start gap-3">
+            <XCircle className="h-5 w-5 text-red-700 dark:text-red-300 mt-0.5" />
             <div>
-              <p className="font-bold text-red-900">{sub.status === 'DECLINED' ? 'Declined' : 'Closed'}</p>
-              <p className="text-sm text-red-800 mt-1">
+              <p className="font-bold text-red-900 dark:text-red-300">{sub.status === 'DECLINED' ? 'Declined' : 'Closed'}</p>
+              <p className="text-sm text-red-800 dark:text-red-300 mt-1">
                 {sub.status === 'DECLINED'
                   ? 'We weren\'t able to acquire this equipment. Thanks for the offer.'
                   : 'This offer was closed without a deal.'}
@@ -187,7 +187,7 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
                     {done ? <CheckCheck className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
                   </div>
                   <div className="flex-1 min-w-0 pt-1">
-                    <p className={`text-sm font-bold ${isCurrent ? 'text-primary' : done ? 'text-emerald-700' : 'text-foreground'}`}>
+                    <p className={`text-sm font-bold ${isCurrent ? 'text-primary' : done ? 'text-emerald-700 dark:text-emerald-300' : 'text-foreground'}`}>
                       {step.label}
                       {isCurrent && <span className="ml-2 text-[10px] uppercase tracking-wider font-bold bg-primary text-primary-foreground px-1.5 py-0.5 rounded-full">current</span>}
                     </p>
@@ -313,7 +313,7 @@ function Bubble({ m, sellerName }: { m: { id: string; body: string; createdAt: D
           </p>
         </div>
         <p className="text-2xl font-bold tabular-nums mb-2 inline-flex items-center gap-2">
-          <Banknote className="h-5 w-5 text-emerald-600" />
+          <Banknote className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
           {m.priceCents != null ? new Intl.NumberFormat('en-US', { style: 'currency', currency: m.currency ?? 'EUR', maximumFractionDigits: 0 }).format(m.priceCents / 100) : '—'}
         </p>
         {m.body && <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.body}</p>}
@@ -322,13 +322,13 @@ function Bubble({ m, sellerName }: { m: { id: string; body: string; createdAt: D
   }
   // Default text message — bubbles like the quote thread.
   const palette = m.fromStaff
-    ? 'bg-emerald-50 border border-emerald-200 text-emerald-950 rounded-tl-sm'
+    ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-950 dark:text-emerald-300 rounded-tl-sm'
     : 'bg-primary text-primary-foreground rounded-tr-sm';
   return (
     <div className={`flex gap-2.5 ${m.fromStaff ? '' : 'flex-row-reverse'}`}>
       <div className={`h-8 w-8 rounded-full inline-flex items-center justify-center text-[11px] font-bold flex-shrink-0 shadow-sm ${
         m.fromStaff
-          ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+          ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
           : 'bg-primary text-primary-foreground'
       }`}>
         {m.fromStaff ? <ShieldCheck className="h-3.5 w-3.5" /> : initials(sellerName)}
@@ -374,7 +374,7 @@ function StageCard({
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div>
             <p className="text-3xl font-bold tabular-nums inline-flex items-center gap-2">
-              <Banknote className="h-6 w-6 text-emerald-600" />
+              <Banknote className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
               {new Intl.NumberFormat('en-US', { style: 'currency', currency: latestProposalCurrency ?? 'EUR', maximumFractionDigits: 0 }).format(latestProposalCents / 100)}
             </p>
             <p className="text-sm text-muted-foreground mt-1">
@@ -438,7 +438,7 @@ function StageCard({
               <pre className="text-sm font-mono whitespace-pre-wrap leading-relaxed">{receivingAddress}</pre>
             </div>
           ) : (
-            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+            <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
               Our receiving address isn't configured yet — please email{' '}
               <a href="mailto:acquisitions@lab2date.com" className="font-semibold underline">acquisitions@lab2date.com</a> for ship-to details.
             </div>
@@ -479,14 +479,14 @@ function StageCard({
   // IN TRANSIT — show tracking back, no form, just waiting
   if (sub.acquisitionStage === 'IN_TRANSIT') {
     return (
-      <section className="rounded-2xl border-2 border-sky-300 bg-sky-50/60 p-6">
-        <p className="text-xs font-bold uppercase tracking-[0.18em] text-sky-800 mb-2 inline-flex items-center gap-1.5">
+      <section className="rounded-2xl border-2 border-sky-300 dark:border-sky-800 bg-sky-50/60 dark:bg-sky-950/30 p-6">
+        <p className="text-xs font-bold uppercase tracking-[0.18em] text-sky-800 dark:text-sky-300 mb-2 inline-flex items-center gap-1.5">
           <Truck className="h-3.5 w-3.5" /> Package in transit
         </p>
         <p className="text-2xl font-bold inline-flex items-center gap-2 tabular-nums">
           {sub.sellerShippingCarrier} · <span className="font-mono">{sub.sellerShippingTracking}</span>
         </p>
-        <p className="text-sm text-sky-900 mt-2">
+        <p className="text-sm text-sky-900 dark:text-sky-300 mt-2">
           We'll stamp <strong>Received · inspecting</strong> the moment the package lands at our warehouse and email you a heads-up.
         </p>
       </section>
@@ -496,14 +496,14 @@ function StageCard({
   // RECEIVED — under inspection
   if (sub.acquisitionStage === 'RECEIVED') {
     return (
-      <section className="rounded-2xl border-2 border-amber-300 bg-amber-50/60 p-6 flex items-start gap-3">
-        <ShieldCheck className="h-6 w-6 text-amber-700 mt-1" />
+      <section className="rounded-2xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 p-6 flex items-start gap-3">
+        <ShieldCheck className="h-6 w-6 text-amber-700 dark:text-amber-300 mt-1" />
         <div>
-          <p className="font-bold text-amber-900">We received your equipment</p>
-          <p className="text-sm text-amber-900 mt-1">
+          <p className="font-bold text-amber-900 dark:text-amber-300">We received your equipment</p>
+          <p className="text-sm text-amber-900 dark:text-amber-300 mt-1">
             QC is in progress. As soon as it clears we wire payment to your bank details and attach the transfer receipt here.
           </p>
-          <p className="text-xs text-amber-900 mt-2">Received {smartDate(sub.receivedAt)}.</p>
+          <p className="text-xs text-amber-900 dark:text-amber-300 mt-2">Received {smartDate(sub.receivedAt)}.</p>
         </div>
       </section>
     );
@@ -512,12 +512,12 @@ function StageCard({
   // COMPLETED — payment receipt download
   if (sub.acquisitionStage === 'COMPLETED') {
     return (
-      <section className="rounded-2xl border-2 border-emerald-300 bg-emerald-50/60 p-6">
+      <section className="rounded-2xl border-2 border-emerald-300 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-950/30 p-6">
         <div className="flex items-start gap-3 mb-3">
-          <CheckCheck className="h-6 w-6 text-emerald-700 mt-1" />
+          <CheckCheck className="h-6 w-6 text-emerald-700 dark:text-emerald-300 mt-1" />
           <div className="flex-1">
-            <p className="font-bold text-emerald-900">Payment wired · acquisition complete</p>
-            <p className="text-sm text-emerald-900 mt-1">
+            <p className="font-bold text-emerald-900 dark:text-emerald-300">Payment wired · acquisition complete</p>
+            <p className="text-sm text-emerald-900 dark:text-emerald-300 mt-1">
               <strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency: sub.agreedCurrency ?? 'EUR', maximumFractionDigits: 0 }).format((sub.agreedPriceCents ?? 0) / 100)}</strong>{' '}
               transferred to your bank {smartDate(sub.completedAt)}. Receipt below.
             </p>
@@ -561,11 +561,11 @@ function StageCard({
   // RESPONDED with no proposal yet — just chatting
   if (sub.status === 'RESPONDED' && !latestProposalCents) {
     return (
-      <section className="rounded-2xl border border-sky-200 bg-sky-50/60 p-6 flex items-start gap-3">
-        <MessageCircle className="h-6 w-6 text-sky-700 mt-1" />
+      <section className="rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50/60 dark:bg-sky-950/30 p-6 flex items-start gap-3">
+        <MessageCircle className="h-6 w-6 text-sky-700 dark:text-sky-300 mt-1" />
         <div>
-          <p className="font-bold text-sky-900">We're in conversation</p>
-          <p className="text-sm text-sky-900 mt-1">
+          <p className="font-bold text-sky-900 dark:text-sky-300">We're in conversation</p>
+          <p className="text-sm text-sky-900 dark:text-sky-300 mt-1">
             Once our team has enough info, you'll see a price offer here and can accept or counter.
           </p>
         </div>
@@ -581,7 +581,7 @@ function BankField({
 }: { name: string; label: string; defaultValue?: string; required?: boolean; mono?: boolean }) {
   return (
     <label className="block">
-      <span className="block text-xs font-semibold mb-1">{label}{required && <span className="text-red-600"> *</span>}</span>
+      <span className="block text-xs font-semibold mb-1">{label}{required && <span className="text-red-600 dark:text-red-400"> *</span>}</span>
       <input
         name={name}
         defaultValue={defaultValue ?? ''}

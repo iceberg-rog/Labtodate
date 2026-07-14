@@ -47,10 +47,10 @@ export function computeSellState(s: {
 
 export function sellToneClasses(tone: SellTone): { pill: string; stripe: string; ring: string } {
   switch (tone) {
-    case 'amber':   return { pill: 'bg-amber-100 text-amber-900 border-amber-200',   stripe: 'before:bg-amber-400',  ring: 'ring-amber-200' };
-    case 'sky':     return { pill: 'bg-sky-50 text-sky-900 border-sky-200',          stripe: 'before:bg-sky-400',    ring: 'ring-sky-200' };
-    case 'emerald': return { pill: 'bg-emerald-50 text-emerald-900 border-emerald-200', stripe: 'before:bg-emerald-500', ring: 'ring-emerald-200' };
-    case 'red':     return { pill: 'bg-red-50 text-red-900 border-red-200',          stripe: 'before:bg-red-400',    ring: 'ring-red-200' };
-    case 'slate':   return { pill: 'bg-slate-100 text-slate-700 border-slate-200',   stripe: 'before:bg-slate-400',  ring: 'ring-slate-200' };
+    case 'amber':   return { pill: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',   stripe: 'before:bg-amber-400',  ring: 'ring-amber-200 dark:ring-amber-800' };
+    case 'sky':     return { pill: 'bg-sky-50 text-sky-900 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800',          stripe: 'before:bg-sky-400',    ring: 'ring-sky-200 dark:ring-sky-800' };
+    case 'emerald': return { pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800', stripe: 'before:bg-emerald-500', ring: 'ring-emerald-200 dark:ring-emerald-800' };
+    case 'red':     return { pill: 'bg-red-50 text-red-900 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800',          stripe: 'before:bg-red-400',    ring: 'ring-red-200 dark:ring-red-800' };
+    case 'slate':   return { pill: 'bg-muted text-muted-foreground border-border',   stripe: 'before:bg-slate-400',  ring: 'ring-border' };
   }
 }

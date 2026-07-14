@@ -32,11 +32,11 @@ function smartDate(d: Date | null | undefined): string {
 }
 
 const STATUS_VIS: Record<string, { ring: string; pill: string; label: string }> = {
-  AI:             { ring: 'ring-violet-200',  pill: 'bg-violet-50 text-violet-900 border-violet-200',     label: 'AI handling' },
-  AWAITING_HUMAN: { ring: 'ring-amber-300',   pill: 'bg-amber-100 text-amber-900 border-amber-200',       label: 'Waiting for you' },
-  WITH_HUMAN:     { ring: 'ring-emerald-200', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200',  label: 'Live · with human' },
-  CLOSED:         { ring: 'ring-slate-200',   pill: 'bg-slate-100 text-slate-700 border-slate-200',       label: 'Closed' },
-  ARCHIVED:       { ring: 'ring-slate-200',   pill: 'bg-slate-50 text-slate-600 border-slate-200',        label: 'Archived' },
+  AI:             { ring: 'ring-violet-200 dark:ring-violet-800',  pill: 'bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800',     label: 'AI handling' },
+  AWAITING_HUMAN: { ring: 'ring-amber-300 dark:ring-amber-800',   pill: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',       label: 'Waiting for you' },
+  WITH_HUMAN:     { ring: 'ring-emerald-200 dark:ring-emerald-800', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',  label: 'Live · with human' },
+  CLOSED:         { ring: 'ring-ring',   pill: 'bg-muted text-muted-foreground border-border',       label: 'Closed' },
+  ARCHIVED:       { ring: 'ring-ring',   pill: 'bg-muted text-muted-foreground border-border',        label: 'Archived' },
 };
 
 export default async function AdminConversationDetailPage(props: { params: Promise<{ id: string }> }) {
@@ -86,12 +86,12 @@ export default async function AdminConversationDetailPage(props: { params: Promi
                 {vis.label}
               </span>
               {isGuest && (
-                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5">
+                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   guest
                 </span>
               )}
               {conv.rating != null && (
-                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5">
+                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-2 py-0.5">
                   <Star className="h-3 w-3 fill-amber-500 text-amber-500" /> Rated {conv.rating}/5
                 </span>
               )}
@@ -221,8 +221,8 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
         isAdmin
           ? 'bg-primary text-primary-foreground'
           : isUser
-          ? 'bg-slate-100 text-slate-700 border border-slate-200'
-          : 'bg-violet-100 text-violet-800 border border-violet-200'
+          ? 'bg-muted text-muted-foreground border border-border'
+          : 'bg-violet-100 text-violet-800 border border-violet-200 dark:bg-violet-900/40 dark:text-violet-300 dark:border-violet-800'
       }`}>
         {isAdmin ? <ShieldCheck className="h-3.5 w-3.5" /> : isUser ? customerName.charAt(0).toUpperCase() : <Sparkles className="h-3.5 w-3.5" />}
       </div>
@@ -238,7 +238,7 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
             ? 'bg-primary text-primary-foreground rounded-tr-sm'
             : isUser
             ? 'bg-card border border-border rounded-tl-sm'
-            : 'bg-violet-50 border border-violet-200 rounded-tl-sm'
+            : 'bg-violet-50 border border-violet-200 dark:bg-violet-950/40 dark:border-violet-800 rounded-tl-sm'
         }`}>
           {m.body}
           {m.attachments?.length > 0 && (

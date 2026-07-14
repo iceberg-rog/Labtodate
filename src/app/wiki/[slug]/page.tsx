@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { ChevronLeft } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { prisma } from '@/lib/db';
+import { sanitizeRichHtml } from '@/lib/sanitize';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,7 +31,7 @@ export default async function WikiArticlePage(props: { params: Promise<{ slug: s
         {article.title}
       </h1>
       <p className="mt-4 text-sm text-muted-foreground">By {article.author.name}</p>
-      <div className="prose-article mt-10 text-foreground" dangerouslySetInnerHTML={{ __html: article.body }} />
+      <div className="prose-article mt-10 text-foreground" dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(article.body) }} />
     </article>
   );
 }

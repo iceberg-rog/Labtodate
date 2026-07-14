@@ -60,9 +60,9 @@ export function WebhooksPanel({ initial }: { initial: Hook[] }) {
           <li key={h.id} className="rounded-xl border border-border bg-foreground/[0.02] p-3">
             <div className="flex items-start gap-3 flex-wrap">
               <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border ${
-                h.kind === 'SLACK' ? 'bg-purple-50 text-purple-700 border-purple-200'
-                : h.kind === 'DISCORD' ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                : 'bg-sky-50 text-sky-700 border-sky-200'
+                h.kind === 'SLACK' ? 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
+                : h.kind === 'DISCORD' ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800'
+                : 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800'
               }`}>{h.kind}</span>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-sm truncate">{h.name}</p>
@@ -72,16 +72,16 @@ export function WebhooksPanel({ initial }: { initial: Hook[] }) {
                   Events: <span className="font-mono">{h.events.join(', ')}</span>
                 </p>
                 {h.lastError ? (
-                  <p className="text-[11px] text-red-700 mt-1 inline-flex items-center gap-1">
+                  <p className="text-[11px] text-red-700 dark:text-red-300 mt-1 inline-flex items-center gap-1">
                     <XCircle className="h-3 w-3" /> {h.lastError}
                   </p>
                 ) : h.lastOkAt ? (
-                  <p className="text-[11px] text-emerald-700 mt-1 inline-flex items-center gap-1">
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300 mt-1 inline-flex items-center gap-1">
                     <CheckCircle2 className="h-3 w-3" /> last delivered {new Date(h.lastOkAt).toLocaleString()}
                   </p>
                 ) : null}
                 {testResult?.id === h.id && (
-                  <p className={`text-[11px] mt-1 inline-flex items-center gap-1 font-semibold ${testResult.ok ? 'text-emerald-700' : 'text-red-700'}`}>
+                  <p className={`text-[11px] mt-1 inline-flex items-center gap-1 font-semibold ${testResult.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
                     {testResult.ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
                     {testResult.message}
                   </p>
@@ -121,7 +121,7 @@ export function WebhooksPanel({ initial }: { initial: Hook[] }) {
                 >
                   <button
                     type="submit"
-                    className="inline-flex items-center gap-1 px-2 h-6 rounded-full text-[10px] font-semibold text-red-700 hover:bg-red-50"
+                    className="inline-flex items-center gap-1 px-2 h-6 rounded-full text-[10px] font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40"
                   >
                     <Trash2 className="h-3 w-3" /> delete
                   </button>

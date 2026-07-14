@@ -23,11 +23,16 @@ export function AdminUserDangerZone({
   email,
   suspended,
   isAdmin,
+  onDone,
 }: {
   userId: string;
   email: string;
   suspended: boolean;
   isAdmin: boolean;
+  /** Called after a successful suspend/delete. When provided (e.g. from the
+   *  quick-view modal) it replaces the default in-page navigation so the
+   *  caller can close the modal and refresh instead. */
+  onDone?: () => void;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -48,10 +53,10 @@ export function AdminUserDangerZone({
   }
 
   return (
-    <div className="rounded-2xl border border-red-200 bg-red-50/40 p-5 space-y-4">
+    <div className="rounded-2xl border border-red-200 dark:border-red-800 bg-red-50/40 dark:bg-red-950/30 p-5 space-y-4">
       <div className="flex items-center gap-2">
-        <AlertOctagon className="h-4 w-4 text-red-700" />
-        <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-red-700">
+        <AlertOctagon className="h-4 w-4 text-red-700 dark:text-red-300" />
+        <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-red-700 dark:text-red-300">
           Account actions
         </h2>
       </div>
@@ -77,7 +82,7 @@ export function AdminUserDangerZone({
             Send reset email
           </Button>
           {resetRes && (
-            <p className={`mt-2 text-[11px] inline-flex items-center gap-1 ${resetRes.ok ? 'text-emerald-700' : 'text-red-700'}`}>
+            <p className={`mt-2 text-[11px] inline-flex items-center gap-1 ${resetRes.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
               {resetRes.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
               {resetRes.message}
             </p>
@@ -87,10 +92,10 @@ export function AdminUserDangerZone({
         {/* Suspend */}
         <div className="rounded-xl border border-border bg-card p-4">
           <p className="text-sm font-bold inline-flex items-center gap-1.5">
-            <ShieldOff className="h-4 w-4 text-amber-600" /> Suspend
+            <ShieldOff className="h-4 w-4 text-amber-600 dark:text-amber-400" /> Suspend
           </p>
           <p className="text-xs text-muted-foreground mt-1 mb-3">
-            Reversible block — wipes their sessions and stops sign-in until lifted. {suspended && <strong className="text-amber-700">Already suspended.</strong>}
+            Reversible block — wipes their sessions and stops sign-in until lifted. {suspended && <strong className="text-amber-700 dark:text-amber-300">Already suspended.</strong>}
           </p>
           {!suspended && (
             <>
@@ -100,7 +105,7 @@ export function AdminUserDangerZone({
                   variant="outline"
                   size="sm"
                   onClick={() => setOpenSuspend(true)}
-                  className="rounded-full font-medium w-full text-amber-700"
+                  className="rounded-full font-medium w-full text-amber-700 dark:text-amber-300"
                 >
                   <ShieldOff className="h-3.5 w-3.5" /> Suspend account
                 </Button>
@@ -113,7 +118,8 @@ export function AdminUserDangerZone({
                       await suspendUser(fd);
                       setOpenSuspend(false);
                       setReason('');
-                      router.refresh();
+                      if (onDone) onDone();
+                      else router.refresh();
                     });
                   }}
                   className="space-y-2"
@@ -148,9 +154,9 @@ export function AdminUserDangerZone({
         </div>
 
         {/* Delete */}
-        <div className="rounded-xl border border-red-200 bg-card p-4">
+        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-card p-4">
           <p className="text-sm font-bold inline-flex items-center gap-1.5">
-            <Trash2 className="h-4 w-4 text-red-700" /> Delete forever
+            <Trash2 className="h-4 w-4 text-red-700 dark:text-red-300" /> Delete forever
           </p>
           <p className="text-xs text-muted-foreground mt-1 mb-3">
             Permanent. Removes sessions, wishlist, cart, notifications, reviews. Order/ticket history is retained for audit.
@@ -161,7 +167,7 @@ export function AdminUserDangerZone({
               variant="outline"
               size="sm"
               onClick={() => setOpenDelete(true)}
-              className="rounded-full font-medium w-full text-red-700"
+              className="rounded-full font-medium w-full text-red-700 dark:text-red-300"
             >
               <Trash2 className="h-3.5 w-3.5" /> Delete account…
             </Button>
@@ -173,7 +179,8 @@ export function AdminUserDangerZone({
                   fd.set('confirmEmail', confirmEmail);
                   try {
                     await deleteUser(fd);
-                    router.push('/admin/users');
+                    if (onDone) onDone();
+                    else router.push('/admin/users');
                   } catch (e) {
                     alert(e instanceof Error ? e.message : 'Delete failed');
                   }
@@ -186,7 +193,7 @@ export function AdminUserDangerZone({
                 value={confirmEmail}
                 onChange={(e) => setConfirmEmail(e.target.value)}
                 placeholder={`Type "${email}" to confirm`}
-                className="w-full h-9 px-3 rounded-lg border border-red-200 bg-background text-xs"
+                className="w-full h-9 px-3 rounded-lg border border-red-200 dark:border-red-800 bg-background text-xs"
               />
               <div className="flex items-center gap-2">
                 <Button
@@ -212,7 +219,7 @@ export function AdminUserDangerZone({
                 </Button>
               </div>
               {isAdmin && (
-                <p className="text-[11px] text-amber-700">
+                <p className="text-[11px] text-amber-700 dark:text-amber-300">
                   This is an admin account. Deletion will be refused if they&apos;re the last active admin.
                 </p>
               )}

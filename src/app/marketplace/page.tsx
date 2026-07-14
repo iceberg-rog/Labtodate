@@ -29,21 +29,25 @@ interface SearchParams {
   page?: string;
 }
 
-export default async function MarketplacePage({ searchParams }: { searchParams: SearchParams }) {
-  const page = parseInt(searchParams.page ?? '1', 10) || 1;
+export default async function MarketplacePage({ searchParams }: { searchParams: Promise<SearchParams> }) {
+  // Next 16: searchParams is async — it MUST be awaited. Reading it directly
+  // yields the Promise object, so every filter (category/brand/search/sort/
+  // price/page) silently read `undefined` and the page showed all products.
+  const sp = await searchParams;
+  const page = parseInt(sp.page ?? '1', 10) || 1;
   const mk = await getMarketing();
 
-  const minEuro = parseFloat(searchParams.minPrice ?? '');
-  const maxEuro = parseFloat(searchParams.maxPrice ?? '');
+  const minEuro = parseFloat(sp.minPrice ?? '');
+  const maxEuro = parseFloat(sp.maxPrice ?? '');
 
   const [result, categories, brands] = await Promise.all([
     listProducts({
-      q: searchParams.q,
-      category: searchParams.category,
-      brand: searchParams.brand,
-      condition: searchParams.condition,
-      mode: searchParams.mode,
-      sort: searchParams.sort,
+      q: sp.q,
+      category: sp.category,
+      brand: sp.brand,
+      condition: sp.condition,
+      mode: sp.mode,
+      sort: sp.sort,
       minPriceCents: Number.isFinite(minEuro) && minEuro >= 0 ? Math.round(minEuro * 100) : undefined,
       maxPriceCents: Number.isFinite(maxEuro) && maxEuro >= 0 ? Math.round(maxEuro * 100) : undefined,
       page,
@@ -53,12 +57,12 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   ]);
 
   const baseParams = new URLSearchParams();
-  for (const [k, v] of Object.entries(searchParams)) {
+  for (const [k, v] of Object.entries(sp)) {
     if (v && k !== 'page') baseParams.set(k, String(v));
   }
 
-  const activeCategoryName = searchParams.category
-    ? categories.find((c) => c.slug === searchParams.category)?.name
+  const activeCategoryName = sp.category
+    ? categories.find((c) => c.slug === sp.category)?.name
     : null;
 
   return (
@@ -83,14 +87,14 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
             <input
               type="search"
               name="q"
-              defaultValue={searchParams.q ?? ''}
+              defaultValue={sp.q ?? ''}
               placeholder="Try ‘Zeiss confocal’ or ‘HPLC under €30k’…"
               className="w-full h-12 pl-11 pr-4 rounded-2xl border border-border bg-card text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
             />
             {/* preserve current filters in the form */}
             {(['category', 'brand', 'condition', 'mode', 'sort'] as const).map((k) =>
-              searchParams[k] ? (
-                <input key={k} type="hidden" name={k} value={String(searchParams[k])} />
+              sp[k] ? (
+                <input key={k} type="hidden" name={k} value={String(sp[k])} />
               ) : null,
             )}
           </div>
@@ -108,7 +112,7 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
           />
         </Suspense>
 
-        <div>
+        <div id="marketplace-results" className="scroll-mt-20">
           <div className="flex items-center justify-between mb-6 gap-3 flex-wrap">
             <p className="text-sm text-muted-foreground">
               Showing <strong className="text-foreground tabular-nums">{result.items.length}</strong> of{' '}

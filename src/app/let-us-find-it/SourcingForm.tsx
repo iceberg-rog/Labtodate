@@ -27,6 +27,7 @@ export function SourcingForm({
       timeframe: (fd.get('timeframe') as string) || null,
       description: String(fd.get('description') ?? ''),
       productSlug: anchor?.slug ?? null,
+      company_url: String(fd.get('company_url') ?? ''),
     };
 
     startTransition(async () => {
@@ -44,6 +45,16 @@ export function SourcingForm({
       onSubmit={handleSubmit}
       className="rounded-2xl border border-border bg-card p-6 md:p-8 space-y-5 shadow-sm"
     >
+      {/* Honeypot — hidden from humans (off-screen, not display:none so bots
+          still see it), never focusable/autofilled. Bots that fill it are
+          silently dropped server-side. */}
+      <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
+        <label>
+          Company URL
+          <input type="text" name="company_url" tabIndex={-1} autoComplete="off" />
+        </label>
+      </div>
+
       {anchor && (
         <div className="rounded-xl bg-foreground/[0.03] border border-border p-4">
           <p className="text-[10px] uppercase tracking-[0.15em] font-bold text-muted-foreground mb-1">
@@ -77,7 +88,7 @@ export function SourcingForm({
           : 'Make / model / specs / condition / quantity / location — anything relevant.'} />
 
       {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</p>
+        <p className="rounded-md border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm">{error}</p>
       )}
 
       <Button type="submit" size="lg" disabled={pending} className="rounded-2xl font-semibold w-full">
@@ -111,7 +122,7 @@ function Field({
     <label className="block">
       <span className="block text-sm font-semibold mb-1.5">
         {label}
-        {required && <span className="text-red-600"> *</span>}
+        {required && <span className="text-red-600 dark:text-red-400"> *</span>}
       </span>
       {textarea ? (
         <textarea name={name} placeholder={placeholder} required={required} minLength={minLength} rows={6}

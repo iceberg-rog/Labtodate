@@ -123,8 +123,22 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
     };
   }
 
-  await prisma.order.update({
-    where: { id: order.id },
+  // BUG-038: claim the transition atomically. The PENDING_PAYMENT precondition
+  // must live in the write's WHERE, not only in the stale-snapshot `if` above.
+  // Otherwise a cron proforma/orphan cancel (status->CANCELED) or an admin verify
+  // (status->PAID) that lands between our read (line ~24) and this write — the S3
+  // upload above can take seconds — would be silently overwritten: an
+  // unconditional update({where:{id}}) stamps AWAITING_VERIFICATION +
+  // paymentSubmittedAt onto an already-CANCELED (and already-restocked) or PAID
+  // order, dropping a phantom receipt into the admin verify queue. S11 guards the
+  // forward edge (a receipt-in-flight order is never auto-canceled); this guards
+  // the reverse edge (a buyer submit must not resurrect an order that left
+  // PENDING_PAYMENT). Mirror the cron/admin pattern: updateMany + count===1 gate
+  // so the loser of the race no-ops cleanly with no side effects. Legitimate
+  // receipt re-submission is unaffected — replacing a receipt keeps status =
+  // PENDING_PAYMENT (only paymentVerificationStatus changes), so the WHERE matches.
+  const claim = await prisma.order.updateMany({
+    where: { id: order.id, status: 'PENDING_PAYMENT' },
     data: {
       paymentSubmittedAt: new Date(),
       paymentVerificationStatus: 'AWAITING_VERIFICATION',
@@ -137,6 +151,13 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
       ...(wantsAddrUpdate ? { shippingAddress: newShippingAddress as Prisma.InputJsonValue } : {}),
     },
   });
+  if (claim.count !== 1) {
+    // The order stopped accepting proof since we read it (canceled by the
+    // expiry/orphan sweep, or already moved to PAID by an admin verify). Don't
+    // notify admins and don't audit a phantom submission — send the buyer to the
+    // closed view, consistent with the snapshot guard above.
+    redirect(`/app/orders/${orderNumber}/payment?err=closed`);
+  }
 
   await notifyAdmins(
     `Payment proof submitted — order ${order.orderNumber}`,

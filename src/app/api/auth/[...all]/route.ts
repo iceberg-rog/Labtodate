@@ -17,6 +17,10 @@ const LIMITS: Array<{ match: RegExp; bucket: string; max: number; windowMs: numb
   { match: /\/(forget|forgot)-password\b/, bucket: 'auth:forgot', max: 5, windowMs: 15 * 60_000 },
   { match: /\/reset-password\b/, bucket: 'auth:reset', max: 5, windowMs: 15 * 60_000 },
   { match: /\/magic-link\b/, bucket: 'auth:magic', max: 5, windowMs: 15 * 60_000 },
+  // Email-OTP send is a Resend-cost + email-bombing lever (each hit emails an
+  // arbitrary address). Verify is capped too so a single IP can't grind codes.
+  { match: /\/email-otp\/send/, bucket: 'auth:otp-send', max: 5, windowMs: 15 * 60_000 },
+  { match: /\/email-otp\/verify/, bucket: 'auth:otp-verify', max: 20, windowMs: 15 * 60_000 },
 ];
 
 export async function POST(req: Request) {

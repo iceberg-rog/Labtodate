@@ -61,7 +61,7 @@ export function BulkShipButton({ count }: { count: number }) {
       {res && (
         <span
           className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
-            res.ok ? 'text-emerald-700' : 'text-red-700'
+            res.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'
           }`}
         >
           {res.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}

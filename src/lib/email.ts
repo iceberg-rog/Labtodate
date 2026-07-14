@@ -66,6 +66,11 @@ function buildTransport(): Transporter | null {
       port,
       secure,
       auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      // Bound every stage so a hung/slow SMTP server can't pin a request (and
+      // its DB connection) open indefinitely — request-side stability.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
     });
   }
 

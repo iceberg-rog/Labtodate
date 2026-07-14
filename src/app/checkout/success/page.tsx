@@ -38,7 +38,7 @@ export default async function CheckoutSuccessPage(
           : "Thanks — we have your order. We'll email you our bank-transfer details shortly. Once you've sent the wire, upload the receipt from your order page and our team will manually verify it before we dispatch."}
       </p>
       {!isPaid && (
-        <p className="mt-3 inline-block rounded-full bg-amber-100 text-amber-900 text-xs px-3 py-1.5 font-semibold">
+        <p className="mt-3 inline-block rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 text-xs px-3 py-1.5 font-semibold">
           Awaiting bank-transfer · manually verified · no charge taken
         </p>
       )}

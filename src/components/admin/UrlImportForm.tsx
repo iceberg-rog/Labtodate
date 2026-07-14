@@ -23,11 +23,11 @@ function fmtPrice(cents: number | null, currency: string): string {
 }
 
 const PLATFORM_LABEL: Record<string, { label: string; tone: string; icon: React.ReactNode }> = {
-  'woo':        { label: 'WooCommerce Store API', tone: 'bg-emerald-100 text-emerald-900', icon: <Cloud className="h-3 w-3" /> },
-  'shopify':    { label: 'Shopify JSON',          tone: 'bg-emerald-100 text-emerald-900', icon: <Cloud className="h-3 w-3" /> },
-  'json-ld':    { label: 'JSON-LD schema.org',    tone: 'bg-blue-100 text-blue-900',       icon: <Code className="h-3 w-3" /> },
-  'opengraph':  { label: 'OpenGraph meta',        tone: 'bg-amber-100 text-amber-900',     icon: <Code className="h-3 w-3" /> },
-  'ai-fallback':{ label: 'AI fallback',           tone: 'bg-purple-100 text-purple-900',   icon: <Sparkles className="h-3 w-3" /> },
+  'woo':        { label: 'WooCommerce Store API', tone: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300', icon: <Cloud className="h-3 w-3" /> },
+  'shopify':    { label: 'Shopify JSON',          tone: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300', icon: <Cloud className="h-3 w-3" /> },
+  'json-ld':    { label: 'JSON-LD schema.org',    tone: 'bg-blue-100 text-blue-900 dark:bg-blue-900/40 dark:text-blue-300',       icon: <Code className="h-3 w-3" /> },
+  'opengraph':  { label: 'OpenGraph meta',        tone: 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300',     icon: <Code className="h-3 w-3" /> },
+  'ai-fallback':{ label: 'AI fallback',           tone: 'bg-purple-100 text-purple-900 dark:bg-purple-900/40 dark:text-purple-300',   icon: <Sparkles className="h-3 w-3" /> },
   'unknown':    { label: 'Not detected',          tone: 'bg-foreground/10 text-foreground', icon: <AlertTriangle className="h-3 w-3" /> },
 };
 
@@ -153,13 +153,13 @@ export function UrlImportForm({ categories, companies }: Props) {
       </section>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 text-red-700 px-4 py-3 text-sm font-semibold flex items-start gap-2">
+        <div className="rounded-xl border border-red-200 bg-red-50 text-red-700 px-4 py-3 text-sm font-semibold flex items-start gap-2 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
           <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" /> {error}
         </div>
       )}
 
       {successSlug && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-3 text-sm font-semibold flex items-start gap-2">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-3 text-sm font-semibold flex items-start gap-2 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
           <CheckCircle2 className="h-4 w-4 mt-0.5 flex-shrink-0" />
           <span>
             Draft created — slug <code>{successSlug}</code>.
@@ -179,8 +179,8 @@ export function UrlImportForm({ categories, companies }: Props) {
               <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${meta.tone}`}>{meta.icon} {meta.label}</span>
             ); })()}
             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-              result.confidence === 'high' ? 'bg-emerald-100 text-emerald-900' :
-              result.confidence === 'medium' ? 'bg-amber-100 text-amber-900' :
+              result.confidence === 'high' ? 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300' :
+              result.confidence === 'medium' ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-300' :
               'bg-foreground/10 text-foreground'
             }`}>{result.confidence} confidence</span>
             {result.finalUrl && (
@@ -196,16 +196,16 @@ export function UrlImportForm({ categories, companies }: Props) {
                 <li key={i} className="flex items-center gap-2 text-muted-foreground">
                   <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${meta.tone.replace('bg-', 'bg-').replace('text-', 'text-')} opacity-90`}>{meta.icon} {meta.label}</span>
                   <span>
-                    {a.outcome === 'matched' && <strong className="text-emerald-700">matched ✓</strong>}
+                    {a.outcome === 'matched' && <strong className="text-emerald-700 dark:text-emerald-300">matched ✓</strong>}
                     {a.outcome === 'skipped' && <span>skipped{a.note ? ` — ${a.note}` : ''}</span>}
-                    {a.outcome === 'error'   && <span className="text-red-700">error: {a.note ?? 'unknown'}</span>}
+                    {a.outcome === 'error'   && <span className="text-red-700 dark:text-red-300">error: {a.note ?? 'unknown'}</span>}
                   </span>
                 </li>
               );
             })}
           </ol>
           {!result.ok && (
-            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-sm flex items-start gap-2">
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-sm flex items-start gap-2 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
               <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" /> {result.error}
             </div>
           )}
@@ -220,7 +220,7 @@ export function UrlImportForm({ categories, companies }: Props) {
           </div>
 
           {result.warnings.length > 0 && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 px-3 py-2 text-xs dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
               <p className="font-bold flex items-center gap-1.5 mb-1"><ShieldAlert className="h-3.5 w-3.5" /> Warnings</p>
               <ul className="list-disc ml-5 space-y-0.5">
                 {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
@@ -275,7 +275,7 @@ export function UrlImportForm({ categories, companies }: Props) {
                     {categories.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
                   </select>
                 </Field>
-                <Field label={<span className="inline-flex items-center gap-1.5">Supplier{initialShop && companySlug === initialShop && <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[9px] font-bold uppercase tracking-wider">auto-linked</span>}</span>}>
+                <Field label={<span className="inline-flex items-center gap-1.5">Supplier{initialShop && companySlug === initialShop && <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[9px] font-bold uppercase tracking-wider dark:bg-emerald-900/40 dark:text-emerald-300">auto-linked</span>}</span>}>
                   <select value={companySlug} onChange={(e) => setCompanySlug(e.target.value)} className={input}>
                     <option value="">lab2date (own inventory)</option>
                     {companies.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}

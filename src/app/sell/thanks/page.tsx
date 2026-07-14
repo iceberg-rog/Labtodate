@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button';
 
 export const metadata = { title: 'Submission received' };
 
-export default function SellThanksPage({ searchParams }: { searchParams: { id?: string } }) {
+export default async function SellThanksPage({ searchParams }: { searchParams: Promise<{ id?: string }> }) {
+  const sp = await searchParams;
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
       <div className="mx-auto h-16 w-16 rounded-full bg-accent/15 flex items-center justify-center mb-6">
@@ -17,8 +18,8 @@ export default function SellThanksPage({ searchParams }: { searchParams: { id?: 
         We&apos;ve emailed you a confirmation. Our acquisitions team will review your equipment and
         reply with a free valuation within <strong className="text-foreground">2 business days</strong>.
       </p>
-      {searchParams.id && (
-        <p className="mt-3 text-xs text-muted-foreground font-mono">Ref: {searchParams.id}</p>
+      {sp.id && (
+        <p className="mt-3 text-xs text-muted-foreground font-mono">Ref: {sp.id}</p>
       )}
 
       <div className="mt-10 text-left rounded-2xl border border-border bg-card p-6 space-y-4">
@@ -30,7 +31,7 @@ export default function SellThanksPage({ searchParams }: { searchParams: { id?: 
 
       <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">
         <Button asChild size="lg" className="rounded-2xl font-semibold">
-          <Link href={searchParams.id ? `/app/sell-submissions/${searchParams.id}` : '/app/sell-submissions'}>
+          <Link href={sp.id ? `/app/sell-submissions/${sp.id}` : '/app/sell-submissions'}>
             Open your offer <ArrowRight className="h-4 w-4" />
           </Link>
         </Button>

@@ -149,11 +149,11 @@ export const PRIORITY_LABEL: Record<Priority, string> = {
 };
 
 export const PRIORITY_CLASS: Record<Priority, string> = {
-  URGENT: 'bg-red-100 text-red-800 border-red-300',
-  HIGH_VALUE: 'bg-violet-100 text-violet-800 border-violet-300',
-  VIP: 'bg-amber-100 text-amber-800 border-amber-300',
-  REPEAT: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  NEW_BUYER: 'bg-sky-50 text-sky-700 border-sky-200',
+  URGENT: 'bg-red-100 text-red-800 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',
+  HIGH_VALUE: 'bg-violet-100 text-violet-800 border-violet-300 dark:bg-violet-900/40 dark:text-violet-300 dark:border-violet-800',
+  VIP: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',
+  REPEAT: 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',
+  NEW_BUYER: 'bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800',
   NORMAL: 'bg-foreground/5 text-muted-foreground border-border',
 };
 

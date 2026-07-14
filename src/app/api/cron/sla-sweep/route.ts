@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { sendEmail } from '@/lib/email';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
+import { expireProformaTransition } from '@/lib/quotes/proforma-expiry';
+import { orphanSweepTtlMinutes } from '@/lib/orders/orphan-ttl';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,7 +47,19 @@ export async function POST(req: NextRequest) {
 
   let ticketsNotified = 0;
   for (const t of overdueTickets) {
-    await prisma.supportTicket.update({ where: { id: t.id }, data: { slaBreachAt: now } });
+    // BUG-042 - atomic breach claim. This route runs on both POST and GET
+    // (a sidecar wget triggers GET -> POST), and a slow sweep can still be
+    // running when the next scheduled tick fires. Two overlapping invocations
+    // both findMany the same slaBreachAt=null ticket, so a plain
+    // update({where:{id}}) + unconditional notify would double-notify,
+    // double-email and double-audit a single breach. Mirror the proforma/orphan
+    // sweeps below: claim the breach atomically (updateMany guarded on
+    // slaBreachAt=null) and only fire side effects when this invocation won.
+    const claim = await prisma.supportTicket.updateMany({
+      where: { id: t.id, slaBreachAt: null },
+      data: { slaBreachAt: now },
+    });
+    if (claim.count !== 1) continue; // another sweep already flagged this one
     const overdueMinutes = Math.max(1, Math.round((now.getTime() - (t.dueAt?.getTime() ?? now.getTime())) / 60_000));
     const title = `SLA breached · ${t.ref}`;
     const body = `${t.priority}: "${t.subject}" — overdue by ${overdueMinutes}m`;
@@ -87,7 +101,13 @@ export async function POST(req: NextRequest) {
 
   let quotesNotified = 0;
   for (const q of overdueQuotes) {
-    await prisma.sourcingRequest.update({ where: { id: q.id }, data: { slaBreachAt: now } });
+    // BUG-042 - atomic breach claim (see ticket sweep above). Guards against
+    // overlapping sweeps double-notifying/double-emailing a single quote breach.
+    const claim = await prisma.sourcingRequest.updateMany({
+      where: { id: q.id, slaBreachAt: null },
+      data: { slaBreachAt: now },
+    });
+    if (claim.count !== 1) continue; // another sweep already flagged this one
     const overdueMinutes = Math.max(1, Math.round((now.getTime() - (q.dueAt?.getTime() ?? now.getTime())) / 60_000));
     const ref = q.proformaNumber ?? `RFQ-${q.id.slice(-6).toUpperCase()}`;
     const subject = q.product?.title ?? q.productCategory ?? `from ${q.buyerName}`;
@@ -116,7 +136,16 @@ export async function POST(req: NextRequest) {
   // Finds proformas whose validUntilAt has passed while the buyer never
   // moved on the deal. Closes the request (→ Lost) and cancels the linked
   // PENDING_PAYMENT order so the buyer's payment workspace blocks further
-  // upload attempts. Idempotent: status=CLOSED falls out of the WHERE.
+  // upload attempts. Sequentially idempotent: once status=CLOSED it falls out
+  // of the WHERE on the next sweep. BUG-044: it was NOT overlap-safe — two
+  // concurrent invocations (GET→POST sidecar wget + a slow sweep overrunning
+  // into the next scheduled tick, the exact scenario BUG-042 hardened the
+  // ticket/quote sweeps for) both findMany the same RESPONDED row before either
+  // commits, and the unconditional sourcingRequest.update + ungated side effects
+  // then double-emailed the buyer "proforma expired", double-notified, and
+  // double-audited a single expiry. Fixed below by claiming the RESPONDED→CLOSED
+  // transition atomically (updateMany guarded on status='RESPONDED') and only
+  // firing notify/email/audit when THIS invocation won the claim.
   const expiredProformas = await prisma.sourcingRequest.findMany({
     where: {
       archivedAt: null,
@@ -138,25 +167,20 @@ export async function POST(req: NextRequest) {
   for (const q of expiredProformas) {
     const ref = q.proformaNumber!;
     const item = q.product?.title ?? q.productCategory ?? 'requested equipment';
-    // Close the request and cancel the linked order in one transaction so
-    // an admin opening either side sees consistent state.
-    try {
-      await prisma.$transaction(async (tx) => {
-        await tx.sourcingRequest.update({
-          where: { id: q.id },
-          data: { status: 'CLOSED' },
-        });
-        await tx.order.updateMany({
-          where: {
-            sourcingRequestId: q.id,
-            status: 'PENDING_PAYMENT',
-          },
-          data: { status: 'CANCELED' },
-        });
-      });
-    } catch {
-      continue;
-    }
+
+    // Close the quote and cancel its linked order atomically — but ONLY if the
+    // buyer hasn't submitted a payment proof. The proof check lives INSIDE the
+    // transaction (expireProformaTransition), which closes the interleaving where
+    // a proof landing between an external read and the commit let the quote close
+    // (→ Lost) and expiry fire while the order stayed PENDING_PAYMENT with proof.
+    // Outcomes:
+    //   proof-in-flight — buyer acted; nothing changes, zero side effects.
+    //   lost-race       — an overlapping sweep won the RESPONDED→CLOSED claim; it
+    //                     owns the side effects.
+    //   expired         — order CANCELED + quote CLOSED committed together; fire
+    //                     notify/email/audit exactly once, below, after commit.
+    const outcome = await expireProformaTransition(prisma, q.id);
+    if (outcome !== 'expired') continue;
 
     if (q.submittedById) {
       await notifyUser(
@@ -196,7 +220,14 @@ export async function POST(req: NextRequest) {
   // Idempotent + race-safe: the cancel is an atomic updateMany guarded by
   // status=PENDING_PAYMENT AND paymentSubmittedAt=null, so a buyer who submits
   // proof between the select and the update wins and is never cancelled.
-  const orphanTtlMin = Number(process.env.ORPHAN_ORDER_TTL_MINUTES ?? 10080); // 7d
+  // Hard safety FLOOR (not merely the configurable TTL): never sweep below the
+  // Stripe checkout-session max lifetime (24h) + margin. A handoff that crashed
+  // after create() but before persist/expire can leave an order with a null
+  // stripeSessionId yet a still-payable Stripe session; the floor guarantees any
+  // such session has expired on Stripe's side before this sweep cancels+restocks.
+  // Fail-safe TTL: hard 25h floor (> Stripe's 24h session max), 7d default, never
+  // NaN. See orphanSweepTtlMinutes (unit-tested in verify-expired-restock-once.ts).
+  const orphanTtlMin = orphanSweepTtlMinutes(process.env.ORPHAN_ORDER_TTL_MINUTES);
   const orphanCutoff = new Date(now.getTime() - orphanTtlMin * 60_000);
   const orphanCandidates = await prisma.order.findMany({
     where: {

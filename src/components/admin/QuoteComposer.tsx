@@ -105,7 +105,7 @@ export function QuoteComposer({
           <button
             type="button"
             onClick={() => { setMode('internal'); setOpen(true); }}
-            className="inline-flex items-center gap-1 h-7 px-3 rounded-full border border-amber-200 bg-amber-50 text-amber-900 text-[11px] font-bold hover:bg-amber-100"
+            className="inline-flex items-center gap-1 h-7 px-3 rounded-full border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 text-[11px] font-bold hover:bg-amber-100 dark:hover:bg-amber-900/40"
           >
             <Lock className="h-3 w-3" /> Internal note
           </button>
@@ -127,7 +127,7 @@ export function QuoteComposer({
     <section
       className={
         isInternal
-          ? 'rounded-2xl border-2 border-amber-300 bg-amber-50/70 overflow-hidden'
+          ? 'rounded-2xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/30 overflow-hidden'
           : isProforma
           ? 'rounded-2xl border-2 border-accent/40 bg-accent/[0.06] overflow-hidden'
           : 'rounded-2xl border-2 border-primary/40 bg-card overflow-hidden'
@@ -152,7 +152,7 @@ export function QuoteComposer({
       <div
         className={
           isInternal
-            ? 'px-5 py-2.5 bg-amber-100/80 border-b border-amber-200 inline-flex items-center gap-2 w-full'
+            ? 'px-5 py-2.5 bg-amber-100/80 dark:bg-amber-900/40 border-b border-amber-200 dark:border-amber-800 inline-flex items-center gap-2 w-full'
             : isProforma
             ? 'px-5 py-2.5 bg-accent/[0.10] border-b border-accent/20 inline-flex items-center gap-2 w-full'
             : 'px-5 py-2.5 bg-primary/5 border-b border-primary/15 inline-flex items-center gap-2 w-full'
@@ -160,8 +160,8 @@ export function QuoteComposer({
       >
         {isInternal ? (
           <>
-            <EyeOff className="h-3.5 w-3.5 text-amber-800 shrink-0" />
-            <p className="text-[11px] font-semibold text-amber-900">Team-only — never emailed, never shown to {buyerEmail}.</p>
+            <EyeOff className="h-3.5 w-3.5 text-amber-800 dark:text-amber-300 shrink-0" />
+            <p className="text-[11px] font-semibold text-amber-900 dark:text-amber-300">Team-only — never emailed, never shown to {buyerEmail}.</p>
           </>
         ) : isProforma ? (
           <p className="text-[11px] font-semibold text-foreground">Sends a formal proforma invoice + payment instructions to {buyerEmail}.</p>
@@ -233,17 +233,17 @@ export function QuoteComposer({
               placeholder={isInternal ? 'Add an internal note — triage, hand-off, mention a teammate…' : 'Write a reply the buyer will see…'}
               className={
                 isInternal
-                  ? 'w-full px-3 py-2.5 rounded-lg border-2 border-amber-300 bg-white text-sm resize-y focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-500'
+                  ? 'w-full px-3 py-2.5 rounded-lg border-2 border-amber-300 dark:border-amber-800 bg-white dark:bg-transparent text-sm resize-y focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-500'
                   : 'w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary'
               }
             />
             <div className="text-right text-[10px] text-muted-foreground tabular-nums">
-              <span className={body.length > 3800 ? 'text-amber-600 font-semibold' : ''}>{body.length} / 4000</span>
+              <span className={body.length > 3800 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}>{body.length} / 4000</span>
             </div>
           </>
         )}
 
-        {err && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{err}</p>}
+        {err && <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">{err}</p>}
 
         <div className="flex items-center gap-2 flex-wrap">
           {!isProforma && (

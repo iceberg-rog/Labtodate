@@ -54,8 +54,8 @@ export default async function GuestTicketPage(
   if (t.accessTokenExpiresAt && t.accessTokenExpiresAt.getTime() <= Date.now()) {
     return (
       <div className="container-px py-20 max-w-md mx-auto text-center">
-        <div className="mx-auto h-14 w-14 rounded-full bg-amber-100 inline-flex items-center justify-center mb-5">
-          <Lock className="h-7 w-7 text-amber-800" />
+        <div className="mx-auto h-14 w-14 rounded-full bg-amber-100 dark:bg-amber-900/40 inline-flex items-center justify-center mb-5">
+          <Lock className="h-7 w-7 text-amber-800 dark:text-amber-300" />
         </div>
         <h1 className="text-3xl font-bold tracking-tight">This link has expired</h1>
         <p className="mt-4 text-muted-foreground">
@@ -99,11 +99,11 @@ export default async function GuestTicketPage(
         <div className="flex items-center gap-2 flex-wrap mb-1">
           <span className="font-mono text-[11px] text-muted-foreground">{t.ref}</span>
           {PRIORITY_ICON[t.priority] && (
-            <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+            <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
               {PRIORITY_ICON[t.priority]} {t.priority}
             </span>
           )}
-          <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-sky-50 text-sky-800 border border-sky-200">
+          <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
             {CUSTOMER_STATUS_LABEL[t.status] ?? t.status.toLowerCase().replace(/_/g, ' ')}
           </span>
         </div>
@@ -113,7 +113,7 @@ export default async function GuestTicketPage(
         </p>
       </div>
       {searchParams.ok === '1' && (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 mb-4 inline-flex items-center gap-2 text-sm text-emerald-900">
+        <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-3 mb-4 inline-flex items-center gap-2 text-sm text-emerald-900 dark:text-emerald-300">
           <ShieldCheck className="h-4 w-4" /> Reply sent — we’ll respond shortly.
         </div>
       )}

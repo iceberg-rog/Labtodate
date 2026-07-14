@@ -7,9 +7,9 @@ import { getMarketing } from '@/lib/marketing';
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
 
-export default async function LetUsFindItPage({ searchParams }: { searchParams: { product?: string } }) {
+export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string }> }) {
   const mk = await getMarketing();
-  const slug = searchParams.product;
+  const slug = (await searchParams).product;
   const anchor = slug
     ? await prisma.product.findUnique({
         where: { slug },

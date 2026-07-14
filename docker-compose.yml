@@ -51,6 +51,7 @@ services:
         done;
         mc mb --ignore-existing "local/$$S3_BUCKET";
         mc anonymous set download "local/$$S3_BUCKET/products";
+        mc anonymous set download "local/$$S3_BUCKET/blog-cover";
       '
 
   mailpit:
@@ -78,7 +79,10 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-    command: ["sh", "-c", "npm run db:deploy && npm run db:seed:all"]
+    # migrate deploy only. Seeding is an explicit operator action (npm run
+    # db:seed:all), never run automatically on boot — it must not touch a
+    # restored production database.
+    command: ["npm", "run", "db:deploy"]
 
   web:
     build:
@@ -88,6 +92,13 @@ services:
     image: lab2date-web:latest
     restart: unless-stopped
     <<: *app-env
+    # Cap the container's RAM so a memory spike (e.g. the WASM image optimizer
+    # under load) gets the web process OOM-killed + auto-restarted instead of
+    # taking the whole 3.8 GB host — and Postgres — down with it. The heap cap
+    # sits below the container limit so Node GCs rather than getting killed.
+    mem_limit: 1536m
+    environment:
+      NODE_OPTIONS: "--max-old-space-size=1024"
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:

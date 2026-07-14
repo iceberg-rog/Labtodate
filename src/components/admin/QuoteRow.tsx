@@ -54,9 +54,9 @@ export type QuoteRowProps = {
 };
 
 const PRIORITY_STYLE: Record<string, { label: string; cls: string; icon: JSX.Element }> = {
-  VIP:    { label: 'VIP',    cls: 'bg-purple-100 text-purple-800 border-purple-300', icon: <Crown className="h-3 w-3" /> },
-  URGENT: { label: 'URGENT', cls: 'bg-red-100 text-red-800 border-red-300',         icon: <ShieldAlert className="h-3 w-3" /> },
-  HIGH:   { label: 'HIGH',   cls: 'bg-amber-100 text-amber-800 border-amber-300',   icon: <AlertCircle className="h-3 w-3" /> },
+  VIP:    { label: 'VIP',    cls: 'bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-900/40 dark:text-purple-300 dark:border-purple-800', icon: <Crown className="h-3 w-3" /> },
+  URGENT: { label: 'URGENT', cls: 'bg-red-100 text-red-800 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',         icon: <ShieldAlert className="h-3 w-3" /> },
+  HIGH:   { label: 'HIGH',   cls: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',   icon: <AlertCircle className="h-3 w-3" /> },
   NORMAL: { label: '',       cls: '',                                                icon: <></> },
   LOW:    { label: '',       cls: '',                                                icon: <></> },
 };
@@ -89,7 +89,7 @@ function SlaBadge({ dueAtISO, status, mounted }: { dueAtISO: string | null; stat
   if (diffMs > 0) {
     const h = Math.round(diffMs / 3600e3);
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+      <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
         <Hourglass className="h-3 w-3" /> {h <= 1 ? '<1h' : `${h}h left`}
       </span>
     );
@@ -99,7 +99,7 @@ function SlaBadge({ dueAtISO, status, mounted }: { dueAtISO: string | null; stat
   return (
     <span
       className={`inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full ${
-        breached ? 'bg-red-100 text-red-800 border border-red-300 animate-pulse' : 'bg-amber-100 text-amber-800 border border-amber-300'
+        breached ? 'bg-red-100 text-red-800 border border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800 animate-pulse' : 'bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800'
       }`}
     >
       <AlertCircle className="h-3 w-3" />
@@ -137,10 +137,10 @@ export function QuoteRow(p: QuoteRowProps) {
 
   const isRepeatBuyer = p.buyerPaidOrders > 0;
   const amountColor =
-    deal.state === 'won_paid' ? 'text-emerald-700'
-      : deal.state.startsWith('won_') ? 'text-purple-700'
-      : deal.state === 'proforma_sent' ? 'text-sky-700'
-      : deal.state === 'awaiting_buyer' ? 'text-sky-700'
+    deal.state === 'won_paid' ? 'text-emerald-700 dark:text-emerald-300'
+      : deal.state.startsWith('won_') ? 'text-purple-700 dark:text-purple-300'
+      : deal.state === 'proforma_sent' ? 'text-sky-700 dark:text-sky-300'
+      : deal.state === 'awaiting_buyer' ? 'text-sky-700 dark:text-sky-300'
       : 'text-foreground';
 
   return (
@@ -149,7 +149,7 @@ export function QuoteRow(p: QuoteRowProps) {
         before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-1 ${stripe} ${p.archived ? 'opacity-70 grayscale-[0.2]' : ''}`}
     >
       {p.archived && (
-        <div className="absolute top-2 right-3 z-10 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5">
+        <div className="absolute top-2 right-3 z-10 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-2 py-0.5">
           <Archive className="h-3 w-3" /> Archived
         </div>
       )}
@@ -181,7 +181,7 @@ export function QuoteRow(p: QuoteRowProps) {
               )}
               <SlaBadge dueAtISO={p.dueAtISO} status={p.status} mounted={mounted} />
               {p.customerType === 'GUEST' && (
-                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5">
+                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   guest
                 </span>
               )}
@@ -204,11 +204,11 @@ export function QuoteRow(p: QuoteRowProps) {
                 )}
               </span>
               {isRepeatBuyer ? (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 px-1.5 py-0.5" title="Past paid orders">
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800 px-1.5 py-0.5" title="Past paid orders">
                   <TrendingUp className="h-3 w-3" /> repeat · {p.buyerPaidOrders}
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5">
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   new buyer
                 </span>
               )}
@@ -295,7 +295,7 @@ export function QuoteRow(p: QuoteRowProps) {
                         catch (err) { alert(err instanceof Error ? err.message : 'Restore failed'); }
                       });
                     }}
-                    className="inline-flex items-center justify-center h-7 w-7 rounded-md text-slate-700 hover:bg-foreground/5 disabled:opacity-50"
+                    className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-foreground/5 disabled:opacity-50"
                     title="Restore"
                   >
                     <ArchiveRestore className="h-3.5 w-3.5" />
@@ -315,7 +315,7 @@ export function QuoteRow(p: QuoteRowProps) {
                         } catch (err) { alert(err instanceof Error ? err.message : 'Delete failed'); }
                       });
                     }}
-                    className="inline-flex items-center justify-center h-7 w-7 rounded-md text-red-700 hover:bg-red-50 disabled:opacity-50"
+                    className="inline-flex items-center justify-center h-7 w-7 rounded-md text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"
                     title="Delete permanently"
                   >
                     <Trash2 className="h-3.5 w-3.5" />

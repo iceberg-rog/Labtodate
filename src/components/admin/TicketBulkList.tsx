@@ -109,7 +109,7 @@ export function TicketBulkList({
                     if (!confirm(`Permanently delete ${selected.size} ticket${selected.size === 1 ? '' : 's'}? This cannot be undone.`)) return;
                     run(bulkDeleteTickets);
                   }}
-                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border-2 border-red-300 bg-red-50 text-red-700 text-xs font-bold hover:bg-red-100 disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                   Delete {selected.size}
@@ -130,7 +130,7 @@ export function TicketBulkList({
       )}
 
       {msg && (
-        <p className="text-xs text-emerald-700 font-semibold px-1">{msg}</p>
+        <p className="text-xs text-emerald-700 dark:text-emerald-300 font-semibold px-1">{msg}</p>
       )}
 
       <ul className="space-y-3">

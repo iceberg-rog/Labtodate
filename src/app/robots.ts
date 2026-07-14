@@ -1,6 +1,6 @@
 import type { MetadataRoute } from 'next';
 
-const BASE = process.env.BETTER_AUTH_URL ?? 'https://lab2date.com';
+const BASE = process.env.BETTER_AUTH_URL ?? 'https://labtodate.com';
 
 export default function robots(): MetadataRoute.Robots {
   return {

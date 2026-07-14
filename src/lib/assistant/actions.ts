@@ -4,7 +4,8 @@ import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { randomBytes } from 'node:crypto';
 import { prisma } from '@/lib/db';
-import { getServerSession, requireSession } from '@/lib/auth-server';
+import { getServerSession, requireCapability } from '@/lib/auth-server';
+import { rateLimit } from '@/lib/ratelimit';
 import { aiChat, type AIMessage } from '@/lib/ai';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
@@ -95,6 +96,10 @@ export async function sendAssistantMessage(input: {
   rating: number | null;
   closedAt: string | null;
 }> {
+  // SECURITY: this action is callable by anonymous guests and drives a paid
+  // LLM call — throttle per real client IP so a replay loop can't run up the
+  // provider bill or flood the DB with messages/conversations.
+  await rateLimit('assistant', 20, 5 * 60_000);
   await ensureSettingsLoaded();
   const actor = await resolveActor();
   const conversationId = await findOrCreateConversation(actor);
@@ -182,6 +187,8 @@ export async function requestHumanEscalation(input: {
   name?: string;
   email?: string;
 }): Promise<{ conversationId: string; status: string }> {
+  // Anonymous-callable + pings admins — throttle to stop escalation spam.
+  await rateLimit('assistant-escalate', 6, 15 * 60_000);
   await ensureSettingsLoaded();
   const actor = await resolveActor();
   const conversationId = await findOrCreateConversation(actor);
@@ -230,7 +237,7 @@ export async function requestHumanEscalation(input: {
  * Admin claims an awaiting conversation (idempotent — second claim re-asserts).
  */
 export async function adminClaimConversation(formData: FormData): Promise<void> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/messages' });
+  const session = await requireCapability('messages:reply', { redirectTo: '/admin/messages' });
   const id = String(formData.get('conversationId') ?? '');
   if (!id) return;
   await prisma.assistantConversation.update({
@@ -249,7 +256,7 @@ export async function adminClaimConversation(formData: FormData): Promise<void> 
  * Admin reply. Persists, advances state if needed, pings user.
  */
 export async function adminReplyConversation(formData: FormData): Promise<void> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/messages' });
+  const session = await requireCapability('messages:reply', { redirectTo: '/admin/messages' });
   await ensureSettingsLoaded();
   const id = String(formData.get('conversationId') ?? '');
   const body = String(formData.get('body') ?? '').trim().slice(0, 4000);
@@ -312,7 +319,7 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
 
 /** Admin closes; user gets a rating prompt next time they open the widget. */
 export async function adminCloseConversation(formData: FormData): Promise<void> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/messages' });
+  const session = await requireCapability('messages:reply', { redirectTo: '/admin/messages' });
   const id = String(formData.get('conversationId') ?? '');
   if (!id) return;
   await prisma.assistantConversation.update({
@@ -377,6 +384,8 @@ export async function readConversation(conversationId: string): Promise<{
       status: true,
       rating: true,
       closedAt: true,
+      userId: true,
+      guestToken: true,
       messages: {
         orderBy: { createdAt: 'asc' },
         select: { id: true, role: true, body: true, attachments: true, createdAt: true },
@@ -386,6 +395,19 @@ export async function readConversation(conversationId: string): Promise<{
   });
   if (!conv) {
     return { conversationId, messages: [], status: 'AI', rating: null, closedAt: null };
+  }
+  // SECURITY (IDOR): a conversation can hold guest name/email + free-text
+  // support content. Only the owner — the logged-in user, or a guest matched
+  // by cookie — or an admin may read it. Anyone else (leaked/guessed id) gets
+  // an empty snapshot rather than someone else's chat.
+  const session = await getServerSession();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  const guestToken = (await cookies()).get(GUEST_COOKIE)?.value ?? null;
+  const owns = conv.userId
+    ? conv.userId === session?.user?.id
+    : !!conv.guestToken && conv.guestToken === guestToken;
+  if (!owns && role !== 'ADMIN') {
+    return { conversationId, messages: [], status: conv.status, rating: null, closedAt: null };
   }
   return {
     conversationId: conv.id,
@@ -431,6 +453,8 @@ export async function startFreshConversation(): Promise<{
   closedAt: string | null;
   identity: { kind: 'user' | 'guest'; name: string | null; email: string | null };
 }> {
+  // Anonymous-callable + creates a row each call — throttle to cap DB growth.
+  await rateLimit('assistant-fresh', 10, 15 * 60_000);
   const actor = await resolveActor();
   const where = actor.userId
     ? { userId: actor.userId, archivedAt: null }

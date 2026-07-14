@@ -27,7 +27,7 @@ type StatusVisual = {
 const STATUS: Record<string, StatusVisual> = {
   PENDING_PAYMENT: {
     stripe: 'before:bg-amber-400',
-    badge: 'bg-amber-100 text-amber-900 border-amber-200',
+    badge: 'bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 border-amber-200 dark:border-amber-800',
     Icon: Clock,
     label: 'Awaiting payment',
     nextLabel: 'Complete payment',
@@ -35,37 +35,37 @@ const STATUS: Record<string, StatusVisual> = {
   },
   PAID: {
     stripe: 'before:bg-emerald-500',
-    badge: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+    badge: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
     Icon: CreditCard,
     label: 'Paid',
   },
   PROCESSING: {
     stripe: 'before:bg-sky-400',
-    badge: 'bg-sky-50 text-sky-900 border-sky-200',
+    badge: 'bg-sky-50 dark:bg-sky-950/40 text-sky-900 dark:text-sky-300 border-sky-200 dark:border-sky-800',
     Icon: Package,
     label: 'Processing',
   },
   SHIPPED: {
     stripe: 'before:bg-violet-500',
-    badge: 'bg-violet-50 text-violet-900 border-violet-200',
+    badge: 'bg-violet-50 dark:bg-violet-950/40 text-violet-900 dark:text-violet-300 border-violet-200 dark:border-violet-800',
     Icon: Truck,
     label: 'Shipped',
   },
   DELIVERED: {
     stripe: 'before:bg-emerald-600',
-    badge: 'bg-emerald-100 text-emerald-900 border-emerald-200',
+    badge: 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-900 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
     Icon: CheckCheck,
     label: 'Delivered',
   },
   CANCELED: {
     stripe: 'before:bg-slate-400',
-    badge: 'bg-slate-100 text-slate-700 border-slate-200',
+    badge: 'bg-muted text-muted-foreground border-border',
     Icon: XCircle,
     label: 'Canceled',
   },
   REFUNDED: {
     stripe: 'before:bg-slate-400',
-    badge: 'bg-slate-100 text-slate-700 border-slate-200',
+    badge: 'bg-muted text-muted-foreground border-border',
     Icon: RefreshCcw,
     label: 'Refunded',
   },

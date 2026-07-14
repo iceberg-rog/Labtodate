@@ -285,7 +285,7 @@ export default async function AdminQuotesPage(
             </span>
           )}
           {priority && (
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 font-semibold">
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 font-semibold">
               Priority: {priority}
               <a href={href({ priority: '' })} className="ml-1 opacity-60 hover:opacity-100">×</a>
             </span>
@@ -352,9 +352,9 @@ function SignalChip({
   label, value, tone, href,
 }: { label: string; value: number; tone: 'red' | 'amber' | 'neutral'; href: string }) {
   const cls = tone === 'red'
-    ? 'bg-red-50 text-red-800 border-red-200'
+    ? 'bg-red-50 text-red-800 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800'
     : tone === 'amber'
-    ? 'bg-amber-50 text-amber-800 border-amber-200'
+    ? 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800'
     : 'bg-card text-muted-foreground border-border';
   return (
     <a href={href} className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-full border text-xs font-semibold hover:opacity-90 ${cls}`}>

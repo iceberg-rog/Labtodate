@@ -191,7 +191,7 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
 
           <div>
             <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1.5">
-              Fallback illustration {images.length > 0 && <span className="text-amber-700 normal-case font-normal">(only used if no photos)</span>}
+              Fallback illustration {images.length > 0 && <span className="text-amber-700 dark:text-amber-300 normal-case font-normal">(only used if no photos)</span>}
             </p>
             <div className={`grid grid-cols-3 sm:grid-cols-4 gap-2 ${images.length > 0 ? 'opacity-60' : ''}`}>
               {ILLUSTRATIONS.map((name) => (
@@ -264,7 +264,7 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
       </section>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 text-red-700 px-4 py-3 text-sm">{error}</div>
+        <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-4 py-3 text-sm">{error}</div>
       )}
 
       <div className="flex flex-col sm:flex-row gap-3 items-center">

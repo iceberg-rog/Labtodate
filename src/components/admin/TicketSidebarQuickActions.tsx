@@ -69,7 +69,7 @@ export function TicketSidebarQuickActions({
           <Truck className="h-3 w-3" /> Invoice
         </Link>
       )}
-      {msg && <p className="text-[10px] text-emerald-700 font-semibold w-full">{msg}</p>}
+      {msg && <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold w-full">{msg}</p>}
     </div>
   );
 }

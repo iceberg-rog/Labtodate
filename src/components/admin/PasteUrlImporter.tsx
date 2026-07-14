@@ -185,9 +185,9 @@ export function PasteUrlImporter({ companySlug, initialUrl, categories }: Props)
 
   const product = preview?.product;
   const confidenceColor =
-    preview?.confidence === 'high' ? 'text-emerald-700 bg-emerald-50 border-emerald-200' :
-    preview?.confidence === 'medium' ? 'text-amber-700 bg-amber-50 border-amber-200' :
-    preview?.confidence === 'low' ? 'text-orange-700 bg-orange-50 border-orange-200' :
+    preview?.confidence === 'high' ? 'text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-300 dark:bg-emerald-950/40 dark:border-emerald-800' :
+    preview?.confidence === 'medium' ? 'text-amber-700 bg-amber-50 border-amber-200 dark:text-amber-300 dark:bg-amber-950/40 dark:border-amber-800' :
+    preview?.confidence === 'low' ? 'text-orange-700 bg-orange-50 border-orange-200 dark:text-orange-300 dark:bg-orange-950/40 dark:border-orange-800' :
     'text-muted-foreground bg-foreground/[0.04] border-border';
 
   return (
@@ -219,14 +219,14 @@ export function PasteUrlImporter({ companySlug, initialUrl, categories }: Props)
       </form>
 
       {error && (
-        <div className="rounded-xl border border-red-200 bg-red-50 text-red-900 px-3 py-2.5 text-sm flex items-start gap-2">
+        <div className="rounded-xl border border-red-200 bg-red-50 text-red-900 px-3 py-2.5 text-sm flex items-start gap-2 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
           <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
           <div className="flex-1 min-w-0 break-words">{error}</div>
         </div>
       )}
 
       {saved && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-3 text-sm flex items-center justify-between gap-3 flex-wrap">
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-3 py-3 text-sm flex items-center justify-between gap-3 flex-wrap dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
           <span className="font-semibold inline-flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4" />
             {saved.existing ? 'Already imported — opening existing draft.' : 'Draft created.'}
@@ -248,7 +248,7 @@ export function PasteUrlImporter({ companySlug, initialUrl, categories }: Props)
                 Source: {preview!.platform} · {preview!.confidence} confidence
               </span>
               {preview!.warnings.length > 0 && (
-                <span className="text-amber-700">{preview!.warnings.length} warning{preview!.warnings.length === 1 ? '' : 's'}</span>
+                <span className="text-amber-700 dark:text-amber-300">{preview!.warnings.length} warning{preview!.warnings.length === 1 ? '' : 's'}</span>
               )}
             </div>
             <a

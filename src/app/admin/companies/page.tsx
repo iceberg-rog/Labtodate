@@ -14,11 +14,12 @@ const PAGE_SIZE = 50;
 export default async function AdminCompaniesPage({
   searchParams,
 }: {
-  searchParams: { q?: string; page?: string; created?: string; imported?: string };
+  searchParams: Promise<{ q?: string; page?: string; created?: string; imported?: string }>;
 }) {
   await requireCapability('companies:manage');
-  const q = (searchParams.q ?? '').trim();
-  const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
+  const sp = await searchParams;
+  const q = (sp.q ?? '').trim();
+  const page = Math.max(1, parseInt(sp.page ?? '1', 10) || 1);
   const where = q
     ? {
         OR: [
@@ -75,11 +76,11 @@ export default async function AdminCompaniesPage({
 
   return (
     <div className="space-y-6">
-      {(searchParams.created || searchParams.imported) && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-3 text-sm font-medium">
-          {searchParams.created
-            ? `✓ Shop “${searchParams.created}” added.`
-            : `✓ Imported ${searchParams.imported} product${searchParams.imported === '1' ? '' : 's'}.`}
+      {(sp.created || sp.imported) && (
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm font-medium">
+          {sp.created
+            ? `✓ Shop “${sp.created}” added.`
+            : `✓ Imported ${sp.imported} product${sp.imported === '1' ? '' : 's'}.`}
         </div>
       )}
 
@@ -125,8 +126,8 @@ export default async function AdminCompaniesPage({
 
 function SummaryCard({ label, value, tone }: { label: string; value: number; tone: 'default' | 'emerald' | 'purple' | 'muted' }) {
   const t =
-    tone === 'emerald' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' :
-    tone === 'purple'  ? 'border-purple-200 bg-purple-50 text-purple-900' :
+    tone === 'emerald' ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300' :
+    tone === 'purple'  ? 'border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/40 text-purple-900 dark:text-purple-300' :
     tone === 'muted'   ? 'border-border bg-foreground/[0.02] text-muted-foreground' :
                          'border-border bg-card';
   return (

@@ -4,6 +4,8 @@
 
 @layer base {
   :root {
+    color-scheme: light;
+
     /* Surfaces */
     --background: 42 33% 97%;          /* #FAF8F2 warm cream */
     --foreground: 200 28% 9%;          /* #11181C deep ink */
@@ -26,6 +28,36 @@
     --ink: 200 30% 6%;
 
     --radius: 0.75rem;
+  }
+
+  /* ── Dark theme ─────────────────────────────────────────────────────────
+     Same forest/lime identity, inverted onto a deep cool ink. Primary is
+     brightened to an emerald so it stays legible both as a surface (buttons)
+     and as text (links, logo) on the dark ground. All UI that uses the
+     semantic tokens below flips automatically. */
+  .dark {
+    color-scheme: dark;
+
+    /* Surfaces — a softer slate dark (not near-black) */
+    --background: 200 20% 11%;         /* cool slate ink */
+    --foreground: 40 30% 93%;          /* warm off-white */
+    --card: 200 17% 15%;               /* elevated surface */
+    --card-foreground: 40 30% 93%;
+    --muted: 200 14% 20%;
+    --muted-foreground: 200 12% 66%;
+
+    /* Brand */
+    --primary: 158 64% 52%;            /* bright emerald */
+    --primary-foreground: 165 65% 7%;  /* near-black green on emerald */
+    --accent: 82 72% 58%;              /* lime, a touch brighter */
+    --accent-foreground: 82 60% 10%;
+    --accent-deep: 82 68% 66%;         /* lighter lime for text on dark */
+
+    /* Lines */
+    --border: 200 13% 26%;
+    --input: 200 13% 27%;
+    --ring: 158 64% 52%;
+    --ink: 40 30% 93%;
   }
 }
 
@@ -60,12 +92,23 @@
       radial-gradient(at 75% 88%, hsla(168, 60%, 32%, 0.16) 0px, transparent 50%),
       radial-gradient(at 10% 90%, hsla(40, 60%, 88%, 0.5) 0px, transparent 50%);
   }
+  .dark .gradient-mesh {
+    background-image:
+      radial-gradient(at 12% 18%, hsla(158, 64%, 46%, 0.16) 0px, transparent 50%),
+      radial-gradient(at 88% 24%, hsla(82, 72%, 55%, 0.14) 0px, transparent 45%),
+      radial-gradient(at 75% 88%, hsla(168, 60%, 40%, 0.14) 0px, transparent 50%),
+      radial-gradient(at 10% 90%, hsla(195, 40%, 20%, 0.55) 0px, transparent 50%);
+  }
 
   /* Frosted glass cards used in Hero */
   .glass {
     background: rgba(255, 255, 255, 0.72);
     backdrop-filter: saturate(160%) blur(12px);
     -webkit-backdrop-filter: saturate(160%) blur(12px);
+  }
+  .dark .glass {
+    background: hsla(195, 24%, 12%, 0.62);
+    border-color: hsl(var(--border));
   }
 
   /* Subtle inner glow used on premium CTA cards */
@@ -74,6 +117,12 @@
       0 0 0 1px rgba(15, 79, 64, 0.06),
       0 12px 32px -12px rgba(15, 79, 64, 0.22),
       0 4px 12px -6px rgba(0, 0, 0, 0.08);
+  }
+  .dark .ring-glow {
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 12px 32px -12px rgba(0, 0, 0, 0.6),
+      0 4px 12px -6px rgba(0, 0, 0, 0.5);
   }
 
   /* Animated subtle float for Hero accents */
@@ -137,6 +186,10 @@
     background-size: 56px 100px;
     -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black, transparent 75%);
     mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black, transparent 75%);
+  }
+  .dark .hex-lattice {
+    opacity: 0.5;
+    background-image: url("data:image/svg+xml,%3Csvg width='56' height='100' viewBox='0 0 56 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M28 0 L56 16 L56 50 L28 66 L0 50 L0 16 Z M28 66 L56 82 L56 116 M28 66 L0 82 L0 116' fill='none' stroke='%235FE0B0' stroke-opacity='0.18' stroke-width='1'/%3E%3C/svg%3E");
   }
 
   /* Fine grain for premium texture */

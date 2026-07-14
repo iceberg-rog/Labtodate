@@ -14,14 +14,16 @@ const nextConfig = {
     // optimizer fetches /media/* via the rewrite below (same origin).
     // For Product.images that point at external suppliers (lab2.nl,
     // lab2parts.com, plus any future supplier added through the AI shop
-    // suggester or the URL importer) we widen the allowlist to all HTTPS
-    // sources — the optimizer still validates the response is an image, so
-    // the risk is bounded to bandwidth abuse, which is mitigated by Next's
-    // built-in size+count limits on /_next/image.
+    // suggester or the URL importer) we allow all HTTPS sources — the
+    // optimizer still validates the response is an image, so the risk is
+    // bounded to bandwidth (mitigated by Next's size+count limits and the
+    // per-IP nginx limit on /_next/image).
+    // SECURITY: `http` is intentionally NOT allowed. Plaintext internal
+    // services (169.254.169.254 metadata, db:5432, minio:9000, xray:9443)
+    // all speak http, so an http:** allowlist turned the optimizer into an
+    // SSRF probe into the private network. HTTPS-only closes that.
     remotePatterns: [
-      { protocol: 'https', hostname: 'images.unsplash.com' },
       { protocol: 'https', hostname: '**' },
-      { protocol: 'http',  hostname: '**' },
     ],
   },
   async rewrites() {

@@ -11,8 +11,8 @@ function Notice({ kind, msg }: { kind: 'ok' | 'err'; msg: string }) {
     <p
       className={`rounded-md px-3 py-2 text-sm ${
         kind === 'ok'
-          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-          : 'bg-red-50 text-red-700 border border-red-200'
+          ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+          : 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
       }`}
     >
       {kind === 'ok' && <Check className="inline h-4 w-4 mr-1" />}

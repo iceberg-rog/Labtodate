@@ -139,7 +139,7 @@ export function ThreadView({
           {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </Button>
       </form>
-      {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
+      {error && <p className="text-xs text-red-600 dark:text-red-400 mt-2">{error}</p>}
     </div>
   );
 }

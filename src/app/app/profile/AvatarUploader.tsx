@@ -71,7 +71,7 @@ export function AvatarUploader({ name, image }: { name: string; image: string | 
         onChange={onPick}
         className="hidden"
       />
-      {err && <p className="absolute top-full left-0 mt-1 text-xs text-red-700 whitespace-nowrap">{err}</p>}
+      {err && <p className="absolute top-full left-0 mt-1 text-xs text-red-700 dark:text-red-400 whitespace-nowrap">{err}</p>}
     </div>
   );
 }

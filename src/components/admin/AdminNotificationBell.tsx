@@ -26,21 +26,21 @@ import {
 type Item = Awaited<ReturnType<typeof getMyAdminNotifications>>['items'][number];
 
 const KIND_ICON: Record<string, React.ReactNode> = {
-  ORDER_NEW: <ShoppingBag className="h-3.5 w-3.5 text-amber-700" />,
-  ORDER_PAID: <CreditCard className="h-3.5 w-3.5 text-emerald-700" />,
-  PAYMENT_SUBMITTED: <CreditCard className="h-3.5 w-3.5 text-sky-700" />,
-  PAYMENT_VERIFIED: <CreditCard className="h-3.5 w-3.5 text-emerald-700" />,
-  PAYMENT_REJECTED: <AlertOctagon className="h-3.5 w-3.5 text-amber-700" />,
-  ORDER_SHIPPED: <Truck className="h-3.5 w-3.5 text-violet-700" />,
-  ORDER_DELIVERED: <Package className="h-3.5 w-3.5 text-emerald-700" />,
-  ORDER_REFUNDED: <AlertOctagon className="h-3.5 w-3.5 text-red-700" />,
-  ORDER_CANCELED: <AlertOctagon className="h-3.5 w-3.5 text-slate-600" />,
-  SHIPPING_MISSING: <AlertOctagon className="h-3.5 w-3.5 text-red-700" />,
-  QUOTE_NEW: <FileText className="h-3.5 w-3.5 text-sky-700" />,
-  QUOTE_APPROVED: <FileText className="h-3.5 w-3.5 text-emerald-700" />,
-  ORDER_FROM_QUOTE: <ShoppingBag className="h-3.5 w-3.5 text-emerald-700" />,
-  TICKET_NEW: <LifeBuoy className="h-3.5 w-3.5 text-red-700" />,
-  SELL_NEW: <Wrench className="h-3.5 w-3.5 text-amber-700" />,
+  ORDER_NEW: <ShoppingBag className="h-3.5 w-3.5 text-amber-700 dark:text-amber-300" />,
+  ORDER_PAID: <CreditCard className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />,
+  PAYMENT_SUBMITTED: <CreditCard className="h-3.5 w-3.5 text-sky-700 dark:text-sky-300" />,
+  PAYMENT_VERIFIED: <CreditCard className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />,
+  PAYMENT_REJECTED: <AlertOctagon className="h-3.5 w-3.5 text-amber-700 dark:text-amber-300" />,
+  ORDER_SHIPPED: <Truck className="h-3.5 w-3.5 text-violet-700 dark:text-violet-300" />,
+  ORDER_DELIVERED: <Package className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />,
+  ORDER_REFUNDED: <AlertOctagon className="h-3.5 w-3.5 text-red-700 dark:text-red-300" />,
+  ORDER_CANCELED: <AlertOctagon className="h-3.5 w-3.5 text-muted-foreground" />,
+  SHIPPING_MISSING: <AlertOctagon className="h-3.5 w-3.5 text-red-700 dark:text-red-300" />,
+  QUOTE_NEW: <FileText className="h-3.5 w-3.5 text-sky-700 dark:text-sky-300" />,
+  QUOTE_APPROVED: <FileText className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />,
+  ORDER_FROM_QUOTE: <ShoppingBag className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />,
+  TICKET_NEW: <LifeBuoy className="h-3.5 w-3.5 text-red-700 dark:text-red-300" />,
+  SELL_NEW: <Wrench className="h-3.5 w-3.5 text-amber-700 dark:text-amber-300" />,
   ANNOUNCEMENT: <Megaphone className="h-3.5 w-3.5 text-primary" />,
   SYSTEM: <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />,
 };
@@ -137,10 +137,10 @@ export function AdminNotificationBell({ initialCount }: { initialCount: number }
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-[380px] rounded-2xl border border-border bg-card shadow-xl z-50 overflow-hidden">
+        <div className="absolute right-0 mt-2 w-[min(380px,calc(100vw-1.5rem))] rounded-2xl border border-border bg-card shadow-xl z-50 overflow-hidden">
           <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-foreground/[0.02]">
             <p className="text-sm font-bold">
-              Notifications {count > 0 && <span className="text-red-600">({count} unread)</span>}
+              Notifications {count > 0 && <span className="text-red-600 dark:text-red-400">({count} unread)</span>}
             </p>
             {count > 0 && (
               <button

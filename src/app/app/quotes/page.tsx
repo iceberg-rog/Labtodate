@@ -40,13 +40,13 @@ type StateVisual = {
 const STATE_VISUAL: Record<DealState, StateVisual> = {
   awaiting_supplier: {
     stripe: 'before:bg-amber-400',
-    badge: 'bg-amber-100 text-amber-900 border-amber-200',
+    badge: 'bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 border-amber-200 dark:border-amber-800',
     Icon: Clock,
     label: 'Waiting for supplier',
   },
   awaiting_buyer: {
     stripe: 'before:bg-sky-400',
-    badge: 'bg-sky-50 text-sky-900 border-sky-200',
+    badge: 'bg-sky-50 dark:bg-sky-950/40 text-sky-900 dark:text-sky-300 border-sky-200 dark:border-sky-800',
     Icon: MessageSquare,
     label: 'Supplier replied · your move',
     ctaLabel: 'Open thread',
@@ -54,7 +54,7 @@ const STATE_VISUAL: Record<DealState, StateVisual> = {
   },
   proforma_sent: {
     stripe: 'before:bg-sky-500',
-    badge: 'bg-sky-100 text-sky-900 border-sky-200',
+    badge: 'bg-sky-100 dark:bg-sky-900/40 text-sky-900 dark:text-sky-300 border-sky-200 dark:border-sky-800',
     Icon: Sparkles,
     label: 'Proforma received · your decision',
     ctaLabel: 'Complete purchase',
@@ -62,7 +62,7 @@ const STATE_VISUAL: Record<DealState, StateVisual> = {
   },
   won_payment_pending: {
     stripe: 'before:bg-purple-500',
-    badge: 'bg-purple-50 text-purple-900 border-purple-200',
+    badge: 'bg-purple-50 dark:bg-purple-950/40 text-purple-900 dark:text-purple-300 border-purple-200 dark:border-purple-800',
     Icon: CreditCard,
     label: 'Awaiting your payment',
     ctaLabel: 'Complete purchase',
@@ -70,7 +70,7 @@ const STATE_VISUAL: Record<DealState, StateVisual> = {
   },
   won_paid: {
     stripe: 'before:bg-emerald-500',
-    badge: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+    badge: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
     Icon: CheckCheck,
     label: 'Won · paid',
     ctaLabel: 'Open order',
@@ -78,25 +78,25 @@ const STATE_VISUAL: Record<DealState, StateVisual> = {
   },
   won_no_order: {
     stripe: 'before:bg-emerald-400',
-    badge: 'bg-emerald-50 text-emerald-900 border-emerald-200',
+    badge: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
     Icon: CheckCheck,
     label: 'Accepted',
   },
   lost_declined: {
     stripe: 'before:bg-red-400',
-    badge: 'bg-red-50 text-red-900 border-red-200',
+    badge: 'bg-red-50 dark:bg-red-950/40 text-red-900 dark:text-red-300 border-red-200 dark:border-red-800',
     Icon: XCircle,
     label: 'You declined',
   },
   lost_closed: {
     stripe: 'before:bg-slate-400',
-    badge: 'bg-slate-100 text-slate-700 border-slate-200',
+    badge: 'bg-muted text-muted-foreground border-border',
     Icon: XCircle,
     label: 'Closed',
   },
   unknown: {
     stripe: 'before:bg-slate-300',
-    badge: 'bg-slate-100 text-slate-700 border-slate-200',
+    badge: 'bg-muted text-muted-foreground border-border',
     Icon: FileText,
     label: 'Quote',
   },
@@ -155,6 +155,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
       lastReplyByStaff: q.lastReplyByStaff,
       proformaNumber: q.proformaNumber,
       linkedOrder: lo ? { status: lo.status } : null,
+      archivedAt: q.archivedAt, // BUG-019: buyer-facing closure for archived RFQs
     });
     return { q, deal, orderNumber: lo?.orderNumber ?? null };
   });
@@ -278,7 +279,11 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
             } else if (deal.state === 'lost_declined') {
               statusLine = `Declined ${smartDate(q.updatedAt)}`;
             } else if (deal.state === 'lost_closed') {
-              statusLine = `Closed ${smartDate(q.updatedAt)}`;
+              // BUG-019: archived-while-waiting RFQs read as closed by ops,
+              // with the reopen path spelled out (a reply auto-unarchives).
+              statusLine = q.archivedAt && q.status !== 'CLOSED' && q.status !== 'DECLINED'
+                ? `Closed by our team ${smartDate(q.updatedAt)} · reply in the thread to reopen`
+                : `Closed ${smartDate(q.updatedAt)}`;
             }
 
             // Where does the row's main clickable target go? Won quotes

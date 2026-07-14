@@ -10,6 +10,7 @@ export default async function CaseStudiesPage() {
   const cases = await prisma.caseStudy.findMany({
     where: { status: 'PUBLISHED' },
     orderBy: { publishedAt: 'desc' },
+    take: 60,
   });
 
   return (
@@ -33,7 +34,7 @@ export default async function CaseStudiesPage() {
                   <InstrumentIllustration name={c.illustration as IllustrationName} />
                 </div>
               )}
-              <div className="absolute top-4 right-4 h-9 w-9 rounded-full bg-white/90 backdrop-blur flex items-center justify-center text-foreground group-hover:bg-accent transition-colors">
+              <div className="absolute top-4 right-4 h-9 w-9 rounded-full bg-card/90 backdrop-blur flex items-center justify-center text-foreground group-hover:bg-accent transition-colors">
                 <ArrowUpRight className="h-4 w-4 group-hover:rotate-12 transition-transform" />
               </div>
               <div className="absolute bottom-4 left-6 right-6">

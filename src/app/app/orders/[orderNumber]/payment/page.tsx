@@ -27,14 +27,16 @@ export default async function PaymentWorkspacePage({
   params,
   searchParams,
 }: {
-  params: { orderNumber: string };
-  searchParams: { ok?: string; err?: string };
+  params: Promise<{ orderNumber: string }>;
+  searchParams: Promise<{ ok?: string; err?: string }>;
 }) {
-  const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}/payment` });
+  const { orderNumber } = await params;
+  const sp = await searchParams;
+  const session = await requireSession({ redirectTo: `/app/orders/${orderNumber}/payment` });
   await ensureSettingsLoaded();
 
   const order = await prisma.order.findUnique({
-    where: { orderNumber: params.orderNumber },
+    where: { orderNumber: orderNumber },
     include: {
       items: { select: { titleSnapshot: true, quantity: true, priceCentsSnapshot: true } },
     },
@@ -100,8 +102,8 @@ export default async function PaymentWorkspacePage({
     !isProformaExpired &&
     order.status === 'PENDING_PAYMENT' &&
     verState !== 'AWAITING_VERIFICATION';
-  const ok = searchParams.ok === '1';
-  const err = searchParams.err && ERR_MSG[searchParams.err];
+  const ok = sp.ok === '1';
+  const err = sp.err && ERR_MSG[sp.err];
 
   const bank = {
     name: process.env.BANK_NAME || '',
@@ -157,11 +159,11 @@ export default async function PaymentWorkspacePage({
 
       {/* === Expired proforma banner =================================== */}
       {isProformaExpired && (
-        <div className="rounded-2xl border border-red-300 bg-red-50 p-4 mb-6 flex items-start gap-3">
-          <XCircle className="h-5 w-5 text-red-700 mt-0.5" />
+        <div className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-4 mb-6 flex items-start gap-3">
+          <XCircle className="h-5 w-5 text-red-700 dark:text-red-300 mt-0.5" />
           <div className="text-sm flex-1">
-            <p className="font-bold text-red-900">This proforma has expired.</p>
-            <p className="text-red-800 mt-1">
+            <p className="font-bold text-red-900 dark:text-red-300">This proforma has expired.</p>
+            <p className="text-red-800 dark:text-red-300 mt-1">
               Your proforma was valid until{' '}
               <strong>{sourcing?.validUntilAt?.toLocaleDateString('en-US', { dateStyle: 'long' })}</strong>.
               The order was automatically cancelled. To proceed, ask us to re-issue with
@@ -170,7 +172,7 @@ export default async function PaymentWorkspacePage({
             {sourcing && (
               <Link
                 href={`/app/quotes/${sourcing.id}`}
-                className="inline-flex items-center gap-1.5 mt-3 h-9 px-4 rounded-full border border-red-300 bg-white text-red-900 text-xs font-bold hover:bg-red-100"
+                className="inline-flex items-center gap-1.5 mt-3 h-9 px-4 rounded-full border border-red-300 dark:border-red-800 bg-white dark:bg-transparent text-red-900 dark:text-red-300 text-xs font-bold hover:bg-red-100"
               >
                 Open quote thread
               </Link>
@@ -181,11 +183,11 @@ export default async function PaymentWorkspacePage({
 
       {/* === Status banners ============================================ */}
       {verState === 'AWAITING_VERIFICATION' && (
-        <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 mb-6 flex items-start gap-3">
-          <Clock className="h-5 w-5 text-sky-700 mt-0.5" />
+        <div className="rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 p-4 mb-6 flex items-start gap-3">
+          <Clock className="h-5 w-5 text-sky-700 dark:text-sky-300 mt-0.5" />
           <div className="text-sm">
-            <p className="font-bold text-sky-900">Your receipt is being reviewed.</p>
-            <p className="text-sky-800 mt-1">
+            <p className="font-bold text-sky-900 dark:text-sky-300">Your receipt is being reviewed.</p>
+            <p className="text-sky-800 dark:text-sky-300 mt-1">
               We'll email you within 1 business day. You'll be able to upload a corrected receipt
               if anything needs attention.
             </p>
@@ -194,11 +196,11 @@ export default async function PaymentWorkspacePage({
       )}
 
       {verState === 'VERIFIED' && (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 mb-6 flex items-start gap-3">
-          <CheckCircle2 className="h-5 w-5 text-emerald-700 mt-0.5" />
+        <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 mb-6 flex items-start gap-3">
+          <CheckCircle2 className="h-5 w-5 text-emerald-700 dark:text-emerald-300 mt-0.5" />
           <div className="text-sm">
-            <p className="font-bold text-emerald-900">Payment verified.</p>
-            <p className="text-emerald-800 mt-1">
+            <p className="font-bold text-emerald-900 dark:text-emerald-300">Payment verified.</p>
+            <p className="text-emerald-800 dark:text-emerald-300 mt-1">
               Your order is being prepared for shipping. <Link href={`/app/orders/${order.orderNumber}`} className="underline font-semibold">Track it</Link>.
             </p>
           </div>
@@ -206,11 +208,11 @@ export default async function PaymentWorkspacePage({
       )}
 
       {verState === 'REJECTED' && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 mb-6 flex items-start gap-3">
-          <AlertTriangle className="h-5 w-5 text-amber-700 mt-0.5" />
+        <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 mb-6 flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-amber-700 dark:text-amber-300 mt-0.5" />
           <div className="text-sm flex-1">
-            <p className="font-bold text-amber-900">Your receipt needs attention.</p>
-            <p className="text-amber-800 mt-1">
+            <p className="font-bold text-amber-900 dark:text-amber-300">Your receipt needs attention.</p>
+            <p className="text-amber-800 dark:text-amber-300 mt-1">
               {order.paymentRejectionReason || 'Please upload a corrected receipt below.'}
             </p>
           </div>
@@ -218,12 +220,12 @@ export default async function PaymentWorkspacePage({
       )}
 
       {ok && (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3 mb-6 text-sm text-emerald-900 inline-flex items-center gap-2">
+        <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-3 mb-6 text-sm text-emerald-900 dark:text-emerald-300 inline-flex items-center gap-2">
           <CheckCircle2 className="h-4 w-4" /> Receipt uploaded — we'll verify within 1 business day.
         </div>
       )}
       {err && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-3 mb-6 text-sm text-red-900 inline-flex items-center gap-2">
+        <div className="rounded-2xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 mb-6 text-sm text-red-900 dark:text-red-300 inline-flex items-center gap-2">
           <XCircle className="h-4 w-4" /> {err}
         </div>
       )}

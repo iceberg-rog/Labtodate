@@ -9,15 +9,16 @@ import {
   CreditCard,
   Bot,
   Building2,
-  Save,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
 import { SETTING_DEFS, getEffectiveSettings } from '@/lib/settings';
 import { saveAdminSettings, uploadCompanyLogo, listWebhooks } from '../actions';
 import { ConnTest } from '@/components/admin/ConnTest';
+import { TestEmailButton } from '@/components/admin/TestEmailButton';
 import { FieldVerify } from '@/components/admin/FieldVerify';
 import { SettingsTabs } from '@/components/admin/SettingsTabs';
+import { SettingsSaveForm } from '@/components/admin/SettingsSaveForm';
 import { WebhooksPanel } from '@/components/admin/WebhooksPanel';
 
 export const dynamic = 'force-dynamic';
@@ -47,7 +48,7 @@ const TAB_CONNECTION: Partial<Record<string, { kind: 'resend' | 'stripe' | 'ai' 
 
 const TAB_NOTE: Partial<Record<string, string>> = {
   Email:
-    'No Resend key = order/quote/sell/message emails fall back to the dev mailbox (Mailpit). Real delivery needs a verified Resend domain matching the From address.',
+    'Two ways to send real email: (1) a Resend API key (simplest — HTTPS, no SMTP ports), or (2) your own SMTP server (host/port/user/password below). Resend wins if its key is set; leave it blank to use SMTP. With neither, all emails fall back to the dev mailbox (Mailpit). After saving, use “Send test email” to confirm delivery.',
   Payments:
     'No Stripe keys = checkout will fall back to a PENDING_PAYMENT order with no card capture. Webhook secret is required for the order to flip to PAID automatically.',
   Brand: 'Brand display values — used in headers, footers, page metadata and outbound emails.',
@@ -87,7 +88,7 @@ export default async function AdminSettingsPage(
             {d.label}
           </label>
           {isSet ? (
-            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600">
+            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
               <CheckCircle2 className="h-3.5 w-3.5" /> Configured
             </span>
           ) : (
@@ -148,10 +149,17 @@ export default async function AdminSettingsPage(
     const conn = TAB_CONNECTION[g];
     const note = TAB_NOTE[g];
     panels[g] = (
-      <form action={saveAdminSettings} className="rounded-2xl border border-border bg-card p-6 space-y-5">
+      <SettingsSaveForm
+        action={saveAdminSettings}
+        group={g}
+        saveNote="Saves this tab only. Empty secret field = keep current. Tick “clear” to wipe."
+      >
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">{g}</h2>
-          {conn && <ConnTest kind={conn.kind} label={conn.label} />}
+          <div className="flex items-center gap-3 flex-wrap">
+            {g === 'Email' && <TestEmailButton />}
+            {conn && <ConnTest kind={conn.kind} label={conn.label} />}
+          </div>
         </div>
         {note && (
           <p className="text-xs leading-relaxed text-muted-foreground bg-foreground/[0.02] border border-border rounded-xl p-3">
@@ -166,15 +174,7 @@ export default async function AdminSettingsPage(
             <strong className="text-foreground">How the test works:</strong> {conn.help}
           </p>
         )}
-        <div className="flex items-center gap-3 pt-2 border-t border-border">
-          <Button type="submit" size="sm" className="rounded-full font-semibold">
-            <Save className="h-4 w-4" /> Save {g}
-          </Button>
-          <p className="text-[11px] text-muted-foreground">
-            Saves this tab only. Empty secret field = keep current. Tick “clear” to wipe.
-          </p>
-        </div>
-      </form>
+      </SettingsSaveForm>
     );
   }
 
@@ -193,7 +193,7 @@ export default async function AdminSettingsPage(
         Uploaded once, then surfaced on every invoice + proforma. Keep a transparent background — looks best on white documents.
       </p>
       <div className="flex items-center gap-5 flex-wrap">
-        <div className="h-20 w-48 rounded-lg border border-border bg-white flex items-center justify-center overflow-hidden">
+        <div className="h-20 w-48 rounded-lg border border-border bg-card flex items-center justify-center overflow-hidden">
           {current['COMPANY_LOGO_URL'] ? (
             // eslint-disable-next-line @next/next/no-img-element
             (<img
@@ -246,36 +246,38 @@ export default async function AdminSettingsPage(
             <Mail className="h-3 w-3" />
             Email:&nbsp;
             {current['RESEND_API_KEY'] ? (
-              <span className="text-emerald-600">live</span>
+              <span className="text-emerald-600 dark:text-emerald-400">live · Resend</span>
+            ) : current['SMTP_USER'] && current['SMTP_PASS'] ? (
+              <span className="text-emerald-600 dark:text-emerald-400">live · SMTP</span>
             ) : (
-              <span className="text-amber-600">dev mailbox</span>
+              <span className="text-amber-600 dark:text-amber-400">dev mailbox</span>
             )}
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground/5 px-2.5 py-1 font-semibold">
             <CreditCard className="h-3 w-3" />
             Payments:&nbsp;
             {current['STRIPE_SECRET_KEY'] ? (
-              <span className="text-emerald-600">live</span>
+              <span className="text-emerald-600 dark:text-emerald-400">live</span>
             ) : (
-              <span className="text-amber-600">pending only</span>
+              <span className="text-amber-600 dark:text-amber-400">pending only</span>
             )}
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground/5 px-2.5 py-1 font-semibold">
             <Bot className="h-3 w-3" />
             AI:&nbsp;
             {current['AI_API_KEY'] ? (
-              <span className="text-emerald-600">live</span>
+              <span className="text-emerald-600 dark:text-emerald-400">live</span>
             ) : (
-              <span className="text-amber-600">off</span>
+              <span className="text-amber-600 dark:text-amber-400">off</span>
             )}
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-foreground/5 px-2.5 py-1 font-semibold">
             <Building2 className="h-3 w-3" />
             Storage:&nbsp;
             {process.env.S3_ENDPOINT ? (
-              <span className="text-emerald-600">wired</span>
+              <span className="text-emerald-600 dark:text-emerald-400">wired</span>
             ) : (
-              <span className="text-amber-600">unknown</span>
+              <span className="text-amber-600 dark:text-amber-400">unknown</span>
             )}
           </span>
         </div>

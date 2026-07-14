@@ -4,8 +4,10 @@ import { usePathname } from 'next/navigation';
 
 /**
  * Hides the public site header / footer / assistant / cookie banner on
- * /admin routes so the admin area can run its own standalone dashboard
- * chrome (no public marketplace nav, no search, no cart, no footer).
+ * /admin and /auth routes so those areas run their own standalone chrome:
+ * the admin dashboard has its own nav (see app/admin/layout.tsx), and auth
+ * screens are a focused, single-logo layout (see app/auth/layout.tsx) — this
+ * is what prevents the site header logo from stacking above the auth logo.
  */
 export function PublicChrome({
   header,
@@ -20,9 +22,10 @@ export function PublicChrome({
 }) {
   const pathname = usePathname() || '';
   const isAdmin = pathname === '/admin' || pathname.startsWith('/admin/');
+  const isAuth = pathname === '/auth' || pathname.startsWith('/auth/');
 
-  if (isAdmin) {
-    // Admin dashboard runs in its own chrome (see app/admin/layout.tsx).
+  if (isAdmin || isAuth) {
+    // Standalone chrome — the route's own layout supplies its header/logo.
     return <main className="flex-1">{children}</main>;
   }
 

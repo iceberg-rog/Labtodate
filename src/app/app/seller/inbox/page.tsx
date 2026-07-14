@@ -37,7 +37,7 @@ export default async function SellerInboxPage() {
             <li key={q.id}>
               <Link href={`/app/seller/inbox/${q.id}`} className="p-5 flex items-center gap-4 hover:bg-foreground/5 transition-colors">
                 <div className="flex-1 min-w-0">
-                  <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">
+                  <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1 truncate">
                     {q.buyerName} · {q.buyerEmail}
                   </p>
                   <p className="font-semibold truncate">

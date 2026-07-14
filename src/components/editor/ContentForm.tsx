@@ -162,7 +162,7 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
                     )}
                   </div>
                   {coverError && (
-                    <p className="text-[11px] text-red-600">{coverError}</p>
+                    <p className="text-[11px] text-red-600 dark:text-red-400">{coverError}</p>
                   )}
                   <p className="text-[10px] text-muted-foreground">
                     When set, the photo replaces the illustration on the cover everywhere — homepage teaser, blog list, hero of the post.
@@ -189,7 +189,7 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
         <TiptapEditor value={body} onChange={setBody} />
       </Field>
 
-      {error && <p className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">{error}</p>}
+      {error && <p className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-3 py-2 text-sm">{error}</p>}
 
       <div className="flex items-center gap-3">
         <Button type="submit" variant="outline" disabled={pending} className="rounded-full font-semibold">

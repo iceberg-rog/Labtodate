@@ -44,12 +44,12 @@ import {
 type Tone = 'amber' | 'sky' | 'emerald' | 'violet' | 'red' | 'slate';
 
 const TONE_BADGE: Record<Tone, string> = {
-  amber: 'bg-amber-50 text-amber-800 border-amber-200',
-  sky: 'bg-sky-50 text-sky-800 border-sky-200',
-  emerald: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  violet: 'bg-violet-50 text-violet-800 border-violet-200',
-  red: 'bg-red-50 text-red-800 border-red-200',
-  slate: 'bg-slate-100 text-slate-600 border-slate-200',
+  amber: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800',
+  sky: 'bg-sky-50 text-sky-800 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800',
+  emerald: 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',
+  violet: 'bg-violet-50 text-violet-800 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800',
+  red: 'bg-red-50 text-red-800 border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800',
+  slate: 'bg-muted text-muted-foreground border-border',
 };
 
 const TONE_STRIPE: Record<Tone, string> = {
@@ -193,7 +193,7 @@ export function OrderRow(p: OrderRowProps) {
         before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-1 ${TONE_STRIPE[p.statusTone]} ${p.selected ? 'ring-2 ring-primary/40' : ''} ${p.archived ? 'opacity-70 grayscale-[0.2]' : ''}`}
     >
       {p.archived && (
-        <div className="absolute top-2 right-3 z-10 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5" data-noopen>
+        <div className="absolute top-2 right-3 z-10 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-2 py-0.5" data-noopen>
           <Archive className="h-3 w-3" /> Archived
         </div>
       )}
@@ -238,7 +238,7 @@ export function OrderRow(p: OrderRowProps) {
                 data-noopen
               >
                 {p.orderNumber}
-                {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3 opacity-40" />}
+                {copied ? <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" /> : <Copy className="h-3 w-3 opacity-40" />}
               </button>
             </div>
             <p className="text-[11px] text-muted-foreground">{p.dateLabel}</p>
@@ -281,7 +281,7 @@ export function OrderRow(p: OrderRowProps) {
             <p className="text-[9px] uppercase tracking-wider font-bold text-muted-foreground">Customer</p>
             {p.anonymised ? (
               <p className="text-sm">
-                <span className="font-semibold text-slate-700">Deleted customer</span>
+                <span className="font-semibold text-muted-foreground">Deleted customer</span>
                 <span className="text-[10px] text-muted-foreground block">original buyer anonymised</span>
               </p>
             ) : (
@@ -310,7 +310,7 @@ export function OrderRow(p: OrderRowProps) {
                     </p>
                   )}
                   {typeof p.buyerPaidOrderCount === 'number' && (
-                    <p className={p.buyerPaidOrderCount >= 1 ? 'text-emerald-700 font-semibold' : 'text-sky-700 font-semibold'}>
+                    <p className={p.buyerPaidOrderCount >= 1 ? 'text-emerald-700 dark:text-emerald-300 font-semibold' : 'text-sky-700 dark:text-sky-300 font-semibold'}>
                       {nthOrderLabel(p.buyerPaidOrderCount)}
                       {p.buyerLifetimeLabel && <span className="ml-1 text-muted-foreground font-normal">· LTV {p.buyerLifetimeLabel}</span>}
                     </p>
@@ -350,7 +350,7 @@ export function OrderRow(p: OrderRowProps) {
                 <span className="text-muted-foreground">{p.shipTo.line}</span>
               </p>
             ) : (canFulfil || canCancel) ? (
-              <p className="text-[11px] text-red-700 font-semibold inline-flex items-center gap-1">
+              <p className="text-[11px] text-red-700 dark:text-red-300 font-semibold inline-flex items-center gap-1">
                 <CircleAlert className="h-3 w-3" /> no shipping address
               </p>
             ) : (
@@ -377,7 +377,7 @@ export function OrderRow(p: OrderRowProps) {
               </div>
             )}
             {p.hasReceipt && (
-              <p className="text-[10px] text-emerald-700 font-semibold inline-flex items-center gap-1">
+              <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold inline-flex items-center gap-1">
                 <Receipt className="h-3 w-3" /> receipt on file
               </p>
             )}
@@ -416,7 +416,7 @@ export function OrderRow(p: OrderRowProps) {
             </select>
           </label>
           {p.hasShippingAddress === false && (
-            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-2 py-1">
               <AlertTriangle className="h-3 w-3" /> No address — ship/deliver locked
             </span>
           )}
@@ -443,7 +443,7 @@ export function OrderRow(p: OrderRowProps) {
               onConfirm={() => runDestructive(refundOrder)}
               label="Refund"
               activeLabel="Refund this order?"
-              toneText="text-red-700"
+              toneText="text-red-700 dark:text-red-300"
             />
           )}
         </form>
@@ -451,12 +451,12 @@ export function OrderRow(p: OrderRowProps) {
 
       {isAwaitingVerify && (
         <div
-          className="border-t border-sky-200 bg-sky-50/60 px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
+          className="border-t border-sky-200 dark:border-sky-800 bg-sky-50/60 dark:bg-sky-950/30 px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
           data-noopen
           onClick={(e) => e.stopPropagation()}
         >
-          <ShieldAlert className="h-4 w-4 text-sky-700 flex-shrink-0" />
-          <span className="flex-1 text-sky-900">
+          <ShieldAlert className="h-4 w-4 text-sky-700 dark:text-sky-300 flex-shrink-0" />
+          <span className="flex-1 text-sky-900 dark:text-sky-300">
             <strong>Buyer submitted payment proof.</strong>{' '}
             {p.paymentSubmittedAtISO ? `Uploaded ${new Date(p.paymentSubmittedAtISO).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.` : ''} Verify or reject.
           </span>
@@ -480,7 +480,7 @@ export function OrderRow(p: OrderRowProps) {
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); setShowReject(true); }}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-white text-amber-800 text-xs font-bold hover:bg-amber-50"
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-white text-amber-800 text-xs font-bold hover:bg-amber-50 dark:bg-transparent dark:text-amber-300 dark:border-amber-800"
               data-noopen
             >
               Reject
@@ -493,7 +493,7 @@ export function OrderRow(p: OrderRowProps) {
                 onChange={(e) => setRejectReason(e.target.value)}
                 placeholder="Reason buyer will see (e.g. amount short, wrong reference)"
                 maxLength={500}
-                className="flex-1 h-8 px-2 rounded-md border border-amber-300 bg-white text-xs"
+                className="flex-1 h-8 px-2 rounded-md border border-amber-300 dark:border-amber-800 bg-card text-xs"
               />
               <button
                 type="button"
@@ -523,12 +523,12 @@ export function OrderRow(p: OrderRowProps) {
 
       {canManualPay && (
         <div
-          className="border-t border-amber-200 bg-amber-50/40 px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
+          className="border-t border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/30 px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
           data-noopen
           onClick={(e) => e.stopPropagation()}
         >
-          <CircleAlert className="h-4 w-4 text-amber-600 flex-shrink-0" />
-          <span className="flex-1 text-amber-900">
+          <CircleAlert className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+          <span className="flex-1 text-amber-900 dark:text-amber-300">
             <strong>Awaiting payment.</strong> If buyer has paid off-platform (bank transfer / invoice), mark it paid manually.
           </span>
           {p.onOpenManualPaid && (
@@ -549,7 +549,7 @@ export function OrderRow(p: OrderRowProps) {
             onConfirm={() => runDestructive(cancelOrder)}
             label="Cancel order"
             activeLabel="Cancel & release stock?"
-            toneText="text-amber-800"
+            toneText="text-amber-800 dark:text-amber-300"
           />
         </div>
       )}
@@ -558,12 +558,12 @@ export function OrderRow(p: OrderRowProps) {
        *      parallel to the bulk bar in the Archived tab). === */}
       {p.archived && (
         <div
-          className="border-t border-slate-200 bg-slate-50/60 px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
+          className="border-t border-border bg-muted/60 px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
           data-noopen
           onClick={(e) => e.stopPropagation()}
         >
-          <Archive className="h-4 w-4 text-slate-600 flex-shrink-0" />
-          <span className="flex-1 text-slate-700">
+          <Archive className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+          <span className="flex-1 text-muted-foreground">
             <strong>Archived.</strong> Hidden from the default queues. Restore to put it back, or delete permanently.
           </span>
           <button
@@ -597,7 +597,7 @@ export function OrderRow(p: OrderRowProps) {
             }}
             label="Delete forever"
             activeLabel="Delete forever — confirm?"
-            toneText="text-red-800"
+            toneText="text-red-800 dark:text-red-300"
           />
         </div>
       )}

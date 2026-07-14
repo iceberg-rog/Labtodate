@@ -32,7 +32,7 @@ export function BuyerIntelCard({ intel, buyerName, buyerEmail, company, isGuest 
           </p>
         )}
         {isGuest && (
-          <p className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+          <p className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 dark:text-amber-300 dark:bg-amber-950/40 dark:border-amber-800">
             Guest — no account
           </p>
         )}
@@ -52,9 +52,9 @@ export function BuyerIntelCard({ intel, buyerName, buyerEmail, company, isGuest 
               <span className="bg-slate-300" style={{ width: `${(intel.rfqsByOutcome.lost / total) * 100}%` }} />
             </div>
             <div className="grid grid-cols-3 gap-2 mt-2 text-[10px]">
-              <Mini icon={<CheckCircle2 className="h-3 w-3 text-emerald-700" />} label="Won" value={intel.rfqsByOutcome.won} />
-              <Mini icon={<Clock className="h-3 w-3 text-amber-700" />} label="Open" value={intel.rfqsByOutcome.open} />
-              <Mini icon={<XCircle className="h-3 w-3 text-slate-600" />} label="Lost" value={intel.rfqsByOutcome.lost} />
+              <Mini icon={<CheckCircle2 className="h-3 w-3 text-emerald-700 dark:text-emerald-300" />} label="Won" value={intel.rfqsByOutcome.won} />
+              <Mini icon={<Clock className="h-3 w-3 text-amber-700 dark:text-amber-300" />} label="Open" value={intel.rfqsByOutcome.open} />
+              <Mini icon={<XCircle className="h-3 w-3 text-muted-foreground" />} label="Lost" value={intel.rfqsByOutcome.lost} />
             </div>
             <p className="text-[10px] text-muted-foreground mt-1.5">
               Win rate: <strong>{Math.round(winRate * 100)}%</strong>

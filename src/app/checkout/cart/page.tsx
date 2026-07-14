@@ -57,7 +57,7 @@ const FIELD_LABEL: Record<string, string> = {
  */
 export default async function CartCheckoutPage(
   props: {
-    searchParams: Promise<{ missing?: string }>;
+    searchParams: Promise<{ missing?: string; err?: string }>;
   }
 ) {
   const searchParams = await props.searchParams;
@@ -66,12 +66,20 @@ export default async function CartCheckoutPage(
   const items = await prisma.cartItem.findMany({
     where: { userId: session.user.id },
     orderBy: { createdAt: 'desc' },
-    include: { product: { select: { slug: true, title: true, priceCents: true, currency: true, images: true, status: true, mode: true } } },
+    include: { product: { select: { slug: true, title: true, priceCents: true, currency: true, images: true, status: true, mode: true, quantity: true } } },
   });
   const valid = items.filter(
     (i) => i.product.status === 'PUBLISHED' && i.product.priceCents && i.product.mode !== 'QUOTE_ONLY',
   );
   if (valid.length === 0) redirect('/app/cart?empty=1');
+
+  // BUG-032: never show an order summary containing items that cannot be
+  // purchased at the requested quantity — stale stock is resolved on the
+  // cart page (sold-out badge / lower-quantity hint), not silently here.
+  const stockBlocked = valid.some(
+    (i) => i.product.quantity <= 0 || i.quantity > i.product.quantity,
+  );
+  if (stockBlocked) redirect('/app/cart?unavailable=1');
 
   const currency = valid[0].product.currency || 'EUR';
   const subtotal = valid.reduce((s, i) => s + (i.product.priceCents ?? 0) * i.quantity, 0);
@@ -110,8 +118,18 @@ export default async function CartCheckoutPage(
           </div>
 
           {missing.length > 0 && (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-800 dark:text-red-300">
               Please fill in: <strong>{missing.map((m) => FIELD_LABEL[m] ?? m).join(', ')}</strong>.
+            </div>
+          )}
+
+          {/* BUG-045: the order create failed and the reserved stock was released.
+              Without this banner the buyer is bounced back to a pristine-looking
+              form with no explanation and no idea whether they now owe money. */}
+          {searchParams.err === 'order' && (
+            <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-800 dark:text-red-300">
+              <strong>We couldn&rsquo;t create your order.</strong> Nothing was reserved and no
+              payment is due. Your cart is unchanged &mdash; please check your details and try again.
             </div>
           )}
 
@@ -158,11 +176,11 @@ export default async function CartCheckoutPage(
             </div>
           </section>
 
-          <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5">
-            <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-amber-900 flex items-center gap-2">
+          <section className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-5">
+            <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-amber-900 dark:text-amber-300 flex items-center gap-2">
               <Building2 className="h-4 w-4" /> Payment: bank transfer
             </h2>
-            <p className="text-sm text-amber-900 mt-2 leading-relaxed">
+            <p className="text-sm text-amber-900 dark:text-amber-300 mt-2 leading-relaxed">
               Once you submit your order, we&rsquo;ll email you our bank details. After your
               transfer arrives, upload the receipt from your order page and our team will
               verify it manually. <strong>No charge is taken at this step.</strong>
@@ -236,7 +254,7 @@ function Field({
   return (
     <label className="block">
       <span className="block text-sm font-semibold mb-1.5">
-        {label} {required && <span className="text-red-600">*</span>}
+        {label} {required && <span className="text-red-600 dark:text-red-400">*</span>}
       </span>
       <input
         type={type ?? 'text'}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   X,
   Loader2,
@@ -23,6 +24,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { getAdminUserSummary } from '@/app/admin/actions';
+import { AdminUserDangerZone } from '@/components/admin/AdminUserDangerZone';
 
 type Summary = NonNullable<Awaited<ReturnType<typeof getAdminUserSummary>>>;
 
@@ -33,9 +35,9 @@ const ROLE_LABEL: Record<string, string> = {
 };
 
 const ROLE_BADGE: Record<string, string> = {
-  ADMIN: 'bg-violet-100 text-violet-800',
+  ADMIN: 'bg-violet-100 text-violet-800 dark:bg-violet-900/40 dark:text-violet-300',
   BUYER: 'bg-foreground/10 text-foreground',
-  SELLER: 'bg-sky-100 text-sky-800',
+  SELLER: 'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
 };
 
 function fmt(cents: number, currency: string) {
@@ -53,6 +55,7 @@ function timeAgo(iso: string) {
 }
 
 export function UserQuickView() {
+  const router = useRouter();
   const [openId, setOpenId] = useState<string | null>(null);
   const [data, setData] = useState<Summary | null>(null);
   const [pending, start] = useTransition();
@@ -133,7 +136,7 @@ export function UserQuickView() {
               <Loader2 className="h-4 w-4 animate-spin" /> Fetching user activity…
             </div>
           )}
-          {err && <p className="text-sm text-red-600">{err}</p>}
+          {err && <p className="text-sm text-red-600 dark:text-red-400">{err}</p>}
 
           {data && (
             <>
@@ -144,9 +147,9 @@ export function UserQuickView() {
                 <span className="inline-flex items-center gap-1 text-muted-foreground">
                   <Mail className="h-3 w-3" />
                   {data.emailVerified ? (
-                    <span className="text-emerald-600 font-semibold">verified</span>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-semibold">verified</span>
                   ) : (
-                    <span className="text-amber-600 font-semibold">unverified</span>
+                    <span className="text-amber-600 dark:text-amber-400 font-semibold">unverified</span>
                   )}
                 </span>
                 {data.company && (
@@ -216,6 +219,27 @@ export function UserQuickView() {
                   <Bell className="h-3 w-3" /> {data.totals.notifications} notifications sent
                 </span>
               </div>
+
+              {/* Account actions (suspend / delete / reset) — surfaced here so
+                  they're reachable straight from the list, not only the full
+                  profile page. Gated on the viewer's users:manage capability. */}
+              {data.viewerCanManage ? (
+                <AdminUserDangerZone
+                  userId={data.id}
+                  email={data.email}
+                  suspended={data.suspended}
+                  isAdmin={data.role === 'ADMIN'}
+                  onDone={() => {
+                    setOpenId(null);
+                    router.refresh();
+                  }}
+                />
+              ) : (
+                <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-950/30 p-3 text-xs text-amber-800 dark:text-amber-300">
+                  Suspend &amp; delete need the <code className="font-mono">users:manage</code> capability, which your admin
+                  account doesn&apos;t have. A super-admin can grant it under Users → your account → Admin capabilities.
+                </div>
+              )}
             </>
           )}
         </div>

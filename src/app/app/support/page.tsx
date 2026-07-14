@@ -63,7 +63,16 @@ export default async function CustomerSupportPage() {
         </div>
       ) : (
         <ul className="space-y-4">
-          {tickets.map((t) => (
+          {tickets.map((t) => {
+            // BUG-019: when ops archives a ticket that is NOT in a terminal
+            // status, the buyer must not read "Awaiting your reply" forever.
+            // Surface it as closed; a reply auto-unarchives (BUG-018).
+            const closedByTeam =
+              !!t.archivedAt && !['RESOLVED', 'CLOSED', 'SPAM'].includes(t.status);
+            const badge = closedByTeam
+              ? { label: 'Closed by support', variant: 'secondary' as const }
+              : (CUSTOMER_STATUS[t.status] ?? { label: t.status.toLowerCase().replace(/_/g, ' '), variant: 'secondary' as const });
+            return (
             <li key={t.id} className="rounded-2xl border border-border bg-card overflow-hidden">
               <details>
                 <summary className="p-5 cursor-pointer list-none flex items-center gap-4 hover:bg-foreground/5">
@@ -73,8 +82,8 @@ export default async function CustomerSupportPage() {
                     </p>
                     <p className="font-semibold truncate">{t.subject}</p>
                   </div>
-                  <Badge variant={(CUSTOMER_STATUS[t.status] ?? CUSTOMER_STATUS.OPEN).variant}>
-                    {(CUSTOMER_STATUS[t.status] ?? { label: t.status.toLowerCase().replace(/_/g, ' ') }).label}
+                  <Badge variant={badge.variant}>
+                    {badge.label}
                   </Badge>
                 </summary>
                 <div className="border-t border-border p-5 space-y-3 bg-foreground/[0.02]">
@@ -93,6 +102,11 @@ export default async function CustomerSupportPage() {
                       <MessageAttachments urls={m.attachments} />
                     </div>
                   ))}
+                  {closedByTeam && (
+                    <p className="text-xs text-muted-foreground rounded-lg border border-border bg-card px-3 py-2">
+                      Our support team closed this conversation. Replying below will reopen it.
+                    </p>
+                  )}
                   {t.status !== 'CLOSED' && (
                     <ReplyForm
                       action={customerReplyTicket}
@@ -103,7 +117,8 @@ export default async function CustomerSupportPage() {
                 </div>
               </details>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

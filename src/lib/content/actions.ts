@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { requireSession } from '@/lib/auth-server';
+import { requireCapability } from '@/lib/auth-server';
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 90);
@@ -25,7 +25,7 @@ const BlogInput = z.object({
 export type BlogInputType = z.infer<typeof BlogInput>;
 
 async function actor() {
-  return requireSession({ roles: ['ADMIN'], redirectTo: '/admin/blog' });
+  return requireCapability('content:write', { redirectTo: '/admin/blog' });
 }
 
 export async function createBlogPost(input: BlogInputType) {

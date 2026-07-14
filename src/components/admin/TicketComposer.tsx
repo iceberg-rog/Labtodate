@@ -55,7 +55,7 @@ export function TicketComposer({
     <section
       className={
         isInternal
-          ? 'rounded-2xl border-2 border-amber-300 bg-amber-50/70 overflow-hidden transition-colors'
+          ? 'rounded-2xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/30 overflow-hidden transition-colors'
           : 'rounded-2xl border-2 border-primary/40 bg-card overflow-hidden transition-colors'
       }
     >
@@ -91,14 +91,14 @@ export function TicketComposer({
       <div
         className={
           isInternal
-            ? 'px-5 py-2.5 bg-amber-100/80 border-b border-amber-200 inline-flex items-center gap-2 w-full'
+            ? 'px-5 py-2.5 bg-amber-100/80 dark:bg-amber-900/40 border-b border-amber-200 dark:border-amber-800 inline-flex items-center gap-2 w-full'
             : 'px-5 py-2.5 bg-primary/5 border-b border-primary/15 inline-flex items-center gap-2 w-full'
         }
       >
         {isInternal ? (
           <>
-            <EyeOff className="h-3.5 w-3.5 text-amber-800 shrink-0" />
-            <p className="text-[11px] font-semibold text-amber-900">
+            <EyeOff className="h-3.5 w-3.5 text-amber-800 dark:text-amber-300 shrink-0" />
+            <p className="text-[11px] font-semibold text-amber-900 dark:text-amber-300">
               Team-only — never emailed, never shown to {customerEmail}.
             </p>
           </>
@@ -133,7 +133,7 @@ export function TicketComposer({
             ))}
           </div>
         )}
-        {err && <p className="text-xs text-red-600 mb-2">{err}</p>}
+        {err && <p className="text-xs text-red-600 dark:text-red-400 mb-2">{err}</p>}
 
         <form
           ref={ref}
@@ -172,7 +172,7 @@ export function TicketComposer({
             }
             className={
               isInternal
-                ? 'w-full px-3 py-2.5 rounded-lg border-2 border-amber-300 bg-white text-sm resize-y focus:outline-none focus:border-amber-500'
+                ? 'w-full px-3 py-2.5 rounded-lg border-2 border-amber-300 dark:border-amber-800 bg-white dark:bg-transparent text-sm resize-y focus:outline-none focus:border-amber-500'
                 : 'w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm resize-y focus:outline-none focus:border-primary'
             }
           />

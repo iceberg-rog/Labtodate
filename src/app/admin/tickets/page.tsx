@@ -281,7 +281,7 @@ export default async function AdminTicketsPage(
             </span>
           )}
           {priority && (
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 font-semibold">
+            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 font-semibold">
               Priority: {priority}
               <a href={href({ priority: '' })} className="ml-1 opacity-60 hover:opacity-100">×</a>
             </span>
@@ -356,9 +356,9 @@ function SignalChip({
   href: string;
 }) {
   const cls = tone === 'red'
-    ? 'border-red-200 bg-red-50 text-red-800'
+    ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-300'
     : tone === 'amber'
-    ? 'border-amber-200 bg-amber-50 text-amber-800'
+    ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300'
     : 'border-border bg-card text-muted-foreground';
   const icon = tone === 'red' ? <AlertCircle className="h-3 w-3" /> : tone === 'amber' ? <Hourglass className="h-3 w-3" /> : <CircleCheck className="h-3 w-3" />;
   return (

@@ -27,7 +27,7 @@ export function Pagination({
   for (let i = start; i <= end; i++) window.push(i);
 
   return (
-    <nav className="flex items-center justify-center gap-1 pt-12" aria-label="Pagination">
+    <nav className="flex flex-wrap items-center justify-center gap-1 pt-12" aria-label="Pagination">
       <Link
         href={buildHref(searchParams, Math.max(1, page - 1))}
         aria-disabled={page === 1}

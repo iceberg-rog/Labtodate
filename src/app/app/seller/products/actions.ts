@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
+import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/delete-guard';
 import { requireSession } from '@/lib/auth-server';
 import { Prisma, type ProductCondition, type ProductMode } from '@prisma/client';
 
@@ -117,13 +118,11 @@ export async function updateProduct(slug: string, input: ProductInputType) {
  *
  * BUG-004 fix: previously a seller could nuke a product that had pending
  * orders, silently cascading away reviews/wishlists/cart items and
- * orphaning OrderItems (productId → null). We now refuse hard-delete if
- * any OrderItem references this product on a non-terminal order. Sellers
- * who want to remove a live product should ARCHIVE instead.
- *
- * Admins can still hard-delete (e.g. for legal takedown), but for products
- * with order history we route through ARCHIVED to preserve audit + invoice
- * regeneration.
+ * orphaning OrderItems (productId → null). Any product with order history is
+ * ARCHIVED instead of hard-deleted — for EVERYONE, sellers and admins alike.
+ * The OrderItem.productId FK is ON DELETE RESTRICT (defense-in-depth), so even a
+ * stray hard-delete cannot sever the audit link; the shared deleteOrArchiveProduct
+ * helper (src/lib/products/delete-guard.ts) enforces this and is also TOCTOU-safe.
  */
 export async function deleteProduct(slug: string) {
   const { userId, role } = await getActor();
@@ -134,26 +133,10 @@ export async function deleteProduct(slug: string) {
   if (!existing) return;
   if (existing.sellerId !== userId && role !== 'ADMIN') throw new Error('Forbidden');
 
-  // Block hard-delete if there's ANY order history (terminal or not).
-  // Terminal orders (DELIVERED/CANCELED/REFUNDED) still need the product
-  // row for invoice regeneration + chargeback defence.
-  const hasOrderHistory = await prisma.orderItem.findFirst({
-    where: { productId: existing.id },
-    select: { id: true },
-  });
-  if (hasOrderHistory) {
-    // Route to archive instead — preserves all FK relations.
-    await prisma.product.update({
-      where: { id: existing.id },
-      data: { status: 'ARCHIVED' },
-    });
-    revalidatePath('/app/seller/products');
-    revalidatePath(`/marketplace/${slug}`);
-    redirect('/app/seller/products?archived=1');
-  }
-
-  await prisma.product.delete({ where: { id: existing.id } });
+  const outcome = await deleteOrArchiveProduct(productDeleteDbFrom(prisma), existing.id);
   revalidatePath('/app/seller/products');
+  revalidatePath(`/marketplace/${slug}`);
+  if (outcome === 'archived') redirect('/app/seller/products?archived=1');
 }
 
 /**

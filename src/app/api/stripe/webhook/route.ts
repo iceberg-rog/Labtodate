@@ -1,10 +1,13 @@
 import { NextResponse } from 'next/server';
 import { headers } from 'next/headers';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getStripe } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { sendOrderInvoice } from '@/lib/orders/actions';
-import { notifyAdmins, notifyUser } from '@/lib/observability';
+import { cancelOrderSaga } from '@/lib/orders/stripe-handoff';
+import { confirmedExpiredApi } from '@/lib/stripe/session-api';
+import { notifyAdmins, notifyUser, logError } from '@/lib/observability';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,16 +43,27 @@ export async function POST(req: Request) {
       // only proceed if it's still PENDING_PAYMENT.
       const current = await prisma.order.findUnique({
         where: { id: orderId },
-        select: { status: true },
+        select: { status: true, orderNumber: true },
       });
       if (!current) {
         // Unknown order — stale metadata. Acknowledge so Stripe stops retrying.
         return NextResponse.json({ received: true, skipped: 'unknown_order' });
       }
       if (current.status !== 'PENDING_PAYMENT') {
-        // Already processed (or in a terminal state). Ack-and-skip; do
-        // NOT replay invoice email or status flip.
+        // A payment COMPLETED for an order that already left PENDING_PAYMENT. If it
+        // is a genuine replay of a PAID order, ack. But if the order is TERMINAL
+        // (CANCELED/REFUNDED), Stripe may have captured money on a session we
+        // canceled/restocked — never silently discard captured money.
+        if (current.status === 'CANCELED' || current.status === 'REFUNDED') {
+          await handleLatePaymentAnomaly(stripe, orderId, current.orderNumber, session, event.id);
+        }
         return NextResponse.json({ received: true, skipped: 'already_processed' });
+      }
+      // Card-only Checkout is synchronous (see the create call), so `completed`
+      // implies captured funds; require payment_status='paid' as defense-in-depth
+      // against an unpaid/async completed ever marking the order PAID.
+      if (session.payment_status !== 'paid') {
+        return NextResponse.json({ received: true, skipped: 'not_paid' });
       }
 
       let shippingAddress: unknown = undefined;
@@ -110,11 +124,12 @@ export async function POST(req: Request) {
         }
       }
 
-      // Atomic conditional update — only flips PENDING_PAYMENT → PAID
-      // once. Concurrent webhook deliveries are serialised by the row
-      // lock; only one update wins (count===1), the rest no-op (count===0).
+      // Atomic conditional update — flips PENDING_PAYMENT → PAID once, CAS'd on
+      // THIS session id so a stale/foreign completed event can't mark an order
+      // that is attached to a different session PAID. Concurrent deliveries are
+      // serialised by the row lock; only one update wins (count===1).
       const updateRes = await prisma.order.updateMany({
-        where: { id: orderId, status: 'PENDING_PAYMENT' },
+        where: { id: orderId, status: 'PENDING_PAYMENT', stripeSessionId: session.id },
         data: {
           status: 'PAID',
           paidAt: new Date(),
@@ -129,8 +144,22 @@ export async function POST(req: Request) {
         },
       });
       if (updateRes.count !== 1) {
-        // Lost the race with another delivery / status changed since
-        // our pre-check. Ack-and-skip side effects.
+        // Did NOT flip PENDING(this session)→PAID. Re-read: an admin cancel that
+        // won before our update (terminal), or an order now attached to a DIFFERENT
+        // session, means captured funds against a non-matching order — route to the
+        // exactly-once anomaly path instead of silently discarding the payment.
+        const after = await prisma.order.findUnique({
+          where: { id: orderId },
+          select: { status: true, orderNumber: true, stripeSessionId: true },
+        });
+        if (
+          after &&
+          (after.status === 'CANCELED' ||
+            after.status === 'REFUNDED' ||
+            (after.status === 'PENDING_PAYMENT' && after.stripeSessionId !== session.id))
+        ) {
+          await handleLatePaymentAnomaly(stripe, orderId, after.orderNumber, session, event.id);
+        }
         return NextResponse.json({ received: true, skipped: 'race_lost' });
       }
       const paid = await prisma.order.findUnique({
@@ -181,27 +210,87 @@ export async function POST(req: Request) {
     const session = event.data.object;
     const orderId = session.metadata?.orderId;
     if (orderId) {
-      const existing = await prisma.order.findUnique({
-        where: { id: orderId },
-        select: { status: true, items: { select: { productId: true, quantity: true } } },
-      });
-      // Only release stock once, and never cancel an order that already paid.
-      if (existing && existing.status === 'PENDING_PAYMENT') {
-        await prisma.order.update({
-          where: { id: orderId },
-          data: { status: 'CANCELED' },
-        });
-        for (const it of existing.items) {
-          if (it.productId) {
-            await prisma.product.update({
-              where: { id: it.productId },
-              data: { quantity: { increment: it.quantity } },
-            });
-          }
+      // Cancel + restock atomically through the Stripe-aware saga, passing THIS
+      // event's session id as onlyIfSessionIs: an old expired event cannot cancel
+      // an order that has since moved to a different/new session. The saga expires
+      // the session (idempotent) then CAS-claims PENDING_PAYMENT + restocks in one
+      // tx; a restock failure rolls back to PENDING_PAYMENT and we 500 for retry.
+      try {
+        // The signed `expired` event authoritatively confirms THIS session is
+        // expired, so the adapter treats it as an already-confirmed no-op (any other
+        // session id falls back to the retrieve-confirmed safeExpire).
+        const out = await cancelOrderSaga(prisma, confirmedExpiredApi(stripe, session.id), orderId, { onlyIfSessionIs: session.id });
+        if (out === 'expire-failed') {
+          await logError('stripe.webhook.expired', new Error(`could not confirm expire of session ${session.id} for order ${orderId}`));
+          return NextResponse.json({ error: 'expire failed, will retry' }, { status: 500 });
         }
+      } catch (e) {
+        await logError('stripe.webhook.expired', e);
+        return NextResponse.json({ error: 'restock failed, will retry' }, { status: 500 });
       }
     }
   }
 
   return NextResponse.json({ received: true });
+}
+
+/**
+ * Late payment on a TERMINAL / non-matching order. EXACTLY-ONCE via the durable
+ * WebhookEvent ledger (keyed on the Stripe event.id): the first processor claims
+ * the row; a concurrent/replayed delivery collides on the PK and returns. On a
+ * FAILED attempt the claim is deleted so a later Stripe redelivery retries. A
+ * REFUNDED order whose PI already equals this session's PI is a normal refund
+ * REPLAY (not a late capture) — recorded, no second refund, no CRITICAL. Never restocks.
+ */
+async function handleLatePaymentAnomaly(
+  stripe: NonNullable<ReturnType<typeof getStripe>>,
+  orderId: string,
+  orderNumber: string,
+  session: { id: string; payment_intent?: unknown },
+  eventId: string,
+): Promise<void> {
+  // Claim the event (single winner). Replays / concurrent deliveries skip.
+  try {
+    await prisma.webhookEvent.create({ data: { id: eventId, type: 'checkout.session.completed', orderId } });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return; // already claimed
+    throw e;
+  }
+  const pi = typeof session.payment_intent === 'string' ? session.payment_intent : null;
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { status: true, stripePaymentIntentId: true },
+    });
+    // Normal refund replay: order already REFUNDED for THIS same PI → not a late
+    // capture; record and stop (no second refund, no CRITICAL).
+    if (order?.status === 'REFUNDED' && pi && order.stripePaymentIntentId === pi) {
+      await prisma.webhookEvent.update({ where: { id: eventId }, data: { outcome: 'refund-replay', detail: `PI ${pi}` } });
+      return;
+    }
+    if (!pi) throw new Error('completed session had no payment_intent to refund');
+    await stripe.refunds.create(
+      { payment_intent: pi },
+      { idempotencyKey: `late-refund-${orderId}-${pi}` }, // Stripe-side double-refund guard
+    );
+    await prisma.webhookEvent.update({ where: { id: eventId }, data: { outcome: 'late-refunded', detail: `PI ${pi}` } });
+    await logError('stripe.webhook.late-payment.autorefunded', new Error(`refunded PI ${pi} for terminal order ${orderNumber}`));
+    await notifyAdmins(
+      `Late payment auto-refunded · ${orderNumber}`,
+      `Captured payment on a terminal/non-matching order; an idempotent refund was issued (PI ${pi}, session ${session.id}). Please verify.`,
+      `/admin/orders/${orderId}`,
+      'SYSTEM',
+    );
+  } catch (e) {
+    // Attempt failed — DELETE the claim so a later Stripe redelivery can retry,
+    // then alert. (A permanent-failure ledger row would strand the money silently.)
+    await prisma.webhookEvent.delete({ where: { id: eventId } }).catch(() => null);
+    await logError('stripe.webhook.late-payment.CRITICAL', e);
+    await notifyAdmins(
+      `CRITICAL: captured payment on terminal order · ${orderNumber}`,
+      `Completed payment (session ${session.id}, PI ${pi ?? 'unknown'}) for a terminal/non-matching order and the auto-refund FAILED — manual intervention required; do not restock. Will retry on redelivery.`,
+      `/admin/orders/${orderId}`,
+      'SYSTEM',
+    );
+  }
 }

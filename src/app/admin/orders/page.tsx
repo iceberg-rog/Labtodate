@@ -282,7 +282,7 @@ export default async function AdminOrdersPage(
       </div>
 
       {/* Sales intelligence ribbon — what's worth knowing in 1 glance */}
-      <section className="rounded-2xl border border-border bg-gradient-to-r from-card via-card to-emerald-50/30 p-3 grid grid-cols-2 md:grid-cols-4 gap-px overflow-hidden">
+      <section className="rounded-2xl border border-border bg-gradient-to-r from-card via-card to-emerald-50/30 dark:to-emerald-950/30 p-3 grid grid-cols-2 md:grid-cols-4 gap-px overflow-hidden">
         <RibbonStat
           icon={<TrendingUp className="h-3.5 w-3.5" />}
           label="Top category · 7d"
@@ -494,21 +494,21 @@ function StatTile({
   // the tone band + label/value/subtitle layout.
   const toneSurface =
     tone === 'emerald'
-      ? 'border-emerald-200 bg-emerald-50/40'
+      ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-950/30'
       : tone === 'amber'
-        ? 'border-amber-200 bg-amber-50/40'
+        ? 'border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/30'
         : tone === 'red'
           ? alert
-            ? 'border-red-300 bg-red-50 ring-2 ring-red-200/60'
-            : 'border-red-200 bg-red-50/40'
+            ? 'border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 ring-2 ring-red-200/60 dark:ring-red-800/60'
+            : 'border-red-200 dark:border-red-800 bg-red-50/40 dark:bg-red-950/30'
           : 'border-border bg-card';
   const toneText =
     tone === 'emerald'
-      ? 'text-emerald-700'
+      ? 'text-emerald-700 dark:text-emerald-300'
       : tone === 'amber'
-        ? 'text-amber-700'
+        ? 'text-amber-700 dark:text-amber-300'
         : tone === 'red'
-          ? 'text-red-700'
+          ? 'text-red-700 dark:text-red-300'
           : 'text-muted-foreground';
   return (
     <Link
@@ -525,7 +525,7 @@ function StatTile({
         )}
       </div>
       <p
-        className={`tabular-nums mt-2 font-bold ${dominant ? 'text-4xl' : 'text-2xl'} ${tone === 'emerald' && dominant ? 'text-emerald-800' : ''}`}
+        className={`tabular-nums mt-2 font-bold ${dominant ? 'text-4xl' : 'text-2xl'} ${tone === 'emerald' && dominant ? 'text-emerald-800 dark:text-emerald-300' : ''}`}
         style={{ letterSpacing: '-0.03em' }}
       >
         {value}

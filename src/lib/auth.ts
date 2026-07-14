@@ -1,10 +1,23 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
-import { magicLink } from 'better-auth/plugins';
+import { magicLink, emailOTP } from 'better-auth/plugins';
 import { nextCookies } from 'better-auth/next-js';
 import { createAuthMiddleware, APIError } from 'better-auth/api';
 import { prisma } from './db';
 import { sendEmail } from './email';
+
+// Startup sanity check (non-fatal): surface a misconfigured production secret
+// in the logs without taking the site down. A placeholder/short secret means
+// session tokens are forgeable — it must be a 32+ char random value.
+if (process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-production-build') {
+  const s = process.env.BETTER_AUTH_SECRET || '';
+  if (s.length < 32 || s.includes('change-me')) {
+    console.error('[auth] SECURITY: BETTER_AUTH_SECRET is missing, <32 chars, or still the placeholder — set a strong random value in .env.');
+  }
+  if ((process.env.CRON_SECRET || '').includes('change-me')) {
+    console.error('[auth] SECURITY: CRON_SECRET is still the placeholder — set a strong random value in .env.');
+  }
+}
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
@@ -15,6 +28,9 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: false,
+    // No session is issued on sign-up — the sign-up form emails a 5-digit
+    // code, verifies it, THEN signs the user in. Existing sign-in is untouched.
+    autoSignIn: false,
     minPasswordLength: 12,
     sendResetPassword: async ({ user, url }) => {
       await sendEmail({
@@ -140,6 +156,27 @@ export const auth = betterAuth({
             </div>
           `,
           text: `Sign in to lab2date: ${url}\n\nThis link expires in 10 minutes.`,
+        });
+      },
+    }),
+    // 5-digit e-mail verification code, used by the sign-up flow.
+    emailOTP({
+      otpLength: 5,
+      expiresIn: 60 * 10, // 10 minutes
+      allowedAttempts: 5,
+      sendVerificationOTP: async ({ email, otp }) => {
+        await sendEmail({
+          to: email,
+          subject: `${otp} is your lab2date verification code`,
+          html: `
+            <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
+              <h2 style="color:#0E4F40;margin:0 0 8px;">Confirm your email</h2>
+              <p style="color:#374151;">Enter this code to finish creating your lab2date account:</p>
+              <p style="font-size:34px;font-weight:800;letter-spacing:8px;color:#0E4F40;background:#f3f4f6;border-radius:12px;padding:16px;text-align:center;margin:20px 0;">${otp}</p>
+              <p style="color:#6b7280;font-size:13px;">This code expires in 10 minutes. If you didn't sign up, you can safely ignore this email.</p>
+            </div>
+          `,
+          text: `Your lab2date verification code is ${otp}. It expires in 10 minutes.`,
         });
       },
     }),

@@ -116,7 +116,7 @@ export function ManualPaidPanel() {
                 className="block mx-auto text-xs"
               />
               {file ? (
-                <p className="text-emerald-700 font-semibold mt-2 inline-flex items-center gap-1">
+                <p className="text-emerald-700 dark:text-emerald-300 font-semibold mt-2 inline-flex items-center gap-1">
                   <FileText className="h-3.5 w-3.5" /> {file.name} ({Math.round(file.size / 1024)} KB)
                 </p>
               ) : (
@@ -140,7 +140,7 @@ export function ManualPaidPanel() {
           </label>
 
           {res && (
-            <p className={`text-sm inline-flex items-center gap-1.5 font-semibold ${res.ok ? 'text-emerald-700' : 'text-red-700'}`}>
+            <p className={`text-sm inline-flex items-center gap-1.5 font-semibold ${res.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
               {res.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
               {res.message}
             </p>

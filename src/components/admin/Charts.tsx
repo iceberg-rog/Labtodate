@@ -144,7 +144,7 @@ export function FunnelChart({
                 <span className="font-semibold">{s.label}</span>
                 <span className="tabular-nums text-muted-foreground">
                   {s.value} ({pct}%)
-                  {drop !== null && drop > 0 && <span className="ml-2 text-amber-600">−{drop}% drop</span>}
+                  {drop !== null && drop > 0 && <span className="ml-2 text-amber-600 dark:text-amber-400">−{drop}% drop</span>}
                   {s.sub && <span className="ml-2 opacity-60">· {s.sub}</span>}
                 </span>
               </div>

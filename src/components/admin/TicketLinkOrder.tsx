@@ -71,7 +71,7 @@ export function TicketLinkOrder({
           </button>
         )}
       </div>
-      {msg && <p className="text-[10px] text-emerald-700 font-semibold mt-1">{msg}</p>}
+      {msg && <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold mt-1">{msg}</p>}
     </div>
   );
 }

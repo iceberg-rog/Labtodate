@@ -39,7 +39,7 @@ export default async function SellerProductsPage(
       </div>
 
       {(searchParams.created || searchParams.updated) && (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-900 px-4 py-3 text-sm">
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm">
           ✓ Listing {searchParams.created ? 'created' : 'updated'}. {searchParams.created ? 'Awaiting admin review before it goes live.' : ''}
         </div>
       )}
@@ -92,7 +92,7 @@ export default async function SellerProductsPage(
                   </Link>
                 </Button>
                 <form action={deleteProduct.bind(null, p.slug)}>
-                  <Button type="submit" variant="ghost" size="sm" className="rounded-full font-medium text-red-600 hover:bg-red-50 hover:text-red-700">
+                  <Button type="submit" variant="ghost" size="sm" className="rounded-full font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-700 dark:hover:text-red-300">
                     Delete
                   </Button>
                 </form>

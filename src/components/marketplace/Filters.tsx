@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
-import { X } from 'lucide-react';
+import { X, SlidersHorizontal, ChevronDown } from 'lucide-react';
 
 interface FacetItem {
   slug: string;
@@ -20,11 +20,22 @@ export function Filters({
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
+  const [open, setOpen] = useState(false); // mobile filter drawer
 
   const activeCategory  = params.get('category');
   const activeBrand     = params.get('brand');
   const activeCondition = params.get('condition');
   const activeMode      = params.get('mode');
+
+  // On phones the filters sit above the results, which are off-screen — so after
+  // applying one, scroll the results into view so the change is visible.
+  const scrollToResults = useCallback(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setTimeout(() => {
+        document.getElementById('marketplace-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 80);
+    }
+  }, []);
 
   const set = useCallback(
     (key: string, value: string | null) => {
@@ -33,8 +44,9 @@ export function Filters({
       else next.set(key, value);
       next.delete('page');
       router.push(`${pathname}?${next.toString()}`, { scroll: false });
+      scrollToResults();
     },
-    [params, pathname, router],
+    [params, pathname, router, scrollToResults],
   );
 
   const clearAll = useCallback(() => {
@@ -42,15 +54,39 @@ export function Filters({
     const q = params.get('q');
     if (q) next.set('q', q);
     router.push(`${pathname}?${next.toString()}`, { scroll: false });
-  }, [params, pathname, router]);
+    setOpen(false);
+    scrollToResults();
+  }, [params, pathname, router, scrollToResults]);
 
-  const hasActive =
-    activeCategory || activeBrand || activeCondition || activeMode ||
-    params.get('minPrice') || params.get('maxPrice');
+  const activeCount = [
+    activeCategory, activeBrand, activeCondition, activeMode,
+    params.get('minPrice'), params.get('maxPrice'),
+  ].filter(Boolean).length;
+  const hasActive = activeCount > 0;
 
   return (
-    <aside className="space-y-6 sticky top-24 self-start">
-      <div className="flex items-center justify-between">
+    <aside className="space-y-4 lg:space-y-6 lg:sticky lg:top-24 lg:self-start">
+      {/* Mobile: collapsible filter drawer trigger (filters otherwise push the
+          results far below the fold, so tapping one felt like "nothing happens"). */}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="lg:hidden w-full flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3 text-sm font-bold"
+      >
+        <span className="inline-flex items-center gap-2">
+          <SlidersHorizontal className="h-4 w-4" /> Filters
+          {activeCount > 0 && (
+            <span className="inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[11px] font-bold min-w-[1.25rem] h-5 px-1.5">
+              {activeCount}
+            </span>
+          )}
+        </span>
+        <ChevronDown className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {/* Desktop: heading + clear all */}
+      <div className="hidden lg:flex items-center justify-between">
         <h2 className="text-sm font-bold uppercase tracking-[0.18em] text-foreground">Filters</h2>
         {hasActive && (
           <button
@@ -62,6 +98,18 @@ export function Filters({
           </button>
         )}
       </div>
+
+      {/* Collapsible body: hidden on mobile until opened, always shown on lg+ */}
+      <div className={`${open ? 'block' : 'hidden'} lg:block space-y-6`}>
+        {hasActive && (
+          <button
+            type="button"
+            onClick={clearAll}
+            className="lg:hidden w-full text-xs text-muted-foreground hover:text-primary inline-flex items-center justify-center gap-1 font-medium rounded-lg border border-border py-2"
+          >
+            <X className="h-3 w-3" /> Clear all filters
+          </button>
+        )}
 
       <FilterGroup title="Category">
         {categories.map((c) => (
@@ -129,6 +177,7 @@ export function Filters({
             else next.delete('maxPrice');
             next.delete('page');
             router.push(`${pathname}?${next.toString()}`, { scroll: false });
+            scrollToResults();
           }}
           className="flex items-center gap-2"
         >
@@ -157,6 +206,7 @@ export function Filters({
           </button>
         </form>
       </FilterGroup>
+      </div>
     </aside>
   );
 }

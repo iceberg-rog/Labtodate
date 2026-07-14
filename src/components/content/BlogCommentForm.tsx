@@ -63,7 +63,7 @@ export function BlogCommentForm({ postId }: { postId: string }) {
         {res && (
           <span
             className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-              res.ok ? 'text-emerald-600' : 'text-red-600'
+              res.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
             }`}
           >
             {res.ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}

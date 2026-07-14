@@ -77,7 +77,7 @@ export function ReplyForm({
           ))}
         </div>
       )}
-      {err && <p className="text-xs text-red-600">{err}</p>}
+      {err && <p className="text-xs text-red-600 dark:text-red-400">{err}</p>}
       <form
         ref={ref}
         onSubmit={(e) => {

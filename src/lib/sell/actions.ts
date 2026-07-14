@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { getServerSession, requireSession } from '@/lib/auth-server';
+import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
 import { sendEmail } from '@/lib/email';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
@@ -200,7 +200,7 @@ function parseAttachments(v: FormDataEntryValue | null): string[] {
 }
 
 export async function replySellSubmission(formData: FormData) {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/sell' });
+  const session = await requireCapability('sell:reply', { redirectTo: '/admin/sell' });
   await ensureSettingsLoaded();
   const id = String(formData.get('submissionId') ?? '');
   const body = String(formData.get('body') ?? '').trim();
@@ -295,7 +295,7 @@ async function emitSystemMessage(submissionId: string, body: string) {
  * the negotiation. priceCents on the message is the offer itself.
  */
 export async function proposeAcquisitionPrice(formData: FormData): Promise<void> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/sell' });
+  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
   await ensureSettingsLoaded();
   const id = String(formData.get('submissionId') ?? '');
   const cents = Math.round(parseFloat(String(formData.get('amount') ?? '0')) * 100);
@@ -485,7 +485,7 @@ export async function saveAcquisitionShipping(formData: FormData): Promise<void>
 
 /** Admin stamps that the package has physically arrived at the warehouse. */
 export async function markAcquisitionReceived(formData: FormData): Promise<void> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/sell' });
+  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
   await ensureSettingsLoaded();
   const id = String(formData.get('submissionId') ?? '');
   if (!id) return;
@@ -532,7 +532,7 @@ export async function markAcquisitionReceived(formData: FormData): Promise<void>
  * through the existing attachment-upload route first).
  */
 export async function completeAcquisition(formData: FormData): Promise<void> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/sell' });
+  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
   await ensureSettingsLoaded();
   const id = String(formData.get('submissionId') ?? '');
   const receiptUrl = String(formData.get('paymentReceiptUrl') ?? '').trim();
@@ -579,7 +579,7 @@ export async function completeAcquisition(formData: FormData): Promise<void> {
  * paste URL).
  */
 export async function uploadReceiptAndComplete(formData: FormData): Promise<void> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/sell' });
+  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
   const id = String(formData.get('submissionId') ?? '');
   const file = formData.get('receipt');
   if (!id || !file || typeof file === 'string') return;

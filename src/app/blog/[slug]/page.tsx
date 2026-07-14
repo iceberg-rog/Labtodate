@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db';
 import { ArticleCover } from '@/components/content/ArticleCover';
 import { BlogCommentForm } from '@/components/content/BlogCommentForm';
 import { trackBlogView } from '@/lib/blog/actions';
+import { sanitizeRichHtml } from '@/lib/sanitize';
 
 export const dynamic = 'force-dynamic';
 
@@ -86,7 +87,7 @@ export default async function BlogPostPage(props: { params: Promise<{ slug: stri
 
       <div
         className="prose-article mt-10 text-foreground"
-        dangerouslySetInnerHTML={{ __html: post.body }}
+        dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(post.body) }}
       />
 
       <section className="mt-16 border-t border-border pt-10">

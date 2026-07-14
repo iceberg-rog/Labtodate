@@ -1,19 +1,20 @@
 import type { MetadataRoute } from 'next';
 import { prisma } from '@/lib/db';
 
-const BASE = process.env.BETTER_AUTH_URL ?? 'https://lab2date.com';
+const BASE = process.env.BETTER_AUTH_URL ?? 'https://labtodate.com';
 
 export const dynamic = 'force-dynamic'; // DB-backed; render on request, not at build
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const [products, categories, posts, articles, cases, facilities, suppliers] = await Promise.all([
+  // NOTE: /suppliers/[slug] is intentionally disabled (always 404s), so supplier
+  // micro-sites are deliberately NOT in the sitemap — never list 404 URLs.
+  const [products, categories, posts, articles, cases, facilities] = await Promise.all([
     prisma.product.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
     prisma.category.findMany({ select: { slug: true, updatedAt: true } }),
     prisma.blogPost.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
     prisma.wikiArticle.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
     prisma.caseStudy.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
     prisma.labFacility.findMany({ where: { isPublished: true }, select: { slug: true, updatedAt: true } }),
-    prisma.company.findMany({ where: { isFeatured: true }, select: { slug: true, updatedAt: true } }),
   ]);
 
   const staticPages: MetadataRoute.Sitemap = [
@@ -35,6 +36,5 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ...articles.map((a) => ({ url: `${BASE}/wiki/${a.slug}`, lastModified: a.updatedAt, changeFrequency: 'monthly' as const, priority: 0.5 })),
     ...cases.map((c) => ({ url: `${BASE}/case-studies/${c.slug}`, lastModified: c.updatedAt, changeFrequency: 'monthly' as const, priority: 0.6 })),
     ...facilities.map((f) => ({ url: `${BASE}/lab-rental/${f.slug}`, lastModified: f.updatedAt, changeFrequency: 'monthly' as const, priority: 0.5 })),
-    ...suppliers.map((s) => ({ url: `${BASE}/suppliers/${s.slug}`, lastModified: s.updatedAt, changeFrequency: 'monthly' as const, priority: 0.5 })),
   ];
 }

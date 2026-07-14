@@ -49,7 +49,7 @@ const FIELD_LABEL: Record<string, string> = {
 export default async function CheckoutAddressPage(
   props: {
     params: Promise<{ slug: string }>;
-    searchParams: Promise<{ missing?: string }>;
+    searchParams: Promise<{ missing?: string; err?: string }>;
   }
 ) {
   const searchParams = await props.searchParams;
@@ -107,8 +107,19 @@ export default async function CheckoutAddressPage(
           </div>
 
           {missing.length > 0 && (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+            <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-800 dark:text-red-300">
               Please fill in: <strong>{missing.map((m) => FIELD_LABEL[m] ?? m).join(', ')}</strong>.
+            </div>
+          )}
+
+          {/* BUG-045: the order create failed and the reserved unit was released
+              back to stock (which is also why this page still renders instead of
+              404-ing on `quantity < 1`). Say so explicitly -- a buyer bounced back
+              to an empty form otherwise has no idea whether they now owe money. */}
+          {searchParams.err === 'order' && (
+            <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-800 dark:text-red-300">
+              <strong>We couldn&rsquo;t create your order.</strong> The item was not reserved and
+              no payment is due. Please check your details and try again.
             </div>
           )}
 
@@ -239,7 +250,7 @@ function Field({
   return (
     <label className="block">
       <span className="block text-sm font-semibold mb-1.5">
-        {label} {required && <span className="text-red-600">*</span>}
+        {label} {required && <span className="text-red-600 dark:text-red-400">*</span>}
       </span>
       <input
         type={type ?? 'text'}

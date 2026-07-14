@@ -58,7 +58,7 @@ export async function CategoryGrid() {
             href={`/marketplace?category=${c.slug}`}
             className="group relative rounded-2xl border border-border bg-card overflow-hidden transition-all duration-300 hover:-translate-y-1 hover:border-primary/30 hover:shadow-[0_22px_50px_-24px_rgba(15,79,64,0.4)]"
           >
-            <div className="relative aspect-[4/3] overflow-hidden bg-white">
+            <div className="relative aspect-[4/3] overflow-hidden bg-card">
               {c.image ? (
                 <Image
                   src={c.image}
@@ -74,7 +74,7 @@ export async function CategoryGrid() {
                   </div>
                 </div>
               )}
-              <div className="absolute top-3 right-3 h-8 w-8 rounded-full bg-white/85 backdrop-blur flex items-center justify-center text-foreground translate-y-1.5 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all">
+              <div className="absolute top-3 right-3 h-8 w-8 rounded-full bg-card/85 backdrop-blur flex items-center justify-center text-foreground translate-y-1.5 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all">
                 <ArrowUpRight className="h-4 w-4" />
               </div>
             </div>

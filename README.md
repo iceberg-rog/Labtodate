@@ -70,10 +70,35 @@ GitHub's 100 MB file limit). Upload it to Google Drive / Dropbox /
 Backblaze for off-machine safety. See `.backups/RESTORE.md` for the
 manual restore steps if the script breaks.
 
-On first boot, the `setup` service runs `prisma db push` and seeds the main catalogue plus content. Re-run it whenever you need to resync schema or reseed:
+### Database migrations & baselining
+
+Schema is managed by **Prisma Migrate**, never `prisma db push` (which is
+destructive against the project's hand-written partial indexes). There are two
+migrations under `prisma/migrations/`:
+
+- `0_baseline` — byte-faithful reproduction of the production dump schema
+  (`pg_dump --schema-only`, including the 16 partial indexes Prisma cannot
+  express as declarations).
+- `1_reconcile_partial_unique_and_fks` — converts the 4 partial UNIQUE indexes to
+  canonical full unique, normalizes 3 FK `onUpdate` actions to `CASCADE`, and adds
+  the missing `SupportTicket.assignedToId` FK. Guarded (duplicate/orphan checks)
+  and atomic (`BEGIN;`/`COMMIT;`).
+
+The `setup` service runs **`prisma migrate deploy` only** — it never seeds.
+
+- **Fresh (empty) DB:** `docker compose run --rm setup npx prisma migrate deploy`
+  applies both `0_baseline` and `1_reconcile`.
+- **Restored production dump:** `scripts/bootstrap-fresh-server.sh` runs
+  `scripts/preflight-restored-baseline.sql` to PROVE the restored DB matches
+  `0_baseline` (never marks an incompatible DB applied), then
+  `prisma migrate resolve --applied 0_baseline`, then `migrate deploy` (applies
+  `1_reconcile`) — hard-gated on an empty `prisma migrate diff` before web starts.
+
+**Seeding is an explicit operator action, never automatic** (and never on a
+restored production DB):
 
 ```bash
-docker compose run --rm setup
+npm run db:seed:all
 ```
 
 Useful maintenance commands:

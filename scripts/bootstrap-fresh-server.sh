@@ -27,12 +27,12 @@ cd "$REPO_ROOT"
 [[ -f .backups/lab2date-prod.sql.gz ]] || { echo "[err] .backups/lab2date-prod.sql.gz missing — fetch from off-machine backup" ; exit 1; }
 [[ -f .backups/minio-mirror.tar.gz ]] || { echo "[err] .backups/minio-mirror.tar.gz missing — fetch from off-machine backup" ; exit 1; }
 
-echo "[1/7] preflight ok — .env + DB dump + MinIO mirror all present"
+echo "[1/9] preflight ok — .env + DB dump + MinIO mirror all present"
 
 # ---------- docker install (idempotent) ----------
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "[2/7] installing docker engine + compose plugin"
+  echo "[2/9] installing docker engine + compose plugin"
   apt-get update -qq
   apt-get install -y -qq curl ca-certificates gnupg
   install -m 0755 -d /etc/apt/keyrings
@@ -46,45 +46,100 @@ if ! command -v docker >/dev/null 2>&1; then
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   systemctl enable --now docker
 else
-  echo "[2/7] docker already installed, skipping"
+  echo "[2/9] docker already installed, skipping"
 fi
 
 # ---------- start infra containers (db + minio + mailpit) first ----------
 
-echo "[3/7] starting db, minio, mailpit (need them up before restore)"
+echo "[3/9] starting db, minio, mailpit (need them up before restore)"
 docker compose up -d db minio mailpit
 
-echo -n "[4/7] waiting for postgres to accept connections "
+echo -n "[4/9] waiting for postgres to accept connections "
+pg_ready=0
 for _ in $(seq 1 60); do
   if docker compose exec -T db pg_isready -U lab2date >/dev/null 2>&1; then
-    echo "ok"
-    break
+    pg_ready=1; echo "ok"; break
   fi
   echo -n "."
   sleep 1
 done
+[ "$pg_ready" -eq 1 ] || { echo; echo "[err] postgres not ready after 60s — aborting" >&2; exit 1; }
 
-# ---------- restore postgres ----------
-
-echo "[5/7] restoring postgres dump (lab2date-prod.sql.gz)"
+# ---------- restore postgres (STRICT: ON_ERROR_STOP + pipefail) ----------
+# The dump is `pg_dump --clean --if-exists`, so DROPs are harmless on a fresh DB,
+# but any real SQL error must abort with a nonzero exit (no partial restore).
+echo "[5/9] restoring postgres dump (lab2date-prod.sql.gz)"
 gunzip -c .backups/lab2date-prod.sql.gz \
-  | docker compose exec -T db psql -U lab2date -d lab2date >/dev/null
-echo "[5/7] postgres restore complete"
+  | docker compose exec -T db psql -U lab2date -d lab2date -v ON_ERROR_STOP=1 -q >/dev/null
+echo "[5/9] postgres restore complete"
 
 # ---------- restore minio bucket ----------
 
-echo "[6/7] restoring minio bucket (minio-mirror.tar.gz, ~400 MB)"
+echo "[6/9] restoring minio bucket (minio-mirror.tar.gz, ~400 MB)"
 MINIO_VOL=$(docker volume inspect lab2date_minio_data --format '{{ .Mountpoint }}')
 [[ -n "$MINIO_VOL" && -d "$MINIO_VOL" ]] || { echo "[err] minio volume not found"; exit 1; }
 docker compose stop minio
 tar xzf .backups/minio-mirror.tar.gz -C "$MINIO_VOL"
 chown -R 1000:1000 "$MINIO_VOL" 2>/dev/null || true
 docker compose start minio
-echo "[6/7] minio restore complete"
+echo "[6/9] minio restore complete"
+
+# ---------- baseline the restored DB (Prisma Migrate) ----------
+# Decide explicitly from _prisma_migrations — never blindly resolve:
+#   applied -> 0_baseline already recorded (finished, not rolled back); skip
+#   fresh   -> no table / no 0_baseline row: run the STRICT preflight fingerprint
+#              (scripts/preflight-restored-baseline.sql) to prove the DB matches
+#              the 0_baseline dump-state, THEN resolve --applied
+#   *       -> any other/failed history or a failed query: ABORT (nonzero)
+echo "[7/9] baselining restored DB (prisma migrate resolve --applied 0_baseline)"
+docker compose build setup
+# Two-step detection. PostgreSQL resolves table references at PARSE time, so a
+# single CASE that both guards with to_regclass AND selects FROM _prisma_migrations
+# still errors ("relation does not exist") on an empty DB. Check existence first;
+# only if the table exists do we query it.
+HAS_MIG_TABLE=$(docker compose exec -T db psql -U lab2date -d lab2date -tA \
+  -c "SELECT to_regclass('public._prisma_migrations') IS NOT NULL" 2>/dev/null | tr -d '[:space:]')
+case "$HAS_MIG_TABLE" in
+  f) BASELINE_STATE=fresh ;;
+  t) BASELINE_STATE=$(docker compose exec -T db psql -U lab2date -d lab2date -tA -c \
+       "SELECT CASE
+          WHEN NOT EXISTS (SELECT 1 FROM _prisma_migrations WHERE migration_name='0_baseline') THEN 'fresh'
+          WHEN EXISTS (SELECT 1 FROM _prisma_migrations
+                       WHERE migration_name='0_baseline' AND finished_at IS NOT NULL AND rolled_back_at IS NULL) THEN 'applied'
+          ELSE 'bad' END" 2>/dev/null | tr -d '[:space:]') ;;
+  *) echo "[err] could not determine _prisma_migrations existence (db query failed)" >&2; exit 1 ;;
+esac
+case "$BASELINE_STATE" in
+  applied)
+    echo "    0_baseline already applied — skipping resolve" ;;
+  fresh)
+    echo "    running restored-baseline preflight fingerprint"
+    docker compose exec -T db psql -U lab2date -d lab2date -v ON_ERROR_STOP=1 \
+      < "$REPO_ROOT/scripts/preflight-restored-baseline.sql"
+    docker compose run --rm setup npx prisma migrate resolve --applied 0_baseline ;;
+  *)
+    echo "[err] unexpected _prisma_migrations state: '${BASELINE_STATE:-<query failed>}' — aborting" >&2
+    exit 1 ;;
+esac
+
+# ---------- apply 1_reconcile + HARD schema gate (BEFORE starting web) ----------
+echo "[8/9] applying 1_reconcile (migrate deploy) + verifying empty diff"
+docker compose run --rm setup npx prisma migrate deploy
+# Run the diff INSIDE the container (single-quoted so $DATABASE_URL expands from
+# the container env_file, not the host shell where set -u would abort on it).
+if ! docker compose run --rm setup sh -c \
+     'npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code' \
+     >/dev/null 2>&1; then
+  echo "[err] schema drift after migrate deploy — refusing to start web. Diff:" >&2
+  docker compose run --rm setup sh -c \
+    'npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script' >&2
+  exit 1
+fi
+echo "    [ok] database schema matches prisma/schema.prisma (empty diff)"
 
 # ---------- build + start web ----------
 
-echo "[7/7] building + starting web (first build ~4 min on a fresh host)"
+echo "[9/9] building + starting web (first build ~4 min on a fresh host)"
 docker compose build web
 docker compose up -d
 

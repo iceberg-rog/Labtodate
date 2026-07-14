@@ -60,21 +60,21 @@ export type TicketRowProps = {
 };
 
 const PRIORITY_STYLE: Record<string, { label: string; cls: string; icon: JSX.Element }> = {
-  VIP:    { label: 'VIP',    cls: 'bg-purple-100 text-purple-800 border-purple-300', icon: <Crown className="h-3 w-3" /> },
-  URGENT: { label: 'URGENT', cls: 'bg-red-100 text-red-800 border-red-300',         icon: <ShieldAlert className="h-3 w-3" /> },
-  HIGH:   { label: 'HIGH',   cls: 'bg-amber-100 text-amber-800 border-amber-300',   icon: <AlertCircle className="h-3 w-3" /> },
-  NORMAL: { label: 'normal', cls: 'bg-slate-100 text-slate-700 border-slate-200',   icon: <></> },
-  LOW:    { label: 'low',    cls: 'bg-slate-50 text-slate-600 border-slate-200',    icon: <></> },
+  VIP:    { label: 'VIP',    cls: 'bg-purple-100 text-purple-800 border-purple-300 dark:bg-purple-900/40 dark:text-purple-300 dark:border-purple-800', icon: <Crown className="h-3 w-3" /> },
+  URGENT: { label: 'URGENT', cls: 'bg-red-100 text-red-800 border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800',         icon: <ShieldAlert className="h-3 w-3" /> },
+  HIGH:   { label: 'HIGH',   cls: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',   icon: <AlertCircle className="h-3 w-3" /> },
+  NORMAL: { label: 'normal', cls: 'bg-muted text-muted-foreground border-border',   icon: <></> },
+  LOW:    { label: 'low',    cls: 'bg-muted text-muted-foreground border-border',    icon: <></> },
 };
 
 const STATUS_STYLE: Record<string, { label: string; cls: string }> = {
-  OPEN:                  { label: 'open',                cls: 'bg-amber-50 text-amber-800 border-amber-200' },
-  WAITING_ON_SUPPORT:    { label: 'awaiting reply',      cls: 'bg-amber-50 text-amber-800 border-amber-200' },
-  WAITING_ON_CUSTOMER:   { label: 'awaiting customer',   cls: 'bg-sky-50 text-sky-800 border-sky-200' },
-  RESOLVED:              { label: 'resolved',            cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
-  CLOSED:                { label: 'closed',              cls: 'bg-slate-100 text-slate-600 border-slate-200' },
-  SPAM:                  { label: 'spam',                cls: 'bg-slate-100 text-slate-500 border-slate-200' },
-  PENDING:               { label: 'pending',             cls: 'bg-sky-50 text-sky-800 border-sky-200' },
+  OPEN:                  { label: 'open',                cls: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800' },
+  WAITING_ON_SUPPORT:    { label: 'awaiting reply',      cls: 'bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800' },
+  WAITING_ON_CUSTOMER:   { label: 'awaiting customer',   cls: 'bg-sky-50 text-sky-800 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800' },
+  RESOLVED:              { label: 'resolved',            cls: 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800' },
+  CLOSED:                { label: 'closed',              cls: 'bg-muted text-muted-foreground border-border' },
+  SPAM:                  { label: 'spam',                cls: 'bg-muted text-muted-foreground border-border' },
+  PENDING:               { label: 'pending',             cls: 'bg-sky-50 text-sky-800 border-sky-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800' },
 };
 
 function initials(name: string, email: string): string {
@@ -117,7 +117,7 @@ function SlaBadge({ dueAtISO, status, mounted }: { dueAtISO: string | null; stat
   if (diffMs > 0) {
     const h = Math.round(diffMs / 3600e3);
     return (
-      <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
+      <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
         <Hourglass className="h-3 w-3" /> SLA · {h <= 1 ? '<1h' : `${h}h left`}
       </span>
     );
@@ -128,8 +128,8 @@ function SlaBadge({ dueAtISO, status, mounted }: { dueAtISO: string | null; stat
     <span
       className={`inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full ${
         breached
-          ? 'bg-red-100 text-red-800 border border-red-300 animate-pulse'
-          : 'bg-amber-100 text-amber-800 border border-amber-300'
+          ? 'bg-red-100 text-red-800 border border-red-300 dark:bg-red-900/40 dark:text-red-300 dark:border-red-800 animate-pulse'
+          : 'bg-amber-100 text-amber-800 border border-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800'
       }`}
     >
       <AlertCircle className="h-3 w-3" />
@@ -164,7 +164,7 @@ export function TicketRow(p: TicketRowProps) {
         before:content-[''] before:absolute before:inset-y-0 before:left-0 before:w-1 ${stripe} ${p.archived ? 'opacity-70 grayscale-[0.2]' : ''}`}
     >
       {p.archived && (
-        <div className="absolute top-2 right-3 z-10 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5">
+        <div className="absolute top-2 right-3 z-10 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-2 py-0.5">
           <Archive className="h-3 w-3" /> Archived
         </div>
       )}
@@ -251,8 +251,8 @@ export function TicketRow(p: TicketRowProps) {
             <div className="inline-flex items-center gap-2 flex-wrap pt-0.5">
               <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
                 p.isRegistered
-                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                  : 'bg-slate-100 text-slate-700 border-slate-200'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                  : 'bg-muted text-muted-foreground border-border'
               }`}>
                 <UserIcon className="h-2.5 w-2.5" />
                 <span>{p.isRegistered ? 'registered' : 'guest'}</span>
@@ -355,7 +355,7 @@ export function TicketRow(p: TicketRowProps) {
                       catch (err) { alert(err instanceof Error ? err.message : 'Restore failed'); }
                     });
                   }}
-                  className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[10px] font-semibold text-slate-700 hover:bg-foreground/5 disabled:opacity-50"
+                  className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[10px] font-semibold text-muted-foreground hover:bg-foreground/5 disabled:opacity-50"
                   title="Restore"
                 >
                   <ArchiveRestore className="h-3 w-3" />
@@ -377,7 +377,7 @@ export function TicketRow(p: TicketRowProps) {
                       catch (err) { alert(err instanceof Error ? err.message : 'Delete failed'); }
                     });
                   }}
-                  className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[10px] font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                  className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[10px] font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"
                   title="Delete permanently"
                 >
                   <Trash2 className="h-3 w-3" />

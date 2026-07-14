@@ -41,7 +41,7 @@ export function GuestQuoteReplyForm({ token }: { token: string }) {
         placeholder="Add a reply…"
         className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm resize-y focus:outline-none focus:border-primary"
       />
-      {err && <p className="text-xs text-red-600">{err}</p>}
+      {err && <p className="text-xs text-red-600 dark:text-red-400">{err}</p>}
       <div className="flex items-center justify-end">
         <button
           type="submit"

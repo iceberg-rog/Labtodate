@@ -27,6 +27,7 @@ import { submitReview } from '@/lib/reviews/actions';
 import { isWishlisted } from '@/lib/wishlist/actions';
 import { getServerSession } from '@/lib/auth-server';
 import { formatPrice } from '@/lib/utils';
+import { sanitizeRichHtml } from '@/lib/sanitize';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -44,11 +45,14 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
   return {
     title: product.title,
     description,
+    alternates: { canonical: `/marketplace/${product.slug}` },
     openGraph: {
       title: product.title,
       description,
       type: 'website',
       siteName: 'lab2date',
+      url: `/marketplace/${product.slug}`,
+      images: product.images?.[0] ? [product.images[0]] : undefined,
     },
     twitter: { card: 'summary_large_image', title: product.title, description },
   };
@@ -78,26 +82,40 @@ export default async function ProductDetailPage(props: PageProps) {
   const companyListings = product.companyId
     ? await prisma.product.count({ where: { companyId: product.companyId, status: 'PUBLISHED' } })
     : 0;
-  const reviews = await prisma.review.findMany({
-    where: { productId: product.id },
-    orderBy: { createdAt: 'desc' },
-    include: { user: { select: { name: true } } },
-  });
+  // Aggregate for count+average (accurate over ALL reviews), but only render
+  // the latest 24 — an unbounded findMany on a public page is a DoS lever.
+  const [reviewAgg, reviews] = await Promise.all([
+    prisma.review.aggregate({ where: { productId: product.id }, _avg: { rating: true }, _count: true }),
+    prisma.review.findMany({
+      where: { productId: product.id },
+      orderBy: { createdAt: 'desc' },
+      include: { user: { select: { name: true } } },
+      take: 24,
+    }),
+  ]);
+  const reviewCount = reviewAgg._count;
   const avgRating =
-    reviews.length > 0
-      ? Math.round((reviews.reduce((s, r) => s + r.rating, 0) / reviews.length) * 10) / 10
+    reviewCount > 0 && reviewAgg._avg.rating != null
+      ? Math.round(reviewAgg._avg.rating * 10) / 10
       : null;
 
-  const base = process.env.BETTER_AUTH_URL ?? 'https://lab2date.com';
+  const base = process.env.BETTER_AUTH_URL ?? 'https://labtodate.com';
+  const abs = (u: string | null | undefined) =>
+    u ? (u.startsWith('http') ? u : `${base}${u.startsWith('/') ? '' : '/'}${u}`) : undefined;
   const jsonLd = {
     '@context': 'https://schema.org/',
     '@type': 'Product',
     name: product.title,
     description: product.summary ?? product.description ?? undefined,
     sku: product.slug,
+    image: abs(product.images?.[0]),
     brand: product.brand ? { '@type': 'Brand', name: product.brand.name } : undefined,
     category: product.category.name,
     url: `${base}/marketplace/${product.slug}`,
+    aggregateRating:
+      reviewCount > 0 && avgRating
+        ? { '@type': 'AggregateRating', ratingValue: avgRating, reviewCount }
+        : undefined,
     offers: product.priceCents
       ? {
           '@type': 'Offer',
@@ -114,6 +132,16 @@ export default async function ProductDetailPage(props: PageProps) {
         }
       : undefined,
   };
+  const breadcrumbLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: base },
+      { '@type': 'ListItem', position: 2, name: 'Marketplace', item: `${base}/marketplace` },
+      { '@type': 'ListItem', position: 3, name: product.category.name, item: `${base}/marketplace?category=${product.category.slug}` },
+      { '@type': 'ListItem', position: 4, name: product.title, item: `${base}/marketplace/${product.slug}` },
+    ],
+  };
 
   const heroImg = product.images?.[0] || productImage(product.illustration, product.slug, 900);
   const specs = (product.specs as Record<string, string> | null) ?? null;
@@ -124,7 +152,11 @@ export default async function ProductDetailPage(props: PageProps) {
     <div className="container-px py-10 md:py-14">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, '\\u003c') }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd).replace(/</g, '\\u003c') }}
       />
       {/* Breadcrumbs */}
       <nav className="flex items-center gap-1 text-xs text-muted-foreground mb-8 flex-wrap">
@@ -279,7 +311,7 @@ export default async function ProductDetailPage(props: PageProps) {
             {product.description ? (
               <div
                 className="prose-article text-foreground"
-                dangerouslySetInnerHTML={{ __html: product.description }}
+                dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(product.description) }}
               />
             ) : (
               <p className="text-base text-muted-foreground leading-relaxed">
@@ -327,7 +359,7 @@ export default async function ProductDetailPage(props: PageProps) {
               </h2>
               {avgRating !== null && (
                 <span className="text-sm font-semibold text-muted-foreground">
-                  ★ {avgRating} · {reviews.length} review{reviews.length === 1 ? '' : 's'}
+                  ★ {avgRating} · {reviewCount} review{reviewCount === 1 ? '' : 's'}
                 </span>
               )}
             </div>
@@ -363,7 +395,7 @@ export default async function ProductDetailPage(props: PageProps) {
               >
                 <p className="text-sm font-semibold">Write a review</p>
                 {reviewNote && (
-                  <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  <p className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-300">
                     Only verified buyers who purchased this item can leave a review.
                   </p>
                 )}
@@ -395,7 +427,7 @@ export default async function ProductDetailPage(props: PageProps) {
         </div>
 
         <aside className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-6 sticky top-24">
+          <div className="rounded-2xl border border-border bg-card p-6 lg:sticky lg:top-24">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground mb-3">
               Sold by
             </p>

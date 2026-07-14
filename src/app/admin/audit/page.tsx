@@ -21,6 +21,7 @@ export default async function AdminAuditPage() {
         </div>
       ) : (
         <div className="rounded-2xl border border-border bg-card overflow-hidden">
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-foreground/[0.02] text-left text-xs uppercase tracking-wider text-muted-foreground">
@@ -45,6 +46,7 @@ export default async function AdminAuditPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

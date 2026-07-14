@@ -97,6 +97,10 @@ export function ensureBucket(): Promise<void> {
             // requesting user is the buyer/owner or an admin.
             Resource: [
               `arn:aws:s3:::${BUCKET}/products/*`,
+              // BUG-016: blog cover images are seeded under `blog-cover/*`
+              // (outside the `products/` upload convention) and are shown to
+              // anonymous visitors on /blog and the homepage — public-read.
+              `arn:aws:s3:::${BUCKET}/blog-cover/*`,
             ],
           },
         ],

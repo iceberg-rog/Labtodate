@@ -9,6 +9,7 @@ export default async function WikiIndexPage() {
   const articles = await prisma.wikiArticle.findMany({
     where: { status: 'PUBLISHED' },
     orderBy: [{ category: 'asc' }, { title: 'asc' }],
+    take: 300,
   });
 
   // Group by category

@@ -93,7 +93,7 @@ export function ShopPricingDialog({ open, shop, onClose }: Props) {
             </label>
           )}
           {res && (
-            <p className={`text-xs font-semibold ${res.ok ? 'text-emerald-700' : 'text-red-700'}`}>{res.message}</p>
+            <p className={`text-xs font-semibold ${res.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>{res.message}</p>
           )}
         </div>
         <div className="p-5 border-t border-border flex gap-2 justify-end">

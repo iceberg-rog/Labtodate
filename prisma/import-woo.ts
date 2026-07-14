@@ -10,6 +10,7 @@
 
 import { PrismaClient, ProductCondition, ProductMode, ProductStatus } from '@prisma/client';
 import { CLEAN_CATEGORIES, categorize } from './_categorize';
+import { deleteOrArchiveProduct, productDeleteDbFrom, EMPTY_CATEGORY_DELETE_WHERE } from '../src/lib/products/delete-guard';
 
 const prisma = new PrismaClient();
 
@@ -181,15 +182,32 @@ async function main() {
   for (const s of SITES) await importSite(s);
 
   // ── Cleanup: drop the original fake seed catalogue ──
+  // Per-product via the shared deleteOrArchiveProduct guard (no snapshot +
+  // deleteMany race): a fake-seed product with order history is ARCHIVED (its
+  // OrderItem → Product RESTRICT link is preserved), the rest are hard-deleted.
   const realSellers = SITES.map((s) => `seed_user_seller_${s.key}`);
-  const removed = await prisma.product.deleteMany({
+  const fakeSeed = await prisma.product.findMany({
     where: { sellerId: { notIn: realSellers } },
+    select: { id: true },
   });
-  console.log(`\n🧹 Removed ${removed.count} non-imported (fake seed) products`);
+  const guardDb = productDeleteDbFrom(prisma);
+  let removed = 0;
+  let archivedWithHistory = 0;
+  for (const p of fakeSeed) {
+    if ((await deleteOrArchiveProduct(guardDb, p.id)) === 'archived') archivedWithHistory++;
+    else removed++;
+  }
+  console.log(
+    `\n🧹 Removed ${removed} non-imported (fake seed) products` +
+      (archivedWithHistory ? `; archived ${archivedWithHistory} with order history` : ''),
+  );
 
-  // ── Cleanup: drop categories with zero published products ──
+  // ── Cleanup: drop categories with NO products at all ──
+  // Uses the shared EMPTY_CATEGORY_DELETE_WHERE (none:{} not none:{PUBLISHED}):
+  // a category still holding a RETAINED ARCHIVED product must not qualify, else
+  // Category delete violates the required Product.categoryId FK.
   const empties = await prisma.category.findMany({
-    where: { products: { none: { status: 'PUBLISHED' } }, children: { none: {} } },
+    where: EMPTY_CATEGORY_DELETE_WHERE,
     select: { id: true },
   });
   if (empties.length) {

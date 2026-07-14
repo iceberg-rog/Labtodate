@@ -222,11 +222,11 @@ export function QuoteThread(p: Props) {
           />
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
             <span>{p.viewerRole === 'BUYER' ? 'Replies are emailed to the supplier.' : 'Replies are emailed to the buyer.'}</span>
-            <span className={body.length > MAX_REPLY_LEN - 200 ? 'text-amber-600 font-semibold' : ''}>
+            <span className={body.length > MAX_REPLY_LEN - 200 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}>
               {body.length} / {MAX_REPLY_LEN}
             </span>
           </div>
-          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</p>}
+          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800">{error}</p>}
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <Button type="submit" disabled={pending || body.trim().length < 2} className="rounded-full font-semibold">
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -256,7 +256,7 @@ export function QuoteThread(p: Props) {
                   </Button>
                 </div>
               ) : (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-900 px-3 py-1.5 text-[11px] font-semibold">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-900 px-3 py-1.5 text-[11px] font-semibold dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300">
                   <Clock className="h-3 w-3" />
                   Awaiting formal proforma before you can accept
                 </span>
@@ -274,7 +274,7 @@ export function QuoteThread(p: Props) {
 
       {/* ───────────────── Terminal-state foot ───────────────── */}
       {p.status === 'DECLINED' && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 flex items-start gap-3">
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 flex items-start gap-3 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
           <X className="h-5 w-5 mt-0.5 flex-shrink-0" />
           <div>
             <p className="font-bold">You declined this quote.</p>
@@ -283,7 +283,7 @@ export function QuoteThread(p: Props) {
         </div>
       )}
       {p.status === 'CLOSED' && (
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 flex items-start gap-3">
+        <div className="rounded-2xl border border-border bg-muted p-4 text-sm text-muted-foreground flex items-start gap-3">
           <Clock className="h-5 w-5 mt-0.5 flex-shrink-0" />
           <p>This request was closed without a deal.</p>
         </div>
@@ -331,8 +331,8 @@ function Avatar({ name, mine, supplier }: { name: string | null; mine: boolean; 
   const palette = mine
     ? 'bg-primary text-primary-foreground'
     : supplier
-    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-    : 'bg-slate-100 text-slate-700 border border-slate-200';
+    ? 'bg-emerald-100 text-emerald-800 border border-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:border-emerald-800'
+    : 'bg-muted text-muted-foreground border border-border';
   return (
     <div className={`h-8 w-8 rounded-full inline-flex items-center justify-center text-[11px] font-bold flex-shrink-0 shadow-sm ${palette}`}>
       {supplier && !mine ? <ShieldCheck className="h-3.5 w-3.5" /> : initials}
@@ -358,7 +358,7 @@ function MessageBubble({ m, buyerName }: { m: Message; buyerName: string }) {
             m.isMine
               ? 'bg-primary text-primary-foreground rounded-tr-sm'
               : isSupplier
-              ? 'bg-emerald-50 border border-emerald-200 text-emerald-950 rounded-tl-sm'
+              ? 'bg-emerald-50 border border-emerald-200 text-emerald-950 rounded-tl-sm dark:bg-emerald-950/40 dark:border-emerald-800 dark:text-emerald-300'
               : 'bg-card border border-border rounded-tl-sm'
           }`}
         >

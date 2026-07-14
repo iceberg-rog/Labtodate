@@ -35,11 +35,11 @@ export const dynamic = 'force-dynamic';
 
 function priorityChip(priority: string) {
   const styles: Record<string, { cls: string; icon: JSX.Element; label: string }> = {
-    VIP:    { cls: 'bg-purple-100 text-purple-800 border-purple-300', icon: <Crown className="h-3 w-3" />,       label: 'VIP' },
-    URGENT: { cls: 'bg-red-100 text-red-800 border-red-300',          icon: <ShieldAlert className="h-3 w-3" />, label: 'URGENT' },
-    HIGH:   { cls: 'bg-amber-100 text-amber-800 border-amber-300',    icon: <AlertCircle className="h-3 w-3" />, label: 'HIGH' },
-    NORMAL: { cls: 'bg-slate-100 text-slate-700 border-slate-200',    icon: <></>,                              label: 'normal' },
-    LOW:    { cls: 'bg-slate-50 text-slate-600 border-slate-200',     icon: <></>,                              label: 'low' },
+    VIP:    { cls: 'bg-purple-100 dark:bg-purple-900/40 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-800', icon: <Crown className="h-3 w-3" />,       label: 'VIP' },
+    URGENT: { cls: 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 border-red-300 dark:border-red-800',          icon: <ShieldAlert className="h-3 w-3" />, label: 'URGENT' },
+    HIGH:   { cls: 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800',    icon: <AlertCircle className="h-3 w-3" />, label: 'HIGH' },
+    NORMAL: { cls: 'bg-muted text-muted-foreground border-border',    icon: <></>,                              label: 'normal' },
+    LOW:    { cls: 'bg-muted text-muted-foreground border-border',     icon: <></>,                              label: 'low' },
   };
   const s = styles[priority] ?? styles.NORMAL;
   return (
@@ -51,13 +51,13 @@ function priorityChip(priority: string) {
 
 function statusChip(status: string) {
   const cls: Record<string, string> = {
-    OPEN: 'bg-amber-50 text-amber-800 border-amber-200',
-    WAITING_ON_SUPPORT: 'bg-amber-50 text-amber-800 border-amber-200',
-    WAITING_ON_CUSTOMER: 'bg-sky-50 text-sky-800 border-sky-200',
-    RESOLVED: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-    CLOSED: 'bg-slate-100 text-slate-600 border-slate-200',
-    SPAM: 'bg-slate-100 text-slate-500 border-slate-200',
-    PENDING: 'bg-sky-50 text-sky-800 border-sky-200',
+    OPEN: 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+    WAITING_ON_SUPPORT: 'bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+    WAITING_ON_CUSTOMER: 'bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 border-sky-200 dark:border-sky-800',
+    RESOLVED: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+    CLOSED: 'bg-muted text-muted-foreground border-border',
+    SPAM: 'bg-muted text-muted-foreground border-border',
+    PENDING: 'bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 border-sky-200 dark:border-sky-800',
   };
   return (
     <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full border ${cls[status] ?? cls.OPEN}`}>
@@ -195,12 +195,12 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
               {priorityChip(t.priority)}
               {statusChip(t.status)}
               {t.customerType === 'GUEST' && (
-                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5">
+                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   guest
                 </span>
               )}
               {t.archivedAt && (
-                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-200 text-slate-700 border border-slate-300 px-1.5 py-0.5">
+                <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   archived
                 </span>
               )}
@@ -209,7 +209,7 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
                   assigned to <strong className="text-foreground">{t.assignedTo.email}</strong>
                 </span>
               ) : (
-                <span className="text-[11px] text-amber-700 font-semibold">unassigned</span>
+                <span className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold">unassigned</span>
               )}
             </div>
             <h1 className="text-2xl font-bold tracking-tight">{t.subject}</h1>
@@ -255,7 +255,7 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
                   <div
                     className={`max-w-[88%] rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                       m.isInternalNote
-                        ? 'bg-amber-50 border border-amber-200 text-amber-900 mx-auto w-full max-w-[92%]'
+                        ? 'bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-300 mx-auto w-full max-w-[92%]'
                         : m.fromStaff
                         ? 'bg-primary text-primary-foreground ml-auto'
                         : 'bg-card border border-border'
@@ -320,7 +320,7 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
                 />
               </div>
               {!t.submittedBy && (
-                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md p-2 mt-2">
+                <p className="text-[11px] text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-md p-2 mt-2">
                   Guest ticket — no account on file. Reply emails include a magic link the customer can use to follow up without signing up.
                 </p>
               )}

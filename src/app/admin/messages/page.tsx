@@ -33,11 +33,11 @@ const TAB_DEFS: Array<{
 ];
 
 const STATUS_VIS: Record<string, { stripe: string; pill: string; label: string }> = {
-  AI:               { stripe: 'before:bg-violet-400',  pill: 'bg-violet-50 text-violet-900 border-violet-200',     label: 'AI handling' },
-  AWAITING_HUMAN:   { stripe: 'before:bg-amber-500',   pill: 'bg-amber-100 text-amber-900 border-amber-200',       label: 'Waiting for you' },
-  WITH_HUMAN:       { stripe: 'before:bg-emerald-500', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200',  label: 'Live · with human' },
-  CLOSED:           { stripe: 'before:bg-slate-400',   pill: 'bg-slate-100 text-slate-700 border-slate-200',       label: 'Closed' },
-  ARCHIVED:         { stripe: 'before:bg-slate-300',   pill: 'bg-slate-50 text-slate-600 border-slate-200',        label: 'Archived' },
+  AI:               { stripe: 'before:bg-violet-400',  pill: 'bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800',     label: 'AI handling' },
+  AWAITING_HUMAN:   { stripe: 'before:bg-amber-500',   pill: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',       label: 'Waiting for you' },
+  WITH_HUMAN:       { stripe: 'before:bg-emerald-500', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',  label: 'Live · with human' },
+  CLOSED:           { stripe: 'before:bg-slate-400',   pill: 'bg-muted text-muted-foreground border-border',       label: 'Closed' },
+  ARCHIVED:         { stripe: 'before:bg-slate-300',   pill: 'bg-muted text-muted-foreground border-border',        label: 'Archived' },
 };
 
 function smartDate(d: Date | null | undefined): string {
@@ -186,12 +186,12 @@ export default async function AdminMessagesPage(
                           {vis.label}
                         </span>
                         {isGuest && (
-                          <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-slate-100 text-slate-700 border border-slate-200 px-1.5 py-0.5">
+                          <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                             guest
                           </span>
                         )}
                         {c.rating != null && (
-                          <span className="inline-flex items-center gap-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-200 px-1.5 py-0.5">
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-bold rounded-full bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 px-1.5 py-0.5">
                             <Star className="h-3 w-3 fill-amber-500 text-amber-500" /> {c.rating}/5
                           </span>
                         )}
@@ -264,10 +264,10 @@ async function AnalyticsStrip() {
 function StatCell({ label, value, hint, tone = 'default' }: { label: string; value: string; hint?: string; tone?: 'default' | 'emerald' | 'sky' | 'amber' | 'red' }) {
   const palette: Record<string, string> = {
     default: 'bg-card border-border',
-    emerald: 'bg-emerald-50/60 border-emerald-200',
-    sky: 'bg-sky-50/60 border-sky-200',
-    amber: 'bg-amber-50/60 border-amber-200',
-    red: 'bg-red-50/60 border-red-200',
+    emerald: 'bg-emerald-50/60 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800',
+    sky: 'bg-sky-50/60 border-sky-200 dark:bg-sky-950/30 dark:border-sky-800',
+    amber: 'bg-amber-50/60 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800',
+    red: 'bg-red-50/60 border-red-200 dark:bg-red-950/30 dark:border-red-800',
   };
   return (
     <div className={`rounded-2xl border p-4 ${palette[tone]}`}>

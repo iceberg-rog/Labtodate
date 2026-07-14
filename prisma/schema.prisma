@@ -140,12 +140,12 @@ model SupportTicket {
   @@index([email])
   @@index([submittedById])
   @@index([priority])
-  @@index([assignedToId])
-  @@index([archivedAt])
-  @@index([dueAt])
-  @@index([orderId])
-  @@index([sourcingRequestId])
-  @@index([lastReplyAt])
+  // Partial indexes on [assignedToId],[archivedAt],[dueAt],[orderId],
+  // [sourcingRequestId],[lastReplyAt] exist in the DB as `... WHERE col IS NOT
+  // NULL` (support_slice_a_intel_assignment_sla.sql). Prisma can't express
+  // partial indexes, so they're managed as raw DB indexes in the baseline
+  // migration and intentionally NOT declared here — declaring them makes Prisma
+  // want full indexes and produces permanent phantom drift.
 }
 
 model SupportMessage {
@@ -205,7 +205,11 @@ model WebhookConfig {
   lastError String?  // last failure message (truncated). Cleared on next success.
   lastOkAt  DateTime?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // @default(now()) models the DB-level DEFAULT CURRENT_TIMESTAMP that
+  // phase_b_webhook.sql created; @updatedAt keeps the client bumping it on write.
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([isActive])
 }
 
 model ErrorLog {
@@ -215,6 +219,22 @@ model ErrorLog {
   createdAt DateTime @default(now())
 
   @@index([createdAt])
+}
+
+/// Durable single-winner ledger for exactly-once webhook side effects (the
+/// late-payment refund + alert). The first processor of a Stripe `event.id`
+/// CREATEs the row (claims it); a concurrent/replayed delivery collides on the PK
+/// and skips. On a FAILED attempt the claim row is deleted so a later Stripe
+/// redelivery can retry; a successful attempt records the final `outcome`.
+model WebhookEvent {
+  id        String   @id // Stripe event.id
+  type      String
+  orderId   String?
+  outcome   String? // null = in-flight; else terminal outcome (paid-late-refunded | late-critical | refund-replay | ...)
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
 }
 
 model Review {
@@ -654,10 +674,9 @@ model SourcingRequest {
   @@index([status])
   @@index([submittedById])
   @@index([assignedToId])
-  @@index([archivedAt])
   @@index([priority])
-  @@index([dueAt])
-  @@index([lastReplyAt])
+  // Partial raw DB indexes (WHERE col IS NOT NULL) on [archivedAt],[dueAt],
+  // [lastReplyAt] — managed in the baseline migration, not declared here.
 }
 
 // (SupportTicket-parity additions on SourcingRequest follow below this comment)
@@ -751,8 +770,8 @@ model Order {
   @@index([buyerId])
   @@index([status])
   @@index([createdAt])
-  @@index([archivedAt])
-  @@index([paymentVerificationStatus])
+  // Partial raw DB indexes (WHERE col IS NOT NULL) on [archivedAt],
+  // [paymentVerificationStatus] — managed in the baseline migration.
 }
 
 model OrderItem {
@@ -761,7 +780,11 @@ model OrderItem {
   order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   productId String?
-  product   Product? @relation(fields: [productId], references: [id])
+  // RESTRICT (not SetNull): a product with ANY order history is never
+  // hard-deleted — deleteProduct/adminDeleteProduct archive it instead. This FK
+  // is defense-in-depth so a stray hard-delete cannot sever the audit/analytics
+  // link; the *Snapshot columns are resilience, not permission to erase it.
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Restrict)
 
   titleSnapshot      String
   brandSnapshot      String?

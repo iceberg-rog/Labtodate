@@ -64,7 +64,7 @@ export default async function BuyerQuoteDetailPage(
     <>
     <AutoRefresh />
     {inHistoryMode && linkedOrder && (
-      <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs text-slate-700 flex items-center justify-between gap-3 flex-wrap">
+      <div className="mb-5 rounded-xl border border-border bg-muted px-4 py-2.5 text-xs text-muted-foreground flex items-center justify-between gap-3 flex-wrap">
         <span>
           📜 You're viewing the original quote conversation. Live actions for this deal live on the order page.
         </span>
@@ -97,9 +97,9 @@ export default async function BuyerQuoteDetailPage(
           : isDelivered ? 'Need help? Request a return from the order page.'
           : isDead ? 'This order is closed. Open a fresh request if you still need the item.'
           : '';
-      const tone = isPending ? 'border-amber-300 bg-amber-50'
-        : isDead ? 'border-slate-300 bg-slate-50'
-        : isDelivered || isShipping || isPaid ? 'border-emerald-300 bg-emerald-50'
+      const tone = isPending ? 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40'
+        : isDead ? 'border-border bg-muted'
+        : isDelivered || isShipping || isPaid ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40'
         : 'border-primary/40 bg-primary/[0.06]';
       const cta = isPending
         ? { label: 'Complete your purchase', href: `/app/orders/${linkedOrder.orderNumber}/payment` }
@@ -171,6 +171,7 @@ export default async function BuyerQuoteDetailPage(
         lastReplyByStaff: sr.lastReplyByStaff,
         proformaNumber: sr.proformaNumber,
         linkedOrder: linkedOrder ? { status: linkedOrder.status } : null,
+        archivedAt: sr.archivedAt, // BUG-019: buyer-facing closure for archived RFQs
       })}
     />
     </>

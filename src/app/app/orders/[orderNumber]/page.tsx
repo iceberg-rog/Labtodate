@@ -44,13 +44,15 @@ export default async function OrderDetailPage({
   params,
   searchParams,
 }: {
-  params: { orderNumber: string };
-  searchParams: { returned?: string };
+  params: Promise<{ orderNumber: string }>;
+  searchParams: Promise<{ returned?: string }>;
 }) {
-  const session = await requireSession({ redirectTo: `/app/orders/${params.orderNumber}` });
+  const { orderNumber } = await params;
+  const sp = await searchParams;
+  const session = await requireSession({ redirectTo: `/app/orders/${orderNumber}` });
 
   const order = await prisma.order.findUnique({
-    where: { orderNumber: params.orderNumber },
+    where: { orderNumber: orderNumber },
     include: { items: { include: { product: { select: { slug: true, illustration: true } } } } },
   });
   if (!order || order.buyerId !== session.user.id) notFound();
@@ -65,7 +67,7 @@ export default async function OrderDetailPage({
     },
     select: { ref: true },
   });
-  const returnedRef = searchParams.returned ?? activeReturn?.ref;
+  const returnedRef = sp.returned ?? activeReturn?.ref;
   const alreadyRequested = !!activeReturn;
 
   return (
@@ -112,7 +114,7 @@ export default async function OrderDetailPage({
       </div>
 
       {returnedRef && (
-        <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-sm text-emerald-900">
+        <div className="rounded-2xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 text-sm text-emerald-900 dark:text-emerald-300">
           <p className="font-bold">Return request submitted ✓</p>
           <p className="mt-1">
             Reference <span className="font-mono font-semibold">{returnedRef}</span>. We&apos;ve opened a
@@ -123,7 +125,7 @@ export default async function OrderDetailPage({
       )}
 
       {order.status === 'PENDING_PAYMENT' && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
           <p className="font-bold">
             {order.paymentVerificationStatus === 'AWAITING_VERIFICATION'
               ? 'Your payment proof is being reviewed'
@@ -217,7 +219,7 @@ export default async function OrderDetailPage({
             </div>
           )}
           {order.status === 'DELIVERED' && order.deliveredAt && (
-            <div className="mt-6 pt-5 border-t text-sm text-emerald-800">
+            <div className="mt-6 pt-5 border-t text-sm text-emerald-800 dark:text-emerald-300">
               <p className="font-semibold">
                 ✓ Delivered {new Date(order.deliveredAt).toLocaleDateString('en-US', { dateStyle: 'long' })}
               </p>

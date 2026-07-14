@@ -4,6 +4,7 @@ import { ChevronLeft } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { prisma } from '@/lib/db';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
+import { sanitizeRichHtml } from '@/lib/sanitize';
 
 export const dynamic = 'force-dynamic';
 
@@ -48,7 +49,7 @@ export default async function CaseStudyPage(props: { params: Promise<{ slug: str
         {c.excerpt}
       </p>
 
-      <div className="prose-article mt-10 text-foreground" dangerouslySetInnerHTML={{ __html: c.body }} />
+      <div className="prose-article mt-10 text-foreground" dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(c.body) }} />
     </article>
   );
 }

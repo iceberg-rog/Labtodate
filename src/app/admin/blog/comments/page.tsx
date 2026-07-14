@@ -129,7 +129,7 @@ function FilterPill({
   active: boolean;
   accent?: 'amber' | 'emerald';
 }) {
-  const tint = accent === 'amber' ? 'text-amber-700' : accent === 'emerald' ? 'text-emerald-700' : 'text-foreground';
+  const tint = accent === 'amber' ? 'text-amber-700 dark:text-amber-300' : accent === 'emerald' ? 'text-emerald-700 dark:text-emerald-300' : 'text-foreground';
   return (
     <Link
       href={href}
