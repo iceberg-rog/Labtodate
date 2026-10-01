@@ -1,7 +1,11 @@
 import { Suspense } from 'react';
-import { Sparkles, Clock, ShieldCheck } from 'lucide-react';
+import Link from 'next/link';
+import { Sparkles, Clock, ShieldCheck, LogIn } from 'lucide-react';
 import { SourcingForm } from './SourcingForm';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { prisma } from '@/lib/db';
+import { getServerSession } from '@/lib/auth-server';
 import { getMarketing } from '@/lib/marketing';
 
 export const metadata = { title: 'Let Us Find It' };
@@ -9,6 +13,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string }> }) {
   const mk = await getMarketing();
+  const session = await getServerSession();
   const slug = (await searchParams).product;
   const anchor = slug
     ? await prisma.product.findUnique({
@@ -39,11 +44,59 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
           </ul>
         </div>
 
-        <Suspense>
-          <SourcingForm
-            anchor={anchor ? { slug: anchor.slug, title: anchor.title, brand: anchor.brand?.name ?? null } : null}
+        {session ? (
+          <Suspense>
+            <SourcingForm
+              anchor={anchor ? { slug: anchor.slug, title: anchor.title, brand: anchor.brand?.name ?? null } : null}
+              buyer={{ name: session.user.name ?? '', email: session.user.email }}
+            />
+          </Suspense>
+        ) : (
+          <SignInToRequest
+            anchor={anchor ? { title: anchor.title, brand: anchor.brand?.name ?? null } : null}
+            back={anchor ? `/let-us-find-it?product=${encodeURIComponent(anchor.slug)}` : '/let-us-find-it'}
           />
-        </Suspense>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Guests see this instead of the form: a quote is tied to an account so the
+// buyer can follow it in their dashboard. `back` returns them to this form.
+function SignInToRequest({
+  anchor,
+  back,
+}: {
+  anchor: { title: string; brand: string | null } | null;
+  back: string;
+}) {
+  const redirect = encodeURIComponent(back);
+  return (
+    <div className="rounded-2xl border border-border bg-card p-6 md:p-8 space-y-5 shadow-sm">
+      {anchor && (
+        <div className="rounded-xl bg-foreground/[0.03] border border-border p-4">
+          <p className="text-[10px] uppercase tracking-[0.15em] font-bold text-muted-foreground mb-1">
+            Quote about
+          </p>
+          <p className="font-semibold">{anchor.title}</p>
+          {anchor.brand && <Badge variant="secondary" className="mt-2">{anchor.brand}</Badge>}
+        </div>
+      )}
+      <div className="space-y-2">
+        <p className="text-lg font-bold">Sign in to request a quote</p>
+        <p className="text-sm text-muted-foreground">
+          Quotes are linked to your account, so you can follow replies and proformas in your dashboard.
+          It takes a minute to create one.
+        </p>
+      </div>
+      <div className="flex flex-col sm:flex-row gap-3">
+        <Button asChild size="lg" className="rounded-2xl font-semibold flex-1">
+          <Link href={`/auth/sign-in?redirect=${redirect}`}><LogIn className="h-4 w-4" /> Sign in</Link>
+        </Button>
+        <Button asChild size="lg" variant="outline" className="rounded-2xl font-semibold flex-1">
+          <Link href={`/auth/sign-up?redirect=${redirect}`}>Create account</Link>
+        </Button>
       </div>
     </div>
   );
