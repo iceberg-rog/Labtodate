@@ -27,7 +27,7 @@ export function SourcingForm({
       timeframe: (fd.get('timeframe') as string) || null,
       description: String(fd.get('description') ?? ''),
       productSlug: anchor?.slug ?? null,
-      company_url: String(fd.get('company_url') ?? ''),
+      company_url: String(fd.get('hp_x7') ?? ''),
     };
 
     startTransition(async () => {
@@ -46,13 +46,12 @@ export function SourcingForm({
       className="rounded-2xl border border-border bg-card p-6 md:p-8 space-y-5 shadow-sm"
     >
       {/* Honeypot — hidden from humans (off-screen, not display:none so bots
-          still see it), never focusable/autofilled. Bots that fill it are
-          silently dropped server-side. */}
+          still see it), never focusable. Bots that fill it are silently dropped
+          server-side. The name and missing label are deliberately meaningless:
+          a "Company URL" field got autofilled by browsers with the user's saved
+          company, so real buyers' requests were silently dropped. */}
       <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
-        <label>
-          Company URL
-          <input type="text" name="company_url" tabIndex={-1} autoComplete="off" />
-        </label>
+        <input type="text" name="hp_x7" tabIndex={-1} autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore />
       </div>
 
       {anchor && (
