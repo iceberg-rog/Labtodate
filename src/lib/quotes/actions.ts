@@ -61,7 +61,16 @@ export type SourcingInputType = z.infer<typeof SourcingInput>;
 export async function submitSourcingRequest(input: SourcingInputType) {
   await rateLimit('quote');
   await ensureSettingsLoaded();
-  const parsed = SourcingInput.parse(input);
+  // Quote requests belong to an account: guests must sign in first, and the
+  // buyer's name and email always come from the account. A typed address could
+  // be anyone's, and the buyer would never see the quote in their dashboard.
+  const session = await getServerSession();
+  if (!session) throw new Error('Please sign in to request a quote.');
+  const parsed = SourcingInput.parse({
+    ...input,
+    buyerEmail: session.user.email,
+    buyerName: session.user.name?.trim() || input.buyerName,
+  });
   // Honeypot: real users never fill the hidden `company_url` field. If it's
   // set, silently drop (no DB row, no emails) but return a normal-looking
   // shape so the bot gets the same thank-you as a human — no abuse signal.
@@ -69,8 +78,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     await audit('quote.honeypot', 'blocked', parsed.buyerEmail || 'unknown').catch(() => {});
     return { id: '', accessToken: null };
   }
-  const session = await getServerSession();
-  const submittedById = session?.user.id ?? null;
+  const submittedById = session.user.id;
 
   // If anchored to a product, route to that product's seller.
   let productId: string | null = null;
@@ -125,6 +133,8 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   });
 
   // Confirmation to buyer — REGISTERED gets dashboard CTA, GUEST gets magic-link.
+  // The request is already saved: a failed confirmation is logged, not thrown,
+  // or the buyer is told "not sent" and resubmits duplicates.
   const buyerCta = accessToken
     ? `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${accessToken}`
     : `${process.env.BETTER_AUTH_URL ?? ''}/app/quotes`;
@@ -149,7 +159,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
         <p style="color:#888;font-size:12px;">Reference: ${QUOTE_REF(created.id)}</p>
       </div>
     `,
-  });
+  }).catch((e) => console.error('[quotes] buyer confirmation failed', QUOTE_REF(created.id), e));
 
   // Notify assignee (seller or platform inbox). Imported sellers carry
   // placeholder addresses, so those go to the intake inbox. The request is
@@ -693,10 +703,57 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
   }
 }
 
-export async function submitAndRedirect(input: SourcingInputType) {
-  const result = await submitSourcingRequest(input);
-  // Empty id => honeypot-dropped submission; still show the generic thanks.
-  redirect(result?.id ? `/let-us-find-it/thanks?id=${result.id}` : '/let-us-find-it/thanks');
+/**
+ * Form entry point. Known failures come back as a readable `error` instead of a
+ * throw: production builds replace thrown messages with a generic "Server
+ * Components render" error, so the buyer never learned why nothing was sent.
+ */
+export async function submitAndRedirect(input: SourcingInputType): Promise<{ error: string }> {
+  if (!(await getServerSession())) {
+    return { error: 'You are signed out. Sign in again, then send your request.' };
+  }
+  let result: Awaited<ReturnType<typeof submitSourcingRequest>>;
+  try {
+    result = await submitSourcingRequest(input);
+  } catch (e) {
+    return { error: quoteSubmitError(e) };
+  }
+  // Empty id => the hidden anti-bot field was filled. Buyers are signed in, so
+  // this is almost always browser autofill; say so rather than fake a success.
+  if (!result.id) {
+    return { error: 'Your request was not sent: your browser auto-filled a hidden field. Reload the page and type your request without autofill.' };
+  }
+  redirect(`/let-us-find-it/thanks?id=${result.id}`);
+}
+
+const QUOTE_FIELD_LABELS: Record<string, string> = {
+  description: 'Your description',
+  buyerName: 'Your name',
+  companyName: 'Company / Institution',
+  productCategory: 'Equipment category',
+  budget: 'Budget',
+  timeframe: 'Timeframe',
+};
+
+function quoteSubmitError(e: unknown): string {
+  if (e instanceof z.ZodError) {
+    const issue = e.issues[0];
+    const field = String(issue?.path[0] ?? '');
+    if (issue?.code === 'too_small' && field === 'description') {
+      return 'Please describe what you need in at least 20 characters.';
+    }
+    if (issue?.code === 'too_small' && field === 'buyerName') {
+      return 'Your account has no name. Add your name in your profile, then try again.';
+    }
+    if (issue?.code === 'too_big') {
+      return `${QUOTE_FIELD_LABELS[field] ?? 'One of the fields'} is too long. Please shorten it and try again.`;
+    }
+    return 'Some details are invalid. Please check the form and try again.';
+  }
+  const msg = e instanceof Error ? e.message : '';
+  if (msg.startsWith('Too many submissions')) return msg;
+  console.error('[quotes] submit failed', e);
+  return 'Something went wrong and your request was not sent. Please try again in a minute.';
 }
 
 // ────────────────────────────────────────────────────────────────────────────

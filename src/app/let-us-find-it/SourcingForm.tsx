@@ -8,8 +8,10 @@ import { submitAndRedirect } from '@/lib/quotes/actions';
 
 export function SourcingForm({
   anchor,
+  buyer,
 }: {
   anchor: { slug: string; title: string; brand: string | null } | null;
+  buyer: { name: string; email: string };
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -27,15 +29,17 @@ export function SourcingForm({
       timeframe: (fd.get('timeframe') as string) || null,
       description: String(fd.get('description') ?? ''),
       productSlug: anchor?.slug ?? null,
-      company_url: String(fd.get('company_url') ?? ''),
+      company_url: String(fd.get('hp_x7') ?? ''),
     };
 
     startTransition(async () => {
       try {
-        await submitAndRedirect(input);
+        const res = await submitAndRedirect(input);
+        if (res?.error) setError(res.error);
       } catch (err) {
         if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
-        setError(err instanceof Error ? err.message : 'Failed to submit');
+        // Network failure, or a page loaded before a site update.
+        setError('Your request was not sent. Reload the page and try again.');
       }
     });
   }
@@ -46,13 +50,12 @@ export function SourcingForm({
       className="rounded-2xl border border-border bg-card p-6 md:p-8 space-y-5 shadow-sm"
     >
       {/* Honeypot — hidden from humans (off-screen, not display:none so bots
-          still see it), never focusable/autofilled. Bots that fill it are
-          silently dropped server-side. */}
+          still see it), never focusable. Bots that fill it are silently dropped
+          server-side. The name and missing label are deliberately meaningless:
+          a "Company URL" field got autofilled by browsers with the user's saved
+          company, so real buyers' requests were silently dropped. */}
       <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
-        <label>
-          Company URL
-          <input type="text" name="company_url" tabIndex={-1} autoComplete="off" />
-        </label>
+        <input type="text" name="hp_x7" tabIndex={-1} autoComplete="off" data-1p-ignore data-lpignore="true" data-bwignore />
       </div>
 
       {anchor && (
@@ -66,8 +69,11 @@ export function SourcingForm({
       )}
 
       <div className="grid sm:grid-cols-2 gap-4">
-        <Field label="Full name" name="buyerName" placeholder="Dr. Jane Doe" required />
-        <Field label="Work email" name="buyerEmail" type="email" placeholder="you@university.edu" required />
+        {/* Name and email come from the signed-in account; the server ignores
+            these values. An account without a name may type one. */}
+        <Field label="Full name" name="buyerName" placeholder="Dr. Jane Doe" required
+          defaultValue={buyer.name} readOnly={!!buyer.name.trim()} />
+        <Field label="Account email" name="buyerEmail" type="email" required defaultValue={buyer.email} readOnly />
       </div>
 
       <Field label="Company / Institution" name="companyName" placeholder="Pivot Park" />
@@ -109,6 +115,8 @@ function Field({
   required,
   textarea,
   minLength,
+  defaultValue,
+  readOnly,
 }: {
   label: string;
   name: string;
@@ -117,6 +125,8 @@ function Field({
   required?: boolean;
   textarea?: boolean;
   minLength?: number;
+  defaultValue?: string;
+  readOnly?: boolean;
 }) {
   return (
     <label className="block">
@@ -129,7 +139,8 @@ function Field({
           className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-y" />
       ) : (
         <input name={name} type={type} placeholder={placeholder} required={required}
-          className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+          defaultValue={defaultValue} readOnly={readOnly} aria-readonly={readOnly || undefined}
+          className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary read-only:bg-muted read-only:text-muted-foreground read-only:cursor-not-allowed" />
       )}
     </label>
   );
