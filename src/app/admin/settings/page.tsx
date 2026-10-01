@@ -101,7 +101,13 @@ export default async function AdminSettingsPage(
           id={d.key}
           name={d.key}
           type={d.secret ? 'password' : 'text'}
-          autoComplete="off"
+          // Browsers ignore autoComplete="off" on password inputs and fill a saved
+          // login password into the first one (the Resend key), which then silently
+          // overrides SMTP. "new-password" + the password-manager opt-outs stop that.
+          autoComplete={d.secret ? 'new-password' : 'off'}
+          data-1p-ignore={d.secret || undefined}
+          data-lpignore={d.secret ? 'true' : undefined}
+          data-bwignore={d.secret || undefined}
           defaultValue={d.secret ? '' : val}
           placeholder={
             d.secret

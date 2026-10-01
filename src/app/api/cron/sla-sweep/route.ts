@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
-import { sendEmail } from '@/lib/email';
+import { isDeliverableEmail, sendEmail } from '@/lib/email';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
 import { expireProformaTransition } from '@/lib/quotes/proforma-expiry';
 import { orphanSweepTtlMinutes } from '@/lib/orders/orphan-ttl';
@@ -116,9 +116,11 @@ export async function POST(req: NextRequest) {
     const href = `/admin/quotes/${q.id}`;
     if (q.assignedToId) {
       await notifyUser(q.assignedToId, title, body, href);
-      if (q.assignedTo?.email) {
+      // Imported sellers have placeholder addresses; send those to the intake inbox.
+      const slaTo = isDeliverableEmail(q.assignedTo?.email) ? q.assignedTo?.email : process.env.QUOTE_INTAKE_EMAIL;
+      if (slaTo) {
         await sendEmail({
-          to: q.assignedTo.email,
+          to: slaTo,
           subject: `[SLA] Quote ${ref} — overdue ${overdueMinutes}m`,
           html: `<p><strong>${q.priority}</strong> quote <code>${ref}</code> has breached its SLA.</p>
                  <p>${subject}</p>

@@ -115,6 +115,13 @@ export async function getEffectiveSettings(): Promise<Record<string, string>> {
 }
 
 export async function saveSettings(input: Record<string, string>): Promise<void> {
+  // A set Resend key overrides SMTP, so an autofilled login password in that
+  // field silently breaks all email. Real keys start with "re_"; reject anything
+  // else before writing so a bad submit changes nothing.
+  const resendKey = (input.RESEND_API_KEY ?? '').trim();
+  if (resendKey && input.__clear_RESEND_API_KEY !== 'on' && !resendKey.startsWith('re_')) {
+    throw new Error('Resend API key must start with "re_" (browser autofill?). Empty that field and save again.');
+  }
   for (const d of SETTING_DEFS) {
     const clear = input[`__clear_${d.key}`] === 'on';
     if (clear) {

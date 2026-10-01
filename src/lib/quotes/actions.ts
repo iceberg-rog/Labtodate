@@ -6,7 +6,7 @@ import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
-import { sendEmail } from '@/lib/email';
+import { isDeliverableEmail, sendEmail } from '@/lib/email';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { renderInvoiceHtml } from '@/lib/invoice';
 import { rateLimit } from '@/lib/ratelimit';
@@ -151,9 +151,14 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     `,
   });
 
-  // Notify assignee (seller or platform inbox)
-  const assigneeEmail =
-    created.assignedTo?.email ?? process.env.QUOTE_INTAKE_EMAIL ?? 'sourcing@lab2date.com';
+  // Notify assignee (seller or platform inbox). Imported sellers carry
+  // placeholder addresses, so those go to the intake inbox. The request is
+  // already saved: a failed staff notification must not fail the buyer's submit
+  // (they'd see an error and resubmit, creating duplicates).
+  const sellerEmail = created.assignedTo?.email;
+  const assigneeEmail = isDeliverableEmail(sellerEmail)
+    ? sellerEmail
+    : process.env.QUOTE_INTAKE_EMAIL ?? 'sourcing@lab2date.com';
   await sendEmail({
     to: assigneeEmail,
     subject: created.product
@@ -171,7 +176,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
         <p>Reply via lab2date dashboard: <a href="${process.env.BETTER_AUTH_URL}/app/seller/inbox/${created.id}">Open in seller inbox</a></p>
       </div>
     `,
-  });
+  }).catch((e) => console.error('[quotes] assignee notification failed', QUOTE_REF(created.id), e));
 
   await notifyAdmins(
     'New quote request',
