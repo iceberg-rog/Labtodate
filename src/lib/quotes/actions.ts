@@ -133,6 +133,8 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   });
 
   // Confirmation to buyer — REGISTERED gets dashboard CTA, GUEST gets magic-link.
+  // The request is already saved: a failed confirmation is logged, not thrown,
+  // or the buyer is told "not sent" and resubmits duplicates.
   const buyerCta = accessToken
     ? `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${accessToken}`
     : `${process.env.BETTER_AUTH_URL ?? ''}/app/quotes`;
@@ -157,7 +159,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
         <p style="color:#888;font-size:12px;">Reference: ${QUOTE_REF(created.id)}</p>
       </div>
     `,
-  });
+  }).catch((e) => console.error('[quotes] buyer confirmation failed', QUOTE_REF(created.id), e));
 
   // Notify assignee (seller or platform inbox). Imported sellers carry
   // placeholder addresses, so those go to the intake inbox. The request is
@@ -724,11 +726,28 @@ export async function submitAndRedirect(input: SourcingInputType): Promise<{ err
   redirect(`/let-us-find-it/thanks?id=${result.id}`);
 }
 
+const QUOTE_FIELD_LABELS: Record<string, string> = {
+  description: 'Your description',
+  buyerName: 'Your name',
+  companyName: 'Company / Institution',
+  productCategory: 'Equipment category',
+  budget: 'Budget',
+  timeframe: 'Timeframe',
+};
+
 function quoteSubmitError(e: unknown): string {
   if (e instanceof z.ZodError) {
-    const field = e.issues[0]?.path[0];
-    if (field === 'description') return 'Please describe what you need in at least 20 characters.';
-    if (field === 'buyerName') return 'Your account has no name. Add your name in your profile, then try again.';
+    const issue = e.issues[0];
+    const field = String(issue?.path[0] ?? '');
+    if (issue?.code === 'too_small' && field === 'description') {
+      return 'Please describe what you need in at least 20 characters.';
+    }
+    if (issue?.code === 'too_small' && field === 'buyerName') {
+      return 'Your account has no name. Add your name in your profile, then try again.';
+    }
+    if (issue?.code === 'too_big') {
+      return `${QUOTE_FIELD_LABELS[field] ?? 'One of the fields'} is too long. Please shorten it and try again.`;
+    }
     return 'Some details are invalid. Please check the form and try again.';
   }
   const msg = e instanceof Error ? e.message : '';
