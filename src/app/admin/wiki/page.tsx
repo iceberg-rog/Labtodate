@@ -27,8 +27,10 @@ export default async function AdminWikiPage() {
       </div>
       <ul className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
         {articles.map((a) => (
-          <li key={a.id} className="p-4 flex items-center gap-4 flex-wrap">
-            <div className="flex-1 min-w-0">
+          <li key={a.id} className="p-4 flex items-center gap-x-4 gap-y-3 flex-wrap">
+            {/* The title keeps at least 16rem (or the full row on a phone): with
+                min-w-0 it shrank to 1–4 characters next to the buttons. */}
+            <div className="flex-1 min-w-[min(100%,16rem)]">
               {a.slug ? (
                 <Link href={`/wiki/${a.slug}`} className="font-semibold truncate hover:text-primary block">{a.title}</Link>
               ) : (
@@ -36,26 +38,28 @@ export default async function AdminWikiPage() {
               )}
               <p className="text-xs text-muted-foreground mt-1">{a.category ?? '—'}</p>
             </div>
-            <Badge variant={a.status === 'PUBLISHED' ? 'success' : 'secondary'}>{a.status.toLowerCase()}</Badge>
-            <Button asChild variant="outline" size="sm" className="rounded-full font-medium">
-              <Link href={`/admin/wiki/${a.slug || a.id}/edit`}><Edit2 className="h-3.5 w-3.5" /> Edit</Link>
-            </Button>
-            <form action={setWikiArticlePublished.bind(null, a.id, a.status !== 'PUBLISHED')}>
-              <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium">
-                {a.status === 'PUBLISHED' ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                {a.status === 'PUBLISHED' ? 'Unpublish' : 'Publish'}
+            <div className="flex items-center gap-3 flex-wrap">
+              <Badge variant={a.status === 'PUBLISHED' ? 'success' : 'secondary'}>{a.status.toLowerCase()}</Badge>
+              <Button asChild variant="outline" size="sm" className="rounded-full font-medium">
+                <Link href={`/admin/wiki/${a.slug || a.id}/edit`}><Edit2 className="h-3.5 w-3.5" /> Edit</Link>
               </Button>
-            </form>
-            <form action={deleteWikiArticle.bind(null, a.id)}>
-              <ConfirmSubmitButton
-                message={`Delete the wiki article "${a.title}"? This cannot be undone.`}
-                variant="outline"
-                size="sm"
-                className="rounded-full font-medium text-destructive"
-              >
-                <Trash2 className="h-3.5 w-3.5" /> Delete
-              </ConfirmSubmitButton>
-            </form>
+              <form action={setWikiArticlePublished.bind(null, a.id, a.status !== 'PUBLISHED')}>
+                <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium">
+                  {a.status === 'PUBLISHED' ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  {a.status === 'PUBLISHED' ? 'Unpublish' : 'Publish'}
+                </Button>
+              </form>
+              <form action={deleteWikiArticle.bind(null, a.id)}>
+                <ConfirmSubmitButton
+                  message={`Delete the wiki article "${a.title}"? This cannot be undone.`}
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full font-medium text-destructive"
+                >
+                  <Trash2 className="h-3.5 w-3.5" /> Delete
+                </ConfirmSubmitButton>
+              </form>
+            </div>
           </li>
         ))}
       </ul>
