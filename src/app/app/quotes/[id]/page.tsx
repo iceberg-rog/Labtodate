@@ -1,11 +1,30 @@
+import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
-import { requireSession } from '@/lib/auth-server';
+import { getServerSession, requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { QuoteThread } from '@/components/quotes/QuoteThread';
 import { computeDealState } from '@/lib/quotes/deal-state';
 
 export const dynamic = 'force-dynamic';
+
+// Same reference the quotes list shows (proforma number once issued). Only the
+// buyer (or an admin) gets it — anyone else keeps the generic site title, as
+// the page itself is a 404 for them.
+export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const { id } = await props.params;
+  const session = await getServerSession();
+  if (!session) return {};
+  const sr = await prisma.sourcingRequest.findUnique({
+    where: { id },
+    select: { id: true, submittedById: true, buyerEmail: true, proformaNumber: true },
+  });
+  if (!sr) return {};
+  const role = (session.user as { role?: string }).role;
+  const isBuyer = sr.submittedById === session.user.id || sr.buyerEmail === session.user.email;
+  if (!isBuyer && role !== 'ADMIN') return {};
+  return { title: `Quote ${sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`}` };
+}
 
 export default async function BuyerQuoteDetailPage(
   props: {
