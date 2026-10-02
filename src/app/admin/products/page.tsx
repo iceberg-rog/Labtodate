@@ -18,7 +18,10 @@ export default async function AdminProductsPage(
   const searchParams = await props.searchParams;
   await requireCapability('products:view');
 
-  const status = searchParams.status as ProductStatus | undefined;
+  // Unknown values are ignored — ?status=NOPE used to reach Prisma and 500.
+  const status = (Object.values(ProductStatus) as string[]).includes(searchParams.status ?? '')
+    ? (searchParams.status as ProductStatus)
+    : undefined;
   const q = (searchParams.q ?? '').trim();
   const categorySlug = (searchParams.category ?? '').trim();
   const shopSlug = (searchParams.shop ?? '').trim();          // '' | 'own' | <company slug>

@@ -582,7 +582,7 @@ export default async function AdminDashboardPage() {
             {quotesStale.map((q) => (
               <Link
                 key={q.id}
-                href={`/app/seller/inbox/${q.id}`}
+                href={`/admin/quotes/${q.id}`}
                 className="flex items-center gap-3 p-3 rounded-xl border border-border bg-card hover:bg-foreground/[0.03]"
               >
                 <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0" />

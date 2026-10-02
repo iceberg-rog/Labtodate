@@ -34,7 +34,10 @@ export default async function AdminUsersPage(
   const canManage = await hasCapability('users:manage');
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
-  const roleFilter = (searchParams.role as UserRole | undefined) ?? undefined;
+  // Only real enum values reach Prisma — ?role=FOO used to 500 the page.
+  const roleFilter = (Object.values(UserRole) as string[]).includes(searchParams.role ?? '')
+    ? (searchParams.role as UserRole)
+    : undefined;
 
   const where = {
     ...(roleFilter ? { role: roleFilter } : {}),
@@ -104,6 +107,7 @@ export default async function AdminUsersPage(
           company: u.company?.name ?? null,
           role: u.role,
           joinedLabel: new Date(u.createdAt).toLocaleDateString('en-US', { dateStyle: 'medium' }),
+          suspended: !!u.suspendedAt,
         }))}
         canManage={canManage}
         roleAction={updateRole}

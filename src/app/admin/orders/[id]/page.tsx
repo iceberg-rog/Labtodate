@@ -533,7 +533,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   <p>
                     From accepted quote{' '}
                     <Link
-                      href={`/app/seller/inbox/${order.sourcingRequestId}`}
+                      href={`/admin/quotes/${order.sourcingRequestId}`}
                       className="text-primary hover:underline font-mono text-xs"
                     >
                       {maskId(order.sourcingRequestId)}
