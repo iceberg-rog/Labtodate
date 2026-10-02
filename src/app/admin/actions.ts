@@ -17,6 +17,7 @@ import { getStripe } from '@/lib/stripe/client';
 import { aiConfig } from '@/lib/ai';
 import { ensureBucket } from '@/lib/storage/s3';
 import { audit, notifyUser, notifyAdmins } from '@/lib/observability';
+import { HOME_DEFAULTS, parseHeroStats } from '@/lib/home-sections';
 
 async function requireAdmin() {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
@@ -1064,9 +1065,14 @@ const HOME_KEYS = [
   'hero', 'trustbar', 'categories', 'featured', 'suppliers', 'blog', 'testimonials', 'cta',
 ];
 
-export async function saveHomepage(formData: FormData) {
+export async function saveHomepage(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('content:cms');
   const enabled = HOME_KEYS.filter((k) => formData.get(`enabled_${k}`) === 'on');
+  // An empty list used to delete the row, which the site reads as "show
+  // everything" — the opposite of what was asked. Refuse it explicitly.
+  if (enabled.length === 0) {
+    return { ok: false, message: 'Keep at least one module visible — with every module hidden the homepage would be blank. Nothing was saved.' };
+  }
   enabled.sort((a, b) => {
     const oa = parseInt(String(formData.get(`order_${a}`) ?? '99'), 10) || 99;
     const ob = parseInt(String(formData.get(`order_${b}`) ?? '99'), 10) || 99;
@@ -1079,20 +1085,38 @@ export async function saveHomepage(formData: FormData) {
     .filter(Boolean)
     .join(',');
 
-  const txt = (k: string) => String(formData.get(k) ?? '').trim();
+  const txt = (k: string) => String(formData.get(k) ?? '').replace(/\r\n/g, '\n').trim();
+  // A value identical to the built-in default is stored as "unset", so only
+  // real edits land in Setting (and later default-copy changes still apply).
+  const custom = (k: string, def: string) => (txt(k) === def ? '' : txt(k));
+  const d = HOME_DEFAULTS;
+
+  // Stats: empty = live catalogue counts. Never store the old zero
+  // placeholder block (a stale editor tab may still post it).
+  let stats = txt('heroStats');
+  if (stats === d.stats.map((s) => `${s.value}|${s.suffix}|${s.label}`).join('\n')) stats = '';
+  if (stats) {
+    const bad = stats.split('\n').map((l) => l.trim()).find((l) => l && !parseHeroStats(l));
+    if (bad !== undefined) {
+      return {
+        ok: false,
+        message: `Stats line “${bad.slice(0, 60)}” isn’t in the value|suffix|label format (e.g. 12400|+|instruments listed). Fix it, or empty the box to show live counts. Nothing was saved.`,
+      };
+    }
+  }
 
   for (const [key, value] of [
     ['HOMEPAGE_SECTIONS', sections],
-    ['HOMEPAGE_POPULAR', popular],
-    ['HERO_BADGE', txt('heroBadge')],
-    ['HERO_TITLE', txt('heroTitle')],
-    ['HERO_ACCENT', txt('heroAccent')],
-    ['HERO_SUBTITLE', txt('heroSubtitle')],
-    ['HERO_STATS', txt('heroStats')],
-    ['TEST_HEADING', txt('testHeading')],
-    ['TEST_META', txt('testMeta')],
-    ['CTA_HEADING', txt('ctaHeading')],
-    ['CTA_SUBTITLE', txt('ctaSubtitle')],
+    ['HOMEPAGE_POPULAR', popular === d.popular.join(',') ? '' : popular],
+    ['HERO_BADGE', custom('heroBadge', d.heroBadge)],
+    ['HERO_TITLE', custom('heroTitle', d.heroTitle)],
+    ['HERO_ACCENT', custom('heroAccent', d.heroAccent)],
+    ['HERO_SUBTITLE', custom('heroSubtitle', d.heroSubtitle)],
+    ['HERO_STATS', stats],
+    ['TEST_HEADING', custom('testHeading', d.testHeading)],
+    ['TEST_META', custom('testMeta', d.testMeta)],
+    ['CTA_HEADING', custom('ctaHeading', d.ctaHeading)],
+    ['CTA_SUBTITLE', custom('ctaSubtitle', d.ctaSubtitle)],
   ] as const) {
     if (value) {
       await prisma.setting.upsert({
@@ -1106,8 +1130,13 @@ export async function saveHomepage(formData: FormData) {
       delete process.env[key];
     }
   }
+  await audit('homepage.save', undefined, sections);
   revalidatePath('/');
   revalidatePath('/admin/homepage');
+  return {
+    ok: true,
+    message: `Homepage saved — ${enabled.length} module${enabled.length === 1 ? '' : 's'} shown${stats ? '' : ', stats show live counts'}. Click ↻ Refresh in the preview to see it.`,
+  };
 }
 
 export async function sendAnnouncement(formData: FormData) {

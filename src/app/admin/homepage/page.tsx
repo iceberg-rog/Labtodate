@@ -8,8 +8,12 @@ import {
   HOME_SECTION_LABEL,
   type HomeSection,
   getHomeContent,
+  getHomeSectionOrder,
+  parseHeroStats,
 } from '@/lib/home-sections';
+import { getLiveHeroStats } from '@/lib/home-stats';
 import { HomepageReorder, HomepagePreview, type ModuleRow } from '@/components/admin/HomepageReorder';
+import { AdminActionForm, AdminActionStatus } from '@/components/admin/AdminActionForm';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,14 +21,15 @@ export default async function AdminHomepagePage() {
   await requireCapability('content:cms');
   await ensureSettingsLoaded();
 
-  const configured = (process.env.HOMEPAGE_SECTIONS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s): s is HomeSection => (HOME_SECTIONS as readonly string[]).includes(s));
-  const order: HomeSection[] = configured.length ? configured : [...HOME_SECTIONS];
+  const order: HomeSection[] = getHomeSectionOrder();
   const hc = getHomeContent();
   const popular = hc.popular.join(', ');
-  const statsText = hc.stats.map((s) => `${s.value}|${s.suffix}|${s.label}`).join('\n');
+  // Only explicit admin stats are pre-filled. When unset the box stays EMPTY
+  // (= live counts) — pre-filling the zero placeholders made every unrelated
+  // save ship "0 instruments listed" to the live hero.
+  const customStats = parseHeroStats(process.env.HERO_STATS);
+  const statsText = customStats ? customStats.map((s) => `${s.value}|${s.suffix}|${s.label}`).join('\n') : '';
+  const live = customStats ? null : await getLiveHeroStats().catch(() => null);
 
   const rows: ModuleRow[] = [
     ...order.map((k) => ({ key: k, label: HOME_SECTION_LABEL[k], enabled: true })),
@@ -48,7 +53,7 @@ export default async function AdminHomepagePage() {
       </div>
 
       <div className="grid xl:grid-cols-[1fr_640px] gap-6 items-start">
-        <form action={saveHomepage} className="space-y-6 min-w-0">
+        <AdminActionForm action={saveHomepage} className="space-y-6 min-w-0" statusInChildren>
           <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
             <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Modules &amp; order</h2>
             <p className="text-xs text-muted-foreground">
@@ -79,9 +84,17 @@ export default async function AdminHomepagePage() {
             </label>
             <label className="block">
               <span className="block text-sm font-semibold mb-1.5">Stats</span>
-              <textarea name="heroStats" defaultValue={statsText} rows={3} className={field} />
+              <textarea
+                name="heroStats"
+                defaultValue={statsText}
+                rows={3}
+                placeholder="Empty = live counts from the catalogue"
+                className={field}
+              />
               <span className="text-xs text-muted-foreground">
                 One per line — <code>value|suffix|label</code> (e.g. <code>12400|+|instruments listed</code>).
+                Leave empty to show live counts
+                {live ? <> (now: {live.map((s) => `${s.value} ${s.label}`).join(' · ')})</> : null}.
               </span>
             </label>
             <label className="block">
@@ -117,11 +130,9 @@ export default async function AdminHomepagePage() {
             <Button type="submit" size="lg" className="rounded-2xl font-semibold">
               <Save className="h-4 w-4" /> Save homepage
             </Button>
-            <span className="text-xs text-muted-foreground">
-              Then click ↻ Refresh in the preview panel to see the result.
-            </span>
+            <AdminActionStatus />
           </div>
-        </form>
+        </AdminActionForm>
 
         <aside className="xl:sticky xl:top-20 min-w-0">
           <HomepagePreview />

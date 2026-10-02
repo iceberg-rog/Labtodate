@@ -1,5 +1,4 @@
 import { Star } from 'lucide-react';
-import { TESTIMONIALS } from '@/lib/seed-data/testimonials';
 import { HOME_DEFAULTS } from '@/lib/home-sections';
 import { prisma } from '@/lib/db';
 
@@ -21,7 +20,9 @@ export async function Testimonials({
   } catch {
     /* table may not exist on first boot */
   }
-  if (list.length === 0) list = TESTIMONIALS;
+  // No published testimonials → no section. Never fall back to made-up
+  // sample quotes credited to real-sounding people (fake-review risk).
+  if (list.length === 0) return null;
   return (
     <section className="border-y border-foreground/5 bg-foreground/[0.02]">
       <div className="container-px py-24">
