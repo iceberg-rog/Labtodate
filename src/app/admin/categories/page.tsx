@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { CategoryManager } from './CategoryManager';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Categories' };
 
 export default async function AdminCategoriesPage() {
   await requireCapability('categories:manage');
