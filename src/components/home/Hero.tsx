@@ -5,11 +5,13 @@ import { SearchTypeahead } from '@/components/site/SearchTypeahead';
 import { CountUp } from '@/components/motion/CountUp';
 import { WaveCanvas } from '@/components/home/WaveCanvas';
 import { HeroProductShowcase } from '@/components/home/HeroProductShowcase';
-import { HOME_DEFAULTS, type HomeContent } from '@/lib/home-sections';
+import { HOME_DEFAULTS, searchPlaceholderFor, type HomeContent } from '@/lib/home-sections';
 
 export function Hero({ content }: { content?: HomeContent } = {}) {
   const c = content ?? HOME_DEFAULTS;
-  const POPULAR = c.popular.length ? c.popular : HOME_DEFAULTS.popular;
+  // The home page has already dropped terms with no results; if none are
+  // left, hide the row rather than falling back to unchecked defaults.
+  const POPULAR = c.popular;
   const STATS = c.stats;
   return (
     <section className="relative overflow-hidden">
@@ -55,24 +57,26 @@ export function Hero({ content }: { content?: HomeContent } = {}) {
             </p>
 
             <div className="mt-8 flex flex-col sm:flex-row gap-3 max-w-xl">
-              <SearchTypeahead className="flex-1" placeholder="Try ‘Zeiss confocal’ or ‘HPLC under €30k’…" />
+              <SearchTypeahead className="flex-1" placeholder={searchPlaceholderFor(POPULAR)} />
               <Button size="lg" variant="accent" asChild className="h-10 px-7 rounded-full text-base font-semibold">
                 <Link href="/marketplace">Browse <ArrowRight className="h-4 w-4" /></Link>
               </Button>
             </div>
 
-            <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-              <span className="text-muted-foreground">Popular:</span>
-              {POPULAR.map((t) => (
-                <Link
-                  key={t}
-                  href={`/marketplace?q=${encodeURIComponent(t)}`}
-                  className="text-foreground/80 hover:text-primary underline-offset-4 hover:underline font-medium"
-                >
-                  {t}
-                </Link>
-              ))}
-            </div>
+            {POPULAR.length > 0 && (
+              <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+                <span className="text-muted-foreground">Popular:</span>
+                {POPULAR.map((t) => (
+                  <Link
+                    key={t}
+                    href={`/marketplace?q=${encodeURIComponent(t)}`}
+                    className="text-foreground/80 hover:text-primary underline-offset-4 hover:underline font-medium"
+                  >
+                    {t}
+                  </Link>
+                ))}
+              </div>
+            )}
 
             <div className="mt-8 flex flex-wrap gap-3">
               <Button variant="outline" size="lg" asChild className="rounded-xl font-semibold bg-card">
