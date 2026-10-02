@@ -6,11 +6,17 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Lock, Loader2, CheckCircle2, AlertOctagon, ArrowLeft } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { Button } from '@/components/ui/button';
+import { authErrorMessage, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, PASSWORD_RULE } from '@/lib/auth-rules';
+
+const EXPIRED_LINK = 'This reset link has expired or was already used. Request a new one.';
 
 export default function ResetPasswordInner() {
   const router = useRouter();
   const params = useSearchParams();
   const token = params.get('token') ?? '';
+  // better-auth sends a used / expired / bogus email link here as
+  // ?error=INVALID_TOKEN (no token).
+  const linkError = params.get('error');
 
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -25,8 +31,8 @@ export default function ResetPasswordInner() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(PASSWORD_RULE);
       return;
     }
     if (password !== confirm) {
@@ -37,7 +43,7 @@ export default function ResetPasswordInner() {
     try {
       const { error: err } = await authClient.resetPassword({ newPassword: password, token });
       if (err) {
-        setError(err.message || 'This reset link is invalid or expired. Request a fresh one.');
+        setError(err.code === 'INVALID_TOKEN' ? EXPIRED_LINK : authErrorMessage(err, EXPIRED_LINK));
         return;
       }
       setDone(true);
@@ -59,7 +65,7 @@ export default function ResetPasswordInner() {
           <h1 className="text-xl font-bold tracking-tight">Password updated</h1>
         </div>
         <p className="text-sm text-muted-foreground mt-3">
-          You&apos;re all set. Sending you to sign-in…
+          You&apos;re all set — any other devices were signed out. Sending you to sign-in…
         </p>
       </div>
     );
@@ -70,11 +76,12 @@ export default function ResetPasswordInner() {
       <div className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 p-6">
         <div className="flex items-center gap-3 mb-2">
           <AlertOctagon className="h-5 w-5" />
-          <h1 className="font-bold">Reset link missing</h1>
+          <h1 className="font-bold">{linkError ? 'This reset link no longer works' : 'Reset link missing'}</h1>
         </div>
         <p className="text-sm">
-          This page expects a <code className="font-mono">?token=…</code> in the URL. Click the link in your email,
-          or request a fresh one.
+          {linkError
+            ? 'It has expired or was already used. Reset links work once and expire after 1 hour — request a new one.'
+            : 'Open the reset link from your email, or request a new one.'}
         </p>
         <div className="mt-4">
           <Button asChild variant="outline" size="sm" className="rounded-full font-semibold">
@@ -89,7 +96,7 @@ export default function ResetPasswordInner() {
     <div className="rounded-2xl border border-border bg-card p-8 shadow-sm">
       <h1 className="text-2xl font-bold tracking-tight">Set a new password</h1>
       <p className="text-sm text-muted-foreground mt-1">
-        Pick something at least 8 characters. You&apos;ll sign in with the new password.
+        {`Pick something at least ${MIN_PASSWORD_LENGTH} characters. You'll sign in with the new password.`}
       </p>
 
       <form onSubmit={handleSubmit} className="mt-6 space-y-4">
@@ -100,11 +107,12 @@ export default function ResetPasswordInner() {
             <input
               type="password"
               required
-              minLength={8}
+              minLength={MIN_PASSWORD_LENGTH}
+              maxLength={MAX_PASSWORD_LENGTH}
               autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="At least 8 characters"
+              placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
               className="w-full h-11 pl-10 pr-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
             />
           </div>
@@ -116,7 +124,8 @@ export default function ResetPasswordInner() {
             <input
               type="password"
               required
-              minLength={8}
+              minLength={MIN_PASSWORD_LENGTH}
+              maxLength={MAX_PASSWORD_LENGTH}
               autoComplete="new-password"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
