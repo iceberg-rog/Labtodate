@@ -5,8 +5,10 @@ import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AppDashboardPage() {
+export default async function AppDashboardPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
   const session = await requireSession({ redirectTo: '/app' });
+  // requireSession sends signed-in users without the needed role here.
+  const forbidden = (await searchParams).error === 'forbidden';
   const role = (session.user as { role?: string }).role || 'BUYER';
   const userId = session.user.id;
 
@@ -30,6 +32,11 @@ export default async function AppDashboardPage() {
 
   return (
     <div className="space-y-6">
+      {forbidden && (
+        <p role="alert" className="rounded-xl border border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 px-4 py-3 text-sm">
+          You don&apos;t have access to that page with this account, so we brought you to your dashboard.
+        </p>
+      )}
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Welcome back, {session.user.name.split(' ')[0]}</h1>
         <p className="text-muted-foreground mt-1">
