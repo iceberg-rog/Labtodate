@@ -1161,14 +1161,27 @@ export async function saveAdminSettings(
   for (const [k, v] of formData.entries()) {
     if (typeof v === 'string') input[k] = v;
   }
+  let saved: Awaited<ReturnType<typeof persistSettings>>;
   try {
-    await persistSettings(input);
+    saved = await persistSettings(input);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? `Save failed: ${e.message.slice(0, 600)}` : 'Save failed.' };
   }
   await audit('settings.save', undefined, Object.keys(input).join(','));
   revalidatePath('/admin/settings');
-  return { ok: true, message: 'Saved ✓' };
+  // Say what actually happened: "Saved ✓" only when something was written,
+  // and name fields that now use (or can only be removed in) the server .env.
+  const list = (labels: string[]) => labels.map((l) => `“${l}”`).join(', ');
+  const parts = [saved.changed.length || saved.envDefault.length ? 'Saved ✓' : 'Nothing changed.'];
+  if (saved.envDefault.length) {
+    parts.push(`${list(saved.envDefault)} now ${saved.envDefault.length === 1 ? 'uses' : 'use'} the server .env value.`);
+  }
+  if (saved.envKept.length) {
+    parts.push(
+      `${list(saved.envKept)} ${saved.envKept.length === 1 ? 'comes' : 'come'} from the server .env, so emptying it here removed nothing — change it in the .env file.`,
+    );
+  }
+  return { ok: true, message: parts.join(' ') };
 }
 
 export async function uploadCompanyLogo(
