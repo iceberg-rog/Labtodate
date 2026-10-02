@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import Image from 'next/image';
+import { redirect } from 'next/navigation';
 import { ShoppingCart, Trash2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
@@ -11,7 +12,10 @@ export const dynamic = 'force-dynamic';
 
 export default async function CartPage(
   props: {
-    searchParams: Promise<{ added?: string; unavailable?: string; mixedcurrency?: string; empty?: string; canceled?: string; payment?: string }>;
+    searchParams: Promise<{
+      added?: string; capped?: string; already?: string; maxed?: string; n?: string;
+      unavailable?: string; changed?: string; mixedcurrency?: string; empty?: string; canceled?: string; payment?: string;
+    }>;
   }
 ) {
   const searchParams = await props.searchParams;
@@ -21,15 +25,20 @@ export default async function CartPage(
     orderBy: { createdAt: 'desc' },
     include: { product: { select: { slug: true, title: true, priceCents: true, currency: true, images: true, status: true, mode: true, quantity: true } } },
   });
-  const valid = items.filter(
-    (i) => i.product.status === 'PUBLISHED' && i.product.priceCents && i.product.mode !== 'QUOTE_ONLY',
-  );
+  // Every row is rendered. A row that became unpublished / quote-only /
+  // priceless is shown as "no longer available" with a Remove button — hiding
+  // it left an invisible row that made cart checkout fail forever.
+  const isListed = (i: (typeof items)[number]) =>
+    i.product.status === 'PUBLISHED' && !!i.product.priceCents && i.product.mode !== 'QUOTE_ONLY';
+  const valid = items.filter(isListed);
+  const unlisted = items.filter((i) => !isListed(i));
   const currency = valid[0]?.product.currency || 'EUR';
   // BUG-032 (invariant S1): surface stale stock at read time instead of
   // letting the buyer discover it as an unexplained checkout bounce.
   const soldOut = valid.filter((i) => i.product.quantity <= 0);
   const overStock = valid.filter((i) => i.product.quantity > 0 && i.quantity > i.product.quantity);
-  const stockBlocked = soldOut.length > 0 || overStock.length > 0;
+  const stockBlocked = soldOut.length > 0 || overStock.length > 0 || unlisted.length > 0;
+  const maxed = Number(searchParams.maxed);
   const subtotal = valid.reduce(
     (s, i) => (i.product.quantity <= 0 ? s : s + (i.product.priceCents ?? 0) * i.quantity),
     0,
@@ -39,12 +48,25 @@ export default async function CartPage(
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Cart</h1>
-        <p className="text-muted-foreground mt-1">{valid.length} item{valid.length === 1 ? '' : 's'}</p>
+        <p className="text-muted-foreground mt-1">{items.length} item{items.length === 1 ? '' : 's'}</p>
       </div>
 
       {searchParams.added && valid.length > 0 && (
         <div className="rounded-2xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 text-sm text-emerald-900 dark:text-emerald-300 font-semibold">
-          Added to cart ✓
+          {searchParams.capped
+            ? 'Added to cart ✓ — quantity limited to the units available.'
+            : 'Added to cart ✓'}
+        </div>
+      )}
+      {searchParams.already && (
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          <span className="font-semibold">This item is already in your cart.</span>{' '}
+          No more units are available, so the quantity was not changed.
+        </div>
+      )}
+      {Number.isInteger(maxed) && maxed > 0 && (
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          Only {maxed} available — the quantity was set to {maxed}.
         </div>
       )}
 
@@ -52,6 +74,12 @@ export default async function CartPage(
         <div className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-4 text-sm text-red-900 dark:text-red-300">
           <span className="font-semibold">Some items are no longer available in the requested quantity.</span>{' '}
           No order was created and no payment is due. Adjust or remove the highlighted items below, then try again.
+        </div>
+      )}
+      {searchParams.changed && (
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          <span className="font-semibold">Your cart changed while you were checking out.</span>{' '}
+          No order was created. Please review the items below and continue again.
         </div>
       )}
       {searchParams.mixedcurrency && (
@@ -71,7 +99,7 @@ export default async function CartPage(
         </div>
       )}
 
-      {valid.length === 0 ? (
+      {items.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <ShoppingCart className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
           <p className="text-lg font-semibold">Your cart is empty</p>
@@ -81,41 +109,70 @@ export default async function CartPage(
         </div>
       ) : (
         <div className="grid lg:grid-cols-[1fr_320px] gap-6 items-start">
-          <ul className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
-            {valid.map((i) => (
-              <li key={i.id} className="p-4 flex items-center gap-4 flex-wrap">
-                <div className="relative h-16 w-20 rounded-lg overflow-hidden bg-card flex-shrink-0">
-                  {i.product.images[0] && (
-                    <Image src={i.product.images[0]} alt={i.product.title} fill sizes="80px" className="object-contain p-1.5" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <Link href={`/marketplace/${i.product.slug}`} className="font-semibold hover:text-primary line-clamp-1">
-                    {i.product.title}
-                  </Link>
-                  <p className="text-sm text-muted-foreground">{formatPrice(i.product.priceCents ?? 0, currency)} each</p>
-                  {i.product.quantity <= 0 ? (
-                    <p className="text-xs font-bold text-red-600 dark:text-red-400 mt-0.5">Sold out — remove this item to continue</p>
-                  ) : i.quantity > i.product.quantity ? (
-                    <p className="text-xs font-bold text-amber-600 dark:text-amber-400 mt-0.5">Only {i.product.quantity} left — lower the quantity to continue</p>
-                  ) : null}
-                </div>
-                {i.product.quantity > 0 && (
-                  <form action={async (fd: FormData) => { 'use server'; await setCartQty(i.id, parseInt(String(fd.get('q')), 10)); }} className="flex items-center gap-1">
-                    <input name="q" type="number" min={1} max={Math.min(99, i.product.quantity)} defaultValue={Math.min(i.quantity, i.product.quantity)}
-                      aria-label={`Quantity of ${i.product.title}`}
-                      className="h-9 w-16 px-2 rounded-lg border border-input bg-background text-sm text-center" />
-                    <Button type="submit" variant="outline" size="sm" className="rounded-full">Update</Button>
-                  </form>
-                )}
-                <p className="font-bold data w-24 text-right">{i.product.quantity <= 0 ? '—' : formatPrice((i.product.priceCents ?? 0) * i.quantity, currency)}</p>
-                <form action={async () => { 'use server'; await removeFromCart(i.id); }}>
-                  <Button type="submit" variant="ghost" size="icon" className="rounded-full text-red-600 dark:text-red-400" aria-label={`Remove ${i.product.title} from cart`}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </form>
-              </li>
-            ))}
+          <ul className="min-w-0 rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
+            {items.map((i) => {
+              const listed = isListed(i);
+              const soldOutRow = listed && i.product.quantity <= 0;
+              const buyable = listed && !soldOutRow;
+              return (
+                // Mobile: image + title/price on the first row, then qty / line
+                // total / remove on a second row. sm+: a single row.
+                <li key={i.id} className={`p-4 grid grid-cols-[64px_1fr] sm:grid-cols-[80px_1fr_auto] gap-x-4 gap-y-3 items-center ${listed ? '' : 'bg-red-50/60 dark:bg-red-950/20'}`}>
+                  <div className="relative h-14 w-16 sm:h-16 sm:w-20 rounded-lg overflow-hidden bg-card">
+                    {i.product.images[0] && (
+                      <Image src={i.product.images[0]} alt={i.product.title} fill sizes="80px" className="object-contain p-1.5" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    {listed ? (
+                      <Link href={`/marketplace/${i.product.slug}`} className="font-semibold hover:text-primary line-clamp-2 break-words">
+                        {i.product.title}
+                      </Link>
+                    ) : (
+                      <span className="font-semibold text-muted-foreground line-clamp-2 break-words">{i.product.title}</span>
+                    )}
+                    {listed && (
+                      <p className="text-sm text-muted-foreground">{formatPrice(i.product.priceCents ?? 0, currency)} each</p>
+                    )}
+                    {!listed ? (
+                      <p className="text-xs font-bold text-red-600 dark:text-red-400 mt-0.5">No longer available — remove this item to continue</p>
+                    ) : soldOutRow ? (
+                      <p className="text-xs font-bold text-red-600 dark:text-red-400 mt-0.5">Sold out — remove this item to continue</p>
+                    ) : i.quantity > i.product.quantity ? (
+                      <p className="text-xs font-bold text-amber-600 dark:text-amber-400 mt-0.5">Only {i.product.quantity} left — lower the quantity to continue</p>
+                    ) : null}
+                  </div>
+                  <div className="col-span-2 sm:col-span-1 flex items-center justify-end gap-3 flex-wrap">
+                    {buyable && (
+                      <form
+                        action={async (fd: FormData) => {
+                          'use server';
+                          const r = await setCartQty(i.id, parseInt(String(fd.get('q')), 10));
+                          // Capped: say so and remount the input (n) so it shows the stored value.
+                          if (r.capped) redirect(`/app/cart?maxed=${r.quantity}&n=${Date.now()}`);
+                        }}
+                        className="flex items-center gap-1"
+                      >
+                        <input
+                          key={`${i.id}-${i.quantity}-${searchParams.n ?? ''}`}
+                          name="q" type="number" min={1} max={Math.min(99, i.product.quantity)}
+                          defaultValue={Math.min(i.quantity, i.product.quantity)}
+                          aria-label={`Quantity of ${i.product.title}`}
+                          className="h-9 w-16 px-2 rounded-lg border border-input bg-background text-sm text-center"
+                        />
+                        <Button type="submit" variant="outline" size="sm" className="rounded-full">Update</Button>
+                      </form>
+                    )}
+                    <p className="font-bold data min-w-[5rem] text-right">{buyable ? formatPrice((i.product.priceCents ?? 0) * i.quantity, currency) : '—'}</p>
+                    <form action={async () => { 'use server'; await removeFromCart(i.id); }}>
+                      <Button type="submit" variant="ghost" size="icon" className="rounded-full text-red-600 dark:text-red-400" aria-label={`Remove ${i.product.title} from cart`}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </form>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
 
           <div className="rounded-2xl border border-border bg-card p-6 space-y-4 lg:sticky lg:top-24">
@@ -124,9 +181,9 @@ export default async function CartPage(
               <span className="font-bold data">{formatPrice(subtotal, currency)}</span>
             </div>
             <p className="text-xs text-muted-foreground">Shipping &amp; tax calculated at checkout. Payment is by bank transfer, manually verified by our team.</p>
-            {stockBlocked ? (
+            {stockBlocked || valid.length === 0 ? (
               <>
-                <Button size="lg" disabled className="rounded-2xl font-semibold w-full">
+                <Button size="lg" disabled className="rounded-2xl font-semibold w-full whitespace-normal h-auto min-h-12 py-3">
                   Continue to shipping &amp; bank transfer <ArrowRight className="h-4 w-4" />
                 </Button>
                 <p className="text-xs font-semibold text-red-600 dark:text-red-400">
@@ -134,7 +191,7 @@ export default async function CartPage(
                 </p>
               </>
             ) : (
-              <Button asChild size="lg" className="rounded-2xl font-semibold w-full">
+              <Button asChild size="lg" className="rounded-2xl font-semibold w-full whitespace-normal h-auto min-h-12 py-3">
                 <Link href="/checkout/cart">
                   Continue to shipping &amp; bank transfer <ArrowRight className="h-4 w-4" />
                 </Link>

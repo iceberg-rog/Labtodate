@@ -34,6 +34,7 @@ import {
   deleteOrderPermanently,
 } from '@/app/admin/actions';
 import { BuyerEmailReveal } from './BuyerEmailReveal';
+import { OrderActionForm } from './OrderActionForm';
 import {
   PRIORITY_CLASS,
   PRIORITY_LABEL,
@@ -135,16 +136,21 @@ export function OrderRow(p: OrderRowProps) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [copied, setCopied] = useState(false);
-  const [confirmDanger, setConfirmDanger] = useState(false);
-  const [fulfilMsg, setFulfilMsg] = useState<{ ok: boolean; message: string } | null>(null);
+  // One armed confirmation at a time, keyed by action — a single shared flag
+  // armed "Cancel" and "Delete forever" together on archived pending rows.
+  const [confirm, setConfirm] = useState<null | 'refund' | 'cancel' | 'delete'>(null);
+  // Result of the last row action, shown in the row (server messages are
+  // returned, not thrown — production redacts thrown messages).
+  const [rowMsg, setRowMsg] = useState<{ ok: boolean; message: string } | null>(null);
 
   const canFulfil = p.status === 'PAID' || p.status === 'PROCESSING' || p.status === 'SHIPPED';
   const isAwaitingVerify = p.paymentVerificationStatus === 'AWAITING_VERIFICATION';
   // When a buyer has submitted proof, the operator's primary action is verify/
   // reject — not the legacy "mark paid manually" (that's the back-channel for
-  // off-platform payments the buyer never uploaded).
-  const canManualPay = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify;
-  const canCancel = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify;
+  // off-platform payments the buyer never uploaded). Archived rows only offer
+  // Restore / Delete.
+  const canManualPay = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify && !p.archived;
+  const canCancel = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify && !p.archived;
   const canRefund = p.status === 'PAID' || p.status === 'PROCESSING' || p.status === 'SHIPPED' || p.status === 'DELIVERED';
   const trackUrl = trackingUrl(p.carrier, p.trackingNumber);
   const [rejectReason, setRejectReason] = useState('');
@@ -159,17 +165,27 @@ export function OrderRow(p: OrderRowProps) {
     } catch {/* */}
   }
 
-  function runDestructive(action: typeof refundOrder | typeof cancelOrder) {
+  function runAction(
+    action: (fd: FormData) => Promise<{ ok: boolean; message: string }>,
+    extra?: Record<string, string>,
+    onOk?: () => void,
+  ) {
+    setRowMsg(null);
     start(async () => {
       const fd = new FormData();
       fd.set('orderId', p.id);
+      for (const [k, v] of Object.entries(extra ?? {})) fd.set(k, v);
       try {
-        await action(fd);
-        router.refresh();
-      } catch (e) {
-        alert(e instanceof Error ? e.message : 'Action failed');
+        const r = await action(fd);
+        setRowMsg(r ?? { ok: false, message: 'No response — refresh to check the order.' });
+        if (r?.ok) {
+          onOk?.();
+          router.refresh();
+        }
+      } catch {
+        setRowMsg({ ok: false, message: 'Something went wrong — refresh to check the order, then retry.' });
       }
-      setConfirmDanger(false);
+      setConfirm(null);
     });
   }
 
@@ -399,77 +415,81 @@ export function OrderRow(p: OrderRowProps) {
 
       {/* === Footer action bar === */}
       {canFulfil && (
-        <form
-          // onSubmit + returned result: a rejected move (e.g. no address) now
-          // shows its reason here instead of crashing the orders page.
-          onSubmit={(e) => {
-            e.preventDefault();
-            const fd = new FormData(e.currentTarget);
-            setFulfilMsg(null);
-            start(async () => {
-              try {
-                const r = await setOrderFulfillment(fd);
-                setFulfilMsg(r);
-                if (r.ok) router.refresh();
-              } catch {
-                setFulfilMsg({ ok: false, message: 'Save failed — please try again.' });
-              }
-            });
-          }}
-          className="border-t border-border bg-foreground/[0.02] px-5 py-2.5 flex flex-wrap items-end gap-2"
+        <div data-noopen onClick={(e) => e.stopPropagation()}>
+          <OrderActionForm
+            action={setOrderFulfillment}
+            className="border-t border-border bg-foreground/[0.02] px-5 py-2.5 flex flex-wrap items-end gap-2"
+            messageClassName="basis-full"
+          >
+            <input type="hidden" name="orderId" value={p.id} />
+            <label className="block">
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Status</span>
+              <select name="status" defaultValue={p.status} className="h-8 px-2 rounded-md border border-input bg-background text-xs font-medium">
+                {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const)
+                  // Forward-only (the server rejects backward moves).
+                  .filter((s, i, all) => i >= all.indexOf(p.status as (typeof all)[number]))
+                  .filter((s) => p.hasShippingAddress !== false || (s !== 'SHIPPED' && s !== 'DELIVERED'))
+                  .map((s) => (
+                    <option key={s} value={s}>{s.toLowerCase()}</option>
+                  ))}
+              </select>
+            </label>
+            {p.hasShippingAddress === false && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-2 py-1">
+                <AlertTriangle className="h-3 w-3" /> No address — ship/deliver locked ·{' '}
+                <Link href={`/admin/orders/${p.id}`} className="underline" data-noopen>add address</Link>
+              </span>
+            )}
+            <label className="block">
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Carrier</span>
+              <select name="carrier" defaultValue={p.carrier ?? ''} className="h-8 px-2 rounded-md border border-input bg-background text-xs font-medium w-28">
+                <option value="">—</option>
+                {CARRIERS.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+            <label className="block flex-1 min-w-[140px]">
+              <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Tracking #</span>
+              <input name="trackingNumber" defaultValue={p.trackingNumber ?? ''} placeholder="1Z…" className="h-8 px-2 rounded-md border border-input bg-background text-xs font-mono w-full" />
+            </label>
+            <button type="submit" className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90 shadow-sm">
+              <Truck className="h-3.5 w-3.5" /> Save &amp; notify
+            </button>
+            {canRefund && (
+              <DestructiveAction
+                pending={pending}
+                confirming={confirm === 'refund'}
+                onArm={() => setConfirm('refund')}
+                onCancelArm={() => setConfirm(null)}
+                onConfirm={() => runAction(refundOrder)}
+                label="Refund"
+                activeLabel="Refund this order?"
+                toneText="text-red-700 dark:text-red-300"
+              />
+            )}
+          </OrderActionForm>
+        </div>
+      )}
+
+      {/* Delivered orders are past the fulfilment form but still refundable
+          (buyers can file a return after delivery). */}
+      {canRefund && !canFulfil && !p.archived && (
+        <div
+          className="border-t border-border bg-foreground/[0.02] px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
           data-noopen
           onClick={(e) => e.stopPropagation()}
         >
-          <input type="hidden" name="orderId" value={p.id} />
-          <label className="block">
-            <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Status</span>
-            <select name="status" defaultValue={p.status} className="h-8 px-2 rounded-md border border-input bg-background text-xs font-medium">
-              {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const)
-                // Forward-only (the server rejects backward moves).
-                .filter((s, i, all) => i >= all.indexOf(p.status as (typeof all)[number]))
-                .filter((s) => p.hasShippingAddress !== false || (s !== 'SHIPPED' && s !== 'DELIVERED'))
-                .map((s) => (
-                  <option key={s} value={s}>{s.toLowerCase()}</option>
-                ))}
-            </select>
-          </label>
-          {p.hasShippingAddress === false && (
-            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded px-2 py-1">
-              <AlertTriangle className="h-3 w-3" /> No address — ship/deliver locked
-            </span>
-          )}
-          <label className="block">
-            <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Carrier</span>
-            <select name="carrier" defaultValue={p.carrier ?? ''} className="h-8 px-2 rounded-md border border-input bg-background text-xs font-medium w-28">
-              <option value="">—</option>
-              {CARRIERS.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </label>
-          <label className="block flex-1 min-w-[140px]">
-            <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Tracking #</span>
-            <input name="trackingNumber" defaultValue={p.trackingNumber ?? ''} placeholder="1Z…" className="h-8 px-2 rounded-md border border-input bg-background text-xs font-mono w-full" />
-          </label>
-          <button type="submit" disabled={pending} className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90 shadow-sm disabled:opacity-50">
-            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Truck className="h-3.5 w-3.5" />} Save &amp; notify
-          </button>
-          {canRefund && (
-            <DestructiveAction
-              pending={pending}
-              confirming={confirmDanger}
-              onArm={() => setConfirmDanger(true)}
-              onCancelArm={() => setConfirmDanger(false)}
-              onConfirm={() => runDestructive(refundOrder)}
-              label="Refund"
-              activeLabel="Refund this order?"
-              toneText="text-red-700 dark:text-red-300"
-            />
-          )}
-          {fulfilMsg && (
-            <span className={`basis-full text-[11px] font-semibold ${fulfilMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
-              {fulfilMsg.message}
-            </span>
-          )}
-        </form>
+          <span className="flex-1 text-muted-foreground">Delivered. Returned or disputed? Record a refund.</span>
+          <DestructiveAction
+            pending={pending}
+            confirming={confirm === 'refund'}
+            onArm={() => setConfirm('refund')}
+            onCancelArm={() => setConfirm(null)}
+            onConfirm={() => runAction(refundOrder)}
+            label="Refund"
+            activeLabel="Refund this delivered order?"
+            toneText="text-red-700 dark:text-red-300"
+          />
+        </div>
       )}
 
       {isAwaitingVerify && (
@@ -488,11 +508,7 @@ export function OrderRow(p: OrderRowProps) {
             disabled={pending}
             onClick={(e) => {
               e.stopPropagation();
-              start(async () => {
-                const fd = new FormData(); fd.set('orderId', p.id);
-                try { await verifyPayment(fd); router.refresh(); }
-                catch (err) { alert(err instanceof Error ? err.message : 'Verify failed'); }
-              });
+              runAction(verifyPayment);
             }}
             className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 disabled:opacity-50"
             data-noopen
@@ -522,10 +538,9 @@ export function OrderRow(p: OrderRowProps) {
                 type="button"
                 disabled={pending || rejectReason.trim().length < 4}
                 onClick={() => {
-                  start(async () => {
-                    const fd = new FormData(); fd.set('orderId', p.id); fd.set('reason', rejectReason.trim());
-                    try { await rejectPayment(fd); setShowReject(false); setRejectReason(''); router.refresh(); }
-                    catch (err) { alert(err instanceof Error ? err.message : 'Reject failed'); }
+                  runAction(rejectPayment, { reason: rejectReason.trim() }, () => {
+                    setShowReject(false);
+                    setRejectReason('');
                   });
                 }}
                 className="h-8 px-3 rounded-md bg-amber-700 text-white text-xs font-bold disabled:opacity-50"
@@ -564,16 +579,18 @@ export function OrderRow(p: OrderRowProps) {
               <CreditCard className="h-3.5 w-3.5" /> Mark as paid
             </button>
           )}
-          <DestructiveAction
-            pending={pending}
-            confirming={confirmDanger}
-            onArm={() => setConfirmDanger(true)}
-            onCancelArm={() => setConfirmDanger(false)}
-            onConfirm={() => runDestructive(cancelOrder)}
-            label="Cancel order"
-            activeLabel="Cancel & release stock?"
-            toneText="text-amber-800 dark:text-amber-300"
-          />
+          {canCancel && (
+            <DestructiveAction
+              pending={pending}
+              confirming={confirm === 'cancel'}
+              onArm={() => setConfirm('cancel')}
+              onCancelArm={() => setConfirm(null)}
+              onConfirm={() => runAction(cancelOrder)}
+              label="Cancel order"
+              activeLabel="Cancel & release stock?"
+              toneText="text-amber-800 dark:text-amber-300"
+            />
+          )}
         </div>
       )}
 
@@ -594,11 +611,7 @@ export function OrderRow(p: OrderRowProps) {
             disabled={pending}
             onClick={(e) => {
               e.stopPropagation();
-              start(async () => {
-                const fd = new FormData(); fd.set('orderId', p.id);
-                try { await unarchiveOrder(fd); router.refresh(); }
-                catch (err) { alert(err instanceof Error ? err.message : 'Restore failed'); }
-              });
+              runAction(unarchiveOrder);
             }}
             className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-slate-700 hover:bg-slate-800 text-white text-xs font-bold disabled:opacity-50"
             data-noopen
@@ -607,22 +620,28 @@ export function OrderRow(p: OrderRowProps) {
           </button>
           <DestructiveAction
             pending={pending}
-            confirming={confirmDanger}
-            onArm={() => setConfirmDanger(true)}
-            onCancelArm={() => setConfirmDanger(false)}
-            onConfirm={() => {
-              start(async () => {
-                const fd = new FormData(); fd.set('orderId', p.id);
-                try { await deleteOrderPermanently(fd); router.refresh(); }
-                catch (err) { alert(err instanceof Error ? err.message : 'Delete failed'); }
-                setConfirmDanger(false);
-              });
-            }}
+            confirming={confirm === 'delete'}
+            onArm={() => setConfirm('delete')}
+            onCancelArm={() => setConfirm(null)}
+            onConfirm={() => runAction(deleteOrderPermanently)}
             label="Delete forever"
-            activeLabel="Delete forever — confirm?"
+            activeLabel={p.status === 'PENDING_PAYMENT' ? 'Delete forever (releases reserved stock) — confirm?' : 'Delete forever — confirm?'}
             toneText="text-red-800 dark:text-red-300"
           />
         </div>
+      )}
+
+      {rowMsg && (
+        <p
+          role="status"
+          data-noopen
+          onClick={(e) => e.stopPropagation()}
+          className={`border-t border-border px-5 py-2 text-[11px] font-semibold ${
+            rowMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'
+          }`}
+        >
+          {rowMsg.message}
+        </p>
       )}
     </li>
   );

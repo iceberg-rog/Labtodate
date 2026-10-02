@@ -20,6 +20,7 @@ import { ActivityTimeline } from '@/components/quotes/ActivityTimeline';
 import { buildBuyerIntel } from '@/lib/quotes/buyer-intel';
 import { buildActivityTimeline } from '@/lib/quotes/activity-timeline';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
+import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,9 +41,7 @@ function priorityChip(priority: string) {
 }
 
 function fmtMoney(cents: number, ccy = 'EUR'): string {
-  // Whole amounts stay compact; amounts with cents show them (never round).
-  const digits = cents % 100 === 0 ? 0 : 2;
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(cents / 100);
+  return formatPrice(cents, ccy); // shows cents when present — must match the proforma
 }
 
 export default async function AdminQuoteDetailPage(props: { params: Promise<{ id: string }> }) {

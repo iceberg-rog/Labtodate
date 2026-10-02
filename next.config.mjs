@@ -11,11 +11,15 @@ const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
   experimental: {
-    // File uploads posted through Server Actions (company logo, payment
-    // receipts) otherwise hit Next's 1 MB default and die with a 500 before
-    // the action's own size check can answer. 10 MB covers the largest
-    // (8 MB receipts) plus form overhead; nginx caps bodies at 25 MB.
-    serverActions: { bodySizeLimit: '10mb' },
+    serverActions: {
+      // File uploads posted through Server Actions (company logo, payment
+      // receipts from the buyer and the admin "mark as paid" form, which
+      // advertise "max 8 MB") otherwise hit Next's 1 MB default and die with
+      // a 413 / full-page crash before the action's own size check can
+      // answer. 10 MB = 8 MB file + multipart overhead; nginx allows 25 MB,
+      // middleware buffers 10 MB.
+      bodySizeLimit: '10mb',
+    },
   },
   images: {
     // optimizer fetches /media/* via the rewrite below (same origin).

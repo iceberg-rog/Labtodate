@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { ShoppingCart, Menu, X, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Logo } from '@/components/site/Logo';
 import { HeaderUserMenu } from '@/components/site/HeaderUserMenu';
 import { SearchTypeahead } from '@/components/site/SearchTypeahead';
 import { ThemeToggle } from '@/components/site/ThemeToggle';
+import { CartCountBadge } from '@/components/site/CartCountBadge';
 import { useSession } from '@/lib/auth-client';
 
 // `primary` links show inline from xl; the rest only from 2xl, where the whole
@@ -64,9 +65,12 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
             {searchOpen ? <X className="h-5 w-5" /> : <Search className="h-5 w-5" />}
           </Button>
           <ThemeToggle className="hidden sm:inline-flex" />
-          <Button variant="ghost" size="icon" className="hidden sm:flex" asChild>
+          <Button variant="ghost" size="icon" className="hidden sm:flex relative" asChild>
             <Link href="/app/cart" aria-label="Cart">
               <ShoppingCart className="h-5 w-5" />
+              <Suspense fallback={null}>
+                <CartCountBadge />
+              </Suspense>
             </Link>
           </Button>
           <HeaderUserMenu />

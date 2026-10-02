@@ -35,6 +35,7 @@ import {
   unarchiveOrder,
   verifyPayment,
   deleteOrderPermanently,
+  refundOrder,
 } from '@/app/admin/actions';
 import { humaniseBuyer, smartDate, STATUS_LABEL, STATUS_TONE, trackingUrl } from '@/lib/orders/display';
 import { openManualPaid } from './ManualPaidPanel';
@@ -557,23 +558,43 @@ export function OrderQuickView() {
                     </Link>
                   )}
                 </div>
-                {!data.archivedAt && (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() => {
-                      setActionMsg(null);
-                      start(async () => {
-                        const fd = new FormData(); fd.set('orderId', data.id);
-                        try { const r = await archiveOrder(fd); setActionMsg(r.message); if (r.ok) refetch(data.id); }
-                        catch (e) { setActionMsg(e instanceof Error ? e.message : 'Failed'); }
-                      });
-                    }}
-                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted disabled:opacity-50"
-                  >
-                    <Archive className="h-3.5 w-3.5" /> Archive
-                  </button>
-                )}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(data.status) && !data.archivedAt && (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => {
+                        if (!window.confirm(`Refund order ${data.orderNumber} (${fmt(data.totalCents, data.currency)})? The order is marked refunded and the buyer is emailed. This cannot be undone.`)) return;
+                        setActionMsg(null);
+                        start(async () => {
+                          const fd = new FormData(); fd.set('orderId', data.id);
+                          try { const r = await refundOrder(fd); setActionMsg(r.message); if (r.ok) refetch(data.id); }
+                          catch { setActionMsg('Refund failed — refresh to check the order, then retry.'); }
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-red-300 bg-card text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"
+                    >
+                      Refund
+                    </button>
+                  )}
+                  {!data.archivedAt && (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => {
+                        setActionMsg(null);
+                        start(async () => {
+                          const fd = new FormData(); fd.set('orderId', data.id);
+                          try { const r = await archiveOrder(fd); setActionMsg(r.message); if (r.ok) refetch(data.id); }
+                          catch (e) { setActionMsg(e instanceof Error ? e.message : 'Failed'); }
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted disabled:opacity-50"
+                    >
+                      <Archive className="h-3.5 w-3.5" /> Archive
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}

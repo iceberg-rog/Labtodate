@@ -11,7 +11,7 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { renderInvoiceHtml } from '@/lib/invoice';
 import { rateLimit } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
-import { createOrderWithUniqueNumber, sendOrderReceived } from '@/lib/orders/actions';
+import { createOrderWithUniqueNumber, sendOrderReceived } from '@/lib/orders/internal';
 
 // ────────────────────────────────────────────────────────────────────────────
 //   Mirror of Support-ticket production-hardening helpers

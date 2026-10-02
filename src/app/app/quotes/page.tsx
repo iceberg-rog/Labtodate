@@ -9,13 +9,12 @@ import { prisma } from '@/lib/db';
 import { computeDealState, type DealState } from '@/lib/quotes/deal-state';
 import { InstrumentIllustration, ILLUSTRATIONS, type IllustrationName } from '@/components/illustrations/instruments';
 import { getMarketing } from '@/lib/marketing';
+import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
 function fmtMoney(cents: number, ccy = 'EUR'): string {
-  // Whole amounts stay compact; amounts with cents show them (never round).
-  const digits = cents % 100 === 0 ? 0 : 2;
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(cents / 100);
+  return formatPrice(cents, ccy); // shows cents when present — must match the proforma
 }
 
 function smartDate(d: Date | null | undefined): string {

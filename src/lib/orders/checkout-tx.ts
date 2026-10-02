@@ -122,6 +122,17 @@ export async function reserveAndCreateOrder(
   return { ok: false, reason: 'order', error: new Error('Could not allocate an order number') };
 }
 
+/**
+ * Did this order decrement product stock when it was created? Only the checkout
+ * paths (reserveAndCreateOrder) reserve units. Orders materialised from a quote
+ * / proforma (sourcingRequestId set, created by createOrderWithUniqueNumber)
+ * never touched stock, so cancelling, refunding or deleting them must NOT
+ * restock — doing so minted a phantom second unit of a single used instrument.
+ */
+export function orderReservedStock(order: { sourcingRequestId: string | null }): boolean {
+  return !order.sourcingRequestId;
+}
+
 export type CancelAndRestockResult = 'canceled' | 'noop';
 
 /**
@@ -157,6 +168,9 @@ export async function cancelAndRestockOrder(
       data: { status: 'CANCELED' },
     });
     if (claim.count !== 1) return 'noop';
+    // Proforma orders never reserved stock — cancel them without restocking.
+    const owner = await tx.order.findUnique({ where: { id: orderId }, select: { sourcingRequestId: true } });
+    if (owner && !orderReservedStock(owner)) return 'canceled';
     const items = await tx.orderItem.findMany({
       where: { orderId },
       select: { productId: true, quantity: true },

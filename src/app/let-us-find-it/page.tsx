@@ -11,11 +11,13 @@ import { getMarketing } from '@/lib/marketing';
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
 
-export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string; facility?: string }> }) {
+export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string; facility?: string; reason?: string }> }) {
   const mk = await getMarketing();
   const session = await getServerSession();
   const sp = await searchParams;
   const slug = sp.product;
+  // Checkout's "Other — request a shipping quote" country lands here.
+  const shippingQuote = sp.reason === 'shipping';
   const anchor = slug
     ? await prisma.product.findUnique({
         where: { slug },
@@ -32,14 +34,25 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
   const facility = facilityRow?.isPublished
     ? { slug: facilityRow.slug, name: facilityRow.name, location: `${facilityRow.city}, ${facilityRow.country}` }
     : null;
-  const back = anchor
+  const backBase = anchor
     ? `/let-us-find-it?product=${encodeURIComponent(anchor.slug)}`
     : facility
       ? `/let-us-find-it?facility=${encodeURIComponent(facility.slug)}`
       : '/let-us-find-it';
+  // Keep the shipping-quote context through sign-in so the banner survives.
+  const back = shippingQuote
+    ? `${backBase}${backBase.includes('?') ? '&' : '?'}reason=shipping`
+    : backBase;
 
   return (
     <div className="container-px py-12 md:py-20">
+      {shippingQuote && (
+        <div role="status" className="max-w-6xl mx-auto mb-8 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          <strong>We need to quote shipping to your country first.</strong> No order was created and nothing was
+          reserved. Send this request with your delivery country and city in the details{anchor ? ' — the item is already filled in' : ''},
+          and we&apos;ll reply with a price including shipping.
+        </div>
+      )}
       <div className="grid lg:grid-cols-[1fr_1.2fr] gap-12 items-start max-w-6xl mx-auto">
         <div>
           <div className="inline-flex items-center gap-2 rounded-full bg-accent/15 border border-accent/30 px-3 py-1 text-xs font-bold text-primary mb-5">

@@ -102,6 +102,9 @@ export function ensureBucket(): Promise<void> {
               // (outside the `products/` upload convention) and are shown to
               // anonymous visitors on /blog and the homepage — public-read.
               `arn:aws:s3:::${BUCKET}/blog-cover/*`,
+              // Company logo (Settings → Logo) is rendered on invoices and in
+              // emails for buyers who aren't signed in — public-read too.
+              `arn:aws:s3:::${BUCKET}/branding/*`,
             ],
           },
         ],
@@ -139,7 +142,11 @@ export async function uploadObject(
       ...(isInlineSafeMime(contentType) ? {} : { ContentDisposition: 'attachment' }),
       Body: body,
       ContentType: contentType,
-      CacheControl: 'public, max-age=31536000, immutable',
+      // Only the public-read prefixes may be cached by shared caches; private
+      // objects (order-proofs/, support-att/, …) must never be marked public.
+      CacheControl: /^(products|blog-cover|branding)\//.test(key)
+        ? 'public, max-age=31536000, immutable'
+        : 'private, no-store',
     }),
   );
   return { url: `${PUBLIC_URL}/${key}`, key };

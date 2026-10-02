@@ -31,7 +31,7 @@ import { sanitizeRichHtml } from '@/lib/sanitize';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
-  searchParams?: Promise<{ review?: string; sold?: string; quoteonly?: string }>;
+  searchParams?: Promise<{ review?: string; sold?: string; quoteonly?: string; canceled?: string; payment?: string }>;
 }
 
 export async function generateMetadata(props: PageProps): Promise<Metadata> {
@@ -79,6 +79,26 @@ export default async function ProductDetailPage(props: PageProps) {
   if (product.status !== 'PUBLISHED' && !canPreviewUnpublished) notFound();
 
   const saved = await isWishlisted(session?.user.id ?? null, product.id);
+  // Only verified buyers may review (submitReview enforces it). Show the form
+  // only to them, so nobody types a review that is then thrown away.
+  const canReview = session
+    ? !!(await prisma.orderItem.findFirst({
+        where: {
+          productId: product.id,
+          order: { buyerId: session.user.id, status: { in: ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] } },
+        },
+        select: { id: true },
+      }))
+    : false;
+  // Checkout / cart bounced the buyer here — say why instead of landing silently.
+  const bounceNote =
+    searchParams?.sold
+      ? 'This unit is no longer available as you saw it (sold, reserved or updated), so no order was created and nothing is due. The listing below shows its current state.'
+      : searchParams?.quoteonly
+        ? 'This item can’t be bought online right now — request a quote instead. No order was created.'
+        : searchParams?.canceled || searchParams?.payment
+          ? 'Checkout was not completed. No payment was taken.'
+          : null;
   const similar = await getSimilarProducts(product.categoryId, product.slug, 4);
   const companyListings = product.companyId
     ? await prisma.product.count({ where: { companyId: product.companyId, status: 'PUBLISHED' } })
@@ -159,6 +179,11 @@ export default async function ProductDetailPage(props: PageProps) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd).replace(/</g, '\\u003c') }}
       />
+      {bounceNote && (
+        <div role="status" className="mb-6 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          {bounceNote}
+        </div>
+      )}
       {/* Breadcrumbs */}
       <nav className="flex items-center gap-1 text-xs text-muted-foreground mb-8 flex-wrap">
         <Link href="/" className="hover:text-foreground">Home</Link>
@@ -389,7 +414,11 @@ export default async function ProductDetailPage(props: PageProps) {
               </ul>
             )}
 
-            {session ? (
+            {session && !canReview ? (
+              <p className="mt-5 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                {reviewNote ? 'Your review wasn’t saved — ' : ''}Only verified buyers who purchased this item can leave a review.
+              </p>
+            ) : session ? (
               <form
                 id="write-review"
                 action={submitReview.bind(null, product.slug)}

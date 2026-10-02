@@ -3,6 +3,7 @@ import { Logo } from '@/components/site/Logo';
 import { Linkedin, Twitter, Github, Mail } from 'lucide-react';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getMarketing } from '@/lib/marketing';
+import { getCompany } from '@/lib/invoice';
 
 const COLUMNS = [
   {
@@ -49,6 +50,15 @@ export async function Footer() {
   const supportEmail = process.env.SUPPORT_EMAIL || 'hello@lab2date.com';
   const siteName = process.env.SITE_NAME || 'lab2date';
   const mk = await getMarketing();
+  // Legal identity (Settings → Company), same source as the invoices — shown
+  // only for the fields that are filled in.
+  const co = getCompany();
+  const legalParts = [
+    process.env.COMPANY_LEGAL_NAME ? co.name : '',
+    [...co.addrLines, co.country].filter(Boolean).join(', '),
+    co.kvk ? `KvK ${co.kvk}` : '',
+    co.vat ? `VAT ${co.vat}` : '',
+  ].filter(Boolean);
   return (
     <footer className="border-t bg-muted/40 mt-24">
       <div className="container-px py-12 grid grid-cols-2 md:grid-cols-6 gap-8">
@@ -98,7 +108,10 @@ export async function Footer() {
       </div>
       <div className="border-t">
         <div className="container-px py-6 flex flex-col sm:flex-row justify-between gap-4 text-xs text-muted-foreground">
-          <p>© {new Date().getFullYear()} {siteName}. All rights reserved.</p>
+          <div className="space-y-1">
+            <p>© {new Date().getFullYear()} {siteName}. All rights reserved.</p>
+            {legalParts.length > 0 && <p>{legalParts.join(' · ')}</p>}
+          </div>
           <p>Made for scientists, by scientists.</p>
         </div>
       </div>

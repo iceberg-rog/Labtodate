@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getStripe } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { sendOrderInvoice } from '@/lib/orders/actions';
+import { sendOrderInvoice } from '@/lib/orders/internal';
 import { cancelOrderSaga } from '@/lib/orders/stripe-handoff';
 import { confirmedExpiredApi } from '@/lib/stripe/session-api';
 import { notifyAdmins, notifyUser, logError } from '@/lib/observability';
