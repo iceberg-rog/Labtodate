@@ -26,6 +26,9 @@ const ERR_MSG: Record<string, string> = {
   expired: 'This proforma has expired, so it can no longer be paid. Ask us to re-issue it on the quote thread.',
 };
 
+// Payment received — the order is past the "pay us" step.
+const PAID_STATES: readonly string[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
+
 export default async function PaymentWorkspacePage({
   params,
   searchParams,
@@ -77,19 +80,32 @@ export default async function PaymentWorkspacePage({
     });
     proformaHtml = rendered.html;
   }
+  const verState = order.paymentVerificationStatus; // AWAITING_VERIFICATION | VERIFIED | REJECTED | null
+  // Expiry is judged by validUntil itself, not by the sla-sweep having run: the
+  // receipt action refuses a lapsed proforma straight away, so the page must not
+  // keep offering bank details and the upload form until the cron catches up.
+  // Only an order that could still be paid (or was canceled) can show it — a
+  // paid order is not "expired", and a receipt already under review is left to
+  // the admin's verify/reject (the sweep leaves it alone too).
   const isProformaExpired =
     !!sourcing?.validUntilAt &&
     sourcing.validUntilAt.getTime() < Date.now() &&
     sourcing.status !== 'DECLINED' && // a decline is its own reason, even past validity
-    (sourcing.status === 'CLOSED' || order.status === 'CANCELED');
+    (order.status === 'CANCELED' ||
+      (order.status === 'PENDING_PAYMENT' && verState !== 'AWAITING_VERIFICATION'));
   // A canceled order, or a quote order whose deal ended (declined / closed
   // without a deal — older ones may still have a PENDING_PAYMENT order), is not
   // payable: no "Complete your purchase", no bank details, no receipt upload.
   // (A receipt already under review is left to the admin's verify/reject.)
   const quoteEnded = !!sourcing && (sourcing.status === 'DECLINED' || sourcing.status === 'CLOSED');
   const isVoid =
+    isProformaExpired ||
     order.status === 'CANCELED' ||
     (quoteEnded && order.status === 'PENDING_PAYMENT' && !order.paymentSubmittedAt);
+  // Paid (or further along) / refunded: nothing left to pay, so the page says
+  // so instead of "Complete your purchase" with bank-transfer instructions.
+  const isPaid = !isVoid && PAID_STATES.includes(order.status);
+  const isRefunded = !isVoid && order.status === 'REFUNDED';
   const voidReason = isProformaExpired
     ? null // the expired banner below explains it
     : sourcing?.status === 'DECLINED'
@@ -114,9 +130,7 @@ export default async function PaymentWorkspacePage({
     country: String(ship?.address?.country ?? ''),
   };
 
-  const verState = order.paymentVerificationStatus; // AWAITING_VERIFICATION | VERIFIED | REJECTED | null
-  // Expired proformas: hard-block the upload path. Buyer can still see the
-  // page (and the bank/totals for reference) but cannot submit a receipt.
+  // Expired proformas: hard-block the upload path (and hide the bank details).
   const canSubmit =
     !isProformaExpired &&
     !isVoid &&
@@ -145,14 +159,21 @@ export default async function PaymentWorkspacePage({
 
       <div className="mb-6">
         <h1 className="text-3xl font-bold tracking-tight">
-          {isVoid ? (isProformaExpired ? 'Proforma expired' : 'Order canceled') : 'Complete your purchase'}
+          {isVoid
+            ? isProformaExpired ? 'Proforma expired' : 'Order canceled'
+            : isPaid
+              ? 'Payment received'
+              : isRefunded
+                ? 'Order refunded'
+                : 'Complete your purchase'}
         </h1>
         <p className="text-muted-foreground mt-1">
           Order <span className="font-mono font-semibold">{order.orderNumber}</span> ·{' '}
-          <span className={isVoid ? 'font-semibold line-through' : 'font-semibold'}>
+          <span className={isVoid || isRefunded ? 'font-semibold line-through' : 'font-semibold'}>
             {formatPrice(order.totalCents, order.currency)}
           </span>
-          {isVoid && <> · no payment due</>}
+          {(isVoid || isRefunded) && <> · no payment due</>}
+          {isPaid && <> · paid</>}
         </p>
       </div>
 
@@ -223,8 +244,10 @@ export default async function PaymentWorkspacePage({
             <p className="text-red-800 dark:text-red-300 mt-1">
               Your proforma was valid until{' '}
               <strong>{sourcing?.validUntilAt?.toLocaleDateString('en-US', { dateStyle: 'long' })}</strong>.
-              The order was automatically cancelled. To proceed, ask us to re-issue with
-              up-to-date pricing — reply on the original quote thread.
+              {order.status === 'CANCELED'
+                ? ' The order was automatically cancelled.'
+                : ' It can no longer be paid — please don’t send a transfer for it.'}{' '}
+              To proceed, ask us to re-issue with up-to-date pricing — reply on the original quote thread.
             </p>
             {sourcing && (
               <Link
@@ -240,7 +263,7 @@ export default async function PaymentWorkspacePage({
 
       {/* === Status banners ============================================ */}
       {/* A canceled order's receipt state is moot — the banner above explains it. */}
-      {!isVoid && verState === 'AWAITING_VERIFICATION' && (
+      {!isVoid && !isPaid && !isRefunded && verState === 'AWAITING_VERIFICATION' && (
         <div className="rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 p-4 mb-6 flex items-start gap-3">
           <Clock className="h-5 w-5 text-sky-700 dark:text-sky-300 mt-0.5" />
           <div className="text-sm">
@@ -253,19 +276,40 @@ export default async function PaymentWorkspacePage({
         </div>
       )}
 
-      {!isVoid && verState === 'VERIFIED' && (
+      {isPaid && (
         <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 mb-6 flex items-start gap-3">
           <CheckCircle2 className="h-5 w-5 text-emerald-700 dark:text-emerald-300 mt-0.5" />
           <div className="text-sm">
-            <p className="font-bold text-emerald-900 dark:text-emerald-300">Payment verified.</p>
+            <p className="font-bold text-emerald-900 dark:text-emerald-300">
+              {verState === 'VERIFIED' ? 'Payment verified.' : 'Payment received.'}
+            </p>
             <p className="text-emerald-800 dark:text-emerald-300 mt-1">
-              Your order is being prepared for shipping. <Link href={`/app/orders/${order.orderNumber}`} className="underline font-semibold">Track it</Link>.
+              {order.status === 'SHIPPED'
+                ? 'Your order has shipped.'
+                : order.status === 'DELIVERED'
+                  ? 'Your order was delivered.'
+                  : 'Your order is being prepared for shipping.'}{' '}
+              No further payment is needed.{' '}
+              <Link href={`/app/orders/${order.orderNumber}`} className="underline font-semibold">Track it</Link>.
             </p>
           </div>
         </div>
       )}
 
-      {!isVoid && verState === 'REJECTED' && (
+      {isRefunded && (
+        <div className="rounded-2xl border border-border bg-card p-4 mb-6 flex items-start gap-3">
+          <CheckCircle2 className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
+          <div className="text-sm">
+            <p className="font-bold">This order was refunded.</p>
+            <p className="text-muted-foreground mt-1">
+              No payment is due. Questions about the refund?{' '}
+              <Link href="/app/support" className="underline font-semibold">Contact support</Link>.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!isVoid && !isPaid && !isRefunded && verState === 'REJECTED' && (
         <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 mb-6 flex items-start gap-3">
           <AlertTriangle className="h-5 w-5 text-amber-700 dark:text-amber-300 mt-0.5 flex-shrink-0" />
           {/* min-w-0 + overflow-wrap: the admin's reason is free text and may be
@@ -337,8 +381,8 @@ export default async function PaymentWorkspacePage({
         </section>
       )}
 
-      {/* === Payment instructions (never for a canceled order) ========== */}
-      {!isVoid && (
+      {/* === Payment instructions (only while there is something to pay) = */}
+      {!isVoid && !isPaid && !isRefunded && (
         <section className="rounded-2xl border border-border bg-card p-6 space-y-4 mb-6">
           <div className="flex items-center gap-2">
             <Banknote className="h-5 w-5 text-primary" />
