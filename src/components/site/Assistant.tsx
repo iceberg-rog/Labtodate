@@ -32,7 +32,14 @@ type Identity = { kind: 'user' | 'guest'; name: string | null; email: string | n
  * The widget polls when WITH_HUMAN so an admin reply appears within
  * a couple of seconds without WS infrastructure.
  */
-export function Assistant() {
+export function Assistant({
+  name = 'lab2date Assistant',
+  siteName = 'lab2date',
+}: {
+  /** ASSISTANT_NAME from Admin → Settings → AI assistant. */
+  name?: string;
+  siteName?: string;
+} = {}) {
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<WireMsg[]>([]);
   const [status, setStatus] = useState<string>('AI');
@@ -212,7 +219,7 @@ export function Assistant() {
             <div className="flex items-center gap-2">
               {status === 'WITH_HUMAN' ? <Headphones className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
               <span className="font-semibold text-sm">
-                {status === 'WITH_HUMAN' ? 'lab2date · live agent' : status === 'AWAITING_HUMAN' ? 'lab2date · connecting…' : 'lab2date Assistant'}
+                {status === 'WITH_HUMAN' ? `${siteName} · live agent` : status === 'AWAITING_HUMAN' ? `${siteName} · connecting…` : name}
               </span>
             </div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close">

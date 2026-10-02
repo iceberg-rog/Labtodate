@@ -949,18 +949,19 @@ export async function sendTestEmail(): Promise<{ ok: boolean; message: string }>
       ? `SMTP (${process.env.SMTP_HOST || 'localhost'}:${process.env.SMTP_PORT || '465'})`
       : 'the dev mailbox (Mailpit) — no Resend key or SMTP credentials set';
 
+  const site = process.env.SITE_NAME?.trim() || 'lab2date';
   try {
     await sendEmail({
       to,
-      subject: 'lab2date — test email ✅',
+      subject: `${site} — test email ✅`,
       html:
         '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;">' +
         '<h2 style="margin:0 0 8px;color:#0E4F40;">Your email is working 🎉</h2>' +
-        '<p style="color:#374151;line-height:1.6;">This is a test message from your lab2date admin settings. ' +
+        `<p style="color:#374151;line-height:1.6;">This is a test message from your ${site.replace(/&/g, '&amp;').replace(/</g, '&lt;')} admin settings. ` +
         `Delivered via <strong>${via.replace(/</g, '&lt;')}</strong>.</p>` +
         '<p style="color:#6b7280;font-size:13px;">If this landed in your inbox, outbound email is configured correctly.</p>' +
         '</div>',
-      text: `Your lab2date email is working. Delivered via ${via}.`,
+      text: `Your ${site} email is working. Delivered via ${via}.`,
     });
     return { ok: true, message: `Sent to ${to} via ${via}. Check your inbox (and spam folder).` };
   } catch (e) {
