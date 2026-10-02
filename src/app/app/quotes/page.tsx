@@ -8,11 +8,12 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { computeDealState, type DealState } from '@/lib/quotes/deal-state';
 import { InstrumentIllustration, ILLUSTRATIONS, type IllustrationName } from '@/components/illustrations/instruments';
+import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
 function fmtMoney(cents: number, ccy = 'EUR'): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 }).format(cents / 100);
+  return formatPrice(cents, ccy); // shows cents when present — must match the proforma
 }
 
 function smartDate(d: Date | null | undefined): string {

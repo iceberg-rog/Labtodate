@@ -13,6 +13,7 @@ import { EmailText } from '@/components/util/EmailText';
 import { computeDealState, toneClasses } from '@/lib/quotes/deal-state';
 import { DealStateBadge } from '@/components/quotes/DealStateBadge';
 import { AssigneeBadge } from '@/components/quotes/AssigneeBadge';
+import { formatPrice } from '@/lib/utils';
 
 export type QuoteRowProps = {
   id: string;
@@ -62,7 +63,7 @@ const PRIORITY_STYLE: Record<string, { label: string; cls: string; icon: JSX.Ele
 };
 
 function fmtMoney(cents: number, ccy = 'EUR'): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 }).format(cents / 100);
+  return formatPrice(cents, ccy); // shows cents when present — must match the proforma
 }
 function initials(name: string, email: string): string {
   const src = (name || email).trim();

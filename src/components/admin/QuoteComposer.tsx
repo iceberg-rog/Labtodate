@@ -4,6 +4,7 @@ import { useState, useRef, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, Send, Lock, Mail, EyeOff, ChevronUp, ChevronDown, Paperclip, X } from 'lucide-react';
 import { replyToQuote, sendProforma } from '@/lib/quotes/actions';
+import { formatPrice } from '@/lib/utils';
 
 type Mode = 'reply' | 'internal' | 'proforma';
 type Att = { url: string; name: string; type: string };
@@ -192,7 +193,7 @@ export function QuoteComposer({
                     <div className="rounded-lg bg-accent/[0.10] border border-accent/30 px-3 py-1.5 text-xs">
                       <span className="text-muted-foreground">Buyer will see </span>
                       <strong className="tabular-nums">
-                        {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(cents / 100)}
+                        {formatPrice(cents, 'EUR')}
                       </strong>
                     </div>
                   ) : null;
