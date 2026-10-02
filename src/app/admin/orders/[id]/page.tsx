@@ -20,17 +20,38 @@ import {
 import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { formatPrice } from '@/lib/utils';
-import { setOrderNotes, setOrderFulfillment, verifyPayment, rejectPayment } from '@/app/admin/actions';
+import {
+  setOrderNotes,
+  setOrderFulfillment,
+  setOrderShippingAddress,
+  verifyPayment,
+  rejectPayment,
+  refundOrder,
+  cancelOrder,
+} from '@/app/admin/actions';
 import { BuyerEmailReveal } from '@/components/admin/BuyerEmailReveal';
+import { OrderActionForm } from '@/components/admin/OrderActionForm';
+import { StickyDetails } from '@/components/admin/StickyDetails';
 import {
   humaniseBuyer,
+  proxyProofUrl,
+  shippingAddressIsComplete,
   smartDate,
   STATUS_LABEL,
   STATUS_TONE,
 } from '@/lib/orders/display';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('orders:view', 'Order', async () => {
+    const { id } = await props.params;
+    const o = await prisma.order.findUnique({ where: { id }, select: { orderNumber: true } });
+    return o && `Order ${o.orderNumber}`;
+  });
+}
 
 const TONE_CLASS: Record<string, string> = {
   amber: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',
@@ -88,27 +109,21 @@ function paymentLabel(
   return '—';
 }
 
-/**
- * Receipts are stored in a PRIVATE S3 prefix. The DB still has the raw S3
- * URL for back-compat, but we serve via /api/order-proof/<key> which auth-
- * checks the requester is admin or the order's buyer. Returns null if the
- * URL doesn't look like an order-proofs key (defensive).
- */
-function proxyProofUrl(rawUrl: string | null | undefined): string | null {
-  if (!rawUrl) return null;
-  const m = rawUrl.match(/order-proofs\/[^?#]+/);
-  return m ? `/api/order-proof/${m[0]}` : null;
-}
-
-// Inline server-action adapters — form `action={...}` requires Promise<void>,
-// but verifyPayment/rejectPayment return { ok, message } for programmatic use.
-async function verifyPaymentAction(formData: FormData): Promise<void> {
-  'use server';
-  await verifyPayment(formData);
-}
-async function rejectPaymentAction(formData: FormData): Promise<void> {
-  'use server';
-  await rejectPayment(formData);
+/** Prefill values for the admin shipping-address editor. */
+function addrFormSeed(a: unknown): Record<'name' | 'phone' | 'line1' | 'line2' | 'city' | 'postal' | 'state' | 'country', string> {
+  const o = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+  const ad = ((o.address as Record<string, unknown>) || o) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  return {
+    name: str(o.name),
+    phone: str(o.phone),
+    line1: str(ad.line1),
+    line2: str(ad.line2),
+    city: str(ad.city),
+    postal: str(ad.postal_code) || str(ad.postal),
+    state: str(ad.state),
+    country: str(ad.country),
+  };
 }
 
 export default async function AdminOrderDetailPage(props: { params: Promise<{ id: string }> }) {
@@ -234,6 +249,21 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
   events.sort((a, b) => a.at.getTime() - b.at.getTime());
 
   const itemsTotal = order.items.reduce((s, i) => s + i.priceCentsSnapshot * i.quantity, 0);
+  const hasCompleteAddress = shippingAddressIsComplete(order.shippingAddress);
+  // Address stays editable until the parcel leaves (proforma orders start
+  // without one; the buyer form closes at PAID).
+  const canEditAddress = ['PENDING_PAYMENT', 'PAID', 'PROCESSING'].includes(order.status);
+  const addrSeed = addrFormSeed(order.shippingAddress);
+  const canRefund = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status);
+  const canCancel = order.status === 'PENDING_PAYMENT' && !order.paymentSubmittedAt;
+  const isPaidFamily = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'].includes(order.status);
+  const receiptUrl = proxyProofUrl(order.paymentProofUrl);
+  const paidByAdmin = order.paidByAdminId
+    ? await prisma.user.findUnique({ where: { id: order.paidByAdminId }, select: { email: true } })
+    : null;
+  const verifiedBy = order.paymentVerifiedById
+    ? await prisma.user.findUnique({ where: { id: order.paymentVerifiedById }, select: { email: true } })
+    : null;
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -388,6 +418,35 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 )}
               </div>
             </div>
+            {canEditAddress && (
+              // Stays open after a save (the address is complete now), so the
+              // operator sees "Shipping address saved.".
+              <StickyDetails className="border-t border-border" defaultOpen={!hasCompleteAddress}>
+                <summary className="cursor-pointer px-5 py-2.5 text-xs font-semibold text-primary hover:bg-foreground/[0.02]">
+                  {hasCompleteAddress ? 'Edit shipping address' : 'Add the shipping address (required before shipping)'}
+                </summary>
+                <OrderActionForm
+                  action={setOrderShippingAddress}
+                  className="px-5 pb-4 pt-1 grid sm:grid-cols-2 gap-3 text-sm"
+                  messageClassName="sm:col-span-2"
+                >
+                  <input type="hidden" name="orderId" value={order.id} />
+                  <AddrField label="Recipient name" name="name" defaultValue={addrSeed.name} required />
+                  <AddrField label="Phone" name="phone" defaultValue={addrSeed.phone} />
+                  <AddrField label="Address line 1" name="line1" defaultValue={addrSeed.line1} required />
+                  <AddrField label="Address line 2" name="line2" defaultValue={addrSeed.line2} />
+                  <AddrField label="City" name="city" defaultValue={addrSeed.city} required />
+                  <AddrField label="Postal code" name="postal" defaultValue={addrSeed.postal} required />
+                  <AddrField label="State / region" name="state" defaultValue={addrSeed.state} />
+                  <AddrField label="Country (2-letter code)" name="country" defaultValue={addrSeed.country} required maxLength={2} placeholder="NL" />
+                  <div className="sm:col-span-2">
+                    <Button type="submit" size="sm" className="rounded-full">
+                      <MapPin className="h-3.5 w-3.5" /> Save address
+                    </Button>
+                  </div>
+                </OrderActionForm>
+              </StickyDetails>
+            )}
             <div className="px-5 py-3 border-t border-border bg-foreground/[0.02] grid sm:grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1.5">
@@ -411,7 +470,11 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 <Truck className="h-4 w-4 text-primary" />
                 <h2 className="text-sm font-bold">Fulfillment</h2>
               </div>
-              <form action={setOrderFulfillment} className="p-5 grid sm:grid-cols-4 gap-3 items-end text-sm">
+              <OrderActionForm
+                action={setOrderFulfillment}
+                className="p-5 grid sm:grid-cols-4 gap-3 items-end text-sm"
+                messageClassName="sm:col-span-4"
+              >
                 <input type="hidden" name="orderId" value={order.id} />
                 <label className="block sm:col-span-1">
                   <span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">Status</span>
@@ -420,9 +483,14 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     defaultValue={order.status}
                     className="h-9 px-2 rounded-md border border-input bg-background text-xs font-medium w-full"
                   >
-                    {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const).map((s) => (
-                      <option key={s} value={s}>{s.toLowerCase()}</option>
-                    ))}
+                    {/* Never offer a move the server will refuse: forward-only (like the
+                        server guard) and, as on the list row, ship/deliver needs an address. */}
+                    {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const)
+                      .filter((s, i, all) => i >= all.indexOf(order.status as (typeof all)[number]))
+                      .filter((s) => hasCompleteAddress || s === order.status || (s !== 'SHIPPED' && s !== 'DELIVERED'))
+                      .map((s) => (
+                        <option key={s} value={s}>{s.toLowerCase()}</option>
+                      ))}
                   </select>
                 </label>
                 <label className="block sm:col-span-1">
@@ -454,10 +522,18 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   </Button>
                 </div>
                 <p className="sm:col-span-4 text-[11px] text-muted-foreground">
-                  Entering a tracking number auto-advances status to <strong>Shipped</strong>. Mark{' '}
-                  <strong>Delivered</strong> manually here, or the buyer can confirm receipt from their order page.
+                  {hasCompleteAddress ? (
+                    <>
+                      Entering a tracking number auto-advances status to <strong>Shipped</strong>. Mark{' '}
+                      <strong>Delivered</strong> manually here, or the buyer can confirm receipt from their order page.
+                    </>
+                  ) : (
+                    <span className="text-amber-700 dark:text-amber-300 font-semibold">
+                      No complete shipping address — add it under Addresses above before shipping.
+                    </span>
+                  )}
                 </p>
-              </form>
+              </OrderActionForm>
               {order.shippedAt && (
                 <div className="px-5 pb-4 text-xs text-muted-foreground">
                   Shipped {smartDate(order.shippedAt)}
@@ -528,7 +604,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   <p>
                     From accepted quote{' '}
                     <Link
-                      href={`/app/seller/inbox/${order.sourcingRequestId}`}
+                      href={`/admin/quotes/${order.sourcingRequestId}`}
                       className="text-primary hover:underline font-mono text-xs"
                     >
                       {maskId(order.sourcingRequestId)}
@@ -599,14 +675,14 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
 
                 <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200 dark:border-amber-800">
                   {/* Verify */}
-                  <form action={verifyPaymentAction}>
+                  <OrderActionForm action={verifyPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
                     <Button type="submit" size="sm" className="w-full rounded-full bg-emerald-600 hover:bg-emerald-700 text-white">
                       <ShieldCheck className="h-3.5 w-3.5" /> Verify payment
                     </Button>
-                  </form>
+                  </OrderActionForm>
                   {/* Reject — reason required */}
-                  <form action={rejectPaymentAction} className="space-y-2">
+                  <OrderActionForm action={rejectPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
                     <input
                       type="text"
@@ -620,25 +696,42 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     <Button type="submit" size="sm" variant="outline" className="w-full rounded-full border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40">
                       Reject &amp; ask for resubmit
                     </Button>
-                  </form>
+                  </OrderActionForm>
                 </div>
               </div>
             </section>
           )}
 
-          {/* === Verified payment summary (PAID state) ==================== */}
-          {order.paymentVerificationStatus === 'VERIFIED' && order.paidByAdminId && (
+          {/* === Payment summary (paid states) ============================
+              Shown for every paid-family order — verified proof, manual
+              mark-paid, or Stripe — with the receipt link whenever one exists. */}
+          {isPaidFamily && (order.paymentVerificationStatus === 'VERIFIED' || order.paidByAdminId || receiptUrl) && (
             <section className="rounded-2xl border border-emerald-200 bg-emerald-50/50 dark:bg-emerald-950/30 dark:border-emerald-800 p-4 text-sm flex items-start gap-3">
               <ShieldCheck className="h-5 w-5 text-emerald-700 dark:text-emerald-300 mt-0.5" />
               <div className="flex-1">
-                <p className="font-bold text-emerald-900 dark:text-emerald-300">Payment verified</p>
-                <p className="text-emerald-800 dark:text-emerald-300 text-xs mt-1">
-                  Verified {order.paymentVerifiedAt ? smartDate(order.paymentVerifiedAt) : ''}.
-                  {(() => {
-                    const u = proxyProofUrl(order.paymentProofUrl);
-                    return u ? <> <a href={u} target="_blank" rel="noreferrer" className="underline font-semibold">Open receipt</a>.</> : null;
-                  })()}
+                <p className="font-bold text-emerald-900 dark:text-emerald-300">
+                  {order.paymentVerificationStatus === 'VERIFIED' ? 'Payment verified' : order.paidByAdminId ? 'Marked as paid manually' : 'Payment received'}
                 </p>
+                <p className="text-emerald-800 dark:text-emerald-300 text-xs mt-1">
+                  {order.paymentVerificationStatus === 'VERIFIED'
+                    ? <>Verified {order.paymentVerifiedAt ? smartDate(order.paymentVerifiedAt) : ''}{verifiedBy ? ` by ${verifiedBy.email}` : ''}.</>
+                    : order.paidAt
+                      ? <>Paid {smartDate(order.paidAt)}{paidByAdmin ? ` · marked by ${paidByAdmin.email}` : ''}.</>
+                      : null}
+                  {order.paymentNote && <span className="block mt-1 whitespace-pre-wrap">Note: {order.paymentNote}</span>}
+                </p>
+                {receiptUrl ? (
+                  <a
+                    href={receiptUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 mt-2 rounded-lg border border-emerald-300 bg-white dark:bg-transparent dark:border-emerald-800 px-3 py-1.5 text-xs font-semibold hover:bg-emerald-100 dark:hover:bg-emerald-900/40"
+                  >
+                    <FileText className="h-3.5 w-3.5" /> Open receipt <ExternalLink className="h-3 w-3 opacity-60" />
+                  </a>
+                ) : (
+                  <p className="text-[11px] text-emerald-800/80 dark:text-emerald-300/80 mt-1">No receipt file on record.</p>
+                )}
               </div>
             </section>
           )}
@@ -759,6 +852,46 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
 
         {/* === Right column === */}
         <aside className="space-y-5">
+          {(canRefund || canCancel) && (
+            <section className="rounded-2xl border border-border bg-card overflow-hidden">
+              <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
+                <CircleDollarSign className="h-4 w-4 text-primary" />
+                <h2 className="text-sm font-bold">Order actions</h2>
+              </div>
+              <div className="p-5 space-y-3 text-sm">
+                {canRefund && (
+                  // announce: the card is gone once the order is refunded.
+                  <OrderActionForm
+                    action={refundOrder}
+                    className="space-y-2"
+                    announce
+                    confirmText={`Refund order ${order.orderNumber} (${formatPrice(order.totalCents, order.currency)})? The order is marked refunded and the buyer is emailed${order.sourcingRequestId ? '' : '; the stock goes back to the catalog'}. This cannot be undone.`}
+                  >
+                    <input type="hidden" name="orderId" value={order.id} />
+                    <Button type="submit" size="sm" variant="outline" className="w-full rounded-full border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40">
+                      Refund order
+                    </Button>
+                    <p className="text-[11px] text-muted-foreground">
+                      {order.stripePaymentIntentId ? 'Refunds the card payment in Stripe.' : 'Records the refund — send the money back by bank transfer.'}
+                    </p>
+                  </OrderActionForm>
+                )}
+                {canCancel && (
+                  <OrderActionForm
+                    action={cancelOrder}
+                    className="space-y-2"
+                    announce
+                    confirmText={`Cancel unpaid order ${order.orderNumber}? The buyer is notified${order.sourcingRequestId ? '' : ' and the reserved stock is released'}.`}
+                  >
+                    <input type="hidden" name="orderId" value={order.id} />
+                    <Button type="submit" size="sm" variant="outline" className="w-full rounded-full border-amber-300 text-amber-800 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/40">
+                      Cancel order
+                    </Button>
+                  </OrderActionForm>
+                )}
+              </div>
+            </section>
+          )}
           <section className="rounded-2xl border border-border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
               <CircleDollarSign className="h-4 w-4 text-primary" />
@@ -828,7 +961,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
             </div>
           </section>
 
-          <form action={setOrderNotes} className="rounded-2xl border border-border bg-card overflow-hidden">
+          <OrderActionForm action={setOrderNotes} className="rounded-2xl border border-border bg-card overflow-hidden" messageClassName="px-5 pb-4">
             <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
               <StickyNote className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-bold">Internal notes</h2>
@@ -850,7 +983,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 Internal only — never sent to buyer. Audit-logged.
               </p>
             </div>
-          </form>
+          </OrderActionForm>
         </aside>
       </div>
     </div>
@@ -884,5 +1017,37 @@ function Stat({ label, value, mono }: { label: string; value: string; mono?: boo
       <span className="text-muted-foreground">{label}</span>
       <span className={`font-semibold text-right ${mono ? 'font-mono text-[11px]' : ''}`}>{value}</span>
     </div>
+  );
+}
+
+function AddrField({
+  label,
+  name,
+  defaultValue,
+  required,
+  maxLength,
+  placeholder,
+}: {
+  label: string;
+  name: string;
+  defaultValue: string;
+  required?: boolean;
+  maxLength?: number;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">
+        {label} {required && <span className="text-red-600 dark:text-red-400">*</span>}
+      </span>
+      <input
+        name={name}
+        defaultValue={defaultValue}
+        required={required}
+        maxLength={maxLength}
+        placeholder={placeholder}
+        className="h-9 px-2 rounded-md border border-input bg-background text-xs w-full"
+      />
+    </label>
   );
 }

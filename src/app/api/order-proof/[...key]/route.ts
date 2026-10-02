@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { getServerSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { streamSupportAttachment } from '@/lib/storage/s3';
+import { storedFileHeaders } from '@/lib/storage/file-type';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -66,11 +67,9 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ key: str
   try {
     const { body, contentType, contentLength } = await streamSupportAttachment(key);
     if (!body) return NextResponse.json({ error: 'not found' }, { status: 404 });
-    const headers: Record<string, string> = {
-      'content-type': contentType,
-      'cache-control': 'private, max-age=60',
-    };
-    if (typeof contentLength === 'number') headers['content-length'] = String(contentLength);
+    // Same safe-serving headers as the support-attachment proxy: receipts are
+    // stored with the uploader's declared type, so never let it run as a page.
+    const headers = storedFileHeaders(contentType, contentLength, 'private, max-age=60');
     return new NextResponse(body, { status: 200, headers });
   } catch {
     return NextResponse.json({ error: 'not found' }, { status: 404 });

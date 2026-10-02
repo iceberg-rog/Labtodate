@@ -11,6 +11,7 @@
 import { PrismaClient, ProductCondition, ProductMode, ProductStatus } from '@prisma/client';
 import { CLEAN_CATEGORIES, categorize } from './_categorize';
 import { deleteOrArchiveProduct, productDeleteDbFrom, EMPTY_CATEGORY_DELETE_WHERE } from '../src/lib/products/delete-guard';
+import { stripHtml } from '../src/lib/marketplace/import-clean';
 
 const prisma = new PrismaClient();
 
@@ -31,10 +32,6 @@ interface WooProduct {
   prices: { price: string; currency_code: string };
   images: { src: string }[];
   categories: { id: number; name: string; slug: string }[];
-}
-
-function stripHtml(h: string): string {
-  return h.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 const KNOWN_BRANDS = ['Agilent', 'Waters', 'Thermo', 'Shimadzu', 'PerkinElmer', 'Hitachi', 'Bruker', 'Sciex', 'Beckman', 'Dionex', 'Varian', 'Sartorius', 'Eppendorf', 'Bio-Rad', 'Mettler', 'Tecan', 'Roche', 'Leica', 'Zeiss', 'Olympus', 'Nikon', 'Hewlett'];

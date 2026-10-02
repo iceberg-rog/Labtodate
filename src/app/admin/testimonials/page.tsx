@@ -1,12 +1,14 @@
 import Link from 'next/link';
-import { Plus, Trash2, Eye, EyeOff, Star, MessageSquareQuote, ArrowRight } from 'lucide-react';
+import { Plus, Trash2, Eye, EyeOff, Star, MessageSquareQuote, ArrowRight, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { createTestimonial, deleteTestimonial, toggleTestimonial } from '@/app/admin/actions';
+import { createTestimonial, deleteTestimonial, toggleTestimonial, updateTestimonial } from '@/app/admin/actions';
+import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Testimonials' };
 
 export default async function AdminTestimonialsPage() {
   await requireCapability('content:cms');
@@ -21,8 +23,7 @@ export default async function AdminTestimonialsPage() {
         <h1 className="text-3xl font-bold tracking-tight">Testimonials</h1>
         <p className="text-muted-foreground mt-1">
           Short customer quotes shown in the “Loved by people who buy expensive things” section of the homepage.
-          {list.length === 0 && ' Add one below to replace the built-in sample quotes.'}
-          {published.length === 0 && list.length > 0 && ' (none published yet — homepage falls back to the built-in samples).'}
+          {published.length === 0 && ' The section is hidden on the homepage until at least one testimonial is published.'}
         </p>
       </div>
 
@@ -32,7 +33,8 @@ export default async function AdminTestimonialsPage() {
           <p className="font-bold">What is this for?</p>
           <p className="text-muted-foreground mt-1">
             Each published testimonial appears as a rotating quote card on the homepage. Quotes should be short
-            (≤2 sentences) and credited with a real person + organisation — sample quotes are shown until you publish at least one real one.
+            (≤2 sentences) and credited with a real person + organisation who agreed to be quoted. With none
+            published, the homepage simply leaves the section out.
           </p>
           <Link
             href="/#testimonials"
@@ -93,7 +95,7 @@ export default async function AdminTestimonialsPage() {
 
           <ul className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
             {list.length === 0 && (
-              <li className="p-6 text-sm text-muted-foreground">No testimonials yet — the homepage shows our built-in samples.</li>
+              <li className="p-6 text-sm text-muted-foreground">No testimonials yet — the homepage hides the section until you publish one.</li>
             )}
             {list.map((t) => (
               <li key={t.id} className="p-4 flex items-start gap-4 flex-wrap">
@@ -120,10 +122,31 @@ export default async function AdminTestimonialsPage() {
                   </Button>
                 </form>
                 <form action={deleteTestimonial.bind(null, t.id)}>
-                  <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium text-destructive">
+                  <ConfirmSubmitButton
+                    message={`Delete the testimonial from ${t.author}? This cannot be undone.`}
+                    variant="outline"
+                    size="sm"
+                    className="rounded-full font-medium text-destructive"
+                  >
                     <Trash2 className="h-3.5 w-3.5" /> Delete
-                  </Button>
+                  </ConfirmSubmitButton>
                 </form>
+                <details className="basis-full">
+                  <summary className="cursor-pointer select-none w-fit text-xs font-semibold text-primary hover:underline">Edit</summary>
+                  <form action={updateTestimonial.bind(null, t.id)} className="mt-3 space-y-3">
+                    <textarea name="quote" required rows={3} maxLength={400} defaultValue={t.quote} aria-label="Quote" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                      <input name="author" required defaultValue={t.author} aria-label="Author" placeholder="Author" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="role" defaultValue={t.role ?? ''} aria-label="Role" placeholder="Role" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="company" defaultValue={t.company ?? ''} aria-label="Company" placeholder="Company" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="rating" type="number" min={1} max={5} defaultValue={t.rating} aria-label="Rating (1–5)" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="sortOrder" type="number" defaultValue={t.sortOrder} aria-label="Sort order" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </div>
+                    <Button type="submit" size="sm" className="rounded-full font-semibold">
+                      <Save className="h-3.5 w-3.5" /> Save changes
+                    </Button>
+                  </form>
+                </details>
               </li>
             ))}
           </ul>
@@ -160,7 +183,7 @@ export default async function AdminTestimonialsPage() {
           ))}
           {published.length === 0 && (
             <p className="text-[11px] text-muted-foreground">
-              Sample preview shown above — publish a real testimonial to replace it on the live homepage.
+              Layout preview only — this sample is never shown on the live site. Publish a real testimonial to show the section.
             </p>
           )}
         </aside>

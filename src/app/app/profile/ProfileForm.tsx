@@ -5,6 +5,14 @@ import { useRouter } from 'next/navigation';
 import { Loader2, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { authClient } from '@/lib/auth-client';
+import {
+  authErrorMessage,
+  cleanName,
+  MAX_PASSWORD_LENGTH,
+  MIN_PASSWORD_LENGTH,
+  NAME_MAX_LENGTH,
+  NAME_RULE,
+} from '@/lib/auth-rules';
 
 function Notice({ kind, msg }: { kind: 'ok' | 'err'; msg: string }) {
   return (
@@ -32,10 +40,16 @@ export function ProfileForm({ initialName }: { initialName: string }) {
   function saveName(e: React.FormEvent) {
     e.preventDefault();
     setNameMsg(null);
+    const cleaned = cleanName(name);
+    if (!cleaned) {
+      setNameMsg({ kind: 'err', msg: NAME_RULE });
+      return;
+    }
     startName(async () => {
-      const { error } = await authClient.updateUser({ name: name.trim() });
+      const { error } = await authClient.updateUser({ name: cleaned });
       if (error) setNameMsg({ kind: 'err', msg: error.message || 'Could not update name' });
       else {
+        setName(cleaned);
         setNameMsg({ kind: 'ok', msg: 'Name updated' });
         router.refresh();
       }
@@ -49,8 +63,8 @@ export function ProfileForm({ initialName }: { initialName: string }) {
     const currentPassword = String(fd.get('current') ?? '');
     const newPassword = String(fd.get('next') ?? '');
     const confirmPassword = String(fd.get('confirm') ?? '');
-    if (newPassword.length < 8) {
-      setPwMsg({ kind: 'err', msg: 'New password must be at least 8 characters' });
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setPwMsg({ kind: 'err', msg: `New password must be at least ${MIN_PASSWORD_LENGTH} characters` });
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -68,7 +82,7 @@ export function ProfileForm({ initialName }: { initialName: string }) {
         newPassword,
         revokeOtherSessions: true,
       });
-      if (error) setPwMsg({ kind: 'err', msg: error.message || 'Could not change password' });
+      if (error) setPwMsg({ kind: 'err', msg: authErrorMessage(error, 'Could not change password') });
       else {
         setPwMsg({ kind: 'ok', msg: 'Password changed — other sessions signed out' });
         form.reset();
@@ -92,6 +106,7 @@ export function ProfileForm({ initialName }: { initialName: string }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             minLength={2}
+            maxLength={NAME_MAX_LENGTH}
             required
             className={field}
           />
@@ -120,11 +135,28 @@ export function ProfileForm({ initialName }: { initialName: string }) {
         </label>
         <label className="block">
           <span className="block text-sm font-semibold mb-1.5">New password</span>
-          <input name="next" type="password" required minLength={8} className={field} autoComplete="new-password" />
+          <input
+            name="next"
+            type="password"
+            required
+            minLength={MIN_PASSWORD_LENGTH}
+            maxLength={MAX_PASSWORD_LENGTH}
+            placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+            className={field}
+            autoComplete="new-password"
+          />
         </label>
         <label className="block">
           <span className="block text-sm font-semibold mb-1.5">Confirm new password</span>
-          <input name="confirm" type="password" required minLength={8} className={field} autoComplete="new-password" />
+          <input
+            name="confirm"
+            type="password"
+            required
+            minLength={MIN_PASSWORD_LENGTH}
+            maxLength={MAX_PASSWORD_LENGTH}
+            className={field}
+            autoComplete="new-password"
+          />
         </label>
         {pwMsg && <Notice {...pwMsg} />}
         <Button type="submit" disabled={savingPw} variant="outline" className="rounded-full font-semibold">

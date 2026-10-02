@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { Clock, AlertTriangle, Banknote } from 'lucide-react';
+import { Clock, AlertTriangle, Banknote, XCircle, CheckCircle2 } from 'lucide-react';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
@@ -8,6 +8,9 @@ import { PrintButton } from '@/components/util/PrintButton';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Proforma invoice' };
+
+// The linked order got past payment (a refund is still "settled" here).
+const SETTLED_STATES: readonly string[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'];
 
 export default async function ProformaPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
@@ -35,6 +38,35 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
   const issuedAt = sr.proformaIssuedAt ?? sr.quotedAt ?? sr.createdAt;
   const validUntil = sr.validUntilAt;
   const isExpired = !!validUntil && validUntil.getTime() < Date.now();
+  // A declined / closed quote (or a canceled order) voids the proforma: it must
+  // not keep reading as a live offer with payment instructions.
+  const linkedOrder = await prisma.order.findUnique({
+    where: { sourcingRequestId: sr.id },
+    select: { orderNumber: true, status: true, paymentVerificationStatus: true },
+  });
+  const isVoid =
+    sr.status === 'DECLINED' || sr.status === 'CLOSED' || linkedOrder?.status === 'CANCELED';
+  const voidReason =
+    sr.status === 'DECLINED'
+      ? 'The quote was declined.'
+      : isExpired
+        ? `It expired on ${validUntil.toISOString().slice(0, 10)}.`
+        : sr.status === 'CLOSED'
+          ? 'The quote request was closed without a deal.'
+          : 'Its order was canceled.';
+  // Paid: nothing left to pay, so no validity countdown or payment details.
+  const isSettled = !isVoid && !!linkedOrder && SETTLED_STATES.includes(linkedOrder.status);
+  // Lapsed but the sla-sweep hasn't closed it yet: the receipt upload already
+  // refuses it, so it must not read as payable (no payment instructions). A
+  // receipt already under review is left to the admin, as on the payment page.
+  const proofInReview = linkedOrder?.paymentVerificationStatus === 'AWAITING_VERIFICATION';
+  const isLapsed = isExpired && !isVoid && !isSettled && !proofInReview;
+  const threadHref =
+    role === 'ADMIN'
+      ? `/admin/quotes/${sr.id}`
+      : sr.assignedToId === session.user.id
+        ? `/app/seller/inbox/${sr.id}`
+        : `/app/quotes/${sr.id}`;
 
   const { html } = renderInvoiceHtml({
     kind: 'PROFORMA',
@@ -64,7 +96,32 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
         </div>
         <PrintButton />
       </div>
-      {validUntil && (
+      {isVoid && (
+        <div className="rounded-2xl border border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 p-4 mb-5 flex items-start gap-3 text-sm">
+          <XCircle className="h-5 w-5 mt-0.5 flex-shrink-0" />
+          <div className="min-w-0">
+            <p className="font-bold">Void — this proforma can no longer be paid.</p>
+            <p className="mt-1">
+              {voidReason}
+              {linkedOrder?.status === 'CANCELED' && <> Order <span className="font-mono">{linkedOrder.orderNumber}</span> was canceled.</>}
+              {' '}Please do not send a transfer for it.
+            </p>
+            <a href={threadHref} className="inline-block mt-2 font-semibold underline print:hidden">
+              Open the quote thread
+            </a>
+          </div>
+        </div>
+      )}
+      {isSettled && linkedOrder && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 p-3 mb-5 inline-flex items-start gap-2 text-sm print:hidden">
+          <CheckCircle2 className="h-4 w-4 mt-0.5" />
+          <p className="font-bold">
+            {linkedOrder.status === 'REFUNDED' ? 'Paid and refunded' : 'Paid'} — order{' '}
+            <span className="font-mono">{linkedOrder.orderNumber}</span>
+          </p>
+        </div>
+      )}
+      {validUntil && !isVoid && !isSettled && (
         <div
           className={`rounded-2xl border p-3 mb-5 inline-flex items-start gap-2 text-sm print:hidden ${
             isExpired
@@ -79,8 +136,11 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
                 ? `Expired ${validUntil.toISOString().slice(0, 10)}`
                 : `Valid until ${validUntil.toISOString().slice(0, 10)}`}
             </p>
-            {isExpired && (
-              <p className="text-xs mt-1">Contact us to re-confirm the price before paying.</p>
+            {isLapsed && (
+              <p className="text-xs mt-1">
+                This proforma can no longer be paid — please don’t send a transfer for it.{' '}
+                <a href={threadHref} className="font-semibold underline">Ask us to re-issue it</a> on the quote thread.
+              </p>
             )}
           </div>
         </div>
@@ -92,7 +152,7 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
       </div>
 
       {/* === Payment instructions block (snapshot at issuance time) === */}
-      {sr.paymentInstructionsSnapshot && (
+      {sr.paymentInstructionsSnapshot && !isVoid && !isLapsed && !isSettled && (
         <section className="rounded-2xl border border-border bg-card p-5 mt-6 print:hidden">
           <h2 className="text-sm font-bold uppercase tracking-wider text-primary inline-flex items-center gap-2 mb-3">
             <Banknote className="h-4 w-4" /> Payment instructions

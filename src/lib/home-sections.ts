@@ -42,14 +42,17 @@ export interface HomeContent {
 }
 
 export const HOME_DEFAULTS: HomeContent = {
-  popular: ['Centrifuges', 'HPLC', 'PCR', 'Microscopes', 'Mass Spec'],
+  // Terms that match the current HPLC/GC/MS inventory. The home page also
+  // hides any chip that would return no results (see src/app/page.tsx).
+  popular: ['HPLC', 'Gas Chromatography', 'Mass Spec', 'Autosampler', 'Agilent'],
   heroBadge: 'Refurbished lab equipment',
   heroTitle: 'The marketplace for',
   heroAccent: 'science.',
   heroSubtitle:
     'Source refurbished and surplus laboratory equipment — quote, proforma and shipping handled end to end.',
-  // Counts are computed live from the DB at request time (see src/app/page.tsx);
-  // these defaults are placeholders for the admin editor and never shipped.
+  // Counts are computed live from the DB at request time (see src/lib/home-stats.ts)
+  // whenever HERO_STATS is unset; these zeros are a type-level fallback only and
+  // must never be pre-filled into the editor (saving them used to ship "0 / 0 / 0").
   stats: [
     { value: 0, suffix: '', label: 'instruments listed' },
     { value: 0, suffix: '', label: 'suppliers' },
@@ -62,9 +65,22 @@ export const HOME_DEFAULTS: HomeContent = {
     "Tell us what you need. We'll come back with quotes — typically within a few business days.",
 };
 
-/** Parse "12400|+|instruments listed" lines; fall back to defaults. */
-function parseStats(raw: string | undefined): HomeStat[] {
-  if (!raw) return HOME_DEFAULTS.stats;
+/**
+ * Search placeholder built from the popular terms (which the home page has
+ * already checked return results), instead of examples we may not stock.
+ */
+export function searchPlaceholderFor(popular: string[]): string {
+  const [a, b] = popular;
+  if (a && b) return `Try ‘${a}’ or ‘${b}’…`;
+  if (a) return `Try ‘${a}’…`;
+  return 'Search instruments, brands, part numbers…';
+}
+
+/** Parse "12400|+|instruments listed" lines. Returns null when nothing
+ *  usable is set — callers then show LIVE catalogue counts, never the zero
+ *  placeholders above. */
+export function parseHeroStats(raw: string | undefined): HomeStat[] | null {
+  if (!raw?.trim()) return null;
   const out: HomeStat[] = [];
   for (const line of raw.split('\n')) {
     const [v, suf, ...rest] = line.split('|');
@@ -72,7 +88,16 @@ function parseStats(raw: string | undefined): HomeStat[] {
     const label = rest.join('|').trim();
     if (Number.isFinite(value) && label) out.push({ value, suffix: (suf || '').trim(), label });
   }
-  return out.length ? out : HOME_DEFAULTS.stats;
+  return out.length ? out : null;
+}
+
+/** Configured module order. Unset / unrecognised → every module, in order. */
+export function getHomeSectionOrder(): HomeSection[] {
+  const configured = (process.env.HOMEPAGE_SECTIONS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s): s is HomeSection => (HOME_SECTIONS as readonly string[]).includes(s));
+  return configured.length ? configured : [...HOME_SECTIONS];
 }
 
 /** Read homepage content from process.env (call ensureSettingsLoaded first). */
@@ -88,7 +113,7 @@ export function getHomeContent(): HomeContent {
     heroTitle: process.env.HERO_TITLE?.trim() || d.heroTitle,
     heroAccent: process.env.HERO_ACCENT?.trim() || d.heroAccent,
     heroSubtitle: process.env.HERO_SUBTITLE?.trim() || d.heroSubtitle,
-    stats: parseStats(process.env.HERO_STATS),
+    stats: parseHeroStats(process.env.HERO_STATS) ?? HOME_DEFAULTS.stats,
     testHeading: process.env.TEST_HEADING?.trim() || d.testHeading,
     testMeta: process.env.TEST_META?.trim() || d.testMeta,
     ctaHeading: process.env.CTA_HEADING?.trim() || d.ctaHeading,

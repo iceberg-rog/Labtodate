@@ -12,6 +12,7 @@
 import { S3Client, HeadBucketCommand, CreateBucketCommand, PutBucketPolicyCommand, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomBytes } from 'node:crypto';
+import { isInlineSafeMime } from './file-type';
 
 const ENDPOINT = process.env.S3_ENDPOINT || 'http://localhost:9000';
 const REGION = process.env.S3_REGION || 'us-east-1';
@@ -101,6 +102,9 @@ export function ensureBucket(): Promise<void> {
               // (outside the `products/` upload convention) and are shown to
               // anonymous visitors on /blog and the homepage — public-read.
               `arn:aws:s3:::${BUCKET}/blog-cover/*`,
+              // Company logo (Settings → Logo) is rendered on invoices and in
+              // emails for buyers who aren't signed in — public-read too.
+              `arn:aws:s3:::${BUCKET}/branding/*`,
             ],
           },
         ],
@@ -132,30 +136,42 @@ export async function uploadObject(
     new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
+      // Anything that isn't a raster image or PDF (an SVG brand logo from a
+      // script, say) is stored as a download, so opening its URL directly on
+      // our /media origin can't render it as a document.
+      ...(isInlineSafeMime(contentType) ? {} : { ContentDisposition: 'attachment' }),
       Body: body,
       ContentType: contentType,
-      CacheControl: 'public, max-age=31536000, immutable',
+      // Only the public-read prefixes may be cached by shared caches; private
+      // objects (order-proofs/, support-att/, …) must never be marked public.
+      CacheControl: /^(products|blog-cover|branding)\//.test(key)
+        ? 'public, max-age=31536000, immutable'
+        : 'private, no-store',
     }),
   );
   return { url: `${PUBLIC_URL}/${key}`, key };
 }
 
-export function safeKey(filename: string): string {
-  const ext = (filename.split('.').pop() ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+/**
+ * Public key for an upload. `ext` must come from the verified file type
+ * (readVerifiedUpload), never from the client's filename.
+ */
+export function safeKey(ext: string): string {
+  const clean = ext.toLowerCase().replace(/[^a-z0-9]/g, '');
   const stamp = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  return `products/${stamp}.${ext || 'bin'}`;
+  return `products/${stamp}.${clean || 'bin'}`;
 }
 
 /**
  * Unguessable S3 key for support attachments. 32 bytes of crypto-random hex
  * (~128 bits entropy) under a private prefix. Even if the bucket policy
  * regressed to public-all, brute-forcing one of these is computationally
- * infeasible.
+ * infeasible. `ext` must come from the verified file type.
  */
-export function supportAttachmentKey(filename: string): string {
-  const ext = (filename.split('.').pop() ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+export function supportAttachmentKey(ext: string): string {
+  const clean = ext.toLowerCase().replace(/[^a-z0-9]/g, '');
   const id = randomBytes(32).toString('hex');
-  return `support-att/${id}.${ext || 'bin'}`;
+  return `support-att/${id}.${clean || 'bin'}`;
 }
 
 /**

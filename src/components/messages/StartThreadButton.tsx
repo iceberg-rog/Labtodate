@@ -18,10 +18,11 @@ export function StartThreadButton({ productSlug, productTitle }: { productSlug: 
     if (text.length < 2) return;
     startTransition(async () => {
       try {
-        await startThreadWithSeller({ productSlug, initialMessage: text });
+        const res = await startThreadWithSeller({ productSlug, initialMessage: text });
+        if (res?.error) setError(res.error);
       } catch (err) {
         if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
-        setError(err instanceof Error ? err.message : 'Failed to send');
+        setError('Your message was not sent. Reload the page and try again.');
       }
     });
   }
@@ -38,7 +39,9 @@ export function StartThreadButton({ productSlug, productTitle }: { productSlug: 
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-lg font-bold">Message the seller</h3>
-                <p className="text-xs text-muted-foreground mt-1">They&apos;ll get an email and can reply in their inbox.</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  We notify the seller — or the lab2date team for listings we manage — and email you when they reply.
+                </p>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground" aria-label="Close">
                 <X className="h-5 w-5" />

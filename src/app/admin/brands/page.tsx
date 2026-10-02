@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { BrandManager } from '@/components/admin/BrandManager';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Brands' };
 
 export default async function AdminBrandsPage() {
   await requireCapability('products:edit');

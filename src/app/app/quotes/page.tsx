@@ -8,11 +8,13 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { computeDealState, type DealState } from '@/lib/quotes/deal-state';
 import { InstrumentIllustration, ILLUSTRATIONS, type IllustrationName } from '@/components/illustrations/instruments';
+import { getMarketing } from '@/lib/marketing';
+import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 
 function fmtMoney(cents: number, ccy = 'EUR'): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 }).format(cents / 100);
+  return formatPrice(cents, ccy); // shows cents when present — must match the proforma
 }
 
 function smartDate(d: Date | null | undefined): string {
@@ -121,6 +123,8 @@ function resolveIllustration(category: string | null | undefined): IllustrationN
 export default async function BuyerQuotesPage(props: { searchParams: Promise<{ filter?: string }> }) {
   const searchParams = await props.searchParams;
   const session = await requireSession({ redirectTo: '/app/quotes' });
+  // One turnaround promise site-wide: the admin QUOTE_TURNAROUND setting.
+  const turnaround = (await getMarketing()).quoteTurnaround;
   const filter = searchParams.filter ?? 'all';
 
   const items = await prisma.sourcingRequest.findMany({
@@ -236,7 +240,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
           </div>
           <p className="text-lg font-bold">No quotes yet</p>
           <p className="text-sm text-muted-foreground mt-2 max-w-sm mx-auto">
-            Need a price on a specific instrument? Our team sources it from verified suppliers, usually within 1 business day.
+            Need a price on a specific instrument? Our team sources it from verified suppliers{turnaround ? `, usually within ${turnaround}` : ''}.
           </p>
           <div className="mt-5 flex gap-3 justify-center flex-wrap">
             <Button asChild className="rounded-full font-semibold"><Link href="/let-us-find-it">Request a quote</Link></Button>
@@ -265,7 +269,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
             // what's happening and what (if anything) they should do.
             let statusLine = `Opened ${smartDate(q.createdAt)}`;
             if (deal.state === 'awaiting_supplier') {
-              statusLine = `Opened ${smartDate(q.createdAt)} · supplier typically replies within 1 business day`;
+              statusLine = `Opened ${smartDate(q.createdAt)} · ${turnaround ? `we aim to reply within ${turnaround}` : 'waiting for the supplier'}`;
             } else if (deal.state === 'awaiting_buyer') {
               statusLine = `Supplier replied ${smartDate(q.lastReplyAt ?? q.updatedAt)} · they're drafting a formal quote`;
             } else if (deal.state === 'proforma_sent') {

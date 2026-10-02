@@ -8,6 +8,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
 import { sendEmail } from '@/lib/email';
+import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
@@ -157,6 +158,14 @@ export async function withUniqueTicketRef<T>(
   throw new Error('Could not allocate a ticket reference');
 }
 
+const TICKET_FIELD_LIMITS: Record<string, string> = {
+  name: 'Your name must be 2–120 characters.',
+  email: 'Please enter a valid email address.',
+  subject: 'The subject must be 3–160 characters.',
+  category: 'Please pick a topic from the list.',
+  body: 'Your message must be 10–5,000 characters.',
+};
+
 export async function submitTicket(input: z.infer<typeof TicketInput>) {
   const p = TicketInput.parse(input);
   if (p.hp && p.hp.trim()) return { ref: 'TKT-OK' }; // honeypot: silently drop bots
@@ -211,22 +220,28 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
   const followUpHref = accessToken
     ? `${process.env.BETTER_AUTH_URL ?? ''}/support/t/${accessToken}`
     : `${process.env.BETTER_AUTH_URL ?? ''}/app/support`;
+  // The acknowledgement goes to whatever address was typed into the form. Echo
+  // the ticket's name/subject/body only when that is the signed-in user's own
+  // (verified) address — otherwise anyone could use this form to make
+  // lab2date send their own text to any inbox. The team copy below has it all.
+  const echo = !!session && p.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
   await sendEmail({
     to: p.email,
     subject: `[${ticket.ref}] We received your request`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">We&rsquo;re on it, ${p.name}</h2>
+        <h2 style="color:#0E4F40;">We&rsquo;re on it${echo ? `, ${escapeHtml(p.name)}` : ''}</h2>
         <p>Your support ticket has been logged. Our team will reply by email.</p>
-        <p><strong>Reference:</strong> ${ticket.ref}<br><strong>Subject:</strong> ${p.subject}</p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${p.body.replace(/\n/g, '<br>')}</blockquote>
+        <p><strong>Reference:</strong> ${ticket.ref}${echo ? `<br><strong>Subject:</strong> ${escapeHtml(p.subject)}` : ''}</p>
+        ${echo ? `<blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(p.body)}</blockquote>` : ''}
         <p style="margin:18px 0;">
           <a href="${followUpHref}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
             ${accessToken ? 'View / reply to ticket' : 'Open in dashboard'}
           </a>
         </p>
         ${accessToken ? `<p style="color:#888;font-size:11px;">This is a private link tied to your ticket — keep it to yourself.</p>` : ''}
-        <p style="color:#888;font-size:12px;">${site}</p>
+        ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t contact ${escapeHtml(site)} support, you can ignore this email.</p>`}
+        <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
       </div>`,
   });
 
@@ -237,13 +252,13 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
     'support@lab2date.com';
   await sendEmail({
     to: ops,
-    subject: `New support ticket ${ticket.ref}: ${p.subject}`,
+    subject: `New support ticket ${ticket.ref}: ${headerText(p.subject, 160)}`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:600px;">
         <h2 style="color:#0E4F40;">New support ticket</h2>
-        <p>From <strong>${p.name}</strong> &lt;${p.email}&gt;${p.category ? ` · ${p.category}` : ''}</p>
-        <p><strong>${p.subject}</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${p.body.replace(/\n/g, '<br>')}</blockquote>
+        <p>From <strong>${escapeHtml(p.name)}</strong> &lt;${escapeHtml(p.email)}&gt;${p.category ? ` · ${escapeHtml(p.category)}` : ''}</p>
+        <p><strong>${escapeHtml(p.subject)}</strong></p>
+        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(p.body)}</blockquote>
         <p style="color:#888;font-size:12px;">Ref ${ticket.ref}</p>
       </div>`,
   });
@@ -278,8 +293,25 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
   return { ref: ticket.ref, accessToken };
 }
 
-export async function submitTicketAndRedirect(input: z.infer<typeof TicketInput>) {
-  const { ref: r } = await submitTicket(input);
+/**
+ * Form entry point. Validation and rate-limit failures come back as a readable
+ * `error`: production builds replace thrown messages with a generic "Server
+ * Components render" error, so the customer could not tell what to fix.
+ */
+export async function submitTicketAndRedirect(input: z.infer<typeof TicketInput>): Promise<{ error: string }> {
+  let r: string;
+  try {
+    ({ ref: r } = await submitTicket(input));
+  } catch (e) {
+    if (e instanceof z.ZodError) {
+      const field = String(e.issues[0]?.path[0] ?? '');
+      return { error: TICKET_FIELD_LIMITS[field] ?? 'Some details are invalid. Please check the form and try again.' };
+    }
+    const msg = e instanceof Error ? e.message : '';
+    if (msg.startsWith('Too many submissions')) return { error: msg };
+    console.error('[support] submit failed', e);
+    return { error: 'Something went wrong and your ticket was not sent. Please try again in a minute.' };
+  }
   redirect(`/support/thanks?ref=${r}`);
 }
 
@@ -354,10 +386,10 @@ export async function replyTicket(formData: FormData) {
       subject: `[${t.ref}] Reply from ${site} support`,
       html: `
         <div style="font-family:system-ui,sans-serif;max-width:560px;">
-          <h2 style="color:#0E4F40;">Re: ${t.subject}</h2>
-          <div style="font-size:14px;line-height:1.7;color:#333;">${body.replace(/\n/g, '<br>')}</div>
+          <h2 style="color:#0E4F40;">Re: ${escapeHtml(t.subject)}</h2>
+          <div style="font-size:14px;line-height:1.7;color:#333;">${escapeHtmlLines(body)}</div>
           ${continueLine}
-          <p style="color:#888;font-size:12px;margin-top:18px;">Ref ${t.ref} · ${site}</p>
+          <p style="color:#888;font-size:12px;margin-top:18px;">Ref ${t.ref} · ${escapeHtml(site)}</p>
         </div>`,
     });
 
@@ -418,8 +450,8 @@ export async function customerReplyTicket(formData: FormData) {
     process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
   await sendEmail({
     to: ops,
-    subject: `[${t.ref}] Customer reply: ${t.subject}`,
-    html: `<p>${session.user.name} replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${body.replace(/\n/g, '<br>')}</blockquote>`,
+    subject: `[${t.ref}] Customer reply: ${headerText(t.subject, 160)}`,
+    html: `<p>${escapeHtml(session.user.name)} replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
   });
 
   await notifyAdmins(
@@ -753,7 +785,7 @@ export async function reissueGuestMagicLink(
     subject: `[${t.ref}] New link to view your ticket`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">Here&rsquo;s a fresh link, ${t.name}</h2>
+        <h2 style="color:#0E4F40;">Here&rsquo;s a fresh link, ${escapeHtml(t.name)}</h2>
         <p>Your support team rotated the access link on ticket <strong>${t.ref}</strong>. Any previous link no longer works.</p>
         <p style="margin:18px 0;">
           <a href="${href}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
@@ -761,7 +793,7 @@ export async function reissueGuestMagicLink(
           </a>
         </p>
         <p style="color:#888;font-size:11px;">This link is valid for 14 days. Keep it private.</p>
-        <p style="color:#888;font-size:12px;">${site}</p>
+        <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
       </div>`,
   });
 

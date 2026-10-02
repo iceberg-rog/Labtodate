@@ -7,6 +7,7 @@ import type { IllustrationName } from '@/components/illustrations/instruments';
 import type { ProductInputType } from '../../actions';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Edit listing' };
 
 export default async function EditProductPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
@@ -43,8 +44,10 @@ export default async function EditProductPage(props: { params: Promise<{ slug: s
   const slug = product.slug;
   async function handleSubmit(input: ProductInputType) {
     'use server';
-    await updateProduct(slug, input);
+    return updateProduct(slug, input);
   }
+  // Sellers' edits to a live listing go back to admin review (INVARIANTS A3).
+  const reReview = product.status === 'PUBLISHED' && role !== 'ADMIN';
 
   return (
     <div className="space-y-6">
@@ -52,6 +55,11 @@ export default async function EditProductPage(props: { params: Promise<{ slug: s
         <h1 className="text-3xl font-bold tracking-tight">Edit listing</h1>
         <p className="text-muted-foreground mt-1 truncate">{product.title}</p>
       </div>
+      {reReview && (
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 px-4 py-3 text-sm max-w-3xl">
+          This listing is live. If you change it, it goes back to admin review and is hidden from buyers until an admin approves it again.
+        </div>
+      )}
       <ProductForm initial={initial} categories={categories} brands={brands} onSubmit={handleSubmit} submitLabel="Save changes" />
     </div>
   );

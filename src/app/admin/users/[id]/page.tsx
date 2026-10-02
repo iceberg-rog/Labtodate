@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { formatPrice } from '@/lib/utils';
 import {
   setUserRole,
@@ -21,9 +22,17 @@ import { RoleSelect } from '../RoleSelect';
 
 export const dynamic = 'force-dynamic';
 
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('users:view', 'User', async () => {
+    const { id } = await props.params;
+    const u = await prisma.user.findUnique({ where: { id }, select: { name: true } });
+    return u && `User ${u.name}`;
+  });
+}
+
 async function updateRole(formData: FormData) {
   'use server';
-  await setUserRole(String(formData.get('userId')), formData.get('role') as UserRole);
+  return setUserRole(String(formData.get('userId')), formData.get('role') as UserRole);
 }
 
 export default async function AdminUserDetailPage(props: { params: Promise<{ id: string }> }) {
@@ -218,7 +227,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
       </div>
       <Section title={`Orders (${orders.length})`}>
         {orders.length === 0 ? <Empty /> : orders.map((o) => (
-          <Row key={o.id} href={`/admin/orders?q=${o.orderNumber}`}
+          <Row key={o.id} href={`/admin/orders/${o.id}`}
             main={o.orderNumber}
             sub={`${o.items.map((i) => i.titleSnapshot).join(', ').slice(0, 80) || '—'}`}
             right={`${formatPrice(o.totalCents, o.currency)} · ${o.status.toLowerCase()}`}
@@ -227,7 +236,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
       </Section>
       <Section title={`Quote / sourcing requests (${sourcing.length})`}>
         {sourcing.length === 0 ? <Empty /> : sourcing.map((s) => (
-          <Row key={s.id} href={`/app/quotes/${s.id}`}
+          <Row key={s.id} href={`/admin/quotes/${s.id}`}
             main={s.description.slice(0, 80) || 'Request'}
             sub={s.quotedPriceCents ? `Quoted ${formatPrice(s.quotedPriceCents, 'EUR')}` : 'Not yet quoted'}
             right={s.status.toLowerCase()} date={s.createdAt} />
@@ -235,7 +244,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
       </Section>
       <Section title={`Sell offers (${sells.length})`}>
         {sells.length === 0 ? <Empty /> : sells.map((s) => (
-          <Row key={s.id} href={`/admin/sell?q=${encodeURIComponent(s.itemTitle)}`}
+          <Row key={s.id} href={`/admin/sell/${s.id}`}
             main={s.itemTitle} sub="" right={s.status.toLowerCase()} date={s.createdAt} />
         ))}
       </Section>
@@ -253,7 +262,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
       </Section>
       <Section title={`Seller conversations (${threads.length})`}>
         {threads.length === 0 ? <Empty /> : threads.map((th) => (
-          <Row key={th.id} href={`/admin/messages?q=${encodeURIComponent(th.subject ?? '')}`}
+          <Row key={th.id} href={`/admin/messages/threads/${th.id}`}
             main={th.subject ?? 'Conversation'} sub={`${th._count.messages} messages`}
             right="" date={th.lastMessageAt} />
         ))}

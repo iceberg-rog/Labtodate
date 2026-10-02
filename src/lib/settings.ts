@@ -81,6 +81,70 @@ export const SETTING_DEFS = [
 
 export type SettingKey = (typeof SETTING_DEFS)[number]['key'];
 
+type SettingDef = (typeof SETTING_DEFS)[number];
+
+declare global {
+  var __settingEnvDefaults: Record<string, string | undefined> | undefined;
+}
+
+// .env values as they were at boot, before ensureSettingsLoaded copied any DB
+// override over them — so clearing a DB value falls back to the .env default
+// instead of leaving the stale DB value live (or wiping .env until restart).
+// Kept on globalThis: the bundler can evaluate this module more than once per
+// process, and a later copy would otherwise snapshot DB values as "defaults".
+// Only this module writes these keys, so the first snapshot is the real .env.
+const ENV_DEFAULTS: Record<string, string | undefined> = (globalThis.__settingEnvDefaults ??=
+  Object.fromEntries(SETTING_DEFS.map((d) => [d.key, process.env[d.key]])));
+
+/** The server .env value for a setting key ('' when .env doesn't set it). */
+function envDefault(key: string): string {
+  return (ENV_DEFAULTS[key] ?? '').replace(/\r\n/g, '\n').trim();
+}
+
+/** Put the boot-time .env value back into process.env (or unset it). */
+function restoreEnvDefault(key: string): void {
+  const def = ENV_DEFAULTS[key];
+  if (def !== undefined) process.env[key] = def;
+  else delete process.env[key];
+}
+
+/** A path on this site ("/media/…"), as an uploaded logo is stored — not a
+ *  protocol-relative "//host/…" (or "/\host/…") URL. Save and Verify share
+ *  this rule, so a value Save accepts is one Verify can check. */
+export function isSiteRelativePath(value: string): boolean {
+  return /^\/(?![/\\])/.test(value);
+}
+
+/** Per-type check run BEFORE anything is written. Returns a reason or null. */
+function validateSettingValue(d: SettingDef, value: string): string | null {
+  const verify = 'verify' in d ? d.verify : undefined;
+  if (verify === 'number') {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return `“${value}” is not a number.`;
+    if (d.key === 'SMTP_PORT' && !(Number.isInteger(n) && n >= 1 && n <= 65535)) return 'must be a whole number between 1 and 65535.';
+    if (d.key === 'PROFORMA_VALID_DAYS' && !(Number.isInteger(n) && n >= 1 && n <= 365)) return 'must be a whole number of days between 1 and 365.';
+    return null;
+  }
+  if (verify === 'email') {
+    // EMAIL_FROM may be written as `Name <addr@domain>`.
+    const addr = value.match(/<([^>]+)>\s*$/)?.[1] ?? value;
+    return /^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(addr.trim()) ? null : `“${value}” is not a valid email address.`;
+  }
+  if (verify === 'url' || verify === 'image') {
+    if (verify === 'image' && isSiteRelativePath(value)) return null; // site-relative upload path
+    try {
+      const u = new URL(value);
+      return u.protocol === 'http:' || u.protocol === 'https:' ? null : 'must start with https:// (or http://).';
+    } catch {
+      return `“${value}” is not a valid URL (include https://).`;
+    }
+  }
+  if (d.key === 'SMTP_SECURE' && !/^(true|false|1|0)$/i.test(value)) {
+    return 'use true or false (or leave blank to auto-detect from the port).';
+  }
+  return null;
+}
+
 let lastLoad = 0;
 let inflight: Promise<void> | null = null;
 const TTL_MS = 5000;
@@ -92,8 +156,17 @@ export async function ensureSettingsLoaded(): Promise<void> {
   inflight = (async () => {
     try {
       const rows = await prisma.setting.findMany();
+      const stored = new Set<string>();
       for (const r of rows) {
-        if (r.value && r.value.trim()) process.env[r.key] = r.value;
+        if (r.value && r.value.trim()) {
+          process.env[r.key] = r.value;
+          stored.add(r.key);
+        }
+      }
+      // A setting whose DB row is gone (cleared from another worker, or by
+      // hand) falls back to its .env default instead of keeping the old value.
+      for (const d of SETTING_DEFS) {
+        if (!stored.has(d.key)) restoreEnvDefault(d.key);
       }
       lastLoad = Date.now();
     } catch {
@@ -114,7 +187,25 @@ export async function getEffectiveSettings(): Promise<Record<string, string>> {
   return out;
 }
 
-export async function saveSettings(input: Record<string, string>): Promise<void> {
+/** Keys whose effective value comes from the server .env (no DB override) —
+ *  emptying such a field can't clear it; the settings page says so. */
+export async function getEnvOnlySettingKeys(): Promise<Set<string>> {
+  const rows = await prisma.setting.findMany({ select: { key: true, value: true } });
+  const inDb = new Set(rows.filter((r) => r.value?.trim()).map((r) => r.key));
+  return new Set(SETTING_DEFS.filter((d) => !inDb.has(d.key) && (process.env[d.key] ?? '').trim()).map((d) => d.key));
+}
+
+/** What a save did, so the settings page can say it truthfully. Labels. */
+export type SaveSettingsResult = {
+  /** Fields whose effective value changed (set, replaced or removed). */
+  changed: string[];
+  /** Fields that now follow the server .env value (override removed). */
+  envDefault: string[];
+  /** Emptied fields whose value comes only from .env, so nothing was removed. */
+  envKept: string[];
+};
+
+export async function saveSettings(input: Record<string, string>): Promise<SaveSettingsResult> {
   // A set Resend key overrides SMTP, so an autofilled login password in that
   // field silently breaks all email. Real keys start with "re_"; reject anything
   // else before writing so a bad submit changes nothing.
@@ -122,25 +213,71 @@ export async function saveSettings(input: Record<string, string>): Promise<void>
   if (resendKey && input.__clear_RESEND_API_KEY !== 'on' && !resendKey.startsWith('re_')) {
     throw new Error('Resend API key must start with "re_" (browser autofill?). Empty that field and save again.');
   }
+  // Type checks (numbers, emails, URLs) — all fields first, so a bad submit
+  // changes nothing (a "fourteen" in a days field used to save as "Saved ✓").
+  const problems: string[] = [];
+  for (const d of SETTING_DEFS) {
+    if (input[`__clear_${d.key}`] === 'on') continue;
+    const value = (input[d.key] ?? '').trim();
+    if (!value) continue;
+    const why = validateSettingValue(d, value);
+    if (why) problems.push(`${d.label}: ${why}`);
+  }
+  if (problems.length) throw new Error(`${problems.join(' · ')} Nothing was saved.`);
+
+  const rows = await prisma.setting.findMany({
+    where: { key: { in: SETTING_DEFS.map((d) => d.key) } },
+    select: { key: true, value: true },
+  });
+  const inDb = new Map(rows.map((r) => [r.key, r.value]));
+  const result: SaveSettingsResult = { changed: [], envDefault: [], envKept: [] };
+
   for (const d of SETTING_DEFS) {
     const clear = input[`__clear_${d.key}`] === 'on';
-    if (clear) {
-      await prisma.setting.deleteMany({ where: { key: d.key } });
-      delete process.env[d.key];
+    const raw = input[d.key];
+    const value = (raw ?? '').replace(/\r\n/g, '\n').trim(); // textareas post CRLF
+    const def = envDefault(d.key);
+    const stored = (inDb.get(d.key) ?? '').trim();
+    // Secret fields are never pre-filled, so empty = keep the current value.
+    // Plain fields ARE pre-filled with their current value, so an emptied
+    // field means "remove it" (it used to report "Saved ✓" and keep it).
+    // Only a DB override can be removed here — the setting then falls back to
+    // the server .env value at once; a value that comes only from .env stays
+    // (the settings page and the save message say so instead of pretending).
+    if (clear || (raw !== undefined && value === '' && !d.secret)) {
+      if (inDb.has(d.key)) {
+        await prisma.setting.deleteMany({ where: { key: d.key } });
+        restoreEnvDefault(d.key);
+        if (stored !== def) result.changed.push(d.label);
+        if (def) result.envDefault.push(d.label);
+      } else if (def) {
+        result.envKept.push(d.label);
+      }
       continue;
     }
-    const raw = input[d.key];
-    if (raw === undefined) continue;
-    const value = raw.trim();
-    // Empty input = leave the existing value untouched (avoids wiping a
-    // secret when the admin re-submits the form without re-typing it).
-    if (value === '') continue;
+    if (raw === undefined || value === '') continue;
+    // One rule for the .env value: it is never copied into the DB (that froze
+    // it against later .env changes). Saving it — typed back in, or a
+    // pre-filled default submitted untouched — removes any override, so .env
+    // is the source again and the setting has its .env value right away.
+    if (def && value === def) {
+      if (inDb.has(d.key)) {
+        await prisma.setting.deleteMany({ where: { key: d.key } });
+        if (stored !== def) result.changed.push(d.label);
+        result.envDefault.push(d.label);
+      }
+      restoreEnvDefault(d.key);
+      continue;
+    }
+    if (stored === value) continue; // unchanged
     await prisma.setting.upsert({
       where: { key: d.key },
       update: { value },
       create: { key: d.key, value },
     });
     process.env[d.key] = value;
+    result.changed.push(d.label);
   }
   lastLoad = Date.now();
+  return result;
 }

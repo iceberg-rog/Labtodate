@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireCapability } from '@/lib/auth-server';
 import { rateLimit } from '@/lib/ratelimit';
@@ -10,9 +11,18 @@ import { aiChat, type AIMessage } from '@/lib/ai';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
 import { notifyAndMaybeEmail } from '@/lib/notify-throttled';
+import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 
 const GUEST_COOKIE = 'lab2_asst_g';
 const GUEST_COOKIE_TTL_DAYS = 90;
+
+/** Chat attachments are uploaded via /api/attachment-upload, which returns
+ *  auth-gated proxy URLs; only those are stored. */
+function keepProxyAttachments(urls: unknown[], max: number): string[] {
+  return urls
+    .filter((u): u is string => typeof u === 'string' && u.startsWith('/api/support-attachment/'))
+    .slice(0, max);
+}
 
 /**
  * Resolve the conversation actor:
@@ -104,7 +114,7 @@ export async function sendAssistantMessage(input: {
   const actor = await resolveActor();
   const conversationId = await findOrCreateConversation(actor);
   const body = (input.body || '').trim().slice(0, 4000);
-  const attachments = (input.attachments || []).slice(0, 4);
+  const attachments = keepProxyAttachments(input.attachments || [], 4);
   if (!body && attachments.length === 0) {
     return readConversation(conversationId);
   }
@@ -260,8 +270,15 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
   await ensureSettingsLoaded();
   const id = String(formData.get('conversationId') ?? '');
   const body = String(formData.get('body') ?? '').trim().slice(0, 4000);
-  const attachmentsRaw = String(formData.get('attachments') ?? '').trim();
-  const attachments = attachmentsRaw ? attachmentsRaw.split(',').filter((u) => u.startsWith('http')) : [];
+  // ReplyForm posts a JSON array of proxy URLs. The old comma-split +
+  // http-only filter dropped every attachment silently.
+  let attachments: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(String(formData.get('attachments') ?? '[]') || '[]');
+    if (Array.isArray(parsed)) attachments = keepProxyAttachments(parsed, 5);
+  } catch {
+    attachments = [];
+  }
   if (!id || (!body && attachments.length === 0)) return;
 
   const conv = await prisma.assistantConversation.findUnique({
@@ -296,11 +313,13 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
       notifBody: `An operator replied: ${body.slice(0, 120)}`,
       notifHref: '/app#chat-open',
       emailSubject: `[${ref}] We replied to your chat on lab2date`,
-      emailHtml: `<p>Hi,</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${body.slice(0, 500)}</blockquote><p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app">Open lab2date</a> to continue the conversation.</p>`,
+      emailHtml: `<p>Hi,</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app">Open lab2date</a> to continue the conversation.</p>`,
       dedupeKey: ref,
     });
-  } else if (conv.guestEmail) {
-    // Guest — fire a one-shot email; throttle still applies via EmailLog.
+  } else if (conv.guestEmail && z.string().email().safeParse(conv.guestEmail).success) {
+    // Guest — fire a one-shot email; throttle still applies via EmailLog. The
+    // address is whatever the guest typed (never validated at escalation), so
+    // only a single well-formed address is mailed — never a list.
     await notifyAndMaybeEmail({
       userId: null,
       toEmail: conv.guestEmail,
@@ -308,7 +327,7 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
       notifBody: '',
       notifHref: '',
       emailSubject: `[${ref}] We replied to your chat on lab2date`,
-      emailHtml: `<p>Hi ${conv.guestName ?? 'there'},</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${body.slice(0, 500)}</blockquote><p>Re-open the chat at the bottom-right of <a href="${process.env.BETTER_AUTH_URL || 'https://labtodate.com'}">labtodate.com</a> to continue.</p>`,
+      emailHtml: `<p>Hi ${escapeHtml(conv.guestName ?? 'there')},</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p>Re-open the chat at the bottom-right of <a href="${process.env.BETTER_AUTH_URL || 'https://labtodate.com'}">labtodate.com</a> to continue.</p>`,
       dedupeKey: ref,
     });
   }

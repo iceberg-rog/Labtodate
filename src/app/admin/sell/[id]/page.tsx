@@ -8,20 +8,32 @@ import {
 import { Button } from '@/components/ui/button';
 import { requireCapability, getServerSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { setSellStatus } from '@/app/admin/actions';
 import {
   replySellSubmission,
   proposeAcquisitionPrice,
   markAcquisitionReceived,
   uploadReceiptAndComplete,
+  acceptSellSubmissionAtPrice,
+  declineSellSubmission,
 } from '@/lib/sell/actions';
 import { ReplyForm } from '@/components/util/ReplyForm';
+import { SubmitWithConfirm } from '@/components/util/SubmitWithConfirm';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
 import { EmailText } from '@/components/util/EmailText';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { computeSellState, sellToneClasses } from '@/lib/sell/deal-state';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('sell:view', 'Sell submission', async () => {
+    const { id } = await props.params;
+    const sub = await prisma.sellSubmission.findUnique({ where: { id }, select: { id: true } });
+    return sub && `Sell submission SS-${sub.id.slice(-6).toUpperCase()}`;
+  });
+}
 
 function smartDate(d: Date | null | undefined): string {
   if (!d) return '';
@@ -32,27 +44,34 @@ function smartDate(d: Date | null | undefined): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// Server-action wrappers — bound status transitions as Promise<void> for the
-// <form action={...}> contract.
-async function acceptAction(formData: FormData): Promise<void> {
-  'use server';
-  await setSellStatus(String(formData.get('id') ?? ''), 'ACCEPTED');
-}
-async function declineAction(formData: FormData): Promise<void> {
-  'use server';
-  await setSellStatus(String(formData.get('id') ?? ''), 'DECLINED');
-}
-async function respondedAction(formData: FormData): Promise<void> {
-  'use server';
-  await setSellStatus(String(formData.get('id') ?? ''), 'RESPONDED');
-}
+// Server-action wrapper — bound status transition as Promise<void> for the
+// <form action={...}> contract. Accept and decline live in lib/sell/actions:
+// accept needs the agreed price, decline emails the seller.
 async function closeAction(formData: FormData): Promise<void> {
   'use server';
   await setSellStatus(String(formData.get('id') ?? ''), 'CLOSED');
 }
 
-export default async function AdminSellDetailPage(props: { params: Promise<{ id: string }> }) {
+const ERRORS: Record<string, string> = {
+  price: 'Enter the agreed payout price (above 0, at most 10,000,000) to accept.',
+  state: 'This offer is no longer open — it was already declined, closed, or its payout has started.',
+};
+
+/** Suggested agreed price: the latest offer we sent, else the asking price when
+ *  it is an unambiguous plain number ("300", "€300", "300 EUR"). Free text like
+ *  "around 5k" or "1.234,56" is left for the admin to type. */
+function suggestedPrice(latestOfferCents: number | null, askingPrice: string | null): string {
+  if (latestOfferCents) return (latestOfferCents / 100).toFixed(latestOfferCents % 100 ? 2 : 0);
+  const m = /^\s*[€$£]?\s*(\d{1,8}(?:\.\d{1,2})?)\s*(?:€|eur|usd|gbp|chf)?\s*$/i.exec(askingPrice ?? '');
+  return m ? m[1] : '';
+}
+
+export default async function AdminSellDetailPage(props: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ err?: string }>;
+}) {
   const params = await props.params;
+  const errorMsg = ERRORS[(await props.searchParams).err ?? ''] ?? null;
   await requireCapability('sell:view');
   await getServerSession();
 
@@ -95,6 +114,9 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
     sub.status === 'CLOSED' ||
     sub.acquisitionStage === 'COMPLETED';
   const canAct = !isTerminal;
+  const latestOffer = [...sub.messages].reverse().find((m) => m.kind === 'PRICE_PROPOSAL');
+  // Accepted before a price was required: no lifecycle can start until one is set.
+  const acceptedWithoutPrice = sub.status === 'ACCEPTED' && !sub.acquisitionStage;
 
   return (
     <div className="space-y-4">
@@ -105,6 +127,16 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
       >
         <ChevronLeft className="h-4 w-4" /> Back to acquisitions
       </Link>
+      {errorMsg && (
+        <div className="rounded-xl border border-red-300 bg-red-50 dark:bg-red-950/40 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-300">
+          {errorMsg}
+        </div>
+      )}
+      {acceptedWithoutPrice && (
+        <div className="rounded-xl border-2 border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 px-4 py-3 text-sm text-amber-900 dark:text-amber-300">
+          This offer was accepted without an agreed price, so the payout lifecycle never started. Enter the agreed price under <strong>Decision</strong> below to send the seller to the bank-details step.
+        </div>
+      )}
       {/* HERO ========================================================== */}
       <section className={`rounded-2xl border-2 bg-card overflow-hidden ${tone.ring} ring-1 ring-inset`}>
         <div className="p-6 grid lg:grid-cols-[1fr_auto] gap-6 items-start">
@@ -374,7 +406,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
                 label="Send reply"
               />
               <p className="text-[11px] text-muted-foreground mt-2">
-                Reply triggers an in-app notification immediately; email is throttled — only the first reply within EMAIL_THROTTLE_HOURS (Settings) is emailed.
+                Reply triggers an in-app notification immediately; reply emails are throttled — only the first email within EMAIL_THROTTLE_HOURS (Settings) goes out. Offers, acceptance, receipt and payment are always emailed.
               </p>
             </section>
           )}
@@ -384,31 +416,57 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
               the in-flight controls live in the Acquisition lifecycle panel
               above. A "Decline" here after the seller has paid+shipped
               would be nonsensical. */}
-          {sub.status !== 'ACCEPTED' && sub.status !== 'DECLINED' && sub.status !== 'CLOSED' && !sub.acquisitionStage && (
+          {sub.status !== 'DECLINED' && sub.status !== 'CLOSED' && !sub.acquisitionStage && (
             <section className="rounded-2xl border border-border bg-card p-5">
               <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-3">Decision</p>
-              <div className="flex gap-2 flex-wrap">
-                <form action={acceptAction}>
-                  <input type="hidden" name="id" value={sub.id} />
-                  <Button type="submit" className="rounded-full font-semibold bg-emerald-600 hover:bg-emerald-700 text-white">
-                    <Check className="h-4 w-4" /> Accept submission (skip negotiation)
-                  </Button>
-                </form>
-                <form action={declineAction}>
-                  <input type="hidden" name="id" value={sub.id} />
-                  <Button type="submit" variant="outline" className="rounded-full font-semibold border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40">
+              <form action={acceptSellSubmissionAtPrice} className="flex gap-2 flex-wrap items-end">
+                <input type="hidden" name="submissionId" value={sub.id} />
+                <label className="block">
+                  <span className="block text-xs font-semibold mb-1">Agreed payout price</span>
+                  <input
+                    type="number" name="amount" min="0.01" max="10000000" step="0.01" required
+                    defaultValue={suggestedPrice(latestOffer?.priceCents ?? null, sub.askingPrice)}
+                    placeholder={sub.askingPrice ? `seller asked ${sub.askingPrice}` : '0.00'}
+                    className="h-10 w-44 px-3 rounded-lg border border-input bg-background text-sm font-mono"
+                  />
+                </label>
+                <label className="block">
+                  <span className="block text-xs font-semibold mb-1">Currency</span>
+                  <select name="currency" defaultValue={latestOffer?.currency ?? 'EUR'} className="h-10 px-3 rounded-lg border border-input bg-background text-sm">
+                    {['EUR', 'USD', 'GBP', 'CHF'].map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </label>
+                <SubmitWithConfirm
+                  confirmMessage="Accept this offer at the price entered? The seller is emailed to add bank details for the payout."
+                  className="rounded-full font-semibold bg-emerald-600 hover:bg-emerald-700 text-white"
+                >
+                  <Check className="h-4 w-4" /> Accept at this price (skip negotiation)
+                </SubmitWithConfirm>
+              </form>
+              <div className="flex gap-2 flex-wrap mt-3">
+                <form action={declineSellSubmission}>
+                  <input type="hidden" name="submissionId" value={sub.id} />
+                  <SubmitWithConfirm
+                    confirmMessage="Decline this offer? The seller is emailed that we're passing on it."
+                    variant="outline"
+                    className="rounded-full font-semibold border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40"
+                  >
                     <X className="h-4 w-4" /> Decline
-                  </Button>
+                  </SubmitWithConfirm>
                 </form>
                 <form action={closeAction}>
                   <input type="hidden" name="id" value={sub.id} />
-                  <Button type="submit" variant="ghost" className="rounded-full font-medium text-muted-foreground">
+                  <SubmitWithConfirm
+                    confirmMessage="Close this offer without a deal? No email is sent."
+                    variant="ghost"
+                    className="rounded-full font-medium text-muted-foreground"
+                  >
                     Close without deal
-                  </Button>
+                  </SubmitWithConfirm>
                 </form>
               </div>
               <p className="text-[11px] text-muted-foreground mt-3">
-                Decline notifies the seller; close archives without notification. Use these only when there's no path to a deal — for normal flow, send a price offer above.
+                Accept starts the payout lifecycle at the agreed price and emails the seller for bank details. Decline emails the seller. Close ends it quietly — no email; a registered seller sees an in-app note. For normal flow, send a price offer above.
               </p>
             </section>
           )}
@@ -419,7 +477,7 @@ export default async function AdminSellDetailPage(props: { params: Promise<{ id:
               <X className="h-4 w-4 mt-0.5" />
               <p>
                 {sub.status === 'DECLINED'
-                  ? 'Declined. Seller was notified.'
+                  ? 'Declined. The seller was emailed.'
                   : 'Closed without a deal.'}
               </p>
             </section>

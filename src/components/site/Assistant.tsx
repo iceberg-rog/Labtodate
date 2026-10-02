@@ -32,7 +32,14 @@ type Identity = { kind: 'user' | 'guest'; name: string | null; email: string | n
  * The widget polls when WITH_HUMAN so an admin reply appears within
  * a couple of seconds without WS infrastructure.
  */
-export function Assistant() {
+export function Assistant({
+  name = 'lab2date Assistant',
+  siteName = 'lab2date',
+}: {
+  /** ASSISTANT_NAME from Admin → Settings → AI assistant. */
+  name?: string;
+  siteName?: string;
+} = {}) {
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState<WireMsg[]>([]);
   const [status, setStatus] = useState<string>('AI');
@@ -205,14 +212,16 @@ export function Assistant() {
           <MessageCircle className="h-6 w-6" />
         </button>
       )}
+      {/* The open panel stacks above the cookie notice (z-90) so the notice
+          can't cover the message box on small screens. */}
       {open && (
-        <div className="fixed bottom-5 right-5 z-[80] w-[92vw] max-w-sm h-[72vh] max-h-[600px] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden">
+        <div className="fixed bottom-5 right-5 z-[95] w-[92vw] max-w-sm h-[72vh] max-h-[600px] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground">
             <div className="flex items-center gap-2">
               {status === 'WITH_HUMAN' ? <Headphones className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
               <span className="font-semibold text-sm">
-                {status === 'WITH_HUMAN' ? 'lab2date · live agent' : status === 'AWAITING_HUMAN' ? 'lab2date · connecting…' : 'lab2date Assistant'}
+                {status === 'WITH_HUMAN' ? `${siteName} · live agent` : status === 'AWAITING_HUMAN' ? `${siteName} · connecting…` : name}
               </span>
             </div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close">

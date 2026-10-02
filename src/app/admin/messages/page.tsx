@@ -10,6 +10,7 @@ import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Messages' };
 
 const PAGE_SIZE = 50;
 

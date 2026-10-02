@@ -1,27 +1,40 @@
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, ExternalLink, Trash2 } from 'lucide-react';
+import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
+import { resolveProductSlug } from '@/lib/products/slug';
 import { AdminProductForm } from '@/components/admin/AdminProductForm';
 import { adminUpdateProduct, adminDeleteProduct, type AdminProductInputType } from '@/app/admin/actions';
 import { Button } from '@/components/ui/button';
 import { redirect } from 'next/navigation';
 import type { IllustrationName } from '@/components/illustrations/instruments';
+import { DeleteProductButton } from './DeleteProductButton';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ slug: string }> }) {
+  return adminDetailTitle('products:edit', 'Edit product', async () => {
+    const { slug } = await props.params;
+    const p = await prisma.product.findUnique({ where: { slug: await resolveProductSlug(slug) }, select: { title: true } });
+    return p && `Edit: ${p.title}`;
+  });
+}
 
 export default async function AdminProductEditPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
   await requireCapability('products:edit');
 
-  const product = await prisma.product.findUnique({ where: { slug: params.slug } });
+  // Matches imported slugs stored with a literal '%c2%b5' (see resolveProductSlug).
+  const product = await prisma.product.findUnique({ where: { slug: await resolveProductSlug(params.slug) } });
   if (!product) notFound();
 
-  const [categories, brands, companies] = await Promise.all([
+  const [categories, brands, companies, orderLines] = await Promise.all([
     prisma.category.findMany({ orderBy: { sortOrder: 'asc' }, select: { id: true, name: true } }),
     prisma.brand.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true } }),
     prisma.company.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true } }),
+    prisma.orderItem.count({ where: { productId: product.id } }),
   ]);
 
   const initial: Partial<AdminProductInputType> = {
@@ -51,7 +64,9 @@ export default async function AdminProductEditPage(props: { params: Promise<{ sl
   async function handleDelete() {
     'use server';
     const r = await adminDeleteProduct(slug);
-    if (r.ok) redirect('/admin/products?deleted=1');
+    if (!r.ok) redirect('/admin/products');
+    // Say what really happened: products with orders are archived, not deleted.
+    redirect(r.outcome === 'archived' ? '/admin/products?archived=1' : '/admin/products?deleted=1');
   }
 
   return (
@@ -74,14 +89,7 @@ export default async function AdminProductEditPage(props: { params: Promise<{ sl
             </Link>
           </Button>
           <form action={handleDelete}>
-            <Button
-              type="submit"
-              variant="outline"
-              size="sm"
-              className="rounded-full text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/40"
-            >
-              <Trash2 className="h-3.5 w-3.5" /> Delete
-            </Button>
+            <DeleteProductButton title={product.title} hasOrders={orderLines > 0} />
           </form>
         </div>
       </div>

@@ -147,10 +147,12 @@ export function Filters({
       </FilterGroup>
 
       <FilterGroup title="Buying mode">
+        {/* "Buy now" = every listing with a Buy now button (BUY_NOW or HYBRID
+            with a visible price); "Quote only" = everything else. A separate
+            "Buy or quote" option listed the same items as "Buy now". */}
         {(
           [
             { v: 'BUY_NOW', l: 'Buy now' },
-            { v: 'HYBRID', l: 'Buy or quote' },
             { v: 'QUOTE_ONLY', l: 'Quote only' },
           ] as const
         ).map((m) => (
@@ -186,6 +188,7 @@ export function Filters({
             type="number"
             min={0}
             placeholder="Min"
+            aria-label="Minimum price in euros"
             defaultValue={params.get('minPrice') ?? ''}
             className="w-full h-9 px-2 rounded-lg border border-input bg-background text-sm"
           />
@@ -195,6 +198,7 @@ export function Filters({
             type="number"
             min={0}
             placeholder="Max"
+            aria-label="Maximum price in euros"
             defaultValue={params.get('maxPrice') ?? ''}
             className="w-full h-9 px-2 rounded-lg border border-input bg-background text-sm"
           />

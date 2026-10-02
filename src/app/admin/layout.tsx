@@ -23,12 +23,17 @@ import {
 import { requireSession, getAdminCaps } from '@/lib/auth-server';
 import { capsAllow, capsAllowSection } from '@/lib/capabilities';
 import { prisma } from '@/lib/db';
+import { TICKETS_AWAITING_SUPPORT } from '@/lib/support/statuses';
 import { AdminNavLink, NavSection } from '@/components/admin/AdminNavLink';
 import { AdminTopBar } from '@/components/admin/AdminTopBar';
 import { NewOrderToast } from '@/components/admin/NewOrderToast';
+import { AdminResultToast } from '@/components/admin/AdminResultToast';
 import { MobileDrawer } from '@/components/util/MobileDrawer';
 
 export const dynamic = 'force-dynamic';
+// Each admin page sets its own title ("Orders · Admin"); every tab used to read
+// the same generic storefront title.
+export const metadata = { title: { default: 'Admin', template: '%s · Admin' } };
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
@@ -45,7 +50,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       prisma.sourcingRequest.count({ where: { status: 'PENDING' } }).catch(() => 0),
       prisma.sellSubmission.count({ where: { status: 'PENDING' } }).catch(() => 0),
       prisma.supportTicket
-        .count({ where: { status: { in: ['OPEN', 'PENDING'] } } })
+        .count({ where: { status: { in: TICKETS_AWAITING_SUPPORT }, archivedAt: null } })
         .catch(() => 0),
       prisma.errorLog.count({ where: { createdAt: { gte: since24h } } }).catch(() => 0),
       prisma.notification.count({ where: { userId: session.user.id, readAt: null } }).catch(() => 0),
@@ -204,6 +209,8 @@ export default async function AdminLayout({ children }: { children: React.ReactN
        *  admin route, not just /admin/orders, so an admin on the dashboard
        *  or in settings still sees a sale arrive. */}
       <NewOrderToast />
+      {/* Results of actions that remove their own row/card (see announceAdminResult). */}
+      <AdminResultToast />
     </div>
   );
 }

@@ -34,9 +34,10 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
 
   // Only PENDING_PAYMENT orders accept proof. Once VERIFIED/PAID we don't
   // want to overwrite the receipt. AWAITING_VERIFICATION can be replaced
-  // (buyer corrects a wrong file before admin reviews).
+  // (buyer corrects a wrong file before admin reviews). A canceled order gets
+  // its own message: the buyer must not think a transfer is still expected.
   if (order.status !== 'PENDING_PAYMENT') {
-    redirect(`/app/orders/${orderNumber}/payment?err=closed`);
+    redirect(`/app/orders/${orderNumber}/payment?err=${order.status === 'CANCELED' ? 'canceled' : 'closed'}`);
   }
 
   // Defense-in-depth: re-check proforma TTL on the server. The cron sweep
@@ -48,7 +49,12 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
     select: { status: true, validUntilAt: true },
   });
   if (sr?.validUntilAt && sr.validUntilAt.getTime() < Date.now()) {
-    redirect(`/app/orders/${orderNumber}/payment?err=closed`);
+    redirect(`/app/orders/${orderNumber}/payment?err=expired`);
+  }
+  // A declined/closed quote ended the deal (its order is canceled on decline;
+  // this also covers orders left over from before that).
+  if (sr && (sr.status === 'DECLINED' || sr.status === 'CLOSED')) {
+    redirect(`/app/orders/${orderNumber}/payment?err=canceled`);
   }
 
   const get = (k: string) => String(formData.get(k) ?? '').trim();
@@ -96,7 +102,9 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
     const up = await uploadObject(`order-proofs/${order.orderNumber}-${Date.now()}.${ext}`, buf, f.type);
     proofUrl = up.url;
   }
-  if (method === 'BANK_TRANSFER' && !proofUrl) {
+  // Without a file there is nothing for an admin to verify for a transfer or
+  // an "other" payment — refuse instead of queueing an empty proof.
+  if ((method === 'BANK_TRANSFER' || method === 'OTHER') && !proofUrl) {
     redirect(`/app/orders/${orderNumber}/payment?err=proofreq`);
   }
 
@@ -170,5 +178,76 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
   revalidatePath(`/app/orders/${orderNumber}`);
   revalidatePath(`/app/orders/${orderNumber}/payment`);
   revalidatePath('/admin/orders');
-  redirect(`/app/orders/${orderNumber}/payment?ok=1`);
+  // ok=1: receipt file stored; ok=2: details submitted without a file (INVOICE).
+  redirect(`/app/orders/${orderNumber}/payment?ok=${proofUrl ? '1' : '2'}`);
+}
+
+/**
+ * Buyer-side: add (or correct) the shipping address after payment, until the
+ * order ships. Proforma orders are created without an address and the payment
+ * form closes once PAID — without this a paid order could be stuck unshippable.
+ */
+export async function buyerSetShippingAddress(formData: FormData): Promise<void> {
+  const session = await requireSession({ redirectTo: '/auth/sign-in' });
+  const orderNumber = String(formData.get('orderNumber') ?? '').trim();
+  if (!orderNumber) redirect('/app/orders');
+  const order = await prisma.order.findUnique({
+    where: { orderNumber },
+    select: { id: true, buyerId: true, status: true, shippingAddress: true },
+  });
+  if (!order || order.buyerId !== session.user.id) redirect('/app/orders');
+  const EDITABLE = ['PAID', 'PROCESSING'] as const;
+  if (!(EDITABLE as readonly string[]).includes(order.status)) {
+    redirect(`/app/orders/${orderNumber}?addr=closed`);
+  }
+
+  const get = (k: string) => String(formData.get(k) ?? '').trim();
+  const f = {
+    name: get('addr_name').slice(0, 120),
+    phone: get('addr_phone').slice(0, 40),
+    line1: get('addr_line1').slice(0, 200),
+    line2: get('addr_line2').slice(0, 200),
+    city: get('addr_city').slice(0, 80),
+    postal: get('addr_postal').slice(0, 24),
+    state: get('addr_state').slice(0, 80),
+    country: get('addr_country').toUpperCase(),
+  };
+  if (!f.name || !f.phone || !f.line1 || !f.city || !f.postal || !/^[A-Z]{2}$/.test(f.country)) {
+    redirect(`/app/orders/${orderNumber}?addr=missing`);
+  }
+
+  const existing = (order.shippingAddress as Record<string, unknown> | null) ?? {};
+  const existingAddr = (existing.address as Record<string, unknown> | undefined) ?? {};
+  const next = {
+    ...existing,
+    name: f.name,
+    phone: f.phone,
+    email: (existing.email as string | undefined) || session.user.email,
+    address: {
+      ...existingAddr,
+      line1: f.line1,
+      line2: f.line2 || null,
+      city: f.city,
+      postal_code: f.postal,
+      state: f.state || null,
+      country: f.country,
+    },
+  };
+  // Status precondition in the WHERE so a concurrent "shipped" can't be re-addressed.
+  const res = await prisma.order.updateMany({
+    where: { id: order.id, buyerId: session.user.id, status: { in: [...EDITABLE] } },
+    data: { shippingAddress: next as Prisma.InputJsonValue },
+  });
+  if (res.count !== 1) redirect(`/app/orders/${orderNumber}?addr=closed`);
+
+  await notifyAdmins(
+    `Order ${orderNumber}: buyer added a shipping address`,
+    `${f.city}, ${f.country} — the order can now be shipped.`,
+    `/admin/orders/${order.id}`,
+  );
+  await audit('order.address.buyer', orderNumber, `${f.city}, ${f.country}`);
+  revalidatePath(`/app/orders/${orderNumber}`);
+  revalidatePath(`/admin/orders/${order.id}`);
+  revalidatePath('/admin/orders');
+  redirect(`/app/orders/${orderNumber}?addr=saved`);
 }

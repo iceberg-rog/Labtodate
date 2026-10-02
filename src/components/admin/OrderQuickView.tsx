@@ -35,9 +35,11 @@ import {
   unarchiveOrder,
   verifyPayment,
   deleteOrderPermanently,
+  refundOrder,
 } from '@/app/admin/actions';
 import { humaniseBuyer, smartDate, STATUS_LABEL, STATUS_TONE, trackingUrl } from '@/lib/orders/display';
-import { openManualPaid } from './ManualPaidPanel';
+import { openManualPaid, ORDER_PAID_EVENT } from './ManualPaidPanel';
+import { announceAdminResult } from './AdminResultToast';
 import { BuyerEmailReveal } from './BuyerEmailReveal';
 
 type Detail = NonNullable<Awaited<ReturnType<typeof getOrderQuickDetail>>>;
@@ -100,7 +102,14 @@ export function OrderQuickView() {
   const [id, setId] = useState<string | null>(null);
   const [data, setData] = useState<Detail | null>(null);
   const [pending, start] = useTransition();
-  const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [actionMsg, setActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  // An action's result shows inline under the status banners AND in the admin
+  // toast: Refund / Archive sit at the bottom of a scrolling modal, where the
+  // inline line is out of view.
+  function report(ok: boolean, text: string) {
+    setActionMsg({ ok, text });
+    announceAdminResult({ ok, message: text });
+  }
 
   // Re-fetch the order so banners + buttons reflect the new state without
   // closing the modal. Cheap and predictable — no SWR/cache invalidation.
@@ -122,6 +131,7 @@ export function OrderQuickView() {
       setId(detail.id);
       setData(null);
       setErr(null);
+      setActionMsg(null);
       start(async () => {
         try {
           const r = await getOrderQuickDetail(detail.id);
@@ -135,6 +145,27 @@ export function OrderQuickView() {
     window.addEventListener('admin:orderquick', handler);
     return () => window.removeEventListener('admin:orderquick', handler);
   }, []);
+
+  // "Mark as paid" runs in a separate panel: when it succeeds for the order
+  // shown here, re-fetch so the header, banners and the CTA show it as paid
+  // (the panel already toasted the result; mirror it inline like other actions).
+  useEffect(() => {
+    if (!id) return;
+    const openId = id;
+    function onPaid(e: Event) {
+      const detail = (e as CustomEvent<{ id: string; message?: string }>).detail;
+      if (detail?.id !== openId) return;
+      if (detail.message) setActionMsg({ ok: true, text: detail.message });
+      start(async () => {
+        try {
+          const r = await getOrderQuickDetail(openId);
+          if (r) setData(r);
+        } catch {/* keep stale */}
+      });
+    }
+    window.addEventListener(ORDER_PAID_EVENT, onPaid);
+    return () => window.removeEventListener(ORDER_PAID_EVENT, onPaid);
+  }, [id]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -229,8 +260,8 @@ export function OrderQuickView() {
                       setActionMsg(null);
                       start(async () => {
                         const fd = new FormData(); fd.set('orderId', data.id);
-                        try { const r = await unarchiveOrder(fd); setActionMsg(r?.message ?? 'Restored.'); if (r?.ok) refetch(data.id); }
-                        catch (e) { setActionMsg(e instanceof Error ? e.message : 'Failed'); }
+                        try { const r = await unarchiveOrder(fd); report(!!r?.ok, r?.message ?? 'Restored.'); if (r?.ok) refetch(data.id); }
+                        catch (e) { report(false, e instanceof Error ? e.message : 'Failed'); }
                       });
                     }}
                     className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-slate-700 hover:bg-slate-800 text-white text-xs font-bold disabled:opacity-50"
@@ -247,9 +278,17 @@ export function OrderQuickView() {
                         const fd = new FormData(); fd.set('orderId', data.id);
                         try {
                           const r = await deleteOrderPermanently(fd);
-                          setActionMsg(r?.message ?? 'Deleted.');
-                          if (r?.ok) { setId(null); router.refresh(); }
-                        } catch (e) { setActionMsg(e instanceof Error ? e.message : 'Failed'); }
+                          if (r?.ok) {
+                            // The modal closes (the order is gone), so the
+                            // result goes to the admin toast, like the row's
+                            // Delete forever.
+                            announceAdminResult({ ok: true, message: r.message || `Order ${data.orderNumber} permanently deleted.` });
+                            setId(null);
+                            router.refresh();
+                          } else {
+                            report(false, r?.message ?? 'Delete failed — refresh to check the order, then retry.');
+                          }
+                        } catch (e) { report(false, e instanceof Error ? e.message : 'Failed'); }
                       });
                     }}
                     className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-red-700 hover:bg-red-800 text-white text-xs font-bold disabled:opacity-50"
@@ -272,8 +311,8 @@ export function OrderQuickView() {
                       setActionMsg(null);
                       start(async () => {
                         const fd = new FormData(); fd.set('orderId', data.id);
-                        try { const r = await verifyPayment(fd); setActionMsg(r.message); if (r.ok) refetch(data.id); }
-                        catch (e) { setActionMsg(e instanceof Error ? e.message : 'Verify failed'); }
+                        try { const r = await verifyPayment(fd); report(r.ok, r.message); if (r.ok) refetch(data.id); }
+                        catch (e) { report(false, e instanceof Error ? e.message : 'Verify failed'); }
                       });
                     }}
                     className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold disabled:opacity-50"
@@ -294,7 +333,12 @@ export function OrderQuickView() {
                 </div>
               )}
               {actionMsg && (
-                <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">{actionMsg}</p>
+                <p
+                  role="status"
+                  className={`text-[11px] font-semibold ${actionMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}
+                >
+                  {actionMsg.text}
+                </p>
               )}
 
               {/* === Customer panel — full B2B contact + buyer intel === */}
@@ -557,23 +601,43 @@ export function OrderQuickView() {
                     </Link>
                   )}
                 </div>
-                {!data.archivedAt && (
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() => {
-                      setActionMsg(null);
-                      start(async () => {
-                        const fd = new FormData(); fd.set('orderId', data.id);
-                        try { const r = await archiveOrder(fd); setActionMsg(r.message); if (r.ok) refetch(data.id); }
-                        catch (e) { setActionMsg(e instanceof Error ? e.message : 'Failed'); }
-                      });
-                    }}
-                    className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted disabled:opacity-50"
-                  >
-                    <Archive className="h-3.5 w-3.5" /> Archive
-                  </button>
-                )}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(data.status) && !data.archivedAt && (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => {
+                        if (!window.confirm(`Refund order ${data.orderNumber} (${fmt(data.totalCents, data.currency)})? The order is marked refunded and the buyer is emailed. This cannot be undone.`)) return;
+                        setActionMsg(null);
+                        start(async () => {
+                          const fd = new FormData(); fd.set('orderId', data.id);
+                          try { const r = await refundOrder(fd); report(r.ok, r.message); if (r.ok) refetch(data.id); }
+                          catch { report(false, 'Refund failed — refresh to check the order, then retry.'); }
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-red-300 bg-card text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"
+                    >
+                      Refund
+                    </button>
+                  )}
+                  {!data.archivedAt && (
+                    <button
+                      type="button"
+                      disabled={pending}
+                      onClick={() => {
+                        setActionMsg(null);
+                        start(async () => {
+                          const fd = new FormData(); fd.set('orderId', data.id);
+                          try { const r = await archiveOrder(fd); report(r.ok, r.message); if (r.ok) refetch(data.id); }
+                          catch (e) { report(false, e instanceof Error ? e.message : 'Failed'); }
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-muted-foreground text-xs font-bold hover:bg-muted disabled:opacity-50"
+                    >
+                      <Archive className="h-3.5 w-3.5" /> Archive
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           )}

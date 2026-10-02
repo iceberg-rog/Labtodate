@@ -11,19 +11,48 @@ import { getMarketing } from '@/lib/marketing';
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
 
-export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string }> }) {
+export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string; facility?: string; reason?: string }> }) {
   const mk = await getMarketing();
   const session = await getServerSession();
-  const slug = (await searchParams).product;
+  const sp = await searchParams;
+  const slug = sp.product;
+  // Checkout's "Other — request a shipping quote" country lands here.
+  const shippingQuote = sp.reason === 'shipping';
   const anchor = slug
     ? await prisma.product.findUnique({
         where: { slug },
         select: { slug: true, title: true, brand: { select: { name: true } } },
       })
     : null;
+  // Lab rental "Request access" sends ?facility=<LabFacility slug>.
+  const facilityRow = !anchor && sp.facility
+    ? await prisma.labFacility.findUnique({
+        where: { slug: sp.facility },
+        select: { slug: true, name: true, city: true, country: true, isPublished: true },
+      })
+    : null;
+  const facility = facilityRow?.isPublished
+    ? { slug: facilityRow.slug, name: facilityRow.name, location: `${facilityRow.city}, ${facilityRow.country}` }
+    : null;
+  const backBase = anchor
+    ? `/let-us-find-it?product=${encodeURIComponent(anchor.slug)}`
+    : facility
+      ? `/let-us-find-it?facility=${encodeURIComponent(facility.slug)}`
+      : '/let-us-find-it';
+  // Keep the shipping-quote context through sign-in so the banner survives.
+  const back = shippingQuote
+    ? `${backBase}${backBase.includes('?') ? '&' : '?'}reason=shipping`
+    : backBase;
 
   return (
     <div className="container-px py-12 md:py-20">
+      {shippingQuote && (
+        <div role="status" className="max-w-6xl mx-auto mb-8 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          <strong>We need to quote shipping to your country first.</strong> No order was created and nothing was
+          reserved. Send this request with your delivery country and city in the details{anchor ? ' — the item is already filled in' : ''},
+          and we&apos;ll reply with a price including shipping.
+        </div>
+      )}
       <div className="grid lg:grid-cols-[1fr_1.2fr] gap-12 items-start max-w-6xl mx-auto">
         <div>
           <div className="inline-flex items-center gap-2 rounded-full bg-accent/15 border border-accent/30 px-3 py-1 text-xs font-bold text-primary mb-5">
@@ -39,7 +68,13 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
           </p>
 
           <ul className="mt-8 space-y-4">
-            <Bullet icon={Clock} title="Quote turnaround" body="We come back as soon as we have something solid — typically a few business days." />
+            <Bullet
+              icon={Clock}
+              title="Quote turnaround"
+              body={mk.quoteTurnaround
+                ? `We come back as soon as we have something solid — within ${mk.quoteTurnaround}.`
+                : 'We come back as soon as we have something solid.'}
+            />
             <Bullet icon={ShieldCheck} title="Free for buyers" body="No commission until you accept a quote." />
           </ul>
         </div>
@@ -48,13 +83,15 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
           <Suspense>
             <SourcingForm
               anchor={anchor ? { slug: anchor.slug, title: anchor.title, brand: anchor.brand?.name ?? null } : null}
+              facility={facility}
               buyer={{ name: session.user.name ?? '', email: session.user.email }}
             />
           </Suspense>
         ) : (
           <SignInToRequest
             anchor={anchor ? { title: anchor.title, brand: anchor.brand?.name ?? null } : null}
-            back={anchor ? `/let-us-find-it?product=${encodeURIComponent(anchor.slug)}` : '/let-us-find-it'}
+            facility={facility}
+            back={back}
           />
         )}
       </div>
@@ -66,9 +103,11 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
 // buyer can follow it in their dashboard. `back` returns them to this form.
 function SignInToRequest({
   anchor,
+  facility,
   back,
 }: {
   anchor: { title: string; brand: string | null } | null;
+  facility: { name: string; location: string } | null;
   back: string;
 }) {
   const redirect = encodeURIComponent(back);
@@ -81,6 +120,15 @@ function SignInToRequest({
           </p>
           <p className="font-semibold">{anchor.title}</p>
           {anchor.brand && <Badge variant="secondary" className="mt-2">{anchor.brand}</Badge>}
+        </div>
+      )}
+      {facility && (
+        <div className="rounded-xl bg-foreground/[0.03] border border-border p-4">
+          <p className="text-[10px] uppercase tracking-[0.15em] font-bold text-muted-foreground mb-1">
+            Lab access request
+          </p>
+          <p className="font-semibold">{facility.name}</p>
+          <p className="text-xs text-muted-foreground mt-1">{facility.location}</p>
         </div>
       )}
       <div className="space-y-2">

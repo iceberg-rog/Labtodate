@@ -11,6 +11,7 @@ import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
 import { computeSellState, sellToneClasses, type SellState } from '@/lib/sell/deal-state';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Acquisitions' };
 
 const PAGE_SIZE = 50;
 
@@ -49,6 +50,9 @@ const TAB_DEFS: Array<{
   { key: 'all', label: 'All' },
 ];
 
+// Submissions are referenced as "SS-XXXXXX" (and listed as "#XXXXXX"): last 6 of the id.
+const SS_REF = /^(?:SS-?|#)[a-z0-9]{6}$/i;
+
 function smartDate(d: Date | null | undefined): string {
   if (!d) return '';
   const days = Math.floor((Date.now() - d.getTime()) / 86400e3);
@@ -71,14 +75,18 @@ export default async function AdminSellPage(
   const searchParams = await props.searchParams;
   await requireCapability('sell:view');
 
-  const tab = TAB_DEFS.find((t) => t.key === searchParams.tab) ?? TAB_DEFS[0];
   const q = (searchParams.q ?? '').trim();
+  const refSearch = SS_REF.test(q);
+  // A reference names one submission wherever it is, so searched from the
+  // default view it is looked up across every tab (Open lists PENDING only and
+  // missed the ref of anything already answered). A tab picked explicitly
+  // still applies; the tab counts show where the matches are.
+  const requestedTab = TAB_DEFS.find((t) => t.key === searchParams.tab);
+  const tab = requestedTab ?? (refSearch ? TAB_DEFS.find((t) => t.key === 'all')! : TAB_DEFS[0]);
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
 
-  const where: Prisma.SellSubmissionWhereInput = {
-    ...(tab.statusFilter ? { status: { in: tab.statusFilter } } : {}),
-    ...(tab.extraWhere ?? {}),
-    ...(q
+  const qWhere: Prisma.SellSubmissionWhereInput =
+    q
       ? {
           OR: [
             { contactName: { contains: q, mode: 'insensitive' as const } },
@@ -88,20 +96,31 @@ export default async function AdminSellPage(
             { model: { contains: q, mode: 'insensitive' as const } },
             { itemTitle: { contains: q, mode: 'insensitive' as const } },
             { description: { contains: q, mode: 'insensitive' as const } },
+            ...(refSearch ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
           ],
         }
-      : {}),
-  };
+      : {};
+  const tabWhere = (t: (typeof TAB_DEFS)[number]): Prisma.SellSubmissionWhereInput => ({
+    ...(t.statusFilter ? { status: { in: t.statusFilter } } : {}),
+    ...(t.extraWhere ?? {}),
+  });
+  const where: Prisma.SellSubmissionWhereInput = { ...tabWhere(tab), ...qWhere };
 
-  // Per-tab counts so the chips show real numbers, not stale defaults.
+  // Per-tab counts so the chips show real numbers, not stale defaults — while
+  // searching, the number of matches in each tab.
   const tabCounts: Record<string, number> = {};
   for (const t of TAB_DEFS) {
-    const w: Prisma.SellSubmissionWhereInput = {
-      ...(t.statusFilter ? { status: { in: t.statusFilter } } : {}),
-      ...(t.extraWhere ?? {}),
-    };
-    tabCounts[t.key] = await prisma.sellSubmission.count({ where: w });
+    tabCounts[t.key] = await prisma.sellSubmission.count({ where: { ...tabWhere(t), ...qWhere } });
   }
+  // Tab links keep the search; 'open' is the default tab except for a
+  // reference search, whose default is 'all'.
+  const tabHref = (key: string) => {
+    const sp = new URLSearchParams();
+    if (key !== 'open' || refSearch) sp.set('tab', key);
+    if (q) sp.set('q', q);
+    const qs = sp.toString();
+    return qs ? `/admin/sell?${qs}` : '/admin/sell';
+  };
 
   const [total, subs] = await Promise.all([
     prisma.sellSubmission.count({ where }),
@@ -137,14 +156,19 @@ export default async function AdminSellPage(
           {totalPages > 1 ? ` · page ${page}/${totalPages}` : ''}
         </p>
       </div>
-      <AdminSearch basePath="/admin/sell" q={q} placeholder="Search seller, email, brand, model, item…" />
+      <AdminSearch
+        basePath="/admin/sell"
+        q={q}
+        params={{ tab: requestedTab?.key }}
+        placeholder="Search seller, email, brand, model, item, SS- ref…"
+      />
       <div className="flex gap-2 flex-wrap">
         {TAB_DEFS.map((t) => {
           const active = t.key === tab.key;
           return (
             <Link
               key={t.key}
-              href={t.key === 'open' ? '/admin/sell' : `/admin/sell?tab=${t.key}`}
+              href={tabHref(t.key)}
               className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-xs font-semibold transition ${
                 active
                   ? 'bg-primary text-primary-foreground'
@@ -162,7 +186,9 @@ export default async function AdminSellPage(
           <div className="mx-auto h-14 w-14 rounded-full bg-primary/10 text-primary inline-flex items-center justify-center mb-4">
             <Inbox className="h-7 w-7" />
           </div>
-          <p className="text-lg font-bold">Nothing in {tab.label.toLowerCase()}</p>
+          <p className="text-lg font-bold">
+            {q ? `No offers in ${tab.label.toLowerCase()} match “${q}”` : `Nothing in ${tab.label.toLowerCase()}`}
+          </p>
           <p className="text-sm text-muted-foreground mt-2 max-w-sm mx-auto">
             New equipment offers from the public <code className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">Sell your equipment</code> page land here.
           </p>

@@ -8,6 +8,7 @@ import { QuoteBulkList } from '@/components/admin/QuoteBulkList';
 import type { QuoteRowProps } from '@/components/admin/QuoteRow';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Quote requests' };
 
 /**
  * Tab definitions for the operator queue. The "waiting" tab is special: it
@@ -23,6 +24,8 @@ const TAB_STATUSES: Array<{
   label: string;
   statusFilter?: QuoteStatus[];
   extraWhere?: Prisma.SourcingRequestWhereInput;
+  /** Not a tab button — the view the header signal chips link to. */
+  hidden?: boolean;
 }> = [
   {
     key: 'open',
@@ -42,7 +45,16 @@ const TAB_STATUSES: Array<{
   { key: 'won',      label: 'Won',      statusFilter: ['ACCEPTED'] },
   { key: 'lost',     label: 'Lost',     statusFilter: ['DECLINED', 'CLOSED'] },
   { key: 'all',      label: 'All',      statusFilter: undefined },
+  // Open + Waiting together: every live deal. The VIP/Urgent, My queue and
+  // Unassigned chips count exactly this set, so they link here — linking to
+  // Open hid the proforma'd deals they had counted.
+  { key: 'active',   label: 'Open + waiting', statusFilter: ['PENDING', 'RESPONDED'], hidden: true },
 ];
+// The statuses the signal chips count (= the 'active' tab).
+const ACTIVE_STATUSES: QuoteStatus[] = ['PENDING', 'RESPONDED'];
+// The reference shown on a row: the proforma number, or "RFQ-XXXXXX" (last 6 of the id).
+const RFQ_REF = /^RFQ-?[a-z0-9]{6}$/i;
+const isRefSearch = (q: string) => /^PRO-/i.test(q) || RFQ_REF.test(q);
 
 const SORT_OPTIONS = [
   { key: 'urgency', label: 'Urgency' },
@@ -52,6 +64,8 @@ const SORT_OPTIONS = [
 ] as const;
 type SortKey = (typeof SORT_OPTIONS)[number]['key'];
 const PRIORITY_WEIGHT: Record<string, number> = { VIP: 0, URGENT: 1, HIGH: 2, NORMAL: 3, LOW: 4 };
+// The "VIP/Urgent" chip: one definition for its count and its list.
+const HOT_PRIORITIES = ['VIP', 'URGENT'];
 const STATUS_WEIGHT: Record<string, number> = {
   PENDING: 0, RESPONDED: 1, ACCEPTED: 2, DECLINED: 3, CLOSED: 4,
 };
@@ -67,19 +81,33 @@ export default async function AdminQuotesPage(
   await requireCapability('quotes:view');
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();
-  const tab = TAB_STATUSES.find((t) => t.key === searchParams.tab) ?? TAB_STATUSES[0];
+  // A reference (PRO-… proforma or RFQ-XXXXXX) names one deal wherever it is,
+  // so searched from the default view it is looked up across every tab — the
+  // Open default excludes every quote with a proforma, so a PRO- search there
+  // could never match. A tab picked explicitly still applies (its match count
+  // below shows where the hits are).
+  const tab =
+    TAB_STATUSES.find((t) => t.key === searchParams.tab) ??
+    (isRefSearch(q) ? TAB_STATUSES.find((t) => t.key === 'all')! : TAB_STATUSES[0]);
   const view = searchParams.view === 'archived' ? 'archived' : '';
   const assignee = searchParams.assignee ?? '';
-  const priority = searchParams.priority ?? '';
+  // One or more priorities, comma-separated (the VIP/Urgent chip sends both);
+  // unknown values are ignored.
+  const priorities = Array.from(new Set(
+    (searchParams.priority ?? '')
+      .split(',')
+      .map((p) => p.trim().toUpperCase())
+      .filter((p) => p in PRIORITY_WEIGHT),
+  ));
+  const priority = priorities.join(',');
   const sort: SortKey = (SORT_OPTIONS.find((s) => s.key === searchParams.sort)?.key ?? 'urgency') as SortKey;
 
-  const where: Prisma.SourcingRequestWhereInput = {
-    ...(view === 'archived' ? { archivedAt: { not: null } } : { archivedAt: null }),
-    ...(tab.statusFilter ? { status: { in: tab.statusFilter } } : {}),
-    ...(tab.extraWhere ?? {}),
+  // The filters shared by every tab (the tab adds its own status scope).
+  const filterWhere = (archived: boolean): Prisma.SourcingRequestWhereInput => ({
+    ...(archived ? { archivedAt: { not: null } } : { archivedAt: null }),
     ...(assignee === 'me' && session?.user.id ? { assignedToId: session.user.id } : {}),
     ...(assignee === 'unassigned' ? { assignedToId: null } : {}),
-    ...(priority ? { priority } : {}),
+    ...(priorities.length ? { priority: { in: priorities } } : {}),
     ...(q
       ? {
           OR: [
@@ -90,10 +118,17 @@ export default async function AdminQuotesPage(
             { productCategory: { contains: q, mode: 'insensitive' as const } },
             { proformaNumber: { contains: q, mode: 'insensitive' as const } },
             { product: { title: { contains: q, mode: 'insensitive' as const } } },
+            // The list shows "RFQ-XXXXXX" (last 6 of the id) — make that searchable.
+            ...(RFQ_REF.test(q) ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
           ],
         }
       : {}),
-  };
+  });
+  const tabWhere = (t: (typeof TAB_STATUSES)[number]): Prisma.SourcingRequestWhereInput => ({
+    ...(t.statusFilter ? { status: { in: t.statusFilter } } : {}),
+    ...(t.extraWhere ?? {}),
+  });
+  const where: Prisma.SourcingRequestWhereInput = { ...filterWhere(view === 'archived'), ...tabWhere(tab) };
 
   // For urgency/sla, fetch wider then sort post-fetch
   const orderByForFetch =
@@ -173,11 +208,21 @@ export default async function AdminQuotesPage(
   const [archivedCount, myCount, unassignedCount, urgentVipCount] = await Promise.all([
     prisma.sourcingRequest.count({ where: { archivedAt: { not: null } } }),
     session?.user.id
-      ? prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: session.user.id, status: { in: ['PENDING', 'RESPONDED'] } } })
+      ? prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: session.user.id, status: { in: ACTIVE_STATUSES } } })
       : 0,
-    prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: null, status: { in: ['PENDING', 'RESPONDED'] } } }),
-    prisma.sourcingRequest.count({ where: { archivedAt: null, priority: { in: ['VIP', 'URGENT'] }, status: { in: ['PENDING', 'RESPONDED'] } } }),
+    prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: null, status: { in: ACTIVE_STATUSES } } }),
+    prisma.sourcingRequest.count({ where: { archivedAt: null, priority: { in: HOT_PRIORITIES }, status: { in: ACTIVE_STATUSES } } }),
   ]);
+  // While searching, every tab (and Archived) shows how many of its deals
+  // match, so a hit outside the tab being viewed is visible from it.
+  const visibleTabs = TAB_STATUSES.filter((t) => !t.hidden || tab.key === t.key);
+  const [tabMatchCounts, archivedMatchCount] = q
+    ? await Promise.all([
+        Promise.all(visibleTabs.map((t) => prisma.sourcingRequest.count({ where: { ...filterWhere(false), ...tabWhere(t) } })))
+          .then((counts) => new Map(visibleTabs.map((t, i) => [t.key, counts[i]]))),
+        prisma.sourcingRequest.count({ where: filterWhere(true) }),
+      ])
+    : [null, null];
 
   function href(over: Partial<{ tab: string; view: string; assignee: string; priority: string; q: string; sort: string }>) {
     const sp = new URLSearchParams();
@@ -189,7 +234,8 @@ export default async function AdminQuotesPage(
       q: over.q !== undefined ? over.q : q,
       sort: over.sort !== undefined ? over.sort : (sort === 'urgency' ? '' : sort),
     };
-    if (merged.tab && merged.tab !== 'open') sp.set('tab', merged.tab);
+    // 'open' is the default — except for a reference search, whose default is 'all'.
+    if (merged.tab && (merged.tab !== 'open' || isRefSearch(merged.q))) sp.set('tab', merged.tab);
     if (merged.view) sp.set('view', merged.view);
     if (merged.assignee) sp.set('assignee', merged.assignee);
     if (merged.priority) sp.set('priority', merged.priority);
@@ -212,9 +258,11 @@ export default async function AdminQuotesPage(
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs flex-wrap">
-          <SignalChip label="VIP/Urgent" value={urgentVipCount} tone={urgentVipCount > 0 ? 'red' : 'neutral'} href={href({ priority: 'URGENT', view: '' })} />
-          <SignalChip label="My queue" value={myCount} tone={myCount > 0 ? 'amber' : 'neutral'} href={href({ assignee: 'me', view: '' })} />
-          <SignalChip label="Unassigned" value={unassignedCount} tone={unassignedCount > 0 ? 'amber' : 'neutral'} href={href({ assignee: 'unassigned', view: '' })} />
+          {/* Each chip links to exactly the set it counts: live deals (Open +
+              waiting, not archived) with that filter alone. */}
+          <SignalChip label="VIP/Urgent" value={urgentVipCount} tone={urgentVipCount > 0 ? 'red' : 'neutral'} href={href({ tab: 'active', view: '', priority: HOT_PRIORITIES.join(','), assignee: '', q: '' })} />
+          <SignalChip label="My queue" value={myCount} tone={myCount > 0 ? 'amber' : 'neutral'} href={href({ tab: 'active', view: '', assignee: 'me', priority: '', q: '' })} />
+          <SignalChip label="Unassigned" value={unassignedCount} tone={unassignedCount > 0 ? 'amber' : 'neutral'} href={href({ tab: 'active', view: '', assignee: 'unassigned', priority: '', q: '' })} />
         </div>
       </div>
 
@@ -250,7 +298,7 @@ export default async function AdminQuotesPage(
       </form>
 
       <div className="flex gap-1.5 flex-wrap border-b border-border pb-2">
-        {TAB_STATUSES.map((t) => (
+        {visibleTabs.map((t) => (
           <a
             key={t.key}
             href={href({ tab: t.key, view: '' })}
@@ -261,6 +309,7 @@ export default async function AdminQuotesPage(
             }`}
           >
             {t.label}
+            {tabMatchCounts && <span className="opacity-60 tabular-nums"> {tabMatchCounts.get(t.key) ?? 0}</span>}
           </a>
         ))}
         <a
@@ -271,7 +320,7 @@ export default async function AdminQuotesPage(
               : 'bg-card border-border text-foreground hover:bg-foreground/5'
           }`}
         >
-          Archived <span className="opacity-60 tabular-nums">{archivedCount}</span>
+          Archived <span className="opacity-60 tabular-nums">{archivedMatchCount ?? archivedCount}</span>
         </a>
       </div>
 
@@ -286,7 +335,7 @@ export default async function AdminQuotesPage(
           )}
           {priority && (
             <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 font-semibold">
-              Priority: {priority}
+              Priority: {priorities.join(' / ')}
               <a href={href({ priority: '' })} className="ml-1 opacity-60 hover:opacity-100">×</a>
             </span>
           )}

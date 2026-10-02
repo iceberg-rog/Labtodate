@@ -3,110 +3,20 @@
 import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
-import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { requireSession } from '@/lib/auth-server';
 import { getStripe, stripeConfigured } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { sendEmail } from '@/lib/email';
-import { renderInvoiceHtml } from '@/lib/invoice';
+import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 import { audit, logError, notifyAdmins, notifyUser } from '@/lib/observability';
-import { generateOrderNumber, reserveAndCreateOrder } from '@/lib/orders/checkout-tx';
+import { reserveAndCreateOrder } from '@/lib/orders/checkout-tx';
+import { sendOrderReceived } from '@/lib/orders/internal';
+import { parseCheckoutCountry } from '@/lib/orders/countries';
 import { stripeCheckoutHandoff, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
 import { safeExpire } from '@/lib/stripe/session-api';
 import { withUniqueTicketRef } from '@/lib/support/actions';
-
-/**
- * Email the buyer (and BCC billing) a real invoice for a paid order.
- * Safe to call more than once; failures never block the order.
- */
-export async function sendOrderInvoice(orderId: string): Promise<void> {
-  try {
-    await ensureSettingsLoaded();
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      include: { buyer: { select: { name: true, email: true } }, items: true },
-    });
-    if (!order) return;
-    const sa = order.shippingAddress as Record<string, unknown> | null;
-    let shipTo: string | null = null;
-    if (sa && typeof sa === 'object') {
-      const ad = ((sa.address as Record<string, unknown>) || sa) as Record<string, unknown>;
-      shipTo =
-        [sa.name, ad.line1, ad.line2, ad.postal_code, ad.city, ad.state, ad.country, sa.phone]
-          .filter((x) => typeof x === 'string' && (x as string).trim())
-          .join(', ') || null;
-    }
-    const { subject, html } = renderInvoiceHtml({
-      kind: 'INVOICE',
-      number: order.orderNumber,
-      dateISO: (order.paidAt ?? order.createdAt).toISOString(),
-      currency: order.currency,
-      buyer: { name: order.buyer.name, email: order.buyer.email },
-      lines: order.items.map((i) => ({
-        title: i.titleSnapshot,
-        qty: i.quantity,
-        unitCents: i.priceCentsSnapshot,
-      })),
-      shippingCents: order.shippingCents,
-      taxCents: order.taxCents,
-      status: order.status === 'PAID' ? 'PAID' : order.status.replace(/_/g, ' '),
-      shipTo,
-    });
-    await sendEmail({ to: order.buyer.email, subject, html });
-    const billing = process.env.COMPANY_EMAIL;
-    if (billing) await sendEmail({ to: billing, subject: `[copy] ${subject}`, html });
-  } catch (e) {
-    console.error('sendOrderInvoice failed', e);
-    await logError('sendOrderInvoice', e);
-  }
-}
-
-/**
- * Honest "we received your order" email for the no-online-payment path.
- * No invoice is issued because nothing has been paid yet — the team
- * follows up with a secure payment link. Never blocks the order.
- */
-export async function sendOrderReceived(orderId: string): Promise<void> {
-  try {
-    await ensureSettingsLoaded();
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      include: { buyer: { select: { name: true, email: true } }, items: true },
-    });
-    if (!order) return;
-    const lines = order.items
-      .map((i) => `<li>${i.titleSnapshot} × ${i.quantity}</li>`)
-      .join('');
-    await sendEmail({
-      to: order.buyer.email,
-      subject: `Order ${order.orderNumber} received — bank transfer details to follow`,
-      html: `<p>Hi ${order.buyer.name || 'there'},</p>
-<p>We&rsquo;ve received your order <strong>${order.orderNumber}</strong>. <strong>No charge has been taken.</strong> Payment for this order is by bank transfer, manually verified by our team.</p>
-<p><strong>Next steps:</strong></p>
-<ol>
-  <li>Our team will email you our bank-transfer details (IBAN, reference) within one business day.</li>
-  <li>Send the wire for the full order amount, quoting the reference.</li>
-  <li>Upload the bank receipt from your order page once the transfer is sent.</li>
-  <li>An admin will verify the transfer and we will dispatch the order.</li>
-</ol>
-<p>Order contents:</p>
-<ul>${lines}</ul>
-<p>You can track everything under your account &rarr; Orders.</p>`,
-    });
-    const ops = process.env.SUPPORT_INTAKE_EMAIL || process.env.COMPANY_EMAIL;
-    if (ops) {
-      await sendEmail({
-        to: ops,
-        subject: `[action] New order ${order.orderNumber} — send bank-transfer details`,
-        html: `<p>${order.buyer.name} (${order.buyer.email}) placed order <strong>${order.orderNumber}</strong>. Send the bank-transfer instructions (IBAN + reference) so the buyer can wire payment for manual verification.</p>`,
-      });
-    }
-  } catch (e) {
-    console.error('sendOrderReceived failed', e);
-    await logError('sendOrderReceived', e);
-  }
-}
+import { ACTIVE_TICKET_STATUSES } from '@/lib/support/statuses';
 
 export async function requestReturn(orderNumber: string, formData: FormData) {
   await ensureSettingsLoaded();
@@ -121,7 +31,7 @@ export async function requestReturn(orderNumber: string, formData: FormData) {
     where: {
       submittedById: session.user.id,
       subject: `Return / refund — order ${orderNumber}`,
-      status: { in: ['OPEN', 'PENDING'] },
+      status: { in: ACTIVE_TICKET_STATUSES },
     },
     select: { ref: true },
   });
@@ -156,7 +66,7 @@ export async function requestReturn(orderNumber: string, formData: FormData) {
   await sendEmail({
     to: ops,
     subject: `Return request ${ref} — order ${orderNumber}`,
-    html: `<p>${session.user.name} (${session.user.email}) requested a return/refund for <strong>${orderNumber}</strong>.</p><p>Reason: ${reason || '—'}</p>`,
+    html: `<p>${escapeHtml(session.user.name)} (${escapeHtml(session.user.email)}) requested a return/refund for <strong>${orderNumber}</strong>.</p><p>Reason: ${reason ? escapeHtmlLines(reason) : '—'}</p>`,
   });
   await sendEmail({
     to: session.user.email,
@@ -225,35 +135,6 @@ export async function confirmDelivery(orderNumber: string): Promise<void> {
 }
 
 /**
- * Create a standalone order (no stock reservation — used by the quote/proforma
- * path), regenerating the order number on the (rare) unique collision instead of
- * throwing an unhandled 500. Each attempt is its own implicit transaction, so a
- * P2002 on one create never poisons the next. Reserving checkout paths use
- * reserveAndCreateOrder (transactional) instead.
- */
-export async function createOrderWithUniqueNumber(
-  data: Omit<Prisma.OrderUncheckedCreateInput, 'orderNumber'>,
-) {
-  for (let attempt = 0; attempt < 6; attempt++) {
-    try {
-      return await prisma.order.create({
-        data: { ...data, orderNumber: generateOrderNumber() },
-      });
-    } catch (e) {
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002' &&
-        attempt < 5
-      ) {
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error('Could not allocate an order number');
-}
-
-/**
  * Initiate purchase of a single product.
  *
  * With STRIPE_SECRET_KEY set: creates a Stripe Checkout session and redirects.
@@ -276,6 +157,14 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
   // Pull and lightly validate the address. Fields the warehouse must have:
   //   name + phone + line1 + city + postal + country.
   const get = (k: string) => String(formData.get(k) ?? '').trim();
+  // "Other — request a shipping quote" → divert to the sourcing form (product
+  // prefilled) so the team can quote shipping for unusual destinations. No
+  // order is created and no stock reserved for an order that may not ship.
+  // Checked on the RAW value — see parseCheckoutCountry.
+  const country = parseCheckoutCountry(get('country'));
+  if (country.kind === 'other') {
+    redirect(`/let-us-find-it?product=${encodeURIComponent(productSlug)}&reason=shipping`);
+  }
   const addr = {
     name: get('name').slice(0, 120),
     phone: get('phone').slice(0, 40),
@@ -285,14 +174,8 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
     city: get('city').slice(0, 80),
     postal: get('postal').slice(0, 24),
     state: get('state').slice(0, 80),
-    country: get('country').slice(0, 2).toUpperCase(),
+    country: country.kind === 'ok' ? country.code : '',
   };
-  // "Other — request a shipping quote" → divert to the sourcing form so the
-  // team can quote shipping for unusual destinations, and don't reserve stock
-  // for an order that may not ship.
-  if (addr.country === '__OTHER' || addr.country === 'OT') {
-    redirect(`/let-us-find-it?slug=${encodeURIComponent(productSlug)}&reason=shipping`);
-  }
 
   const missing: string[] = [];
   if (!addr.name) missing.push('name');
@@ -300,7 +183,7 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
   if (!addr.line1) missing.push('line1');
   if (!addr.city) missing.push('city');
   if (!addr.postal) missing.push('postal');
-  if (addr.country.length !== 2) missing.push('country');
+  if (!addr.country) missing.push('country');
   if (missing.length > 0) {
     redirect(`/checkout/${productSlug}?missing=${missing.join(',')}`);
   }

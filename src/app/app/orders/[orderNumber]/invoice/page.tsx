@@ -8,6 +8,10 @@ import { PrintButton } from '@/components/util/PrintButton';
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Invoice' };
 
+// Money has been captured for these statuses; anything else is still unpaid
+// (or was never paid) and must not be presented as a final invoice.
+const PAID_STATUSES = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'];
+
 export default async function InvoicePage({ params }: { params: Promise<{ orderNumber: string }> }) {
   const { orderNumber } = await params;
   const session = await requireSession({ redirectTo: `/app/orders/${orderNumber}/invoice` });
@@ -37,8 +41,10 @@ export default async function InvoicePage({ params }: { params: Promise<{ orderN
     : new Date((order.createdAt.getTime()) + paymentTermDays * 86_400_000).toISOString();
   const deliveryDateISO = order.paidAt ? order.paidAt.toISOString() : null;
 
+  const unpaid = !PAID_STATUSES.includes(order.status);
   const { html } = renderInvoiceHtml({
     kind: 'INVOICE',
+    unpaid,
     number: order.orderNumber,
     dateISO: (order.paidAt ?? order.createdAt).toISOString(),
     currency: order.currency,
@@ -61,7 +67,9 @@ export default async function InvoicePage({ params }: { params: Promise<{ orderN
       <div className="flex justify-end mb-6 print:hidden">
         <PrintButton />
       </div>
-      <div className="rounded-2xl border border-border bg-white p-8">
+      {/* overflow-x-auto + wrap: a long unbroken address line must stay inside
+          the card instead of widening the page on phones. */}
+      <div className="rounded-2xl border border-border bg-white p-4 sm:p-8 overflow-x-auto [overflow-wrap:anywhere]">
         <div dangerouslySetInnerHTML={{ __html: html }} />
       </div>
     </div>

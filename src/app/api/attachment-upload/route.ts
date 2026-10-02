@@ -1,18 +1,13 @@
 import { NextResponse } from 'next/server';
+import { IMAGE_KINDS, readVerifiedUpload } from '@/lib/storage/file-type';
 import { uploadObject, supportAttachmentKey } from '@/lib/storage/s3';
 import { rateLimit } from '@/lib/ratelimit';
+import { getServerSession } from '@/lib/auth-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
-const ALLOWED = [
-  'image/jpeg',
-  'image/png',
-  'image/webp',
-  'image/gif',
-  'application/pdf',
-];
 
 /**
  * Support / ticket attachment upload.
@@ -22,8 +17,14 @@ const ALLOWED = [
  * exposed to the client.
  */
 export async function POST(req: Request) {
+  // Per-IP window sized by who is uploading: staff attach files all day across
+  // tickets, quotes and chats; signed-in customers attach up to 5 per message;
+  // anonymous guests (magic-link replies, chat widget) stay tight.
+  const session = await getServerSession();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  const max = role === 'ADMIN' ? 200 : session ? 30 : 10;
   try {
-    await rateLimit('attachment-upload');
+    await rateLimit(role === 'ADMIN' ? 'attachment-upload-staff' : 'attachment-upload', max, 10 * 60_000);
   } catch {
     return NextResponse.json({ error: 'Too many uploads, slow down.' }, { status: 429 });
   }
@@ -38,19 +39,15 @@ export async function POST(req: Request) {
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'no file' }, { status: 400 });
   }
-  if (file.size > MAX_BYTES) {
-    return NextResponse.json({ error: 'File too large (max 10 MB).' }, { status: 400 });
-  }
-  if (!ALLOWED.includes(file.type)) {
-    return NextResponse.json(
-      { error: 'Only images and PDF are allowed.' },
-      { status: 400 },
-    );
+  // Type and extension come from the file's bytes, not the browser's claim.
+  const checked = await readVerifiedUpload(file, { allow: [...IMAGE_KINDS, 'pdf'], maxBytes: MAX_BYTES });
+  if (!checked.ok) {
+    return NextResponse.json({ error: checked.error }, { status: 400 });
   }
 
-  const buf = Buffer.from(await file.arrayBuffer());
-  const key = supportAttachmentKey(file.name);
-  await uploadObject(key, buf, file.type);
+  const { buf, mime, ext } = checked.upload;
+  const key = supportAttachmentKey(ext);
+  await uploadObject(key, buf, mime);
   const proxiedUrl = `/api/support-attachment/${key}`;
-  return NextResponse.json({ url: proxiedUrl, name: file.name, type: file.type });
+  return NextResponse.json({ url: proxiedUrl, name: file.name, type: mime });
 }

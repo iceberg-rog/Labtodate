@@ -8,6 +8,8 @@ import { Assistant } from '@/components/site/Assistant';
 import { PublicChrome } from '@/components/site/PublicChrome';
 import { ThemeScript } from '@/components/site/ThemeScript';
 import { getMarketing } from '@/lib/marketing';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { isBuildPhase } from '@/lib/build-phase';
 
 // Self-hosted variable fonts (next/font/local reads local files — no network
 // at build time, unlike next/font/google which needs fonts.gstatic.com).
@@ -28,49 +30,55 @@ const mono = localFont({
   fallback: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
 });
 
-export const metadata: Metadata = {
-  metadataBase: new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com'),
-  title: {
-    default: 'lab2date — Refurbished & surplus lab equipment marketplace',
-    template: '%s · lab2date',
-  },
-  description:
-    'B2B marketplace for laboratory & biotech equipment across Europe — new, refurbished and surplus HPLC, GC, mass spectrometry and analytical instruments, with end-to-end quote, proforma and insured shipping.',
-  keywords: [
-    'refurbished lab equipment',
-    'used laboratory instruments',
-    'HPLC',
-    'gas chromatography',
-    'mass spectrometry',
-    'analytical instruments',
-    'lab equipment marketplace',
-    'laboratory equipment Netherlands',
-    'surplus scientific instruments',
-    'Europe',
-  ],
-  applicationName: 'lab2date',
-  authors: [{ name: 'lab2date' }],
-  // NOTE: no site-wide `alternates.canonical` — that would point every page at
-  // the homepage. Canonicals are set per-page in each route's generateMetadata.
-  robots: {
-    index: true,
-    follow: true,
-    googleBot: { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1, 'max-video-preview': -1 },
-  },
-  openGraph: {
-    title: 'lab2date — Refurbished & surplus lab equipment marketplace',
+// Site name from Admin → Settings → Brand (SITE_NAME); it used to be
+// hard-coded here, so changing the setting never reached <title> / OG tags.
+export async function generateMetadata(): Promise<Metadata> {
+  if (!isBuildPhase()) await ensureSettingsLoaded();
+  const site = process.env.SITE_NAME?.trim() || 'lab2date';
+  return {
+    metadataBase: new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com'),
+    title: {
+      default: `${site} — Refurbished & surplus lab equipment marketplace`,
+      template: `%s · ${site}`,
+    },
     description:
-      'Source refurbished and surplus laboratory equipment across Europe — quote, proforma and insured shipping handled end to end.',
-    type: 'website',
-    siteName: 'lab2date',
-    locale: 'en_US',
-  },
-  twitter: {
-    card: 'summary_large_image',
-    title: 'lab2date — Lab equipment marketplace',
-    description: 'Refurbished & surplus laboratory equipment for Europe.',
-  },
-};
+      'B2B marketplace for laboratory & biotech equipment across Europe — new, refurbished and surplus HPLC, GC, mass spectrometry and analytical instruments, with end-to-end quote, proforma and insured shipping.',
+    keywords: [
+      'refurbished lab equipment',
+      'used laboratory instruments',
+      'HPLC',
+      'gas chromatography',
+      'mass spectrometry',
+      'analytical instruments',
+      'lab equipment marketplace',
+      'laboratory equipment Netherlands',
+      'surplus scientific instruments',
+      'Europe',
+    ],
+    applicationName: site,
+    authors: [{ name: site }],
+    // NOTE: no site-wide `alternates.canonical` — that would point every page at
+    // the homepage. Canonicals are set per-page in each route's generateMetadata.
+    robots: {
+      index: true,
+      follow: true,
+      googleBot: { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1, 'max-video-preview': -1 },
+    },
+    openGraph: {
+      title: `${site} — Refurbished & surplus lab equipment marketplace`,
+      description:
+        'Source refurbished and surplus laboratory equipment across Europe — quote, proforma and insured shipping handled end to end.',
+      type: 'website',
+      siteName: site,
+      locale: 'en_US',
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: `${site} — Lab equipment marketplace`,
+      description: 'Refurbished & surplus laboratory equipment for Europe.',
+    },
+  };
+}
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -92,7 +100,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <PublicChrome
           header={<Header searchPlaceholder={`Search ${mk.listings} instruments…`} />}
           footer={<Footer />}
-          overlays={<><CookieConsent /><Assistant /></>}
+          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'lab2date'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'lab2date'} /></>}
         >
           {children}
         </PublicChrome>

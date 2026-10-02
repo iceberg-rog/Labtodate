@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
 import { sendEmail } from '@/lib/email';
+import { escapeHtml as esc, escapeHtmlLines, headerText } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
 import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
@@ -34,7 +35,16 @@ const SellInput = z.object({
   accessories: z.string().max(2000).optional().nullable(),
   reason: z.string().max(500).optional().nullable(),
   availability: z.string().max(160).optional().nullable(),
-  photosUrl: z.string().url().max(500).optional().nullable().or(z.literal('')),
+  // http(s) only: z.url() also accepts javascript:/data: links, and this value
+  // is rendered as a clickable link for the acquisitions team.
+  photosUrl: z
+    .string()
+    .url()
+    .max(500)
+    .refine((u) => /^https?:\/\//i.test(u), 'must be a web link starting with http:// or https://')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
   images: z.array(z.string().url().max(500)).max(8).optional(),
 });
 
@@ -108,21 +118,29 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
   ]
     .map(
       ([k, v]) =>
-        `<tr><td style="padding:4px 12px 4px 0;color:#888;">${k}</td><td style="padding:4px 0;"><strong>${v}</strong></td></tr>`,
+        `<tr><td style="padding:4px 12px 4px 0;color:#888;">${k}</td><td style="padding:4px 0;"><strong>${esc(v)}</strong></td></tr>`,
     )
     .join('');
 
   // Emails are best-effort: a transport hiccup must not lose the submission.
   try {
-  // Confirmation to the seller
+  // Confirmation to the seller. This form needs no account and mails the
+  // address that was typed, so the submission (name, item, summary) is echoed
+  // only to the signed-in user's own address. Anyone else gets a generic
+  // receipt — otherwise the form relays arbitrary text from lab2date to any
+  // inbox. The ops copy below carries the full (escaped) details.
+  const echo = !!session && parsed.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
   await sendEmail({
     to: parsed.email,
-    subject: `We received your equipment submission: ${parsed.itemTitle}`,
+    subject: echo
+      ? `We received your equipment submission: ${headerText(parsed.itemTitle, 120)}`
+      : 'We received your equipment submission',
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">Thanks, ${parsed.contactName} — we&rsquo;ve got it</h2>
+        <h2 style="color:#0E4F40;">Thanks${echo ? `, ${esc(parsed.contactName)}` : ''} — we&rsquo;ve got it</h2>
         <p>Our acquisitions team will review your submission and reply within <strong>2 business days</strong> with a valuation and next steps.</p>
-        <table style="border-collapse:collapse;font-size:14px;margin:16px 0;">${summaryRows}</table>
+        ${echo ? `<table style="border-collapse:collapse;font-size:14px;margin:16px 0;">${summaryRows}</table>` : ''}
+        ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t offer equipment to lab2date, you can ignore this email.</p>`}
         <p style="color:#888;font-size:12px;">Reference: ${created.id}</p>
       </div>
     `,
@@ -131,25 +149,22 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
   // Notify acquisitions / ops
   await sendEmail({
     to: OPS_EMAIL,
-    subject: `New sell submission: ${parsed.itemTitle} (${parsed.sellerType})`,
+    subject: `New sell submission: ${headerText(parsed.itemTitle, 120)} (${parsed.sellerType})`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:600px;">
         <h2 style="color:#0E4F40;">New equipment submission</h2>
-        <p>From <strong>${parsed.contactName}</strong> &lt;${parsed.email}&gt;${
-          parsed.phone ? ` · ${parsed.phone}` : ''
-        }${parsed.companyName ? ` · ${parsed.companyName}` : ''}${
-          parsed.country ? ` · ${parsed.country}` : ''
+        <p>From <strong>${esc(parsed.contactName)}</strong> &lt;${esc(parsed.email)}&gt;${
+          parsed.phone ? ` · ${esc(parsed.phone)}` : ''
+        }${parsed.companyName ? ` · ${esc(parsed.companyName)}` : ''}${
+          parsed.country ? ` · ${esc(parsed.country)}` : ''
         }</p>
         <table style="border-collapse:collapse;font-size:14px;margin:12px 0;">${summaryRows}</table>
         <p><strong>Description</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${parsed.description.replace(
-          /\n/g,
-          '<br>',
-        )}</blockquote>
-        ${parsed.accessories ? `<p><strong>Accessories / extras:</strong> ${parsed.accessories}</p>` : ''}
-        ${parsed.reason ? `<p><strong>Reason for selling:</strong> ${parsed.reason}</p>` : ''}
-        ${parsed.availability ? `<p><strong>Availability:</strong> ${parsed.availability}</p>` : ''}
-        ${parsed.photosUrl ? `<p><strong>Photos:</strong> <a href="${parsed.photosUrl}">${parsed.photosUrl}</a></p>` : ''}
+        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
+        ${parsed.accessories ? `<p><strong>Accessories / extras:</strong> ${escapeHtmlLines(parsed.accessories)}</p>` : ''}
+        ${parsed.reason ? `<p><strong>Reason for selling:</strong> ${escapeHtmlLines(parsed.reason)}</p>` : ''}
+        ${parsed.availability ? `<p><strong>Availability:</strong> ${esc(parsed.availability)}</p>` : ''}
+        ${parsed.photosUrl && /^https?:\/\//i.test(parsed.photosUrl) ? `<p><strong>Photos:</strong> <a href="${esc(parsed.photosUrl)}">${esc(parsed.photosUrl)}</a></p>` : ''}
         <p style="color:#888;font-size:12px;">Reference: ${created.id}</p>
       </div>
     `,
@@ -192,12 +207,47 @@ function parseAttachments(v: FormDataEntryValue | null): string[] {
     if (!Array.isArray(arr)) return [];
     return arr
       .filter((u): u is string => typeof u === 'string')
-      .filter((u) => u.startsWith('/media/') || u.startsWith('http://') || u.startsWith('https://'))
+      // The reply box uploads through /api/attachment-upload, which returns the
+      // auth-gated proxy URL. Only those are kept — the old /media/ + http(s)
+      // allow-list silently dropped every real attachment.
+      .filter((u) => u.startsWith('/api/support-attachment/'))
       .slice(0, 5);
   } catch {
     return [];
   }
 }
+
+/** Amount as people write it: cents only when there are some (never rounded). */
+function fmtAmount(cents: number, currency: string): string {
+  const digits = cents % 100 === 0 ? 0 : 2;
+  return `${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${currency}`;
+}
+
+/**
+ * Lifecycle milestones (offer, accepted, declined, received, paid) are
+ * transactional: the seller always gets the in-app note AND the email. They
+ * used to go through notifyAndMaybeEmail, whose chat throttle matches the
+ * SS-ref in the subject, so any chat reply in the previous couple of hours
+ * swallowed the offer or even the "payment wired" email. Guest sellers have
+ * no account, so for them the email is the only channel.
+ */
+async function notifySellerMilestone(opts: {
+  userId: string | null;
+  toEmail: string;
+  notifTitle: string;
+  notifBody: string;
+  notifHref: string;
+  emailSubject: string;
+  emailHtml: string;
+}): Promise<void> {
+  await notifyUser(opts.userId, opts.notifTitle, opts.notifBody, opts.notifHref);
+  await sendEmail({ to: opts.toEmail, subject: opts.emailSubject, html: opts.emailHtml }).catch((e) =>
+    console.error('[sell] milestone email failed', opts.emailSubject, e),
+  );
+}
+
+const ACQUISITION_CURRENCIES = ['EUR', 'USD', 'GBP', 'CHF'];
+const MAX_ACQUISITION_CENTS = 10_000_000_00; // €10M — far above any lab instrument
 
 export async function replySellSubmission(formData: FormData) {
   const session = await requireCapability('sell:reply', { redirectTo: '/admin/sell' });
@@ -225,9 +275,9 @@ export async function replySellSubmission(formData: FormData) {
     notifTitle: `New reply · ${ref}`,
     notifBody: `Our acquisitions team replied about "${sub.itemTitle}". Open it to respond.`,
     notifHref: `/app/sell-submissions/${id}`,
-    emailSubject: `[${ref}] New reply on your equipment offer "${sub.itemTitle}"`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
-                <p>Our acquisitions team replied on your equipment offer <strong>${sub.itemTitle}</strong>.</p>
+    emailSubject: `[${ref}] New reply on your equipment offer "${headerText(sub.itemTitle, 120)}"`,
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
+                <p>Our acquisitions team replied on your equipment offer <strong>${esc(sub.itemTitle)}</strong>.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Open conversation in your dashboard</a></p>
                 <p style="color:#888;font-size:12px;">We send at most one of these emails every couple of hours while we're actively chatting — check your dashboard for newer replies.</p>`,
     dedupeKey: ref,
@@ -273,8 +323,8 @@ export async function replyToSellSubmission(formData: FormData) {
  *     URL never carries the ownership claim).
  *   - Every state change emits a SellMessage of kind='SYSTEM' so the
  *     conversation thread doubles as an audit trail.
- *   - Seller-bound notifications use the throttled helper; chat-rapid-fire
- *     won't spam their inbox.
+ *   - Chat replies use the throttled helper so rapid-fire chat won't spam the
+ *     seller's inbox; lifecycle milestones always email (notifySellerMilestone).
  */
 
 function ownsSellerSide(sub: { submittedById: string | null; email: string }, sess: { id: string; email: string }) {
@@ -313,7 +363,7 @@ export async function proposeAcquisitionPrice(formData: FormData): Promise<void>
       submissionId: id,
       fromStaff: true,
       authorId: session.user.id,
-      body: note || `We can offer ${(cents / 100).toLocaleString()} ${currency} for this item.`,
+      body: note || `We can offer ${fmtAmount(cents, currency)} for this item.`,
       kind: 'PRICE_PROPOSAL',
       priceCents: cents,
       currency,
@@ -324,20 +374,107 @@ export async function proposeAcquisitionPrice(formData: FormData): Promise<void>
   }
   const ref = `SS-${id.slice(-6).toUpperCase()}`;
   const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
-  await notifyAndMaybeEmail({
+  await notifySellerMilestone({
     userId: sub.submittedById,
     toEmail: sub.email,
     notifTitle: `New price offer · ${ref}`,
-    notifBody: `We proposed ${(cents / 100).toLocaleString()} ${currency} for "${sub.itemTitle}".`,
+    notifBody: `We proposed ${fmtAmount(cents, currency)} for "${sub.itemTitle}".`,
     notifHref: `/app/sell-submissions/${id}`,
-    emailSubject: `[${ref}] We proposed ${(cents / 100).toLocaleString()} ${currency} for "${sub.itemTitle}"`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
-                <p>We've put a price on your equipment offer:<br><strong style="font-size:18px;">${(cents / 100).toLocaleString()} ${currency}</strong></p>
-                ${note ? `<blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#555;">${note}</blockquote>` : ''}
+    emailSubject: `[${ref}] We proposed ${fmtAmount(cents, currency)} for "${headerText(sub.itemTitle, 120)}"`,
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
+                <p>We've put a price on your equipment offer:<br><strong style="font-size:18px;">${esc(fmtAmount(cents, currency))}</strong></p>
+                ${note ? `<blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#555;">${escapeHtmlLines(note)}</blockquote>` : ''}
                 <p><a href="${base}/app/sell-submissions/${id}">Open offer in your dashboard</a> to accept or counter.</p>`,
-    dedupeKey: ref,
   });
   await audit('sell.price.propose', ref, `${cents}c ${currency} by=${session.user.email}`);
+  revalidatePath('/admin/sell');
+  revalidatePath(`/admin/sell/${id}`);
+  revalidatePath(`/app/sell-submissions/${id}`);
+}
+
+/**
+ * Admin accepts a submission without a counter-offer ("skip negotiation").
+ * The agreed payout price is required: the lifecycle (bank details → ship →
+ * receive → pay) runs on agreedPriceCents, so accepting without one left the
+ * deal with no next step for either side. Also repairs offers that were
+ * accepted before the price was required (status ACCEPTED, no stage).
+ */
+export async function acceptSellSubmissionAtPrice(formData: FormData): Promise<void> {
+  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
+  await ensureSettingsLoaded();
+  const id = String(formData.get('submissionId') ?? '');
+  if (!id) return;
+  const cents = Math.round(parseFloat(String(formData.get('amount') ?? '')) * 100);
+  const currency = String(formData.get('currency') ?? 'EUR').toUpperCase();
+  if (!Number.isFinite(cents) || cents <= 0 || cents > MAX_ACQUISITION_CENTS || !ACQUISITION_CURRENCIES.includes(currency)) {
+    redirect(`/admin/sell/${id}?err=price`);
+  }
+  const sub = await prisma.sellSubmission.findUnique({
+    where: { id },
+    select: { submittedById: true, email: true, contactName: true, itemTitle: true },
+  });
+  if (!sub) redirect('/admin/sell');
+  const claim = await prisma.sellSubmission.updateMany({
+    where: { id, acquisitionStage: null, status: { in: ['PENDING', 'RESPONDED', 'ACCEPTED'] } },
+    data: { status: 'ACCEPTED', acquisitionStage: 'AWAITING_BANK', agreedPriceCents: cents, agreedCurrency: currency },
+  });
+  if (claim.count !== 1) redirect(`/admin/sell/${id}?err=state`);
+
+  const ref = `SS-${id.slice(-6).toUpperCase()}`;
+  const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
+  await emitSystemMessage(id, `Acquisitions accepted the offer at ${fmtAmount(cents, currency)}. Next: bank details.`);
+  await notifySellerMilestone({
+    userId: sub.submittedById,
+    toEmail: sub.email,
+    notifTitle: `Offer accepted · ${ref}`,
+    notifBody: `We'll buy "${sub.itemTitle}" for ${fmtAmount(cents, currency)}. Next: add your bank details for the payout.`,
+    notifHref: `/app/sell-submissions/${id}`,
+    emailSubject: `[${ref}] We accepted your offer at ${fmtAmount(cents, currency)}`,
+    emailHtml: `<p>Hi ${esc(sub.contactName || 'there')},</p>
+                <p>Good news: we'll buy <strong>${esc(sub.itemTitle)}</strong> for <strong>${esc(fmtAmount(cents, currency))}</strong>.</p>
+                <p>Next step: <a href="${base}/app/sell-submissions/${id}">add your bank details</a> so we know where to wire the payout. Then we'll send you the shipping instructions.</p>
+                <p style="color:#888;font-size:12px;">To use the dashboard, sign in (or create an account) with ${esc(sub.email)}.</p>`,
+  });
+  await audit('sell.accept', ref, `${cents}c ${currency} by=${session.user.email}`);
+  revalidatePath('/admin/sell');
+  revalidatePath(`/admin/sell/${id}`);
+  revalidatePath(`/app/sell-submissions/${id}`);
+  redirect(`/admin/sell/${id}`); // drop a stale ?err= from an earlier attempt
+}
+
+/** Admin declines a submission. The seller is told by email (guests have no
+ *  account, so an in-app note alone reached nobody). */
+export async function declineSellSubmission(formData: FormData): Promise<void> {
+  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
+  await ensureSettingsLoaded();
+  const id = String(formData.get('submissionId') ?? '');
+  if (!id) return;
+  const sub = await prisma.sellSubmission.findUnique({
+    where: { id },
+    select: { submittedById: true, email: true, contactName: true, itemTitle: true },
+  });
+  if (!sub) redirect('/admin/sell');
+  // Compare-and-set: a double click emails once; never after the payout started.
+  const claim = await prisma.sellSubmission.updateMany({
+    where: { id, acquisitionStage: null, status: { notIn: ['DECLINED', 'CLOSED'] } },
+    data: { status: 'DECLINED' },
+  });
+  if (claim.count === 1) {
+    const ref = `SS-${id.slice(-6).toUpperCase()}`;
+    await emitSystemMessage(id, 'Acquisitions declined this offer.');
+    await notifySellerMilestone({
+      userId: sub.submittedById,
+      toEmail: sub.email,
+      notifTitle: 'Your equipment submission was declined',
+      notifBody: `"${sub.itemTitle}" was declined. Thank you for the offer.`,
+      notifHref: `/app/sell-submissions/${id}`,
+      emailSubject: `[${ref}] About your equipment offer`,
+      emailHtml: `<p>Hi ${esc(sub.contactName || 'there')},</p>
+                  <p>Thank you for offering us <strong>${esc(sub.itemTitle)}</strong>. After reviewing it, we can't make an offer this time.</p>
+                  <p>You're welcome to submit other equipment any time.</p>`,
+    });
+    await audit('sell.decline', ref, `by=${session.user.email}`);
+  }
   revalidatePath('/admin/sell');
   revalidatePath(`/admin/sell/${id}`);
   revalidatePath(`/app/sell-submissions/${id}`);
@@ -355,7 +492,7 @@ export async function acceptAcquisitionPrice(formData: FormData): Promise<void> 
   if (!id) return;
   const sub = await prisma.sellSubmission.findUnique({
     where: { id },
-    select: { submittedById: true, email: true, itemTitle: true, status: true },
+    select: { submittedById: true, email: true, itemTitle: true, status: true, acquisitionStage: true },
   });
   if (!sub) throw new Error('Submission not found');
   if (!ownsSellerSide({ submittedById: sub.submittedById, email: sub.email }, { id: session.user.id, email: session.user.email })) {
@@ -368,8 +505,11 @@ export async function acceptAcquisitionPrice(formData: FormData): Promise<void> 
     select: { priceCents: true, currency: true },
   });
   if (!latest?.priceCents) return; // nothing to accept
-  await prisma.sellSubmission.update({
-    where: { id },
+  // Only an open negotiation can be accepted (an ACCEPTED offer that never got
+  // a price included). Once the payout lifecycle runs, a stale/double click
+  // must not rewind it to AWAITING_BANK.
+  const claim = await prisma.sellSubmission.updateMany({
+    where: { id, acquisitionStage: null, status: { in: ['PENDING', 'RESPONDED', 'ACCEPTED'] } },
     data: {
       status: 'ACCEPTED',
       acquisitionStage: 'AWAITING_BANK',
@@ -377,10 +517,11 @@ export async function acceptAcquisitionPrice(formData: FormData): Promise<void> 
       agreedCurrency: latest.currency ?? 'EUR',
     },
   });
-  await emitSystemMessage(id, `Seller accepted ${(latest.priceCents / 100).toLocaleString()} ${latest.currency ?? 'EUR'}. Next: bank details.`);
+  if (claim.count !== 1) return;
+  await emitSystemMessage(id, `Seller accepted ${fmtAmount(latest.priceCents, latest.currency ?? 'EUR')}. Next: bank details.`);
   await notifyAdmins(
     `Price accepted · ${`SS-${id.slice(-6).toUpperCase()}`}`,
-    `Seller accepted ${(latest.priceCents / 100).toLocaleString()} ${latest.currency ?? 'EUR'} for "${sub.itemTitle}".`,
+    `Seller accepted ${fmtAmount(latest.priceCents, latest.currency ?? 'EUR')} for "${sub.itemTitle}".`,
     `/admin/sell/${id}`,
     'SYSTEM',
   ).catch(() => null);
@@ -505,18 +646,17 @@ export async function markAcquisitionReceived(formData: FormData): Promise<void>
   await emitSystemMessage(id, `Package received at warehouse. Inspection in progress.`);
   const ref = `SS-${id.slice(-6).toUpperCase()}`;
   const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
-  await notifyAndMaybeEmail({
+  await notifySellerMilestone({
     userId: sub.submittedById,
     toEmail: sub.email,
     notifTitle: `Package received · ${ref}`,
     notifBody: `We received "${sub.itemTitle}". Inspection in progress — we'll wire payment as soon as QC clears.`,
     notifHref: `/app/sell-submissions/${id}`,
-    emailSubject: `[${ref}] We received "${sub.itemTitle}" — inspection started`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
+    emailSubject: `[${ref}] We received "${headerText(sub.itemTitle, 120)}" — inspection started`,
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
                 <p>Your equipment for offer <strong>${ref}</strong> arrived at our warehouse and is now being inspected.</p>
                 <p>Once QC clears we wire payment to the bank details on file and email you the transfer receipt.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Track status in your dashboard</a></p>`,
-    dedupeKey: ref,
   });
   await audit('sell.received', ref, `by=${session.user.email}`);
   revalidatePath(`/admin/sell/${id}`);
@@ -550,21 +690,21 @@ export async function completeAcquisition(formData: FormData): Promise<void> {
       paymentReceiptUrl: receiptUrl,
     },
   });
-  await emitSystemMessage(id, `Acquisition completed. Payment of ${(sub.agreedPriceCents ?? 0) / 100} ${sub.agreedCurrency ?? 'EUR'} wired; receipt attached.`);
+  const paid = fmtAmount(sub.agreedPriceCents ?? 0, sub.agreedCurrency ?? 'EUR');
+  await emitSystemMessage(id, `Acquisition completed. Payment of ${paid} wired; receipt attached.`);
   const ref = `SS-${id.slice(-6).toUpperCase()}`;
   const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
-  await notifyAndMaybeEmail({
+  await notifySellerMilestone({
     userId: sub.submittedById,
     toEmail: sub.email,
     notifTitle: `Acquisition completed · ${ref}`,
-    notifBody: `Payment of ${(sub.agreedPriceCents ?? 0) / 100} ${sub.agreedCurrency ?? 'EUR'} has been wired. Receipt available in your dashboard.`,
+    notifBody: `Payment of ${paid} has been wired. Receipt available in your dashboard.`,
     notifHref: `/app/sell-submissions/${id}`,
     emailSubject: `[${ref}] Payment wired — acquisition complete`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
-                <p>We've wired <strong>${(sub.agreedPriceCents ?? 0) / 100} ${sub.agreedCurrency ?? 'EUR'}</strong> to your bank for offer <strong>${ref}</strong>.</p>
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
+                <p>We've wired <strong>${esc(paid)}</strong> to your bank for offer <strong>${ref}</strong>.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Open dashboard</a> to download the transfer receipt.</p>
                 <p>Thanks for selling through lab2date — the instrument is going to a new home.</p>`,
-    dedupeKey: ref,
   });
   await audit('sell.completed', ref, `by=${session.user.email}`);
   revalidatePath(`/admin/sell/${id}`);

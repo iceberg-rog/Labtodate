@@ -41,6 +41,9 @@ export function AdminUserDangerZone({
   const [openDelete, setOpenDelete] = useState(false);
   const [openSuspend, setOpenSuspend] = useState(false);
   const [reason, setReason] = useState('');
+  // Server refusals (last admin, account has orders, …) shown inline — they
+  // used to surface as an alert with the redacted production error.
+  const [actionErr, setActionErr] = useState<string | null>(null);
 
   function triggerReset() {
     setResetRes(null);
@@ -112,10 +115,15 @@ export function AdminUserDangerZone({
               ) : (
                 <form
                   action={(fd) => {
+                    setActionErr(null);
                     start(async () => {
                       fd.set('userId', userId);
                       fd.set('reason', reason);
-                      await suspendUser(fd);
+                      const r = await suspendUser(fd).catch(() => ({ ok: false, message: 'Suspend failed — please try again.' }));
+                      if (!r.ok) {
+                        setActionErr(r.message);
+                        return;
+                      }
                       setOpenSuspend(false);
                       setReason('');
                       if (onDone) onDone();
@@ -159,7 +167,7 @@ export function AdminUserDangerZone({
             <Trash2 className="h-4 w-4 text-red-700 dark:text-red-300" /> Delete forever
           </p>
           <p className="text-xs text-muted-foreground mt-1 mb-3">
-            Permanent. Removes sessions, wishlist, cart, notifications, reviews. Order/ticket history is retained for audit.
+            Permanent. Removes sessions, wishlist, cart, notifications, reviews. Accounts with orders can’t be deleted — suspend those instead.
           </p>
           {!openDelete ? (
             <Button
@@ -174,16 +182,17 @@ export function AdminUserDangerZone({
           ) : (
             <form
               action={(fd) => {
+                setActionErr(null);
                 start(async () => {
                   fd.set('userId', userId);
                   fd.set('confirmEmail', confirmEmail);
-                  try {
-                    await deleteUser(fd);
-                    if (onDone) onDone();
-                    else router.push('/admin/users');
-                  } catch (e) {
-                    alert(e instanceof Error ? e.message : 'Delete failed');
+                  const r = await deleteUser(fd).catch(() => ({ ok: false, message: 'Delete failed — please try again.' }));
+                  if (!r.ok) {
+                    setActionErr(r.message);
+                    return;
                   }
+                  if (onDone) onDone();
+                  else router.push('/admin/users');
                 });
               }}
               className="space-y-2"
@@ -227,6 +236,11 @@ export function AdminUserDangerZone({
           )}
         </div>
       </div>
+      {actionErr && (
+        <p role="alert" className="text-xs font-semibold text-red-700 dark:text-red-300 inline-flex items-center gap-1.5">
+          <XCircle className="h-4 w-4 flex-shrink-0" /> {actionErr}
+        </p>
+      )}
     </div>
   );
 }

@@ -28,6 +28,14 @@ const CommentInput = z.object({
   body: z.string().trim().min(3).max(2000),
 });
 
+// Field-level messages people can act on (zod's defaults read like
+// "String must contain at least 3 character(s)").
+const COMMENT_FIELD_ERRORS: Record<string, string> = {
+  authorName: 'Please enter your name (2–80 characters).',
+  authorEmail: 'Please enter a valid email address, like name@example.com.',
+  body: 'Please write a comment of 3–2,000 characters.',
+};
+
 /** Public comment submission — auto-held for moderation. */
 export async function submitBlogComment(
   formData: FormData,
@@ -39,15 +47,17 @@ export async function submitBlogComment(
     body: formData.get('body'),
   });
   if (!parsed.success) {
-    const first = parsed.error.issues[0];
-    return { ok: false, message: first?.message ?? 'Invalid comment.' };
+    const field = String(parsed.error.issues[0]?.path[0] ?? '');
+    return { ok: false, message: COMMENT_FIELD_ERRORS[field] ?? 'This comment could not be posted. Reload the page and try again.' };
   }
   // Honeypot — bots fill anything in this field; legit submitters never see it.
   if (String(formData.get('website') ?? '').trim() !== '') {
     return { ok: true, message: 'Thanks — your comment will appear after review.' };
   }
+  // Keyed on the client IP only: including the typed email let anyone reset
+  // the limit by changing the address.
   try {
-    await rateLimit(`blogcomment:${parsed.data.authorEmail.toLowerCase()}`, 5, 60_000);
+    await rateLimit('blogcomment', 5, 60_000);
   } catch {
     return { ok: false, message: 'Too many comments — please wait a minute before posting again.' };
   }
@@ -86,15 +96,16 @@ export async function setBlogCommentApproved(id: string, approved: boolean): Pro
   if (c.post?.slug) revalidatePath(`/blog/${c.post.slug}`);
 }
 
-/** Admin: delete a comment (spam etc.). */
+/** Admin: delete a comment (spam etc.). Idempotent — a second click on an
+ *  already-deleted comment is a no-op instead of a P2025 crash. */
 export async function deleteBlogComment(id: string): Promise<void> {
   await requireCapability('content:write');
   const c = await prisma.blogComment.findUnique({
     where: { id },
     select: { post: { select: { slug: true } } },
   });
-  await prisma.blogComment.delete({ where: { id } });
-  await audit('blogcomment.delete', id);
+  const { count } = await prisma.blogComment.deleteMany({ where: { id } });
+  if (count > 0) await audit('blogcomment.delete', id);
   revalidatePath('/admin/blog');
   revalidatePath('/admin/blog/comments');
   if (c?.post?.slug) revalidatePath(`/blog/${c.post.slug}`);

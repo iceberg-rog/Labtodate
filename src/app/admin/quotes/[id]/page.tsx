@@ -6,9 +6,11 @@ import {
 } from 'lucide-react';
 import { requireCapability, getServerSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { EmailText } from '@/components/util/EmailText';
 import { QuoteComposer } from '@/components/admin/QuoteComposer';
+import { QuoteHeaderControls } from '@/components/admin/QuoteHeaderControls';
 import { QuoteReissueMagicLink } from '@/components/admin/QuoteReissueMagicLink';
 import { computeDealState, toneClasses } from '@/lib/quotes/deal-state';
 import { DealStateBadge } from '@/components/quotes/DealStateBadge';
@@ -19,8 +21,17 @@ import { ActivityTimeline } from '@/components/quotes/ActivityTimeline';
 import { buildBuyerIntel } from '@/lib/quotes/buyer-intel';
 import { buildActivityTimeline } from '@/lib/quotes/activity-timeline';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
+import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('quotes:view', 'Quote request', async () => {
+    const { id } = await props.params;
+    const sr = await prisma.sourcingRequest.findUnique({ where: { id }, select: { id: true, proformaNumber: true } });
+    return sr && `Quote ${sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`}`;
+  });
+}
 
 function priorityChip(priority: string) {
   const styles: Record<string, { cls: string; icon: JSX.Element; label: string }> = {
@@ -39,7 +50,7 @@ function priorityChip(priority: string) {
 }
 
 function fmtMoney(cents: number, ccy = 'EUR'): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 }).format(cents / 100);
+  return formatPrice(cents, ccy); // shows cents when present — must match the proforma
 }
 
 export default async function AdminQuoteDetailPage(props: { params: Promise<{ id: string }> }) {
@@ -87,6 +98,10 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
   const ref = sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`;
   const title = sr.product?.title ?? sr.productCategory ?? 'General sourcing request';
   const canCompose = !sr.archivedAt && sr.status !== 'CLOSED' && sr.status !== 'ACCEPTED' && sr.status !== 'DECLINED';
+  // Closing is for deals that went nowhere; a paid order is managed on the order.
+  const canClose =
+    sr.status !== 'CLOSED' && sr.status !== 'DECLINED' &&
+    (!linkedOrder || linkedOrder.status === 'PENDING_PAYMENT' || linkedOrder.status === 'CANCELED');
 
   return (
     <div className="space-y-4">
@@ -183,6 +198,12 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               myUserId={session?.user.id ?? null}
               admins={admins}
               variant="block"
+            />
+            <QuoteHeaderControls
+              quoteId={sr.id}
+              priority={sr.priority}
+              archived={!!sr.archivedAt}
+              canClose={canClose}
             />
             {linkedOrder && (
               <Link

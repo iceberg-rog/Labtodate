@@ -188,7 +188,7 @@ export function ProductQuickView() {
                     <ExternalLink className="h-3.5 w-3.5" /> Open public page
                   </Link>
                   <Link
-                    href={`/app/seller/products/${data.slug}/edit`}
+                    href={`/admin/products/${data.slug}`}
                     className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-xs font-semibold hover:bg-foreground/5"
                   >
                     <Tag className="h-3.5 w-3.5" /> Full edit

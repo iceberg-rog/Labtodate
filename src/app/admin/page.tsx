@@ -19,12 +19,16 @@ import {
 } from 'lucide-react';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { TICKETS_AWAITING_SUPPORT } from '@/lib/support/statuses';
 import { formatPrice } from '@/lib/utils';
 import { OrderStatus } from '@prisma/client';
 import { LineChart } from '@/components/admin/Charts';
 import { BulkShipButton } from '@/components/admin/BulkShipButton';
 
 export const dynamic = 'force-dynamic';
+// The layout's "%s · Admin" template only applies to child segments, so this
+// page (same segment as the layout) would read "Overview · <site name>".
+export const metadata = { title: { absolute: 'Overview · Admin' } };
 export const revalidate = 30;
 
 const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
@@ -112,7 +116,8 @@ export default async function AdminDashboardPage() {
     }),
     prisma.supportTicket.findMany({
       where: {
-        status: { in: ['OPEN', 'PENDING'] },
+        status: { in: TICKETS_AWAITING_SUPPORT },
+        archivedAt: null,
         updatedAt: { lt: ticketStale },
       },
       orderBy: { updatedAt: 'asc' },
@@ -582,7 +587,7 @@ export default async function AdminDashboardPage() {
             {quotesStale.map((q) => (
               <Link
                 key={q.id}
-                href={`/app/seller/inbox/${q.id}`}
+                href={`/admin/quotes/${q.id}`}
                 className="flex items-center gap-3 p-3 rounded-xl border border-border bg-card hover:bg-foreground/[0.03]"
               >
                 <FileText className="h-4 w-4 text-muted-foreground flex-shrink-0" />

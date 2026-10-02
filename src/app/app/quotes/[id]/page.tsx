@@ -1,11 +1,30 @@
+import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
-import { requireSession } from '@/lib/auth-server';
+import { getServerSession, requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { QuoteThread } from '@/components/quotes/QuoteThread';
 import { computeDealState } from '@/lib/quotes/deal-state';
 
 export const dynamic = 'force-dynamic';
+
+// Same reference the quotes list shows (proforma number once issued). Only the
+// buyer (or an admin) gets it — anyone else keeps the generic site title, as
+// the page itself is a 404 for them.
+export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  const { id } = await props.params;
+  const session = await getServerSession();
+  if (!session) return {};
+  const sr = await prisma.sourcingRequest.findUnique({
+    where: { id },
+    select: { id: true, submittedById: true, buyerEmail: true, proformaNumber: true },
+  });
+  if (!sr) return {};
+  const role = (session.user as { role?: string }).role;
+  const isBuyer = sr.submittedById === session.user.id || sr.buyerEmail === session.user.email;
+  if (!isBuyer && role !== 'ADMIN') return {};
+  return { title: `Quote ${sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`}` };
+}
 
 export default async function BuyerQuoteDetailPage(
   props: {
@@ -48,17 +67,18 @@ export default async function BuyerQuoteDetailPage(
   // see the thread for audit, and buyers can force-see it with ?history=1
   // (linked from the order page so the conversation isn't lost).
   const POST_QUOTE_STATES = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELED', 'REFUNDED'];
-  if (
-    isBuyer &&
-    role !== 'ADMIN' &&
-    linkedOrder &&
-    POST_QUOTE_STATES.includes(linkedOrder.status) &&
-    searchParams.history !== '1'
-  ) {
+  // Declining (or closing) a quote cancels its unpaid order. That order page
+  // only says "Canceled", so the quote thread stays the buyer's view of the
+  // deal: it says what happened, and the order is linked as a side note.
+  const endedWithoutDeal =
+    (sr.status === 'DECLINED' || sr.status === 'CLOSED') && linkedOrder?.status === 'CANCELED';
+  const orderTakesOver =
+    isBuyer && role !== 'ADMIN' && !!linkedOrder && POST_QUOTE_STATES.includes(linkedOrder.status) && !endedWithoutDeal;
+  if (orderTakesOver && linkedOrder && searchParams.history !== '1') {
     redirect(`/app/orders/${linkedOrder.orderNumber}`);
   }
 
-  const inHistoryMode = !!(isBuyer && role !== 'ADMIN' && linkedOrder && POST_QUOTE_STATES.includes(linkedOrder.status) && searchParams.history === '1');
+  const inHistoryMode = orderTakesOver && searchParams.history === '1';
 
   return (
     <>
@@ -76,15 +96,31 @@ export default async function BuyerQuoteDetailPage(
         </a>
       </div>
     )}
-    {linkedOrder && (() => {
+    {endedWithoutDeal && linkedOrder && (
+      <p className="mb-5 rounded-xl border border-border bg-muted px-4 py-2.5 text-xs text-muted-foreground">
+        {sr.status === 'DECLINED' ? 'You declined this quote' : 'This request was closed'}, so order{' '}
+        <span className="font-mono">{linkedOrder.orderNumber}</span> was canceled.{' '}
+        <a href={`/app/orders/${linkedOrder.orderNumber}`} className="font-semibold text-primary hover:underline">
+          View canceled order
+        </a>
+      </p>
+    )}
+    {linkedOrder && !(
+      // A declined/closed deal has no live order: no banner inviting payment.
+      (sr.status === 'DECLINED' || sr.status === 'CLOSED') &&
+      (linkedOrder.status === 'PENDING_PAYMENT' || linkedOrder.status === 'CANCELED')
+    ) && (() => {
       const s = linkedOrder.status;
       const isPending = s === 'PENDING_PAYMENT';
       const isPaid = s === 'PAID';
       const isShipping = s === 'PROCESSING' || s === 'SHIPPED';
       const isDelivered = s === 'DELIVERED';
       const isDead = s === 'CANCELED' || s === 'REFUNDED';
+      // The order exists from the moment the proforma is sent; "Accepted" only
+      // once the buyer actually accepted it.
       const headline =
-        isPending ? `Accepted — order ${linkedOrder.orderNumber} · awaiting your payment`
+        isPending && sr.status !== 'ACCEPTED' ? `Proforma ready — order ${linkedOrder.orderNumber} · complete your purchase`
+          : isPending ? `Accepted — order ${linkedOrder.orderNumber} · awaiting your payment`
           : isPaid ? `Paid — order ${linkedOrder.orderNumber} · we are preparing your shipment`
           : isShipping ? `Order ${linkedOrder.orderNumber} · ${s.toLowerCase()}`
           : isDelivered ? `Delivered — order ${linkedOrder.orderNumber}`
@@ -119,22 +155,37 @@ export default async function BuyerQuoteDetailPage(
         </div>
       );
     })()}
-    {sr.quotedPriceCents != null && (
-      <div className="mb-5 rounded-2xl border-2 border-accent/40 bg-accent/[0.05] p-5 flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">Quoted price</p>
-          <p className="text-2xl font-bold data mt-1">
-            {((sr.quotedPriceCents) / 100).toLocaleString()} {sr.quotedCurrency || 'EUR'}
-          </p>
-        </div>
-        <a
-          href={`/app/quotes/${sr.id}/proforma`}
-          className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90"
+    {sr.quotedPriceCents != null && (() => {
+      // The deal ended (declined / closed / its order canceled): the price card
+      // stays for reference but must not read as a live, payable offer.
+      const quoteVoid = sr.status === 'DECLINED' || sr.status === 'CLOSED' || linkedOrder?.status === 'CANCELED';
+      return (
+        <div
+          className={`mb-5 rounded-2xl border-2 p-5 flex items-center justify-between gap-4 flex-wrap ${
+            quoteVoid ? 'border-border bg-muted' : 'border-accent/40 bg-accent/[0.05]'
+          }`}
         >
-          View / download proforma
-        </a>
-      </div>
-    )}
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+              {quoteVoid ? 'Quoted price · void, no payment due' : 'Quoted price'}
+            </p>
+            <p className={`text-2xl font-bold data mt-1 ${quoteVoid ? 'line-through text-muted-foreground' : ''}`}>
+              {((sr.quotedPriceCents) / 100).toLocaleString()} {sr.quotedCurrency || 'EUR'}
+            </p>
+          </div>
+          <a
+            href={`/app/quotes/${sr.id}/proforma`}
+            className={
+              quoteVoid
+                ? 'rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-muted-foreground hover:text-foreground'
+                : 'rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90'
+            }
+          >
+            {quoteVoid ? 'View void proforma' : 'View / download proforma'}
+          </a>
+        </div>
+      );
+    })()}
     <QuoteThread
       sourcingRequestId={sr.id}
       buyerName={sr.buyerName}
@@ -142,6 +193,7 @@ export default async function BuyerQuoteDetailPage(
       description={sr.description}
       status={sr.status}
       product={sr.product}
+      productCategory={sr.productCategory}
       messages={sr.messages.map((m) => ({
         id: m.id,
         body: m.body,
@@ -154,6 +206,8 @@ export default async function BuyerQuoteDetailPage(
               : 'lab2date Verified Supplier',
         authorEmail: role === 'ADMIN' ? (m.author?.email ?? null) : null,
         isMine: m.author?.id === session.user.id,
+        fromStaff: m.fromStaff,
+        attachments: m.attachments,
       }))}
       viewerRole="BUYER"
       createdAt={sr.createdAt.toISOString()}

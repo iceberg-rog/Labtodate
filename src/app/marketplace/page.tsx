@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import Link from 'next/link';
 import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
 import { listProducts, getCategories, getTopBrands } from '@/lib/marketplace/queries';
@@ -17,28 +18,59 @@ export const metadata: Metadata = {
 
 export const dynamic = 'force-dynamic';
 
-interface SearchParams {
-  q?: string;
-  category?: string;
-  brand?: string;
-  condition?: ProductCondition;
-  mode?: ProductMode;
-  sort?: 'newest' | 'price_asc' | 'price_desc';
-  minPrice?: string;
-  maxPrice?: string;
-  page?: string;
+type RawSearchParams = Record<string, string | string[] | undefined>;
+
+const CONDITIONS: readonly ProductCondition[] = ['NEW', 'REFURBISHED', 'USED'];
+const MODES: readonly ProductMode[] = ['BUY_NOW', 'HYBRID', 'QUOTE_ONLY'];
+const SORTS = ['newest', 'price_asc', 'price_desc'] as const;
+
+/** A repeated param (?category=a&category=b) arrives as an array — use the first. */
+function first(v: string | string[] | undefined): string {
+  return ((Array.isArray(v) ? v[0] : v) ?? '').trim();
 }
 
-export default async function MarketplacePage({ searchParams }: { searchParams: Promise<SearchParams> }) {
+function oneOf<T extends string>(v: string, allowed: readonly T[]): T | undefined {
+  return allowed.find((a) => a.toLowerCase() === v.toLowerCase());
+}
+
+/** Non-negative euro amount, or undefined (cents are clamped in listProducts). */
+function euros(v: string): number | undefined {
+  const n = parseFloat(v);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/**
+ * URL params go straight into Prisma, so anything it would reject (an unknown
+ * enum such as ?condition=new, an array, a price beyond INT4) used to 500 the
+ * page. Keep only values we understand and drop the rest.
+ */
+function parseParams(raw: RawSearchParams) {
+  const minEuro = euros(first(raw.minPrice));
+  const maxEuro = euros(first(raw.maxPrice));
+  return {
+    q: first(raw.q).slice(0, 200) || undefined,
+    category: first(raw.category) || undefined,
+    brand: first(raw.brand) || undefined,
+    condition: oneOf(first(raw.condition), CONDITIONS),
+    mode: oneOf(first(raw.mode), MODES),
+    sort: oneOf(first(raw.sort), SORTS),
+    minPrice: minEuro !== undefined ? first(raw.minPrice) : undefined,
+    maxPrice: maxEuro !== undefined ? first(raw.maxPrice) : undefined,
+    minEuro,
+    maxEuro,
+    page: Math.min(10_000, Math.max(1, parseInt(first(raw.page), 10) || 1)),
+    /** Set by checkout / add-to-cart when the item is no longer listed (banner only; not carried over). */
+    gone: first(raw.gone) || undefined,
+  };
+}
+
+export default async function MarketplacePage({ searchParams }: { searchParams: Promise<RawSearchParams> }) {
   // Next 16: searchParams is async — it MUST be awaited. Reading it directly
   // yields the Promise object, so every filter (category/brand/search/sort/
   // price/page) silently read `undefined` and the page showed all products.
-  const sp = await searchParams;
-  const page = parseInt(sp.page ?? '1', 10) || 1;
+  const sp = parseParams(await searchParams);
+  const page = sp.page;
   const mk = await getMarketing();
-
-  const minEuro = parseFloat(sp.minPrice ?? '');
-  const maxEuro = parseFloat(sp.maxPrice ?? '');
 
   const [result, categories, brands] = await Promise.all([
     listProducts({
@@ -48,17 +80,20 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
       condition: sp.condition,
       mode: sp.mode,
       sort: sp.sort,
-      minPriceCents: Number.isFinite(minEuro) && minEuro >= 0 ? Math.round(minEuro * 100) : undefined,
-      maxPriceCents: Number.isFinite(maxEuro) && maxEuro >= 0 ? Math.round(maxEuro * 100) : undefined,
+      minPriceCents: sp.minEuro !== undefined ? sp.minEuro * 100 : undefined,
+      maxPriceCents: sp.maxEuro !== undefined ? sp.maxEuro * 100 : undefined,
       page,
     }),
     getCategories(),
     getTopBrands(12),
   ]);
 
+  // Filters that carry over to pagination and the inline search box.
+  const KEPT = ['q', 'category', 'brand', 'condition', 'mode', 'sort', 'minPrice', 'maxPrice'] as const;
   const baseParams = new URLSearchParams();
-  for (const [k, v] of Object.entries(sp)) {
-    if (v && k !== 'page') baseParams.set(k, String(v));
+  for (const k of KEPT) {
+    const v = sp[k];
+    if (v) baseParams.set(k, v);
   }
 
   const activeCategoryName = sp.category
@@ -67,6 +102,12 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
 
   return (
     <div className="container-px py-10 md:py-14">
+      {sp.gone && (
+        <div role="status" className="mb-6 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          That item is no longer available, so no order was created and nothing is due. Browse similar listings below,
+          or ask us to source one via <Link href="/let-us-find-it" className="underline font-semibold">Let us find it</Link>.
+        </div>
+      )}
       {/* Hero strip */}
       <div className="mb-10">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">Marketplace</p>
@@ -88,13 +129,14 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
               type="search"
               name="q"
               defaultValue={sp.q ?? ''}
-              placeholder="Try ‘Zeiss confocal’ or ‘HPLC under €30k’…"
+              placeholder="Search by instrument, brand, category or part number…"
+              aria-label="Search the marketplace"
               className="w-full h-12 pl-11 pr-4 rounded-2xl border border-border bg-card text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
             />
             {/* preserve current filters in the form */}
-            {(['category', 'brand', 'condition', 'mode', 'sort'] as const).map((k) =>
+            {KEPT.filter((k) => k !== 'q').map((k) =>
               sp[k] ? (
-                <input key={k} type="hidden" name={k} value={String(sp[k])} />
+                <input key={k} type="hidden" name={k} value={sp[k]} />
               ) : null,
             )}
           </div>

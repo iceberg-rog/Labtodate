@@ -4,7 +4,7 @@ import Inner from './Inner';
 export const dynamic = 'force-dynamic';
 
 export const metadata = {
-  title: 'Forgot password · lab2date',
+  title: 'Forgot password',
 };
 
 export default function ForgotPasswordPage() {

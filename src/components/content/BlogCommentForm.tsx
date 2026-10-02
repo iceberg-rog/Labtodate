@@ -12,13 +12,21 @@ export function BlogCommentForm({ postId }: { postId: string }) {
   return (
     <form
       ref={ref}
-      action={(fd: FormData) =>
+      // onSubmit, not a form `action`: React resets an action form after every
+      // submit, which wiped the visitor's comment when the server rejected it.
+      onSubmit={(e) => {
+        e.preventDefault();
+        const fd = new FormData(e.currentTarget);
         start(async () => {
-          const r = await submitBlogComment(fd);
-          setRes(r);
-          if (r.ok) ref.current?.reset();
-        })
-      }
+          try {
+            const r = await submitBlogComment(fd);
+            setRes(r);
+            if (r.ok) ref.current?.reset();
+          } catch {
+            setRes({ ok: false, message: 'Your comment was not sent. Check your connection and try again.' });
+          }
+        });
+      }}
       className="rounded-2xl border border-border bg-card p-5 space-y-3"
     >
       <input type="hidden" name="postId" value={postId} />
@@ -38,6 +46,7 @@ export function BlogCommentForm({ postId }: { postId: string }) {
           name="authorEmail"
           type="email"
           required
+          maxLength={180}
           placeholder="you@example.com (not published)"
           className="h-10 px-3 rounded-lg border border-input bg-background text-sm"
         />

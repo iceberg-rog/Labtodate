@@ -9,16 +9,21 @@ export function AdminSearch({
   basePath,
   q,
   status,
+  params,
   placeholder,
 }: {
   basePath: string;
   q: string;
   status?: string;
+  /** Other active filters (e.g. category, shop) to keep when searching. */
+  params?: Record<string, string | undefined>;
   placeholder: string;
 }) {
+  const keep = Object.entries({ status, ...params }).filter((e): e is [string, string] => !!e[1]);
+  const clearQs = new URLSearchParams(keep).toString();
   return (
     <form method="GET" className="flex gap-2 flex-wrap">
-      {status && <input type="hidden" name="status" value={status} />}
+      {keep.map(([k, v]) => <input key={k} type="hidden" name={k} value={v} />)}
       <input
         name="q"
         defaultValue={q}
@@ -28,7 +33,7 @@ export function AdminSearch({
       <Button type="submit" size="sm" className="rounded-full font-semibold">Search</Button>
       {q && (
         <a
-          href={status ? `${basePath}?status=${status}` : basePath}
+          href={clearQs ? `${basePath}?${clearQs}` : basePath}
           className="inline-flex items-center px-3 h-10 rounded-full text-xs font-semibold bg-foreground/5 hover:bg-foreground/10"
         >
           Clear
@@ -46,6 +51,7 @@ export function AdminPager({
   q,
   status,
   tab,
+  params,
 }: {
   basePath: string;
   page: number;
@@ -55,12 +61,15 @@ export function AdminPager({
   status?: string;
   /** Generic tab key (queues that use ?tab= instead of ?status=). */
   tab?: string;
+  /** Other active filters (e.g. category, shop) to keep across pages. */
+  params?: Record<string, string | undefined>;
 }) {
   if (totalPages <= 1) return null;
   const href = (target: number) => {
     const sp = new URLSearchParams();
     if (status) sp.set('status', status);
     if (tab) sp.set('tab', tab);
+    for (const [k, v] of Object.entries(params ?? {})) if (v) sp.set(k, v);
     if (q) sp.set('q', q);
     if (target > 1) sp.set('page', String(target));
     const s = sp.toString();

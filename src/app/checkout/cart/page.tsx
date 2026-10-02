@@ -7,36 +7,10 @@ import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { Prisma } from '@prisma/client';
 import { startCartCheckoutWithAddress } from '@/lib/cart/actions';
+import { CHECKOUT_COUNTRIES as COUNTRIES } from '@/lib/orders/countries';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Checkout — shipping details' };
-
-const COUNTRIES: { code: string; name: string }[] = [
-  { code: 'NL', name: 'Netherlands' },
-  { code: 'DE', name: 'Germany' },
-  { code: 'FR', name: 'France' },
-  { code: 'BE', name: 'Belgium' },
-  { code: 'GB', name: 'United Kingdom' },
-  { code: 'IE', name: 'Ireland' },
-  { code: 'ES', name: 'Spain' },
-  { code: 'IT', name: 'Italy' },
-  { code: 'PT', name: 'Portugal' },
-  { code: 'AT', name: 'Austria' },
-  { code: 'CH', name: 'Switzerland' },
-  { code: 'SE', name: 'Sweden' },
-  { code: 'NO', name: 'Norway' },
-  { code: 'DK', name: 'Denmark' },
-  { code: 'FI', name: 'Finland' },
-  { code: 'PL', name: 'Poland' },
-  { code: 'CZ', name: 'Czechia' },
-  { code: 'US', name: 'United States' },
-  { code: 'CA', name: 'Canada' },
-  { code: 'AU', name: 'Australia' },
-  { code: 'AE', name: 'United Arab Emirates' },
-  { code: 'IR', name: 'Iran' },
-  { code: 'TR', name: 'Türkiye' },
-  { code: '__OTHER', name: 'Other — request a shipping quote' },
-];
 
 const FIELD_LABEL: Record<string, string> = {
   name: 'Full name',
@@ -72,6 +46,10 @@ export default async function CartCheckoutPage(
     (i) => i.product.status === 'PUBLISHED' && i.product.priceCents && i.product.mode !== 'QUOTE_ONLY',
   );
   if (valid.length === 0) redirect('/app/cart?empty=1');
+  // A row that is no longer for sale would make the order submit fail (the
+  // whole cart is ordered or nothing). Send the buyer back to the cart, which
+  // shows it as "no longer available" with a Remove button.
+  if (valid.length !== items.length) redirect('/app/cart?unavailable=1');
 
   // BUG-032: never show an order summary containing items that cannot be
   // purchased at the requested quantity — stale stock is resolved on the
@@ -108,7 +86,7 @@ export default async function CartCheckoutPage(
         <ChevronLeft className="h-4 w-4" /> Back to cart
       </Link>
       <div className="grid lg:grid-cols-[1fr_360px] gap-6 items-start">
-        <form action={startCartCheckoutWithAddress} className="space-y-5">
+        <form action={startCartCheckoutWithAddress} className="space-y-5 min-w-0">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Shipping details</h1>
             <p className="text-muted-foreground mt-1">
@@ -188,7 +166,7 @@ export default async function CartCheckoutPage(
           </section>
 
           <div className="flex items-center gap-3 flex-wrap">
-            <Button type="submit" size="lg" className="rounded-2xl font-semibold">
+            <Button type="submit" size="lg" className="rounded-2xl font-semibold whitespace-normal h-auto min-h-12 py-3 text-center w-full sm:w-auto">
               Submit order — bank-transfer details to follow
             </Button>
             <span className="text-xs text-muted-foreground">
@@ -197,7 +175,7 @@ export default async function CartCheckoutPage(
           </div>
         </form>
 
-        <aside className="lg:sticky lg:top-20 rounded-2xl border border-border bg-card overflow-hidden">
+        <aside className="min-w-0 lg:sticky lg:top-20 rounded-2xl border border-border bg-card overflow-hidden">
           <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
             <ShoppingBag className="h-4 w-4 text-primary" />
             <h2 className="text-sm font-bold">Order summary</h2>

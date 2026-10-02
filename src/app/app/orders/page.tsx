@@ -283,6 +283,14 @@ export default async function OrdersPage(props: { searchParams: Promise<{ filter
                         <FileText className="h-3.5 w-3.5" /> Invoice
                       </Link>
                     )}
+                    {o.status === 'PENDING_PAYMENT' && (
+                      <Link
+                        href={o.sourcingRequestId ? `/app/quotes/${o.sourcingRequestId}/proforma` : `/app/orders/${o.orderNumber}/invoice`}
+                        className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-border text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted"
+                      >
+                        <FileText className="h-3.5 w-3.5" /> Proforma invoice
+                      </Link>
+                    )}
                     {o.status === 'SHIPPED' && (
                       <Link
                         href={`/app/orders/${o.orderNumber}`}

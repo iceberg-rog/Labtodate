@@ -6,7 +6,8 @@ import { Upload, X, Loader2, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
 import { TiptapEditor } from '@/components/editor/TiptapEditor';
-import type { ProductInputType } from '@/app/app/seller/products/actions';
+import type { ProductActionError, ProductInputType } from '@/app/app/seller/products/actions';
+import { MAX_PRICE_CENTS } from '@/lib/products/validation';
 
 const ILLUSTRATIONS: IllustrationName[] = ['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector'];
 const CONDITIONS = ['NEW', 'REFURBISHED', 'USED'] as const;
@@ -20,8 +21,9 @@ interface Props {
   initial?: Partial<ProductInputType> & { slug?: string };
   categories: { id: string; name: string; slug: string }[];
   brands: { id: string; name: string; slug: string }[];
-  /** Server action wrapper — caller decides create vs update. */
-  onSubmit: (input: ProductInputType) => Promise<void>;
+  /** Server action wrapper — caller decides create vs update. Redirects on
+   *  success; returns a readable error when the server rejects the input. */
+  onSubmit: (input: ProductInputType) => Promise<ProductActionError | void>;
   submitLabel?: string;
 }
 
@@ -29,6 +31,7 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const [title, setTitle] = useState(initial?.title ?? '');
   const [summary, setSummary] = useState(initial?.summary ?? '');
@@ -37,7 +40,7 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
   const [brandId, setBrandId] = useState(initial?.brandId ?? '');
   const [condition, setCondition] = useState<'NEW' | 'REFURBISHED' | 'USED'>(initial?.condition ?? 'REFURBISHED');
   const [mode, setMode] = useState<'BUY_NOW' | 'QUOTE_ONLY' | 'HYBRID'>(initial?.mode ?? 'HYBRID');
-  const [priceEur, setPriceEur] = useState<string>(initial?.priceCents ? String(initial.priceCents / 100) : '');
+  const [priceEur, setPriceEur] = useState<string>(initial?.priceCents != null ? String(initial.priceCents / 100) : '');
   const [yearMade, setYearMade] = useState<string>(initial?.yearMade ? String(initial.yearMade) : '');
   const [illustration, setIllustration] = useState<IllustrationName>(initial?.illustration ?? 'balance');
   const [images, setImages] = useState<string[]>(initial?.images ?? []);
@@ -71,6 +74,7 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setFieldErrors({});
 
     const specsObj: Record<string, string> = {};
     for (const { k, v } of specs) if (k.trim() && v.trim()) specsObj[k.trim()] = v.trim();
@@ -93,9 +97,15 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
 
     startTransition(async () => {
       try {
-        await onSubmit(input);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Save failed');
+        const r = await onSubmit(input);
+        if (r && r.ok === false) {
+          setError(r.message);
+          setFieldErrors(r.fieldErrors ?? {});
+        }
+      } catch {
+        // Thrown server errors are redacted in production builds, so their
+        // text is meaningless to the seller.
+        setError('Saving failed. Please check your connection and try again.');
       }
     });
   }
@@ -105,17 +115,22 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
       {/* Basics */}
       <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
         <h2 className="text-lg font-bold">Basics</h2>
-        <Field label="Title (required)" hint="Brand + model + form factor.">
-          <input value={title} onChange={(e) => setTitle(e.target.value)} required minLength={6} className={inputCls} placeholder="Beckman Allegra X-30R Refrigerated Benchtop Centrifuge" />
+        <Field label="Title (required)" hint="Brand + model + form factor. 6–180 characters." error={fieldErrors.title}>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} required minLength={6} maxLength={180} className={inputCls} placeholder="Beckman Allegra X-30R Refrigerated Benchtop Centrifuge" />
         </Field>
-        <Field label="Short summary" hint="One sentence shown on listing cards.">
-          <input value={summary} onChange={(e) => setSummary(e.target.value)} className={inputCls} placeholder="High-capacity refrigerated benchtop centrifuge with broad rotor selection." />
+        <Field label="Short summary" hint="One sentence shown on listing cards (max 300 characters)." error={fieldErrors.summary}>
+          <input value={summary} onChange={(e) => setSummary(e.target.value)} maxLength={300} className={inputCls} placeholder="High-capacity refrigerated benchtop centrifuge with broad rotor selection." />
         </Field>
-        <Field label="Description" hint="Rich text. Renders on the public product page exactly as you see it here.">
+        <Field
+          label="Description"
+          hint={`Rich text. Renders on the public product page exactly as you see it here. ${(description ?? '').length.toLocaleString('en-US')} / 8,000 characters including formatting.`}
+          error={fieldErrors.description}
+          plain
+        >
           <TiptapEditor value={description ?? ''} onChange={setDescription} />
         </Field>
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Category">
+          <Field label="Category" error={fieldErrors.categoryId}>
             <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className={inputCls}>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
@@ -143,10 +158,10 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
               {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </Field>
-          <Field label="Price (EUR)" hint={mode === 'QUOTE_ONLY' ? 'Leave blank for quote-only.' : 'List price ex. VAT.'}>
-            <input type="number" min="0" step="0.01" value={priceEur} onChange={(e) => setPriceEur(e.target.value)} className={inputCls} placeholder="12800" disabled={mode === 'QUOTE_ONLY'} />
+          <Field label="Price (EUR)" hint={mode === 'QUOTE_ONLY' ? 'Leave blank for quote-only.' : 'List price ex. VAT.'} error={fieldErrors.priceCents}>
+            <input type="number" min="0" max={MAX_PRICE_CENTS / 100} step="0.01" value={priceEur} onChange={(e) => setPriceEur(e.target.value)} className={inputCls} placeholder="12800" disabled={mode === 'QUOTE_ONLY'} />
           </Field>
-          <Field label="Year made">
+          <Field label="Year made" error={fieldErrors.yearMade}>
             <input type="number" min="1900" max="2100" value={yearMade} onChange={(e) => setYearMade(e.target.value)} className={inputCls} placeholder="2020" />
           </Field>
         </div>
@@ -256,11 +271,14 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
             </div>
           ))}
           <label className="aspect-[4/3] rounded-xl border-2 border-dashed border-border flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-primary hover:bg-foreground/[0.02] transition-colors">
-            <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml" onChange={handleFile} disabled={uploading} className="sr-only" />
+            <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={handleFile} disabled={uploading} className="sr-only" />
             {uploading ? <Loader2 className="h-5 w-5 animate-spin text-primary" /> : <Upload className="h-5 w-5 text-muted-foreground" />}
             <span className="text-xs font-medium text-muted-foreground">{uploading ? 'Uploading…' : 'Add image'}</span>
           </label>
         </div>
+        {fieldErrors.images && (
+          <p role="alert" className="text-xs font-medium text-red-600 dark:text-red-400">{fieldErrors.images}</p>
+        )}
       </section>
 
       {error && (
@@ -283,12 +301,28 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50';
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  error,
+  plain,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  error?: string;
+  /** Render a <div>, not a <label>: a label forwards clicks on its text to its
+   *  first button, which in the rich-text editor is the Bold toolbar button. */
+  plain?: boolean;
+  children: React.ReactNode;
+}) {
+  const Wrapper = plain ? 'div' : 'label';
   return (
-    <label className="block">
+    <Wrapper className="block">
       <span className="block text-sm font-semibold mb-1">{label}</span>
       {hint && <span className="block text-xs text-muted-foreground mb-1.5">{hint}</span>}
       {children}
-    </label>
+      {error && <span className="block text-xs font-medium text-red-600 dark:text-red-400 mt-1">{error}</span>}
+    </Wrapper>
   );
 }

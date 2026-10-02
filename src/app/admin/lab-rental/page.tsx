@@ -1,11 +1,13 @@
-import { Plus, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Plus, Trash2, Eye, EyeOff, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { createFacility, deleteFacility, toggleFacility } from '@/app/admin/actions';
+import { createFacility, deleteFacility, toggleFacility, updateFacility } from '@/app/admin/actions';
+import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Lab rental' };
 
 export default async function AdminLabRentalPage() {
   await requireCapability('content:cms');
@@ -39,6 +41,14 @@ export default async function AdminLabRentalPage() {
             <label className="text-sm font-medium">Capabilities (comma-separated)</label>
             <input name="capabilities" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="HPLC, Mass Spec, PCR" />
           </div>
+          <div>
+            <label className="text-sm font-medium">Hourly rate (EUR, optional)</label>
+            <input name="hourlyRate" type="number" min={0} max={1000000} step="0.01" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="120" />
+          </div>
+          <div>
+            <label className="text-sm font-medium">Daily rate (EUR, optional)</label>
+            <input name="dailyRate" type="number" min={0} max={1000000} step="0.01" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="850" />
+          </div>
         </div>
         <div>
           <label className="text-sm font-medium">Description</label>
@@ -70,10 +80,32 @@ export default async function AdminLabRentalPage() {
               </Button>
             </form>
             <form action={deleteFacility.bind(null, f.id)}>
-              <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium text-destructive">
+              <ConfirmSubmitButton
+                message={`Delete the facility "${f.name}"? This cannot be undone.`}
+                variant="outline"
+                size="sm"
+                className="rounded-full font-medium text-destructive"
+              >
                 <Trash2 className="h-3.5 w-3.5" /> Delete
-              </Button>
+              </ConfirmSubmitButton>
             </form>
+            <details className="basis-full">
+              <summary className="cursor-pointer select-none w-fit text-xs font-semibold text-primary hover:underline">Edit</summary>
+              <form action={updateFacility.bind(null, f.id)} className="mt-3 space-y-3">
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <input name="name" required defaultValue={f.name} aria-label="Name" placeholder="Name" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <input name="city" defaultValue={f.city === '—' ? '' : f.city} aria-label="City" placeholder="City" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <input name="country" defaultValue={f.country === '—' ? '' : f.country} aria-label="Country" placeholder="Country" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <input name="capabilities" defaultValue={f.capabilities.join(', ')} aria-label="Capabilities (comma-separated)" placeholder="Capabilities (comma-separated)" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <input name="hourlyRate" type="number" min={0} max={1000000} step="0.01" defaultValue={f.hourlyRateCents != null ? f.hourlyRateCents / 100 : ''} aria-label="Hourly rate (EUR)" placeholder="Hourly rate (EUR)" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <input name="dailyRate" type="number" min={0} max={1000000} step="0.01" defaultValue={f.dailyRateCents != null ? f.dailyRateCents / 100 : ''} aria-label="Daily rate (EUR)" placeholder="Daily rate (EUR)" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                </div>
+                <textarea name="description" rows={4} defaultValue={f.description} aria-label="Description" placeholder="Description" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <Button type="submit" size="sm" className="rounded-full font-semibold">
+                  <Save className="h-3.5 w-3.5" /> Save changes
+                </Button>
+              </form>
+            </details>
           </li>
         ))}
       </ul>

@@ -5,18 +5,25 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/delete-guard';
 import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
+import { orderReservedStock } from '@/lib/orders/checkout-tx';
+import { sendOrderInvoice } from '@/lib/orders/internal';
+import { proxyProofUrl } from '@/lib/orders/display';
 import { expireOnlyApi } from '@/lib/stripe/session-api';
-import { requireSession, requireCapability, hasCapability } from '@/lib/auth-server';
+import { requireSession, requireCapability, hasCapability, sendAdminPasswordReset } from '@/lib/auth-server';
 import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
-import { UserRole } from '@prisma/client';
-import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
+import { Prisma, UserRole } from '@prisma/client';
+import { saveSettings as persistSettings, SETTING_DEFS, isSiteRelativePath } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
-import { sendEmail } from '@/lib/email';
+import { readVerifiedUpload } from '@/lib/storage/file-type';
+import { isDeliverableEmail, sendEmail } from '@/lib/email';
+import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getStripe } from '@/lib/stripe/client';
 import { aiConfig } from '@/lib/ai';
 import { ensureBucket } from '@/lib/storage/s3';
 import { audit, notifyUser, notifyAdmins } from '@/lib/observability';
+import { MAX_ADMIN_PRODUCT_IMAGES, MAX_PRICE_CENTS, MAX_PRICE_MESSAGE, zodFieldErrors, zodMessage } from '@/lib/products/validation';
+import { HOME_DEFAULTS, parseHeroStats } from '@/lib/home-sections';
 
 async function requireAdmin() {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
@@ -74,11 +81,33 @@ export async function toggleTestimonial(id: string, published: boolean) {
   revalidatePath('/admin/testimonials');
   revalidatePath('/');
 }
+/** Edit in place. A blank required field keeps its old value instead of
+ *  failing (bare form action: a throw would be a 500 page). */
+export async function updateTestimonial(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const quote = String(formData.get('quote') ?? '').trim().slice(0, 400);
+  const author = String(formData.get('author') ?? '').trim().slice(0, 120);
+  await prisma.testimonial.updateMany({
+    where: { id },
+    data: {
+      ...(quote ? { quote } : {}),
+      ...(author ? { author } : {}),
+      role: (formData.get('role') as string)?.trim() || null,
+      company: (formData.get('company') as string)?.trim() || null,
+      rating: Math.min(5, Math.max(1, parseInt(String(formData.get('rating') ?? '5'), 10) || 5)),
+      sortOrder: parseInt(String(formData.get('sortOrder') ?? '0'), 10) || 0,
+    },
+  });
+  await audit('testimonial.update', id);
+  revalidatePath('/admin/testimonials');
+  revalidatePath('/');
+}
 
 // ---- Case studies CRUD ----
-export async function createCaseStudy(formData: FormData) {
+export async function createCaseStudy(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('content:cms');
   const title = String(formData.get('title') ?? '').trim();
+  if (!title) return { ok: false, message: 'Enter a title — a case study can’t be published without one.' };
   const slug = await uniqueSlug(title, async (s) =>
     !!(await prisma.caseStudy.findUnique({ where: { slug: s }, select: { id: true } })),
   );
@@ -97,6 +126,7 @@ export async function createCaseStudy(formData: FormData) {
   await audit('casestudy.create', title);
   revalidatePath('/admin/case-studies');
   revalidatePath('/case-studies');
+  return { ok: true, message: `Published “${title}”.` };
 }
 export async function deleteCaseStudy(id: string) {
   await requireCap('content:cms');
@@ -114,8 +144,37 @@ export async function toggleCaseStudy(id: string, publish: boolean) {
   revalidatePath('/admin/case-studies');
   revalidatePath('/case-studies');
 }
+/** Edit in place; the slug is kept so published links keep working. */
+export async function updateCaseStudy(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const title = String(formData.get('title') ?? '').trim();
+  const cs = await prisma.caseStudy.findUnique({ where: { id }, select: { slug: true } });
+  if (!cs) return;
+  await prisma.caseStudy.update({
+    where: { id },
+    data: {
+      ...(title ? { title } : {}),
+      customer: String(formData.get('customer') ?? '').trim() || '—',
+      outcomeMetric: String(formData.get('outcomeMetric') ?? '').trim() || '—',
+      excerpt: String(formData.get('excerpt') ?? '').trim(),
+      body: String(formData.get('body') ?? '').trim(),
+    },
+  });
+  await audit('casestudy.update', cs.slug);
+  revalidatePath('/admin/case-studies');
+  revalidatePath('/case-studies');
+  revalidatePath(`/case-studies/${cs.slug}`);
+}
 
 // ---- Lab facilities CRUD ----
+/** Optional € rate field → cents (null when blank or out of range). */
+function rateCents(v: FormDataEntryValue | null): number | null {
+  const raw = String(v ?? '').trim();
+  if (!raw) return null;
+  const n = Math.round(Number(raw) * 100);
+  return Number.isFinite(n) && n >= 0 && n <= MAX_PRICE_CENTS ? n : null;
+}
+
 export async function createFacility(formData: FormData) {
   await requireCap('content:cms');
   const name = String(formData.get('name') ?? '').trim();
@@ -133,6 +192,8 @@ export async function createFacility(formData: FormData) {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
+      hourlyRateCents: rateCents(formData.get('hourlyRate')),
+      dailyRateCents: rateCents(formData.get('dailyRate')),
       isPublished: true,
     },
   });
@@ -152,6 +213,32 @@ export async function toggleFacility(id: string, isPublished: boolean) {
   await prisma.labFacility.update({ where: { id }, data: { isPublished } });
   revalidatePath('/admin/lab-rental');
   revalidatePath('/lab-rental');
+}
+/** Edit in place, including the hourly / daily rates shown on /lab-rental. */
+export async function updateFacility(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const name = String(formData.get('name') ?? '').trim();
+  const f = await prisma.labFacility.findUnique({ where: { id }, select: { slug: true } });
+  if (!f) return;
+  await prisma.labFacility.update({
+    where: { id },
+    data: {
+      ...(name ? { name } : {}),
+      city: String(formData.get('city') ?? '').trim() || '—',
+      country: String(formData.get('country') ?? '').trim() || '—',
+      description: String(formData.get('description') ?? '').trim(),
+      capabilities: String(formData.get('capabilities') ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      hourlyRateCents: rateCents(formData.get('hourlyRate')),
+      dailyRateCents: rateCents(formData.get('dailyRate')),
+    },
+  });
+  await audit('facility.update', f.slug);
+  revalidatePath('/admin/lab-rental');
+  revalidatePath('/lab-rental');
+  revalidatePath(`/lab-rental/${f.slug}`);
 }
 
 /* ── Webhook config CRUD + test-fire ─────────────────────────────────── */
@@ -175,16 +262,18 @@ export async function listWebhooks(): Promise<{
   }));
 }
 
-export async function createWebhook(formData: FormData): Promise<void> {
+export async function createWebhook(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('settings:write');
   const name = String(formData.get('name') ?? '').trim().slice(0, 80);
   const kind = String(formData.get('kind') ?? '').trim().toUpperCase();
   const url = String(formData.get('url') ?? '').trim().slice(0, 600);
   const chatId = String(formData.get('chatId') ?? '').trim() || null;
   const eventsRaw = String(formData.get('events') ?? '*').trim();
-  if (!name || !url) throw new Error('Name and URL required');
-  if (!['SLACK', 'DISCORD', 'TELEGRAM'].includes(kind)) throw new Error('Unknown webhook kind');
-  if (!/^https?:\/\//i.test(url)) throw new Error('URL must start with http(s)://');
+  // Returned, not thrown: production redacts thrown messages to a generic one.
+  if (!name || !url) return { ok: false, message: 'Name and URL are required.' };
+  if (!['SLACK', 'DISCORD', 'TELEGRAM'].includes(kind)) return { ok: false, message: 'Unknown webhook kind — pick Slack, Discord or Telegram.' };
+  if (!/^https?:\/\//i.test(url)) return { ok: false, message: 'The URL must start with https:// (or http://).' };
+  if (kind === 'TELEGRAM' && !chatId) return { ok: false, message: 'Telegram needs a chat_id.' };
   const events = eventsRaw === '*'
     ? ['*']
     : eventsRaw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -193,6 +282,7 @@ export async function createWebhook(formData: FormData): Promise<void> {
   });
   await audit('webhook.create', name, kind);
   revalidatePath('/admin/settings');
+  return { ok: true, message: `Webhook “${name}” added — use Test fire to check it.` };
 }
 
 export async function deleteWebhook(id: string): Promise<void> {
@@ -208,19 +298,19 @@ export async function toggleWebhook(id: string, isActive: boolean): Promise<void
   revalidatePath('/admin/settings');
 }
 
-/** Test-fire — sends a synthetic ANNOUNCEMENT event to one hook, returns
- *  whether the destination accepted it. */
+/** Test-fire — sends a synthetic ANNOUNCEMENT event to THIS hook only (it
+ *  used to fan out to every active hook) and reports this hook's response. */
 export async function testWebhook(id: string): Promise<{ ok: boolean; message: string }> {
   await requireCap('settings:write');
-  const { dispatchWebhook } = await import('@/lib/webhooks');
-  const hook = await prisma.webhookConfig.findUnique({ where: { id } });
+  const { sendTestWebhook } = await import('@/lib/webhooks');
+  const hook = await prisma.webhookConfig.findUnique({ where: { id }, select: { isActive: true } });
   if (!hook) return { ok: false, message: 'Webhook not found.' };
   if (!hook.isActive) return { ok: false, message: 'Webhook is disabled — enable it first.' };
-  // dispatchWebhook reads the active row; force one event through it.
-  await dispatchWebhook('ANNOUNCEMENT', 'Test fire from lab2date admin', `If you see this, the ${hook.kind} integration works.`, '/admin/settings');
-  const fresh = await prisma.webhookConfig.findUnique({ where: { id } });
-  if (fresh?.lastError) return { ok: false, message: `Last error: ${fresh.lastError}` };
-  return { ok: true, message: 'Test event sent. Check your channel.' };
+  const r = await sendTestWebhook(id);
+  if (!r) return { ok: false, message: 'Webhook not found.' };
+  return r.ok
+    ? { ok: true, message: 'Test event delivered to this hook (2xx). Check your channel.' }
+    : { ok: false, message: `Not delivered: ${r.error}` };
 }
 
 /** Recent notifications for the signed-in admin (bell dropdown). */
@@ -433,7 +523,9 @@ export async function getOrderQuickDetail(id: string): Promise<{
     paymentMethodLast4: o.paymentMethodLast4,
     paymentMethodWallet: o.paymentMethodWallet,
     paymentMethodManual: o.paymentMethodManual,
-    paymentProofUrl: o.paymentProofUrl,
+    // Receipts live in the private order-proofs/ prefix — hand the modal the
+    // auth-gated proxy URL, never the raw bucket URL.
+    paymentProofUrl: proxyProofUrl(o.paymentProofUrl),
     paymentNote: o.paymentNote,
     paidByAdminEmail: o.paidByAdminId
       ? (await prisma.user.findUnique({ where: { id: o.paidByAdminId }, select: { email: true } }))?.email ?? null
@@ -579,8 +671,9 @@ export async function getAdminUserSummary(id: string): Promise<{
   };
 }
 
-export async function setUserRole(userId: string, role: UserRole) {
+export async function setUserRole(userId: string, role: UserRole): Promise<{ ok: boolean; message: string }> {
   await requireCap('users:manage');
+  if (!Object.values(UserRole).includes(role)) return { ok: false, message: 'Unknown role.' };
   // Never let the LAST admin be demoted — that locks everyone out of /admin
   // with no in-app way back (recovery then needs a direct DB update).
   if (role !== 'ADMIN') {
@@ -588,7 +681,7 @@ export async function setUserRole(userId: string, role: UserRole) {
     if (target?.role === 'ADMIN') {
       const otherAdmins = await prisma.user.count({ where: { role: 'ADMIN', NOT: { id: userId } } });
       if (otherAdmins === 0) {
-        throw new Error('Cannot change the last admin to a non-admin role — promote another admin first.');
+        return { ok: false, message: 'Cannot change the last admin to a non-admin role — promote another admin first.' };
       }
     }
   }
@@ -596,23 +689,24 @@ export async function setUserRole(userId: string, role: UserRole) {
   await audit('user.role', userId, `role=${role}`);
   revalidatePath('/admin/users');
   revalidatePath(`/admin/users/${userId}`);
+  return { ok: true, message: `Role changed to ${role === 'SELLER' ? 'internal supplier' : role.toLowerCase()}.` };
 }
 
 /** Soft-suspend a user: blocks sign-in and wipes active sessions.
  *  Reversible via [[unsuspendUser]]. */
-export async function suspendUser(formData: FormData): Promise<void> {
+export async function suspendUser(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('users:manage');
   const id = String(formData.get('userId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim().slice(0, 240) || 'Suspended by admin';
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing user.' };
   const target = await prisma.user.findUnique({ where: { id }, select: { role: true, email: true } });
-  if (!target) throw new Error('User not found.');
+  if (!target) return { ok: false, message: 'User not found.' };
   if (target.role === 'ADMIN') {
     // Refuse to suspend the LAST active admin so we don't get locked out.
     const remainingAdmins = await prisma.user.count({
       where: { role: 'ADMIN', suspendedAt: null, NOT: { id } },
     });
-    if (remainingAdmins === 0) throw new Error('Cannot suspend the last active admin.');
+    if (remainingAdmins === 0) return { ok: false, message: 'Cannot suspend the last active admin.' };
   }
   await prisma.$transaction([
     prisma.user.update({
@@ -624,6 +718,7 @@ export async function suspendUser(formData: FormData): Promise<void> {
   await audit('user.suspend', id, reason);
   revalidatePath('/admin/users');
   revalidatePath(`/admin/users/${id}`);
+  return { ok: true, message: `${target.email} is suspended and signed out everywhere.` };
 }
 
 export async function unsuspendUser(formData: FormData): Promise<void> {
@@ -711,66 +806,66 @@ export async function bulkSuspendUsers(
 }
 
 /** Permanently delete a user and their owned data. Use only for GDPR
- *  erasure / clear spam accounts — soft-suspend is the safe default. */
-export async function deleteUser(formData: FormData): Promise<void> {
+ *  erasure / clear spam accounts — soft-suspend is the safe default.
+ *  Returns {ok, message}: refusals used to be thrown, which production shows
+ *  only as the generic "Server Components render" error. */
+export async function deleteUser(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('users:manage');
   const id = String(formData.get('userId') ?? '');
   const confirm = String(formData.get('confirmEmail') ?? '').trim().toLowerCase();
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing user.' };
   const target = await prisma.user.findUnique({
     where: { id },
     select: { email: true, role: true },
   });
-  if (!target) throw new Error('User not found.');
+  if (!target) return { ok: false, message: 'User not found.' };
   if (confirm !== target.email.toLowerCase()) {
-    throw new Error('Email confirmation did not match — refusing to delete.');
+    return { ok: false, message: 'Email confirmation did not match — nothing was deleted.' };
   }
   if (target.role === 'ADMIN') {
     const remainingAdmins = await prisma.user.count({
       where: { role: 'ADMIN', NOT: { id } },
     });
-    if (remainingAdmins === 0) throw new Error('Cannot delete the last admin.');
+    if (remainingAdmins === 0) return { ok: false, message: 'Cannot delete the last admin.' };
+  }
+  // Orders reference the buyer without a cascade (kept for the money trail),
+  // so an account with orders can't be hard-deleted — say so up front.
+  const orderCount = await prisma.order.count({ where: { buyerId: id } });
+  if (orderCount > 0) {
+    return {
+      ok: false,
+      message: `Delete blocked — this account has ${orderCount} order${orderCount === 1 ? '' : 's'}, which must be kept. Suspend the account instead.`,
+    };
   }
   // Cascading via FK onDelete handles sessions, accounts, wishlists, cart,
-  // notifications, reviews, blog/wiki author (where allowed). Orders &
-  // tickets keep the snapshot fields (no FK cascade) for audit trail —
-  // those are by design.
+  // notifications, reviews. Records that reference the user WITHOUT a cascade
+  // (authored content, seller chats, …) make the delete fail below.
   try {
     await prisma.user.delete({ where: { id } });
-  } catch (e) {
-    throw new Error(
-      e instanceof Error
-        ? `Delete blocked: ${e.message.slice(0, 200)}. Suspend the account instead.`
-        : 'Delete failed.',
-    );
+  } catch {
+    return {
+      ok: false,
+      message: 'Delete blocked — this account still owns records that must be kept (content, conversations or history). Suspend the account instead.',
+    };
   }
   await audit('user.delete', id, target.email);
   revalidatePath('/admin/users');
+  return { ok: true, message: `${target.email} was deleted.` };
 }
 
 /** Send the user a password-reset email (admin-initiated). Useful when a
  *  customer can't get the link themselves. Email is sent via the same
- *  Better-Auth pipeline as the public "forgot password" flow. */
+ *  Better-Auth pipeline as the public "forgot password" flow, called
+ *  in-process with its own per-account / per-admin caps. */
 export async function adminSendPasswordReset(formData: FormData): Promise<{ ok: boolean; message: string }> {
-  await requireCap('users:manage');
+  const session = await requireCap('users:manage');
   await ensureSettingsLoaded();
   const id = String(formData.get('userId') ?? '');
   if (!id) return { ok: false, message: 'Missing user.' };
   const target = await prisma.user.findUnique({ where: { id }, select: { email: true } });
   if (!target) return { ok: false, message: 'User not found.' };
   try {
-    const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
-    const res = await fetch(`${base}/api/auth/request-password-reset`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: target.email,
-        redirectTo: '/auth/reset-password',
-      }),
-    });
-    if (!res.ok) {
-      return { ok: false, message: `Better-Auth refused: HTTP ${res.status}` };
-    }
+    await sendAdminPasswordReset(session.user.id, { id, email: target.email });
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Reset request failed.' };
   }
@@ -835,9 +930,9 @@ export async function quickUpdateProduct(
     }
   }
   if (patch.quantity !== undefined) {
-    const q = Math.round(Number(patch.quantity));
-    if (!Number.isFinite(q) || q < 0 || q > 100_000)
-      return { ok: false, message: 'Quantity must be between 0 and 100,000.' };
+    const q = Number(patch.quantity);
+    if (!Number.isInteger(q) || q < 0 || q > 100_000)
+      return { ok: false, message: 'Quantity must be a whole number between 0 and 100,000.' };
     data.quantity = q;
   }
   if (patch.status !== undefined) {
@@ -860,6 +955,7 @@ export async function quickUpdateProduct(
 export async function setCompanyVerified(slug: string, verified: boolean) {
   await requireCap('companies:manage');
   await prisma.company.update({ where: { slug }, data: { isVerified: verified } });
+  await audit(verified ? 'company.verify' : 'company.unverify', slug);
   revalidatePath('/admin/companies');
 }
 
@@ -945,18 +1041,19 @@ export async function sendTestEmail(): Promise<{ ok: boolean; message: string }>
       ? `SMTP (${process.env.SMTP_HOST || 'localhost'}:${process.env.SMTP_PORT || '465'})`
       : 'the dev mailbox (Mailpit) — no Resend key or SMTP credentials set';
 
+  const site = process.env.SITE_NAME?.trim() || 'lab2date';
   try {
     await sendEmail({
       to,
-      subject: 'lab2date — test email ✅',
+      subject: `${site} — test email ✅`,
       html:
         '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;">' +
         '<h2 style="margin:0 0 8px;color:#0E4F40;">Your email is working 🎉</h2>' +
-        '<p style="color:#374151;line-height:1.6;">This is a test message from your lab2date admin settings. ' +
-        `Delivered via <strong>${via.replace(/</g, '&lt;')}</strong>.</p>` +
+        `<p style="color:#374151;line-height:1.6;">This is a test message from your ${escapeHtml(site)} admin settings. ` +
+        `Delivered via <strong>${escapeHtml(via)}</strong>.</p>` +
         '<p style="color:#6b7280;font-size:13px;">If this landed in your inbox, outbound email is configured correctly.</p>' +
         '</div>',
-      text: `Your lab2date email is working. Delivered via ${via}.`,
+      text: `Your ${site} email is working. Delivered via ${via}.`,
     });
     return { ok: true, message: `Sent to ${to} via ${via}. Check your inbox (and spam folder).` };
   } catch (e) {
@@ -996,16 +1093,47 @@ export async function verifySetting(
         : { ok: false, message: `“${val}” is not a valid non-negative number.` };
     }
     if (verify === 'url' || verify === 'image') {
+      // A site-relative image path (an uploaded logo is stored as /media/…) is
+      // accepted on Save — check it on this site, resolved exactly like the
+      // invoice does (`${BETTER_AUTH_URL}${path}`), instead of rejecting it as
+      // "not a valid URL". The host is our own configured origin, never the
+      // setting's value, so this needs no SSRF guard (and the dev origin is
+      // localhost, which safeFetch would refuse); redirects are not followed.
+      if (verify === 'image' && isSiteRelativePath(val)) {
+        const origin = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
+        if (!origin) return { ok: false, message: 'Site-relative path, but the site address (BETTER_AUTH_URL) is not set — enter a full https:// URL instead.' };
+        const target = new URL(`${origin}${val}`);
+        if (target.origin !== new URL(origin).origin) return { ok: false, message: `“${val}” is not a valid path on this site.` };
+        const r = await fetch(target, { redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+        await r.body?.cancel().catch(() => {});
+        if (r.status < 200 || r.status >= 300) return { ok: false, message: `Not found on this site — HTTP ${r.status} for ${target.pathname}.` };
+        const ct = r.headers.get('content-type') || '';
+        return ct.startsWith('image/')
+          ? { ok: true, message: `Reachable image on this site (${ct}).` }
+          : { ok: false, message: `Reachable but not an image (content-type: ${ct || 'unknown'}).` };
+      }
       let u: URL;
       try {
         u = new URL(val);
       } catch {
         return { ok: false, message: `“${val}” is not a valid URL (include https://).` };
       }
-      const r = await fetch(u, { method: 'GET', signal: AbortSignal.timeout(12000), redirect: 'follow' });
-      if (!r.ok) return { ok: false, message: `Unreachable — HTTP ${r.status} from ${u.host}.` };
+      // SSRF guard: same fetcher as the URL importer — refuses private,
+      // loopback, link-local / cloud-metadata addresses and re-checks every
+      // redirect hop, so Verify can't be used to probe internal services.
+      const { safeFetch, SafeFetchError } = await import('@/lib/import/safe-fetch');
+      let r: Awaited<ReturnType<typeof safeFetch>>;
+      try {
+        r = await safeFetch(u.toString(), { timeoutMs: 12000, maxBytes: 5 * 1024 * 1024 });
+      } catch (e) {
+        if (e instanceof SafeFetchError && (e.code === 'PRIVATE_IP' || e.code === 'BAD_SCHEME')) {
+          return { ok: false, message: 'Blocked — only public http(s) addresses can be checked from the server.' };
+        }
+        throw e;
+      }
+      if (r.status < 200 || r.status >= 300) return { ok: false, message: `Unreachable — HTTP ${r.status} from ${u.host}.` };
       if (verify === 'image') {
-        const ct = r.headers.get('content-type') || '';
+        const ct = r.contentType || '';
         return ct.startsWith('image/')
           ? { ok: true, message: `Reachable image (${ct}).` }
           : { ok: false, message: `Reachable but not an image (content-type: ${ct || 'unknown'}).` };
@@ -1033,40 +1161,70 @@ export async function saveAdminSettings(
   for (const [k, v] of formData.entries()) {
     if (typeof v === 'string') input[k] = v;
   }
+  let saved: Awaited<ReturnType<typeof persistSettings>>;
   try {
-    await persistSettings(input);
+    saved = await persistSettings(input);
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? `Save failed: ${e.message.slice(0, 140)}` : 'Save failed.' };
+    return { ok: false, message: e instanceof Error ? `Save failed: ${e.message.slice(0, 600)}` : 'Save failed.' };
   }
   await audit('settings.save', undefined, Object.keys(input).join(','));
   revalidatePath('/admin/settings');
-  return { ok: true, message: 'Saved ✓' };
+  // Say what actually happened: "Saved ✓" only when something was written,
+  // and name fields that now use (or can only be removed in) the server .env.
+  const list = (labels: string[]) => labels.map((l) => `“${l}”`).join(', ');
+  const parts = [saved.changed.length || saved.envDefault.length ? 'Saved ✓' : 'Nothing changed.'];
+  if (saved.envDefault.length) {
+    parts.push(`${list(saved.envDefault)} now ${saved.envDefault.length === 1 ? 'uses' : 'use'} the server .env value.`);
+  }
+  if (saved.envKept.length) {
+    parts.push(
+      `${list(saved.envKept)} ${saved.envKept.length === 1 ? 'comes' : 'come'} from the server .env, so emptying it here removed nothing — change it in the .env file.`,
+    );
+  }
+  return { ok: true, message: parts.join(' ') };
 }
 
-export async function uploadCompanyLogo(formData: FormData) {
-  await requireCap('settings:write');
+export async function uploadCompanyLogo(
+  _prev: { ok: boolean; message: string } | null,
+  formData: FormData,
+): Promise<{ ok: boolean; message: string }> {
+  // Same gate as saveAdminSettings: a missing cap is a message, not a redirect.
+  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  if (!(await hasCapability('settings:write'))) {
+    return { ok: false, message: 'Your admin account lacks the “settings:write” permission — ask a super-admin to grant it.' };
+  }
   const file = formData.get('logo');
-  if (!file || typeof file === 'string' || file.size === 0) return;
-  const f = file as File;
-  if (f.size > 2_000_000) throw new Error('Logo too large (max 2MB)');
-  const ext = (f.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const buf = Buffer.from(await f.arrayBuffer());
-  const { url } = await uploadObject(
-    `branding/logo-${Date.now()}.${ext}`,
-    buf,
-    f.type || 'image/png',
-  );
-  await persistSettings({ COMPANY_LOGO_URL: url });
+  if (!(file instanceof File) || file.size === 0) return { ok: false, message: 'Choose a logo file first.' };
+  // Raster images only, checked by the file's bytes: an SVG logo could carry
+  // script, and a non-image would show as a broken logo on every invoice.
+  const checked = await readVerifiedUpload(file, { allow: ['png', 'jpeg', 'webp'], maxBytes: 2 * 1024 * 1024, label: 'Logo' });
+  if (!checked.ok) return { ok: false, message: checked.error };
+  const { buf, mime, ext } = checked.upload;
+  try {
+    // Under products/ because that is the prefix the bucket policy makes
+    // public; invoices and emails load the logo anonymously.
+    const { url } = await uploadObject(`products/branding/logo-${Date.now()}.${ext}`, buf, mime);
+    await persistSettings({ COMPANY_LOGO_URL: url });
+    await audit('settings.logo', undefined, url);
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? `Upload failed: ${e.message.slice(0, 140)}` : 'Upload failed.' };
+  }
   revalidatePath('/admin/settings');
+  return { ok: true, message: 'Logo updated ✓' };
 }
 
 const HOME_KEYS = [
   'hero', 'trustbar', 'categories', 'featured', 'suppliers', 'blog', 'testimonials', 'cta',
 ];
 
-export async function saveHomepage(formData: FormData) {
+export async function saveHomepage(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('content:cms');
   const enabled = HOME_KEYS.filter((k) => formData.get(`enabled_${k}`) === 'on');
+  // An empty list used to delete the row, which the site reads as "show
+  // everything" — the opposite of what was asked. Refuse it explicitly.
+  if (enabled.length === 0) {
+    return { ok: false, message: 'Keep at least one module visible — with every module hidden the homepage would be blank. Nothing was saved.' };
+  }
   enabled.sort((a, b) => {
     const oa = parseInt(String(formData.get(`order_${a}`) ?? '99'), 10) || 99;
     const ob = parseInt(String(formData.get(`order_${b}`) ?? '99'), 10) || 99;
@@ -1079,20 +1237,38 @@ export async function saveHomepage(formData: FormData) {
     .filter(Boolean)
     .join(',');
 
-  const txt = (k: string) => String(formData.get(k) ?? '').trim();
+  const txt = (k: string) => String(formData.get(k) ?? '').replace(/\r\n/g, '\n').trim();
+  // A value identical to the built-in default is stored as "unset", so only
+  // real edits land in Setting (and later default-copy changes still apply).
+  const custom = (k: string, def: string) => (txt(k) === def ? '' : txt(k));
+  const d = HOME_DEFAULTS;
+
+  // Stats: empty = live catalogue counts. Never store the old zero
+  // placeholder block (a stale editor tab may still post it).
+  let stats = txt('heroStats');
+  if (stats === d.stats.map((s) => `${s.value}|${s.suffix}|${s.label}`).join('\n')) stats = '';
+  if (stats) {
+    const bad = stats.split('\n').map((l) => l.trim()).find((l) => l && !parseHeroStats(l));
+    if (bad !== undefined) {
+      return {
+        ok: false,
+        message: `Stats line “${bad.slice(0, 60)}” isn’t in the value|suffix|label format (e.g. 12400|+|instruments listed). Fix it, or empty the box to show live counts. Nothing was saved.`,
+      };
+    }
+  }
 
   for (const [key, value] of [
     ['HOMEPAGE_SECTIONS', sections],
-    ['HOMEPAGE_POPULAR', popular],
-    ['HERO_BADGE', txt('heroBadge')],
-    ['HERO_TITLE', txt('heroTitle')],
-    ['HERO_ACCENT', txt('heroAccent')],
-    ['HERO_SUBTITLE', txt('heroSubtitle')],
-    ['HERO_STATS', txt('heroStats')],
-    ['TEST_HEADING', txt('testHeading')],
-    ['TEST_META', txt('testMeta')],
-    ['CTA_HEADING', txt('ctaHeading')],
-    ['CTA_SUBTITLE', txt('ctaSubtitle')],
+    ['HOMEPAGE_POPULAR', popular === d.popular.join(',') ? '' : popular],
+    ['HERO_BADGE', custom('heroBadge', d.heroBadge)],
+    ['HERO_TITLE', custom('heroTitle', d.heroTitle)],
+    ['HERO_ACCENT', custom('heroAccent', d.heroAccent)],
+    ['HERO_SUBTITLE', custom('heroSubtitle', d.heroSubtitle)],
+    ['HERO_STATS', stats],
+    ['TEST_HEADING', custom('testHeading', d.testHeading)],
+    ['TEST_META', custom('testMeta', d.testMeta)],
+    ['CTA_HEADING', custom('ctaHeading', d.ctaHeading)],
+    ['CTA_SUBTITLE', custom('ctaSubtitle', d.ctaSubtitle)],
   ] as const) {
     if (value) {
       await prisma.setting.upsert({
@@ -1106,11 +1282,16 @@ export async function saveHomepage(formData: FormData) {
       delete process.env[key];
     }
   }
+  await audit('homepage.save', undefined, sections);
   revalidatePath('/');
   revalidatePath('/admin/homepage');
+  return {
+    ok: true,
+    message: `Homepage saved — ${enabled.length} module${enabled.length === 1 ? '' : 's'} shown${stats ? '' : ', stats show live counts'}. Click ↻ Refresh in the preview to see it.`,
+  };
 }
 
-export async function sendAnnouncement(formData: FormData) {
+export async function sendAnnouncement(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('content:cms');
   await ensureSettingsLoaded();
   const title = String(formData.get('title') ?? '').trim();
@@ -1119,7 +1300,11 @@ export async function sendAnnouncement(formData: FormData) {
   const kind = (String(formData.get('kind') ?? 'ANNOUNCEMENT') || 'ANNOUNCEMENT').toUpperCase();
   const audience = String(formData.get('audience') ?? 'ALL');
   const alsoEmail = formData.get('email') === 'on';
-  if (title.length < 3 || body.length < 3) throw new Error('Title and message are required');
+  // Returned, not thrown — a thrown error replaced the whole admin page.
+  if (title.length < 3 || body.length < 3) {
+    return { ok: false, message: 'Title and message are required (at least 3 characters each, not just spaces).' };
+  }
+  if (!['OFFER', 'ANNOUNCEMENT', 'SYSTEM'].includes(kind)) return { ok: false, message: 'Unknown announcement type.' };
 
   const where =
     audience === 'BUYER'
@@ -1135,10 +1320,15 @@ export async function sendAnnouncement(formData: FormData) {
     take: 5000,
   });
 
+  if (users.length === 0) return { ok: false, message: 'Nobody in that audience — nothing was sent.' };
+
   await prisma.notification.createMany({
     data: users.map((u) => ({ userId: u.id, title, body, href, kind })),
   });
 
+  let emailed = 0;
+  let emailFailed = 0;
+  let skipped = 0;
   if (alsoEmail) {
     const site = process.env.SITE_NAME || 'lab2date';
     const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
@@ -1148,6 +1338,12 @@ export async function sendAnnouncement(formData: FormData) {
         : `${base}${href.startsWith('/') ? '' : '/'}${href}`
       : `${base}/app/notifications`;
     for (const u of users) {
+      // Seed / importer accounts carry placeholder addresses (sales@shop.import,
+      // *.example …) that bounce and hurt sender reputation — in-app only.
+      if (!isDeliverableEmail(u.email)) {
+        skipped++;
+        continue;
+      }
       // Best-effort per recipient — one bad address must not abort the whole
       // broadcast (and every notification row is already persisted above).
       try {
@@ -1156,17 +1352,19 @@ export async function sendAnnouncement(formData: FormData) {
           subject: title,
           html: `
           <div style="font-family:system-ui,sans-serif;max-width:560px;">
-            <h2 style="color:#0E4F40;">${title}</h2>
-            <p>Hi ${u.name},</p>
-            <div style="font-size:14px;line-height:1.7;color:#333;">${body.replace(/\n/g, '<br>')}</div>
+            <h2 style="color:#0E4F40;">${escapeHtml(title)}</h2>
+            <p>Hi ${escapeHtml(u.name)},</p>
+            <div style="font-size:14px;line-height:1.7;color:#333;">${escapeHtmlLines(body)}</div>
             <p style="margin:22px 0;">
-              <a href="${link}" style="background:#0E4F40;color:#fff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">View on ${site}</a>
+              <a href="${escapeHtml(link)}" style="background:#0E4F40;color:#fff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">View on ${escapeHtml(site)}</a>
             </p>
-            <p style="color:#999;font-size:11px;">You receive this because you have a ${site} account.</p>
+            <p style="color:#999;font-size:11px;">You receive this because you have a ${escapeHtml(site)} account.</p>
           </div>`,
         });
+        emailed++;
       } catch {
         // swallow — logged in EmailLog by sendEmail; continue the broadcast
+        emailFailed++;
       }
     }
   }
@@ -1174,26 +1372,34 @@ export async function sendAnnouncement(formData: FormData) {
   await audit('announcement.send', audience, title);
   revalidatePath('/admin/announcements');
   revalidatePath('/app/notifications');
+  const parts = [`Sent to ${users.length} user${users.length === 1 ? '' : 's'} in-app.`];
+  if (alsoEmail) {
+    parts.push(`Emailed ${emailed}.`);
+    if (skipped) parts.push(`Skipped ${skipped} placeholder address${skipped === 1 ? '' : 'es'}.`);
+    if (emailFailed) parts.push(`${emailFailed} email${emailFailed === 1 ? '' : 's'} failed (see the email log).`);
+  }
+  return { ok: true, message: parts.join(' ') };
 }
 
-export async function refundOrder(formData: FormData) {
+export async function refundOrder(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:refund');
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing order id.' };
   const order = await prisma.order.findUnique({
     where: { id },
     select: {
       status: true,
       stripePaymentIntentId: true,
       orderNumber: true,
+      sourcingRequestId: true,
       buyer: { select: { id: true, name: true, email: true } },
       totalCents: true,
       currency: true,
       items: { select: { productId: true, quantity: true } },
     },
   });
-  if (!order) throw new Error('Order not found');
+  if (!order) return { ok: false, message: 'Order not found.' };
   // BUG-043: refund is only meaningful once money has actually been captured.
   // Positively allow-list the money-captured statuses (mirrors the UI's
   // `canRefund` gate and every sibling money-path action) instead of the old
@@ -1211,7 +1417,12 @@ export async function refundOrder(formData: FormData) {
   if (!REFUNDABLE.includes(order.status as (typeof REFUNDABLE)[number])) {
     // Includes the already-REFUNDED case (idempotent no-op) and every
     // non-captured status. No Stripe call, no restock, no email.
-    return;
+    return {
+      ok: false,
+      message: order.status === 'REFUNDED'
+        ? `Order ${order.orderNumber} is already refunded.`
+        : `Order ${order.orderNumber} is ${order.status.toLowerCase().replace(/_/g, ' ')} — only paid orders can be refunded.`,
+    };
   }
 
   const stripe = getStripe();
@@ -1220,7 +1431,7 @@ export async function refundOrder(formData: FormData) {
       await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
     } catch (e) {
       console.error('stripe refund failed', e);
-      throw new Error('Stripe refund failed — check the payment in Stripe');
+      return { ok: false, message: 'Stripe refund failed — check the payment in Stripe. Nothing was changed here.' };
     }
   }
   // BUG-036: claim the REFUNDED transition atomically. The status guard at the
@@ -1233,20 +1444,26 @@ export async function refundOrder(formData: FormData) {
     where: { id, status: { in: [...REFUNDABLE] } },
     data: { status: 'REFUNDED' },
   });
-  if (flip.count !== 1) return; // a concurrent click already refunded + restocked
-  // Return the reserved unit(s) to stock so the item can be sold again.
-  for (const it of order.items) {
-    if (it.productId) {
-      await prisma.product.update({
-        where: { id: it.productId },
-        data: { quantity: { increment: it.quantity } },
-      });
+  // A concurrent click already refunded + restocked.
+  if (flip.count !== 1) return { ok: false, message: `Order ${order.orderNumber} was already refunded by another action.` };
+  // Return the reserved unit(s) to stock so the item can be sold again. Proforma
+  // orders never reserved stock, so restocking them would mint phantom units.
+  // updateMany: a hard-deleted product no-ops instead of throwing mid-loop.
+  const restock = orderReservedStock(order);
+  if (restock) {
+    for (const it of order.items) {
+      if (it.productId) {
+        await prisma.product.updateMany({
+          where: { id: it.productId },
+          data: { quantity: { increment: it.quantity } },
+        });
+      }
     }
   }
   await sendEmail({
     to: order.buyer.email,
     subject: `Refund issued for order ${order.orderNumber}`,
-    html: `<p>Hi ${order.buyer.name}, a refund for order <strong>${order.orderNumber}</strong> has been processed${
+    html: `<p>Hi ${escapeHtml(order.buyer.name)}, a refund for order <strong>${order.orderNumber}</strong> has been processed${
       stripe && order.stripePaymentIntentId ? ' to your original payment method' : ''
     }. It may take a few business days to appear.</p>`,
   });
@@ -1258,13 +1475,17 @@ export async function refundOrder(formData: FormData) {
   );
   await notifyAdmins(
     `Order ${order.orderNumber}: refunded — ${(order.totalCents / 100).toFixed(2)} ${order.currency}`,
-    `Refund issued${stripe && order.stripePaymentIntentId ? ' via Stripe' : ' (manual)'}. Stock returned to catalog.`,
+    `Refund issued${stripe && order.stripePaymentIntentId ? ' via Stripe' : ' (manual)'}.${restock ? ' Stock returned to catalog.' : ''}`,
     `/admin/orders/${id}`,
     'ORDER_REFUNDED',
   );
   await audit('order.refund', order.orderNumber, `${order.totalCents} ${order.currency}`);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
+  return {
+    ok: true,
+    message: `Order ${order.orderNumber} marked refunded${stripe && order.stripePaymentIntentId ? ' (Stripe refund issued)' : ' — return the money by bank transfer'}.${restock ? ' Stock returned to the catalog.' : ''}`,
+  };
 }
 
 /** Build the expire-only Stripe adapter the cancel saga needs (create() is never
@@ -1278,28 +1499,57 @@ function stripeExpireApi(): StripeSessionApi | null {
   return stripe ? expireOnlyApi(stripe) : null;
 }
 
+/**
+ * Short buyer email for an order-state change (cancel / paid / delivered used
+ * to be in-app only). Only system values (order number, fixed copy, link) go
+ * into the HTML — no user-typed text. Best-effort: returns false, never throws.
+ */
+async function emailBuyerOrderUpdate(to: string, orderNumber: string, subject: string, line: string): Promise<boolean> {
+  if (!isDeliverableEmail(to)) return true; // placeholder/seed address — nothing to send
+  try {
+    const link = `${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app/orders/${orderNumber}`;
+    await sendEmail({
+      to,
+      subject,
+      html: `
+        <div style="font-family:system-ui,sans-serif;max-width:540px;">
+          <h2 style="color:#0E4F40;">${escapeHtml(subject)}</h2>
+          <p>${escapeHtml(line)}</p>
+          <p><a href="${escapeHtml(link)}">View order ${orderNumber}</a></p>
+        </div>`,
+      text: `${line}\n\nView order ${orderNumber}: ${link}`,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Cancel an order that hasn't been paid (or is in PROCESSING). Releases
  *  reserved stock back to the catalog. Distinct from refundOrder which
  *  applies once money is taken. */
-export async function cancelOrder(formData: FormData): Promise<void> {
+export async function cancelOrder(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:fulfil');
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing order id.' };
   const order = await prisma.order.findUnique({
     where: { id },
     select: {
       status: true,
       orderNumber: true,
       paymentSubmittedAt: true,
+      sourcingRequestId: true,
       buyer: { select: { id: true, name: true, email: true } },
       items: { select: { productId: true, quantity: true } },
     },
   });
-  if (!order) throw new Error('Order not found.');
-  if (['CANCELED', 'REFUNDED', 'DELIVERED'].includes(order.status)) return;
-  if (['PAID', 'PROCESSING', 'SHIPPED'].includes(order.status)) {
-    throw new Error('Order has been paid — use Refund instead.');
+  if (!order) return { ok: false, message: 'Order not found.' };
+  if (['CANCELED', 'REFUNDED'].includes(order.status)) {
+    return { ok: false, message: `Order ${order.orderNumber} is already ${order.status.toLowerCase()}.` };
+  }
+  if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
+    return { ok: false, message: 'Order has been paid — use Refund instead.' };
   }
   // BUG-035: a buyer receipt awaiting verification leaves status=PENDING_PAYMENT
   // but paymentSubmittedAt set. Canceling here would bypass the verify/reject
@@ -1307,7 +1557,7 @@ export async function cancelOrder(formData: FormData): Promise<void> {
   // Decline via Reject first (which clears paymentSubmittedAt), then cancel.
   // Keeps "admin verify is the ONLY path that changes payment state" intact.
   if (order.paymentSubmittedAt) {
-    throw new Error('This order has a payment receipt awaiting verification — use Verify or Reject, not Cancel.');
+    return { ok: false, message: 'This order has a payment receipt awaiting verification — use Verify or Reject, not Cancel.' };
   }
   // Stripe-aware atomic cancel: expire any active payment session FIRST, then
   // claim PENDING_PAYMENT + restock in ONE transaction (CAS on the same session id
@@ -1315,36 +1565,50 @@ export async function cancelOrder(formData: FormData): Promise<void> {
   // an active payable session is never left pointing at canceled/restocked stock.
   const outcome = await cancelOrderSaga(prisma, stripeExpireApi(), id, { requireNoProof: true });
   if (outcome === 'expire-failed') {
-    throw new Error("Could not expire the buyer's active payment session — the order was left reserved; please retry.");
+    return { ok: false, message: "Could not expire the buyer's active payment session — the order was left reserved; please retry." };
   }
-  if (outcome !== 'canceled') return; // already canceled / raced / receipt in flight
+  if (outcome !== 'canceled') {
+    // already canceled / raced / receipt in flight
+    revalidatePath('/admin/orders');
+    return { ok: false, message: `Order ${order.orderNumber} could not be canceled — its status changed. Refresh and check.` };
+  }
+  const restocked = orderReservedStock(order);
   await notifyUser(
     order.buyer.id,
     `Order ${order.orderNumber}: canceled`,
-    'Your order was canceled before payment. No charge was made. Items are back in stock.',
+    `Your order was canceled before payment. No charge was made.${restocked ? ' Items are back in stock.' : ''}`,
     `/app/orders/${order.orderNumber}`,
+  );
+  await emailBuyerOrderUpdate(
+    order.buyer.email,
+    order.orderNumber,
+    `Order ${order.orderNumber} canceled`,
+    'Your order was canceled before payment. No charge was made.',
   );
   await notifyAdmins(
     `Order ${order.orderNumber}: canceled (pre-payment)`,
-    'Reserved stock has been returned. No charge was made.',
+    `${restocked ? 'Reserved stock has been returned. ' : ''}No charge was made.`,
     `/admin/orders/${id}`,
     'ORDER_CANCELED',
   );
   await audit('order.cancel', order.orderNumber);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
+  return { ok: true, message: `Order ${order.orderNumber} canceled.${restocked ? ' Reserved stock released.' : ''}` };
 }
 
 /** Save (or clear) the internal-only operator notes on an order. */
-export async function setOrderNotes(formData: FormData): Promise<void> {
+export async function setOrderNotes(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:fulfil');
   const id = String(formData.get('orderId') ?? '');
   const notes = String(formData.get('notes') ?? '').slice(0, 4000).trim() || null;
-  if (!id) return;
-  await prisma.order.update({ where: { id }, data: { adminNotes: notes } });
+  if (!id) return { ok: false, message: 'Missing order id.' };
+  const updated = await prisma.order.updateMany({ where: { id }, data: { adminNotes: notes } });
+  if (updated.count === 0) return { ok: false, message: 'Order not found — it may have been deleted.' };
   await audit('order.notes', id, notes ? 'set' : 'cleared');
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
+  return { ok: true, message: notes ? 'Notes saved.' : 'Notes cleared.' };
 }
 
 /** Mark every PAID/PROCESSING order as SHIPPED in one shot — bulk fulfilment
@@ -1365,7 +1629,7 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
   }
   const order = await prisma.order.findUnique({
     where: { id },
-    select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, buyer: { select: { id: true } } },
+    select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, shippingAddress: true, buyer: { select: { id: true, email: true } } },
   });
   if (!order) return { ok: false, message: 'Order not found.' };
   if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
@@ -1423,6 +1687,12 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     `Your payment has been confirmed${method === 'BANK_TRANSFER' ? ' (bank transfer)' : method === 'INVOICE' ? ' (invoice)' : ''}. We'll prepare your order for shipping.`,
     `/app/orders/${order.orderNumber}`,
   );
+  await emailBuyerOrderUpdate(
+    order.buyer.email,
+    order.orderNumber,
+    `Payment received — order ${order.orderNumber}`,
+    `Your payment has been confirmed${method === 'BANK_TRANSFER' ? ' (bank transfer)' : method === 'INVOICE' ? ' (invoice)' : ''}. We'll prepare your order for shipping.`,
+  );
   await notifyAdmins(
     `Order ${order.orderNumber} marked PAID manually — ${(order.totalCents / 100).toFixed(2)} ${order.currency}`,
     `Method: ${method.toLowerCase().replace('_', ' ')}${proofUrl ? ' · receipt attached' : ''}${note ? ` · note: ${note.slice(0, 80)}` : ''}`,
@@ -1430,9 +1700,17 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     'ORDER_PAID',
   );
   await audit('order.paid.manual', order.orderNumber, `${method}${proofUrl ? ' +proof' : ''}${note ? ` "${note.slice(0, 60)}"` : ''}`);
+  // The order is now PAID: email the real invoice (the checkout success page
+  // promises it). Never blocks — sendOrderInvoice swallows + logs failures.
+  await sendOrderInvoice(order.id);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
-  return { ok: true, message: 'Marked as paid.' };
+  return {
+    ok: true,
+    message: shippingAddressIsComplete(order.shippingAddress)
+      ? 'Marked as paid. Invoice emailed to the buyer.'
+      : 'Marked as paid. Invoice emailed to the buyer. No complete shipping address on file yet — add it on the order page before shipping.',
+  };
 }
 
 /** Bulk cancel a list of order IDs (PENDING_PAYMENT only — safe). */
@@ -1524,13 +1802,35 @@ function shippingAddressIsComplete(sa: unknown): boolean {
   return Boolean(name && line1 && city && postal && country.length === 2);
 }
 
-export async function bulkMarkAllShipped(): Promise<{ ok: boolean; count: number; skipped: number; message?: string }> {
+type BulkShipResult = { ok: boolean; count: number; skipped: number; message: string };
+
+/** Overview tile: ship EVERY PAID/PROCESSING order that has a complete address.
+ *  The button that calls this says so explicitly; row selections in the orders
+ *  list use bulkMarkSelectedShipped instead. */
+export async function bulkMarkAllShipped(): Promise<BulkShipResult> {
   await requireCap('orders:fulfil');
+  return markShipped(null);
+}
+
+/** Orders list bulk bar: ship ONLY the selected PAID/PROCESSING orders. */
+export async function bulkMarkSelectedShipped(formData: FormData): Promise<BulkShipResult> {
+  await requireCap('orders:fulfil');
+  const ids = String(formData.get('ids') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) return { ok: false, count: 0, skipped: 0, message: 'No orders selected.' };
+  return markShipped(ids);
+}
+
+/** Shared body. `ids === null` means "all PAID/PROCESSING orders" (overview
+ *  only); otherwise the WHERE is restricted to exactly those ids. */
+async function markShipped(ids: string[] | null): Promise<BulkShipResult> {
+  const scope = ids ? { id: { in: ids } } : {};
   const candidates = await prisma.order.findMany({
-    where: { status: { in: ['PAID', 'PROCESSING'] } },
+    where: { ...scope, status: { in: ['PAID', 'PROCESSING'] } },
     select: { id: true, orderNumber: true, shippingAddress: true, buyer: { select: { id: true } } },
   });
-  if (candidates.length === 0) return { ok: true, count: 0, skipped: 0 };
+  if (candidates.length === 0) {
+    return { ok: false, count: 0, skipped: 0, message: 'No paid or processing orders to ship.' };
+  }
 
   // RB-fix: address-less orders cannot ship. Filter them out and surface
   // the skip count so the operator knows to chase those buyers first.
@@ -1567,19 +1867,22 @@ export async function bulkMarkAllShipped(): Promise<{ ok: boolean; count: number
         `/app/orders/${o.orderNumber}`,
       );
     }
-    await audit('order.bulkship', undefined, `${res.count} orders${skipped ? ` (skipped ${skipped} address-less)` : ''}`);
+    await audit('order.bulkship', undefined, `${res.count} orders${ids ? ' (selected)' : ' (all)'}${skipped ? ` (skipped ${skipped} address-less)` : ''}`);
   }
   revalidatePath('/admin');
   revalidatePath('/admin/orders');
+  const shippedMsg = `Marked ${res.count} order${res.count === 1 ? '' : 's'} as shipped.`;
   return {
     ok: true,
     count: res.count,
     skipped,
-    message: skipped > 0 ? `Shipped ${res.count}; skipped ${skipped} (no address).` : undefined,
+    message: skipped > 0 ? `${shippedMsg} Skipped ${skipped} with no complete shipping address.` : shippedMsg,
   };
 }
 
-export async function setOrderFulfillment(formData: FormData) {
+/** Returns {ok, message} rather than throwing — a rejected transition used to
+ *  crash the whole admin page (production redacts thrown messages). */
+export async function setOrderFulfillment(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:fulfil');
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
@@ -1587,7 +1890,7 @@ export async function setOrderFulfillment(formData: FormData) {
     | 'PAID' | 'PROCESSING' | 'SHIPPED' | 'DELIVERED' | 'CANCELED' | 'REFUNDED';
   const carrier = String(formData.get('carrier') ?? '').trim() || null;
   const trackingNumber = String(formData.get('trackingNumber') ?? '').trim() || null;
-  if (!id || !status) return;
+  if (!id || !status) return { ok: false, message: 'Pick a status first.' };
 
   const order = await prisma.order.findUnique({
     where: { id },
@@ -1600,7 +1903,7 @@ export async function setOrderFulfillment(formData: FormData) {
       buyer: { select: { id: true, name: true, email: true } },
     },
   });
-  if (!order) throw new Error('Order not found');
+  if (!order) return { ok: false, message: 'Order not found.' };
 
   // F12 / S3 guard: REFUNDED and CANCELED are terminal money-states. Once an
   // order is refunded or canceled, no fulfilment transition may move it back
@@ -1613,9 +1916,10 @@ export async function setOrderFulfillment(formData: FormData) {
   // allowed; only a status CHANGE out of a terminal state is blocked.
   const TERMINAL_ORDER_STATES = new Set(['REFUNDED', 'CANCELED']);
   if (TERMINAL_ORDER_STATES.has(order.status) && status !== order.status) {
-    throw new Error(
-      `Cannot change order ${order.orderNumber} to ${status.toLowerCase()} — it is ${order.status.toLowerCase()} (terminal). Refunded or canceled orders cannot be re-fulfilled.`,
-    );
+    return {
+      ok: false,
+      message: `Cannot change order ${order.orderNumber} to ${status.toLowerCase()} — it is ${order.status.toLowerCase()} (terminal). Refunded or canceled orders cannot be re-fulfilled.`,
+    };
   }
 
   // Admin entered a tracking number on a not-yet-shipped order → that IS the
@@ -1642,19 +1946,22 @@ export async function setOrderFulfillment(formData: FormData) {
   const stageRank = (s: string) => (FULFILMENT_CHAIN as readonly string[]).indexOf(s);
   if (status !== order.status) {
     if (status === 'CANCELED' || status === 'REFUNDED') {
-      throw new Error(
-        `Cannot set order ${order.orderNumber} to ${status.toLowerCase()} from the fulfilment panel — use the ${status === 'REFUNDED' ? 'Refund' : 'Cancel'} action so reserved stock is restocked correctly.`,
-      );
+      return {
+        ok: false,
+        message: `Cannot set order ${order.orderNumber} to ${status.toLowerCase()} from the fulfilment panel — use the ${status === 'REFUNDED' ? 'Refund' : 'Cancel'} action so reserved stock is restocked correctly.`,
+      };
     }
     if (stageRank(order.status) === -1) {
-      throw new Error(
-        `Cannot fulfil order ${order.orderNumber} — it is ${order.status.toLowerCase()}, not yet paid. Record payment first (manual payment / verify proof) before moving it through fulfilment.`,
-      );
+      return {
+        ok: false,
+        message: `Cannot fulfil order ${order.orderNumber} — it is ${order.status.toLowerCase()}, not yet paid. Record payment first (manual payment / verify proof) before moving it through fulfilment.`,
+      };
     }
     if (stageRank(status) < stageRank(order.status)) {
-      throw new Error(
-        `Cannot move order ${order.orderNumber} backward from ${order.status.toLowerCase()} to ${status.toLowerCase()} — fulfilment status only moves forward (paid → processing → shipped → delivered).`,
-      );
+      return {
+        ok: false,
+        message: `Cannot move order ${order.orderNumber} backward from ${order.status.toLowerCase()} to ${status.toLowerCase()} — fulfilment status only moves forward (paid → processing → shipped → delivered).`,
+      };
     }
   }
 
@@ -1662,9 +1969,10 @@ export async function setOrderFulfillment(formData: FormData) {
   // 5LX2KB shipped without an address through single + bulk + inline
   // paths. Block the transition server-side instead of trusting the UI.
   if ((status === 'SHIPPED' || status === 'DELIVERED') && !shippingAddressIsComplete(order.shippingAddress)) {
-    throw new Error(
-      `Cannot mark order ${order.orderNumber} as ${status.toLowerCase()} — no complete shipping address on file. Capture the buyer's address first.`,
-    );
+    return {
+      ok: false,
+      message: `Cannot mark order ${order.orderNumber} as ${status.toLowerCase()} — no complete shipping address on file. Add the shipping address on the order page first.`,
+    };
   }
 
   // RB-fix: idempotency. Previously the action wrote + audited even when
@@ -1677,7 +1985,7 @@ export async function setOrderFulfillment(formData: FormData) {
   if (statusUnchanged && carrierUnchanged && trackingUnchanged) {
     // Pure no-op — no write, no audit, no notification, no email.
     revalidatePath(`/admin/orders/${id}`);
-    return;
+    return { ok: true, message: 'Nothing changed.' };
   }
 
   // RB-fix: atomic transition. updateMany with the precondition that the
@@ -1697,9 +2005,12 @@ export async function setOrderFulfillment(formData: FormData) {
   if (res.count !== 1) {
     // Lost the race; another admin moved the row. Skip side effects.
     revalidatePath(`/admin/orders/${id}`);
-    return;
+    return { ok: false, message: 'Someone else updated this order a moment ago — refresh and check its status.' };
   }
 
+  // The status change is already committed — an email failure must not turn
+  // into an error for a save that DID happen; report it in the message.
+  let emailFailed = false;
   if (status === 'SHIPPED' && order.status !== 'SHIPPED') {
     const site = process.env.SITE_NAME || 'lab2date';
     const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
@@ -1709,13 +2020,21 @@ export async function setOrderFulfillment(formData: FormData) {
       html: `
         <div style="font-family:system-ui,sans-serif;max-width:540px;">
           <h2 style="color:#0E4F40;">Your order is on its way 🚚</h2>
-          <p>Hi ${order.buyer.name}, order <strong>${order.orderNumber}</strong> has shipped.</p>
-          ${carrier ? `<p><strong>Carrier:</strong> ${carrier}</p>` : ''}
-          ${trackingNumber ? `<p><strong>Tracking #:</strong> ${trackingNumber}</p>` : ''}
+          <p>Hi ${escapeHtml(order.buyer.name)}, order <strong>${order.orderNumber}</strong> has shipped.</p>
+          ${carrier ? `<p><strong>Carrier:</strong> ${escapeHtml(carrier)}</p>` : ''}
+          ${trackingNumber ? `<p><strong>Tracking #:</strong> ${escapeHtml(trackingNumber)}</p>` : ''}
           <p><a href="${base}/app/orders">Track it in your account</a></p>
-          <p style="color:#888;font-size:12px;">${site}</p>
+          <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
         </div>`,
-    });
+    }).catch(() => { emailFailed = true; });
+  }
+  if (status === 'DELIVERED' && order.status !== 'DELIVERED') {
+    emailFailed = !(await emailBuyerOrderUpdate(
+      order.buyer.email,
+      order.orderNumber,
+      `Order ${order.orderNumber} delivered`,
+      'Your order has been marked as delivered. If anything is wrong with it, contact us from your order page.',
+    ));
   }
   if (status !== order.status) {
     const msg =
@@ -1747,6 +2066,80 @@ export async function setOrderFulfillment(formData: FormData) {
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
   revalidatePath('/app/orders');
+  return {
+    ok: true,
+    message:
+      (status !== order.status ? `Saved — order is now ${status.toLowerCase()}; buyer notified.` : 'Saved — tracking details updated.') +
+      (emailFailed ? ' (The buyer email could not be sent — check Settings → Email; the in-app notification went out.)' : ''),
+  };
+}
+
+/**
+ * Capture or correct an order's shipping address from the admin order page.
+ * Proforma orders are created without an address, and the buyer's payment form
+ * closes once the order is PAID, so without this a paid address-less order could
+ * never ship. Allowed until the order ships; merges into the existing JSON so
+ * company / VAT / email captured elsewhere survive.
+ */
+export async function setOrderShippingAddress(formData: FormData): Promise<{ ok: boolean; message: string }> {
+  await requireCap('orders:fulfil');
+  const id = String(formData.get('orderId') ?? '');
+  if (!id) return { ok: false, message: 'Missing order id.' };
+  const get = (k: string) => String(formData.get(k) ?? '').trim();
+  const f = {
+    name: get('name').slice(0, 120),
+    phone: get('phone').slice(0, 40),
+    line1: get('line1').slice(0, 200),
+    line2: get('line2').slice(0, 200),
+    city: get('city').slice(0, 80),
+    postal: get('postal').slice(0, 24),
+    state: get('state').slice(0, 80),
+    country: get('country').toUpperCase(),
+  };
+  const missing: string[] = [];
+  if (!f.name) missing.push('recipient name');
+  if (!f.line1) missing.push('address line 1');
+  if (!f.city) missing.push('city');
+  if (!f.postal) missing.push('postal code');
+  if (!/^[A-Z]{2}$/.test(f.country)) missing.push('2-letter country code');
+  if (missing.length) return { ok: false, message: `Please fill in: ${missing.join(', ')}.` };
+
+  const order = await prisma.order.findUnique({
+    where: { id },
+    select: { orderNumber: true, status: true, shippingAddress: true },
+  });
+  if (!order) return { ok: false, message: 'Order not found.' };
+  const EDITABLE = ['PENDING_PAYMENT', 'PAID', 'PROCESSING'];
+  if (!EDITABLE.includes(order.status)) {
+    return { ok: false, message: `The address can't be changed once an order is ${order.status.toLowerCase()}.` };
+  }
+  const existing = (order.shippingAddress as Record<string, unknown> | null) ?? {};
+  const existingAddr = (existing.address as Record<string, unknown> | undefined) ?? {};
+  const next = {
+    ...existing,
+    name: f.name,
+    phone: f.phone || (existing.phone as string | undefined) || '',
+    address: {
+      ...existingAddr,
+      line1: f.line1,
+      line2: f.line2 || null,
+      city: f.city,
+      postal_code: f.postal,
+      state: f.state || null,
+      country: f.country,
+    },
+  };
+  // Status precondition in the WHERE: a concurrent ship can't be re-addressed.
+  const res = await prisma.order.updateMany({
+    where: { id, status: { in: EDITABLE as ('PENDING_PAYMENT' | 'PAID' | 'PROCESSING')[] } },
+    data: { shippingAddress: next },
+  });
+  if (res.count !== 1) return { ok: false, message: 'The order changed while you were editing — refresh and try again.' };
+  await audit('order.address', order.orderNumber, `${f.city}, ${f.country}`);
+  revalidatePath('/admin/orders');
+  revalidatePath(`/admin/orders/${id}`);
+  revalidatePath(`/app/orders/${order.orderNumber}`);
+  return { ok: true, message: 'Shipping address saved.' };
 }
 
 export async function setSellStatus(
@@ -1778,46 +2171,77 @@ export async function setSellStatus(
 export async function setCompanyFeatured(slug: string, featured: boolean) {
   await requireCap('companies:manage');
   await prisma.company.update({ where: { slug }, data: { isFeatured: featured } });
+  await audit(featured ? 'company.feature' : 'company.unfeature', slug);
   revalidatePath('/admin/companies');
 }
 
 const CategoryInput = z.object({
-  name: z.string().min(2).max(80),
-  description: z.string().max(200).optional().nullable(),
+  name: z.string().trim().min(2).max(80),
+  description: z.string().trim().max(200).optional().nullable(),
 });
+const CATEGORY_LABELS = { name: 'Category name', description: 'Description' };
 
-export async function createCategory(input: z.infer<typeof CategoryInput>) {
+// Category actions return {ok,message} instead of throwing: they run from
+// form submits, and a thrown error became a full-page 500.
+
+export async function createCategory(input: z.infer<typeof CategoryInput>): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
-  const parsed = CategoryInput.parse(input);
-  const slug = parsed.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const r = CategoryInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, CATEGORY_LABELS) };
+  const parsed = r.data;
+  const dup = await prisma.category.findFirst({
+    where: { name: { equals: parsed.name, mode: 'insensitive' } },
+    select: { id: true },
+  });
+  if (dup) return { ok: false, message: `A category named “${parsed.name}” already exists.` };
+  // Names with no Latin letters/digits (e.g. Persian) have no ASCII slug of
+  // their own; they get "category", "category-x7k2", … instead of ''.
+  const slug = await uniqueSlug(/[a-z0-9]/i.test(parsed.name) ? parsed.name : 'category', async (s) =>
+    !!(await prisma.category.findUnique({ where: { slug: s }, select: { id: true } })),
+  );
   const count = await prisma.category.count();
   await prisma.category.create({
-    data: { slug, name: parsed.name, description: parsed.description ?? null, sortOrder: count },
+    data: { slug, name: parsed.name, description: parsed.description || null, sortOrder: count },
   });
+  await audit('category.create', slug);
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Category “${parsed.name}” added.` };
 }
 
-export async function updateCategory(input: { id: string; name: string; description?: string | null }) {
+export async function updateCategory(input: { id: string; name: string; description?: string | null }): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
-  const parsed = CategoryInput.parse({ name: input.name, description: input.description ?? null });
+  const r = CategoryInput.safeParse({ name: input.name, description: input.description ?? null });
+  if (!r.success) return { ok: false, message: zodMessage(r.error, CATEGORY_LABELS) };
+  const parsed = r.data;
+  const dup = await prisma.category.findFirst({
+    where: { name: { equals: parsed.name, mode: 'insensitive' }, NOT: { id: input.id } },
+    select: { id: true },
+  });
+  if (dup) return { ok: false, message: `Another category is already named “${parsed.name}”.` };
+  const existing = await prisma.category.findUnique({ where: { id: input.id }, select: { id: true } });
+  if (!existing) return { ok: false, message: 'Category not found — it may have been deleted.' };
   await prisma.category.update({
     where: { id: input.id },
-    data: { name: parsed.name, description: parsed.description ?? null },
+    data: { name: parsed.name, description: parsed.description || null },
   });
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Saved “${parsed.name}”.` };
 }
 
-export async function deleteCategory(id: string) {
+export async function deleteCategory(id: string): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
   const [products, children] = await Promise.all([
     prisma.product.count({ where: { categoryId: id } }),
     prisma.category.count({ where: { parentId: id } }),
   ]);
-  if (products > 0) throw new Error(`Cannot delete: ${products} product(s) still use this category.`);
-  if (children > 0) throw new Error(`Cannot delete: it has ${children} sub-categor(ies).`);
+  if (products > 0) return { ok: false, message: `Cannot delete: ${products} product(s) still use this category.` };
+  if (children > 0) return { ok: false, message: `Cannot delete: it has ${children} sub-categor(ies).` };
+  const cat = await prisma.category.findUnique({ where: { id }, select: { name: true } });
+  if (!cat) return { ok: false, message: 'Category not found — it may already be deleted.' };
   await prisma.category.delete({ where: { id } });
   await audit('category.delete', id);
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Category “${cat.name}” deleted.` };
 }
 
 export async function replyToThread(threadId: string, body: string) {
@@ -1834,14 +2258,25 @@ export async function replyToThread(threadId: string, body: string) {
   revalidatePath('/admin/messages');
 }
 
-const BrandInput = z.object({ name: z.string().min(2).max(80), logoUrl: z.string().url().nullish() });
+const BrandInput = z.object({ name: z.string().trim().min(2).max(80), logoUrl: z.string().url().nullish() });
+const BRAND_LABELS = { name: 'Brand name', logoUrl: 'Logo' };
+
+/** Case-insensitive name clash (duplicates showed up twice in product dropdowns). */
+async function brandNameTaken(name: string, exceptId?: string): Promise<boolean> {
+  return !!(await prisma.brand.findFirst({
+    where: { name: { equals: name, mode: 'insensitive' }, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+    select: { id: true },
+  }));
+}
 
 export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string; slug?: string }> {
   await requireCap('products:edit');
-  const parsed = BrandInput.parse(input);
+  const r = BrandInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, BRAND_LABELS) };
+  const parsed = r.data;
+  if (await brandNameTaken(parsed.name)) return { ok: false, message: `A brand named “${parsed.name}” already exists.` };
   const baseSlug = parsed.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  if (baseSlug.length < 2) return { ok: false, message: 'Brand name produces an empty slug.' };
-  const slug = await uniqueSlug(baseSlug, async (s) =>
+  const slug = await uniqueSlug(baseSlug.length >= 2 ? baseSlug : 'brand', async (s) =>
     !!(await prisma.brand.findUnique({ where: { slug: s }, select: { id: true } })),
   );
   await prisma.brand.create({ data: { slug, name: parsed.name, logoUrl: parsed.logoUrl ?? null } });
@@ -1853,9 +2288,12 @@ export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ 
 
 export async function updateBrand(id: string, input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string }> {
   await requireCap('products:edit');
-  const parsed = BrandInput.parse(input);
+  const r = BrandInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, BRAND_LABELS) };
+  const parsed = r.data;
   const existing = await prisma.brand.findUnique({ where: { id } });
   if (!existing) return { ok: false, message: 'Brand not found.' };
+  if (await brandNameTaken(parsed.name, id)) return { ok: false, message: `Another brand is already named “${parsed.name}”.` };
   await prisma.brand.update({ where: { id }, data: { name: parsed.name, logoUrl: parsed.logoUrl ?? null } });
   await audit('brand.update', existing.slug);
   revalidatePath('/admin/brands');
@@ -1876,20 +2314,23 @@ export async function deleteBrand(id: string): Promise<{ ok: boolean; message: s
 
 // ─── Admin product create / edit (admin own inventory, full edit) ──────────
 
+// Limits are wide enough for every row the shop / URL importers write (titles
+// up to 200 chars, all supplier photos, full descriptions), so an imported
+// product can always be re-saved from the edit page.
 const AdminProductInput = z.object({
-  title: z.string().min(6).max(180),
+  title: z.string().trim().min(2).max(200),
   summary: z.string().max(300).nullish(),
-  description: z.string().max(8000).nullish(),
+  description: z.string().max(100_000).nullish(),
   categoryId: z.string().min(1),
   brandId: z.string().nullish(),
   companyId: z.string().nullish(),               // null = lab2date own inventory
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']),
   mode: z.enum(['BUY_NOW', 'QUOTE_ONLY', 'HYBRID']),
-  priceCents: z.number().int().nonnegative().nullable(),
+  priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
   currency: z.string().default('EUR'),
   yearMade: z.number().int().min(1900).max(2100).nullable(),
   illustration: z.enum(['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector']),
-  images: z.array(z.string().url()).max(8).default([]),
+  images: z.array(z.string().url()).max(MAX_ADMIN_PRODUCT_IMAGES).default([]),
   specs: z.record(z.string()).default({}),
   status: z.enum(['DRAFT', 'PENDING_REVIEW', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
   quantity: z.number().int().min(0).max(100000).default(1),
@@ -1897,15 +2338,46 @@ const AdminProductInput = z.object({
 
 export type AdminProductInputType = z.infer<typeof AdminProductInput>;
 
-export async function adminCreateProduct(input: AdminProductInputType): Promise<{ ok: true; slug: string } | { ok: false; message: string }> {
+const ADMIN_PRODUCT_LABELS: Record<string, string> = {
+  title: 'Title',
+  summary: 'Short summary',
+  description: 'Description',
+  categoryId: 'Category',
+  brandId: 'Brand',
+  companyId: 'Shop / supplier',
+  condition: 'Condition',
+  mode: 'Buying mode',
+  priceCents: 'Price',
+  currency: 'Currency',
+  yearMade: 'Year made',
+  illustration: 'Fallback illustration',
+  images: 'Photos',
+  specs: 'Technical specs',
+  status: 'Status',
+  quantity: 'Quantity in stock',
+};
+
+type AdminProductError = { ok: false; message: string; fieldErrors?: Record<string, string> };
+
+/** safeParse with readable per-field messages (never the raw zod JSON). */
+function parseAdminProduct(input: AdminProductInputType): { data: AdminProductInputType } | { error: AdminProductError } {
+  const r = AdminProductInput.safeParse(input);
+  if (r.success) return { data: r.data };
+  return {
+    error: {
+      ok: false,
+      message: zodMessage(r.error, ADMIN_PRODUCT_LABELS),
+      fieldErrors: zodFieldErrors(r.error, ADMIN_PRODUCT_LABELS),
+    },
+  };
+}
+
+export async function adminCreateProduct(input: AdminProductInputType): Promise<{ ok: true; slug: string } | AdminProductError> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: AdminProductInputType;
-  try {
-    parsed = AdminProductInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const result = parseAdminProduct(input);
+  if ('error' in result) return result.error;
+  const parsed = result.data;
   let slug = parsed.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
   if (slug.length < 3) slug = `product-${Date.now().toString(36)}`;
   slug = await uniqueSlug(slug, async (s) => !!(await prisma.product.findUnique({ where: { slug: s }, select: { id: true } })));
@@ -1939,15 +2411,12 @@ export async function adminCreateProduct(input: AdminProductInputType): Promise<
   return { ok: true, slug };
 }
 
-export async function adminUpdateProduct(slug: string, input: AdminProductInputType): Promise<{ ok: boolean; message: string }> {
+export async function adminUpdateProduct(slug: string, input: AdminProductInputType): Promise<{ ok: true; message: string } | AdminProductError> {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: AdminProductInputType;
-  try {
-    parsed = AdminProductInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const result = parseAdminProduct(input);
+  if ('error' in result) return result.error;
+  const parsed = result.data;
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
   if (!existing) return { ok: false, message: 'Product not found.' };
   await prisma.product.update({
@@ -1966,7 +2435,9 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
       illustration: parsed.illustration,
       images: parsed.images,
       hasImages: parsed.images.length > 0,
-      specs: Object.keys(parsed.specs).length ? parsed.specs : undefined,
+      // DbNull, not undefined: undefined means "leave unchanged", so removing
+      // every spec row used to keep the old specs.
+      specs: Object.keys(parsed.specs).length ? parsed.specs : Prisma.DbNull,
       categoryId: parsed.categoryId,
       brandId: parsed.brandId || null,
       companyId: parsed.companyId || null,
@@ -1979,7 +2450,7 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
   return { ok: true, message: 'Saved.' };
 }
 
-export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; message: string }> {
+export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; message: string; outcome?: 'deleted' | 'archived' }> {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
@@ -1993,10 +2464,10 @@ export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; m
   if (outcome === 'archived') {
     await audit('product.admin.archive', slug, 'had order history — archived instead of hard-deleted');
     revalidatePath(`/marketplace/${slug}`);
-    return { ok: true, message: 'Product has order history — archived instead of deleted.' };
+    return { ok: true, message: 'Product has order history — archived instead of deleted.', outcome: 'archived' };
   }
   await audit('product.admin.delete', slug);
-  return { ok: true, message: 'Deleted.' };
+  return { ok: true, message: 'Deleted.', outcome: 'deleted' };
 }
 
 // ─── Company pricing rules + Cloud-API import trigger ──────────────────────
@@ -2009,12 +2480,9 @@ const CompanyPricingInput = z.object({
 export async function updateCompanyPricing(slug: string, input: z.infer<typeof CompanyPricingInput>): Promise<{ ok: boolean; message: string }> {
   await requireAdmin();
   await requireCap('companies:manage');
-  let parsed: z.infer<typeof CompanyPricingInput>;
-  try {
-    parsed = CompanyPricingInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const r = CompanyPricingInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, { pricingMode: 'Pricing mode', pricingMarkupBp: 'Markup' }) };
+  const parsed = r.data;
   const co = await prisma.company.findUnique({ where: { slug } });
   if (!co) return { ok: false, message: 'Company not found.' };
   await prisma.company.update({
@@ -2032,20 +2500,29 @@ export async function updateCompanyPricing(slug: string, input: z.infer<typeof C
 }
 
 const CreateCompanyInput = z.object({
-  name: z.string().min(2).max(120),
-  country: z.string().max(80).nullish(),
-  website: z.string().url().nullish(),
-  importSourceUrl: z.string().url().nullish(),       // e.g. https://lab2parts.com
+  name: z.string().trim().min(2).max(120),
+  country: z.string().trim().max(80).nullish(),
+  website: z.string().trim().url().nullish(),
+  importSourceUrl: z.string().trim().url().nullish(),       // e.g. https://lab2parts.com
 });
+const COMPANY_LABELS = { name: 'Shop name', country: 'Country', website: 'Public website', importSourceUrl: 'Import URL' };
+
+/** Case-insensitive name clash — two shops with one name are indistinguishable in every picker. */
+async function companyNameTaken(name: string, exceptSlug?: string): Promise<boolean> {
+  return !!(await prisma.company.findFirst({
+    where: { name: { equals: name, mode: 'insensitive' }, ...(exceptSlug ? { NOT: { slug: exceptSlug } } : {}) },
+    select: { id: true },
+  }));
+}
 
 export async function createCompany(input: z.infer<typeof CreateCompanyInput>): Promise<{ ok: boolean; message: string; slug?: string }> {
   await requireAdmin();
   await requireCap('companies:manage');
-  let parsed: z.infer<typeof CreateCompanyInput>;
-  try {
-    parsed = CreateCompanyInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
+  const r = CreateCompanyInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, COMPANY_LABELS) };
+  const parsed = r.data;
+  if (await companyNameTaken(parsed.name)) {
+    return { ok: false, message: `A shop named “${parsed.name}” already exists. Use a different name or edit the existing shop.` };
   }
   const slug = await uniqueSlug(parsed.name, async (s) =>
     !!(await prisma.company.findUnique({ where: { slug: s }, select: { id: true } })),
@@ -2063,6 +2540,53 @@ export async function createCompany(input: z.infer<typeof CreateCompanyInput>): 
   await audit('company.create', slug, parsed.importSourceUrl ?? '');
   revalidatePath('/admin/companies');
   return { ok: true, message: `Shop “${parsed.name}” added.`, slug };
+}
+
+/** Edit a shop's name, country, website and import URL. The slug is kept so
+ *  existing links and ?shop= filters keep working. */
+export async function updateCompany(slug: string, input: z.infer<typeof CreateCompanyInput>): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  await requireCap('companies:manage');
+  const r = CreateCompanyInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, COMPANY_LABELS) };
+  const parsed = r.data;
+  const co = await prisma.company.findUnique({ where: { slug }, select: { id: true } });
+  if (!co) return { ok: false, message: 'Shop not found — it may have been deleted.' };
+  if (await companyNameTaken(parsed.name, slug)) return { ok: false, message: `Another shop is already named “${parsed.name}”.` };
+  await prisma.company.update({
+    where: { id: co.id },
+    data: {
+      name: parsed.name,
+      country: parsed.country || null,
+      website: parsed.website || null,
+      importSourceUrl: parsed.importSourceUrl || null,
+    },
+  });
+  await audit('company.update', slug, parsed.importSourceUrl ?? '');
+  revalidatePath('/admin/companies');
+  revalidatePath('/admin/products');
+  return { ok: true, message: `Shop “${parsed.name}” saved.` };
+}
+
+/** Delete a shop. Refused while products, user accounts or lab facilities are
+ *  linked: those FKs are ON DELETE SET NULL, so deleting would silently turn
+ *  the shop's products into lab2date own inventory. */
+export async function deleteCompany(slug: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  await requireCap('companies:manage');
+  const co = await prisma.company.findUnique({
+    where: { slug },
+    select: { id: true, name: true, _count: { select: { products: true, users: true, facilities: true } } },
+  });
+  if (!co) return { ok: false, message: 'Shop not found — it may already be deleted.' };
+  const { products, users, facilities } = co._count;
+  if (products > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${products} product${products === 1 ? ' is' : 's are'} still linked. Move or delete them first.` };
+  if (users > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${users} user account${users === 1 ? ' belongs' : 's belong'} to this shop.` };
+  if (facilities > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${facilities} lab facilit${facilities === 1 ? 'y is' : 'ies are'} owned by this shop.` };
+  await prisma.company.delete({ where: { id: co.id } });
+  await audit('company.delete', slug, 'manual delete');
+  revalidatePath('/admin/companies');
+  return { ok: true, message: `Shop “${co.name}” deleted.` };
 }
 
 /**
@@ -2452,14 +2976,14 @@ export async function previewProductFromUrl(url: string): Promise<ImportRunResul
 
 const DraftFromExtraction = z.object({
   sourceUrl: z.string().url(),
-  title: z.string().min(6).max(200),
+  title: z.string().trim().min(2).max(200),
   summary: z.string().max(280).nullish(),
   description: z.string().max(8000).nullish(),
   brand: z.string().max(80).nullish(),                  // free-text, we map → Brand
   categorySlug: z.string().min(1).max(64),
   companySlug: z.string().max(64).nullish(),            // optional supplier
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']).default('REFURBISHED'),
-  priceCents: z.number().int().nonnegative().nullable(),
+  priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
   currency: z.string().min(2).max(8).default('EUR'),
   images: z.array(z.string().url()).max(8).default([]),
   specs: z.record(z.string()).default({}),
@@ -2471,12 +2995,14 @@ export type DraftFromExtractionInput = z.infer<typeof DraftFromExtraction>;
 export async function createDraftFromExtraction(input: DraftFromExtractionInput): Promise<{ ok: boolean; slug?: string; message: string; existing?: { slug: string; title: string } }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: DraftFromExtractionInput;
-  try {
-    parsed = DraftFromExtraction.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 240) : 'Invalid input.' };
+  const r = DraftFromExtraction.safeParse(input);
+  if (!r.success) {
+    return {
+      ok: false,
+      message: zodMessage(r.error, { ...ADMIN_PRODUCT_LABELS, sourceUrl: 'Source URL', brand: 'Brand', categorySlug: 'Category', companySlug: 'Shop' }),
+    };
   }
+  const parsed = r.data;
 
   // Duplicate guard: same source URL already imported?
   const dup = await prisma.product.findUnique({
@@ -2729,6 +3255,12 @@ export async function deleteOrderPermanently(formData: FormData): Promise<{ ok: 
   });
   if (!o) return { ok: false, message: 'Order not found.' };
   if (!o.archivedAt) return { ok: false, message: 'Archive the order first, then delete.' };
+  // An unpaid order still holds its reserved unit(s). Release them through the
+  // same Stripe-aware cancel saga as "Cancel order" BEFORE the row disappears —
+  // otherwise the product sits at 0 stock forever (nothing can restock an order
+  // that no longer exists).
+  const release = await releaseBeforeDelete(o.id, o.status);
+  if (!release.ok) return { ok: false, message: `Order ${o.orderNumber}: ${release.message}` };
 
   // Forensic snapshot — written BEFORE the row vanishes so the audit trail
   // can answer "what existed and was wiped?" without the live row.
@@ -2744,13 +3276,42 @@ export async function deleteOrderPermanently(formData: FormData): Promise<{ ok: 
 
   // Cascade: delete child rows first (OrderItem). Notification rows that
   // referenced this order via title/body text stay — they're a separate
-  // audit dimension. Stock is NOT restored on delete (the row is gone for
-  // ops reasons, not because the buyer asked for a return).
+  // audit dimension. Stock of a PAID-family order is NOT restored on delete
+  // (the row is gone for ops reasons, not because the buyer asked for a
+  // return); an unpaid reservation was already released above.
   await prisma.orderItem.deleteMany({ where: { orderId: id } });
   await prisma.order.delete({ where: { id } });
 
   revalidatePath('/admin/orders');
-  return { ok: true, message: `Order ${o.orderNumber} permanently deleted.` };
+  return {
+    ok: true,
+    message: `Order ${o.orderNumber} permanently deleted.${release.restocked ? ' Its reserved stock was released.' : ''}`,
+  };
+}
+
+/** Pre-delete step for unpaid orders: cancel (and restock, when the order
+ *  reserved stock) via the cancel saga. Paid-family / already-closed orders
+ *  pass straight through — their stock is not ours to touch on delete. */
+async function releaseBeforeDelete(
+  orderId: string,
+  status: string,
+): Promise<{ ok: true; restocked: boolean } | { ok: false; message: string }> {
+  if (status !== 'PENDING_PAYMENT') return { ok: true, restocked: false };
+  const snap = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { paymentSubmittedAt: true, sourcingRequestId: true },
+  });
+  if (snap?.paymentSubmittedAt) {
+    return { ok: false, message: 'has a payment receipt awaiting verification — verify or reject it before deleting.' };
+  }
+  const outcome = await cancelOrderSaga(prisma, stripeExpireApi(), orderId, { requireNoProof: true });
+  if (outcome === 'expire-failed') {
+    return { ok: false, message: "the buyer's payment session could not be expired — nothing was deleted; please retry." };
+  }
+  if (outcome !== 'canceled') {
+    return { ok: false, message: 'its status changed while deleting — refresh and try again.' };
+  }
+  return { ok: true, restocked: !!snap && orderReservedStock(snap) };
 }
 
 /** Bulk permanent delete. Same archived-first guard + cap as the single-row
@@ -2760,23 +3321,45 @@ export async function bulkDeleteOrders(formData: FormData): Promise<{ ok: boolea
   await requireCap('orders:delete');
   const ids = String(formData.get('ids') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) return { ok: false, count: 0, message: 'No orders selected.' };
-  const targets = await prisma.order.findMany({
+  const candidates = await prisma.order.findMany({
     where: { id: { in: ids }, archivedAt: { not: null } },
     select: {
       id: true, orderNumber: true, status: true, totalCents: true, currency: true,
       buyer: { select: { email: true } },
     },
   });
-  if (targets.length === 0) {
+  if (candidates.length === 0) {
     return { ok: false, count: 0, message: 'None of the selected orders are archived. Archive them first.' };
+  }
+  // Unpaid orders release their reserved stock first (same as the single-row
+  // delete); any that can't be released are kept and reported, never dropped.
+  const targets: typeof candidates = [];
+  const kept: string[] = [];
+  let restocked = 0;
+  for (const o of candidates) {
+    const release = await releaseBeforeDelete(o.id, o.status);
+    if (!release.ok) { kept.push(`${o.orderNumber} ${release.message}`); continue; }
+    if (release.restocked) restocked++;
+    targets.push(o);
   }
   for (const o of targets) {
     await audit('order.delete.permanent', o.orderNumber, `bulk · ${(o.totalCents / 100).toFixed(2)} ${o.currency} · buyer=${o.buyer.email} · status=${o.status}`);
   }
-  await prisma.orderItem.deleteMany({ where: { orderId: { in: targets.map((o) => o.id) } } });
-  await prisma.order.deleteMany({ where: { id: { in: targets.map((o) => o.id) } } });
+  if (targets.length > 0) {
+    await prisma.orderItem.deleteMany({ where: { orderId: { in: targets.map((o) => o.id) } } });
+    await prisma.order.deleteMany({ where: { id: { in: targets.map((o) => o.id) } } });
+  }
   revalidatePath('/admin/orders');
-  return { ok: true, count: targets.length, message: `Deleted ${targets.length} order${targets.length === 1 ? '' : 's'}.` };
+  const skippedNote = ids.length > candidates.length
+    ? ` ${ids.length - candidates.length} not archived — skipped.`
+    : '';
+  const keptNote = kept.length ? ` Not deleted: ${kept.join('; ')}.` : '';
+  const stockNote = restocked ? ` Reserved stock released for ${restocked} unpaid order${restocked === 1 ? '' : 's'}.` : '';
+  return {
+    ok: targets.length > 0,
+    count: targets.length,
+    message: `Deleted ${targets.length} order${targets.length === 1 ? '' : 's'}.${stockNote}${skippedNote}${keptNote}`,
+  };
 }
 
 /**
@@ -2800,6 +3383,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
       paymentVerificationStatus: true, paymentSubmittedAt: true,
       paymentMethodManual: true,
       sourcingRequestId: true,
+      shippingAddress: true,
       buyer: { select: { id: true, email: true, name: true } },
     },
   });
@@ -2853,7 +3437,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     await sendEmail({
       to: order.buyer.email,
       subject: `Payment verified — order ${order.orderNumber}`,
-      html: `<p>Hi ${order.buyer.name ?? 'there'},</p><p>Your payment for order <strong>${order.orderNumber}</strong> has been verified. We will arrange shipping shortly.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}">View order</a></p>`,
+      html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>Your payment for order <strong>${order.orderNumber}</strong> has been verified. We will arrange shipping shortly.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}">View order</a></p>`,
       text: `Your payment for order ${order.orderNumber} has been verified. We will arrange shipping shortly.`,
     });
   } catch { /* email failure non-fatal */ }
@@ -2864,6 +3448,9 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     'PAYMENT_VERIFIED',
   );
   await audit('order.payment.verify', order.orderNumber, `verifier=${session.user.email}`);
+  // The order is now PAID: email the real invoice (+ billing copy), as the
+  // checkout success page promises. Never blocks — failures are logged.
+  await sendOrderInvoice(order.id);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
   revalidatePath('/app/quotes');
@@ -2872,7 +3459,12 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     revalidatePath(`/app/quotes/${order.sourcingRequestId}`);
     revalidatePath(`/admin/quotes/${order.sourcingRequestId}`);
   }
-  return { ok: true, message: 'Payment verified.' };
+  return {
+    ok: true,
+    message: shippingAddressIsComplete(order.shippingAddress)
+      ? 'Payment verified. Invoice emailed to the buyer.'
+      : 'Payment verified. Invoice emailed to the buyer. No complete shipping address on file yet — add it on the order page before shipping.',
+  };
 }
 
 /** Admin rejects a buyer-submitted payment proof; buyer can resubmit. */
@@ -2931,7 +3523,7 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
     await sendEmail({
       to: order.buyer.email,
       subject: `Payment proof needs attention — order ${order.orderNumber}`,
-      html: `<p>Hi ${order.buyer.name ?? 'there'},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${reason}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
+      html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${escapeHtmlLines(reason)}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
       text: `We need a corrected receipt for order ${order.orderNumber}. Reason: ${reason}\nResubmit: ${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment`,
     });
   } catch { /* email failure non-fatal */ }

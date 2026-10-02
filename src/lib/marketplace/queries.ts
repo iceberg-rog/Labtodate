@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import type { Prisma, ProductCondition, ProductMode } from '@prisma/client';
 import { applyShopPricing, type ShopPricingMode } from '@/lib/shop-pricing';
+import { productTextWhere } from '@/lib/search/where';
 
 export interface MarketplaceFilters {
   q?: string;
@@ -40,38 +41,69 @@ export interface MarketplaceResult {
 
 const DEFAULT_PAGE_SIZE = 24;
 
+/** What a buyer can browse: the same rule for listings, facets and headline counts. */
+export const LIVE_PRODUCT_WHERE = {
+  status: 'PUBLISHED',
+  quantity: { gt: 0 },
+} satisfies Prisma.ProductWhereInput;
+
+/**
+ * Listings that show a Buy now button: a buyable mode with a price that the
+ * shop's pricing rule doesn't hide (see applyShopPricing + the product page).
+ * Imports are HYBRID, so matching `mode = BUY_NOW` alone returned nothing.
+ */
+const PURCHASABLE_WHERE: Prisma.ProductWhereInput = {
+  mode: { in: ['BUY_NOW', 'HYBRID'] },
+  priceCents: { gt: 0 },
+  OR: [{ companyId: null }, { company: { pricingMode: { in: ['PASS_THROUGH', 'MARKUP_PERCENT'] } } }],
+};
+
+/** Everything a buyer has to request a quote for (the complement of the above). */
+const QUOTE_ONLY_WHERE: Prisma.ProductWhereInput = {
+  OR: [
+    { mode: 'QUOTE_ONLY' },
+    { priceCents: null },
+    { priceCents: { lte: 0 } },
+    { company: { pricingMode: { in: ['FORCE_QUOTE', 'HIDE_PRICE'] } } },
+  ],
+};
+
+/** Product.priceCents is a Postgres INT4; larger bounds made Prisma throw (500). */
+const INT4_MAX = 2_147_483_647;
+const clampCents = (n: number) => Math.min(INT4_MAX, Math.max(0, Math.round(n)));
+
 export async function listProducts(filters: MarketplaceFilters = {}): Promise<MarketplaceResult> {
   const page = Math.max(1, filters.page ?? 1);
   const pageSize = Math.max(1, Math.min(60, filters.pageSize ?? DEFAULT_PAGE_SIZE));
 
-  const where: Prisma.ProductWhereInput = {
-    status: 'PUBLISHED',
-    quantity: { gt: 0 },
-  };
-
-  if (filters.q) {
-    where.OR = [
-      { title:   { contains: filters.q, mode: 'insensitive' } },
-      { summary: { contains: filters.q, mode: 'insensitive' } },
-    ];
-  }
-  if (filters.category) where.category = { slug: filters.category };
-  if (filters.brand)    where.brand    = { slug: filters.brand };
-  if (filters.condition) where.condition = filters.condition;
-  if (filters.mode)      where.mode = filters.mode;
+  // Conditions are ANDed so the text, mode and price filters can't overwrite
+  // each other's OR / priceCents keys.
+  const and: Prisma.ProductWhereInput[] = [];
+  if (filters.q?.trim()) and.push(productTextWhere(filters.q));
+  if (filters.category) and.push({ category: { slug: filters.category } });
+  if (filters.brand)    and.push({ brand: { slug: filters.brand } });
+  if (filters.condition) and.push({ condition: filters.condition });
+  if (filters.mode === 'BUY_NOW') and.push(PURCHASABLE_WHERE);
+  else if (filters.mode === 'HYBRID') and.push(PURCHASABLE_WHERE, { mode: 'HYBRID' });
+  else if (filters.mode === 'QUOTE_ONLY') and.push(QUOTE_ONLY_WHERE);
   if (filters.minPriceCents !== undefined || filters.maxPriceCents !== undefined) {
-    where.priceCents = {
-      ...(filters.minPriceCents !== undefined ? { gte: filters.minPriceCents } : {}),
-      ...(filters.maxPriceCents !== undefined ? { lte: filters.maxPriceCents } : {}),
-    };
+    and.push({
+      priceCents: {
+        ...(filters.minPriceCents !== undefined ? { gte: clampCents(filters.minPriceCents) } : {}),
+        ...(filters.maxPriceCents !== undefined ? { lte: clampCents(filters.maxPriceCents) } : {}),
+      },
+    });
   }
+  const where: Prisma.ProductWhereInput = { ...LIVE_PRODUCT_WHERE, ...(and.length ? { AND: and } : {}) };
 
-  // Products with real photography always lead within any sort.
+  // Products with real photography always lead within any sort. Quote-only
+  // items have no price: keep them after the priced ones in both directions
+  // (Postgres puts NULLs first on DESC, which filled "high → low" with them).
   const orderBy: Prisma.ProductOrderByWithRelationInput[] =
     filters.sort === 'price_asc'
-      ? [{ hasImages: 'desc' }, { priceCents: 'asc' }]
+      ? [{ hasImages: 'desc' }, { priceCents: { sort: 'asc', nulls: 'last' } }]
       : filters.sort === 'price_desc'
-        ? [{ hasImages: 'desc' }, { priceCents: 'desc' }]
+        ? [{ hasImages: 'desc' }, { priceCents: { sort: 'desc', nulls: 'last' } }]
         : [{ hasImages: 'desc' }, { createdAt: 'desc' }];
 
   const [items, total] = await Promise.all([
@@ -131,6 +163,12 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
   };
 }
 
+/** How many live listings `/marketplace?q=<query>` would show. */
+export async function countSearchMatches(query: string): Promise<number> {
+  if (!query.trim()) return 0;
+  return prisma.product.count({ where: { ...LIVE_PRODUCT_WHERE, ...productTextWhere(query) } });
+}
+
 export async function getProductBySlug(slug: string) {
   const product = await prisma.product.findUnique({
     where: { slug },
@@ -179,11 +217,11 @@ export async function getSimilarProducts(categoryId: string, excludeSlug: string
 
 export async function getTopCategories(limit = 10) {
   const cats = await prisma.category.findMany({
-    where: { products: { some: { status: 'PUBLISHED' } } },
+    where: { products: { some: LIVE_PRODUCT_WHERE } },
     select: {
       slug: true,
       name: true,
-      _count: { select: { products: { where: { status: 'PUBLISHED' } } } },
+      _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } },
     },
   });
   return cats
@@ -194,11 +232,11 @@ export async function getTopCategories(limit = 10) {
 
 export async function getTopCategoriesWithImage(limit = 10) {
   const cats = await prisma.category.findMany({
-    where: { products: { some: { status: 'PUBLISHED' } } },
+    where: { products: { some: LIVE_PRODUCT_WHERE } },
     select: {
       slug: true,
       name: true,
-      _count: { select: { products: { where: { status: 'PUBLISHED' } } } },
+      _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } },
     },
   });
   const top = cats
@@ -250,14 +288,14 @@ export async function getTopCategoriesWithImage(limit = 10) {
 export async function getCategories() {
   return prisma.category.findMany({
     orderBy: { sortOrder: 'asc' },
-    select: { slug: true, name: true, _count: { select: { products: { where: { status: 'PUBLISHED' } } } } },
+    select: { slug: true, name: true, _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } } },
   });
 }
 
 export async function getTopBrands(limit: number = 12) {
-  // Order brands by their published product count (desc).
+  // Order brands by their live (published, in-stock) product count (desc).
   const brands = await prisma.brand.findMany({
-    select: { slug: true, name: true, _count: { select: { products: { where: { status: 'PUBLISHED' } } } } },
+    select: { slug: true, name: true, _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } } },
   });
   return brands
     .filter((b) => b._count.products > 0)

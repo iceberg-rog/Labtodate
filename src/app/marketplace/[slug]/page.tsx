@@ -18,6 +18,7 @@ import { WishlistButton } from '@/components/marketplace/WishlistButton';
 import { ProductGallery } from '@/components/marketplace/ProductGallery';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import { getProductBySlug, getSimilarProducts } from '@/lib/marketplace/queries';
+import { resolveProductSlug } from '@/lib/products/slug';
 import { prisma } from '@/lib/db';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 import { startCheckout } from '@/lib/orders/actions';
@@ -31,12 +32,12 @@ import { sanitizeRichHtml } from '@/lib/sanitize';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
-  searchParams?: Promise<{ review?: string; sold?: string; quoteonly?: string }>;
+  searchParams?: Promise<{ review?: string; sold?: string; quoteonly?: string; canceled?: string; payment?: string }>;
 }
 
 export async function generateMetadata(props: PageProps): Promise<Metadata> {
   const params = await props.params;
-  const product = await getProductBySlug(params.slug);
+  const product = await getProductBySlug(await resolveProductSlug(params.slug));
   // BUG-024 / S10: don't leak titles of non-public (DRAFT/PENDING_REVIEW/
   // ARCHIVED) products via metadata. Owner/admin preview still renders the
   // page itself; generic metadata is acceptable there.
@@ -61,9 +62,12 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
 export default async function ProductDetailPage(props: PageProps) {
   const searchParams = await props.searchParams;
   const params = await props.params;
-  const product = await getProductBySlug(params.slug);
+  // Imported slugs can hold a literal '%c2%b5' that the URL segment never
+  // spells the same way — match it as stored (see resolveProductSlug).
+  const product = await getProductBySlug(await resolveProductSlug(params.slug));
   if (!product) notFound();
   const reviewNote = searchParams?.review === 'needpurchase';
+  const reviewInvalid = searchParams?.review === 'invalid';
   const mk = await getMarketing();
 
   const session = await getServerSession();
@@ -78,6 +82,26 @@ export default async function ProductDetailPage(props: PageProps) {
   if (product.status !== 'PUBLISHED' && !canPreviewUnpublished) notFound();
 
   const saved = await isWishlisted(session?.user.id ?? null, product.id);
+  // Only verified buyers may review (submitReview enforces it). Show the form
+  // only to them, so nobody types a review that is then thrown away.
+  const canReview = session
+    ? !!(await prisma.orderItem.findFirst({
+        where: {
+          productId: product.id,
+          order: { buyerId: session.user.id, status: { in: ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] } },
+        },
+        select: { id: true },
+      }))
+    : false;
+  // Checkout / cart bounced the buyer here — say why instead of landing silently.
+  const bounceNote =
+    searchParams?.sold
+      ? 'This unit is no longer available as you saw it (sold, reserved or updated), so no order was created and nothing is due. The listing below shows its current state.'
+      : searchParams?.quoteonly
+        ? 'This item can’t be bought online right now — request a quote instead. No order was created.'
+        : searchParams?.canceled || searchParams?.payment
+          ? 'Checkout was not completed. No payment was taken.'
+          : null;
   const similar = await getSimilarProducts(product.categoryId, product.slug, 4);
   const companyListings = product.companyId
     ? await prisma.product.count({ where: { companyId: product.companyId, status: 'PUBLISHED' } })
@@ -158,6 +182,11 @@ export default async function ProductDetailPage(props: PageProps) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd).replace(/</g, '\\u003c') }}
       />
+      {bounceNote && (
+        <div role="status" className="mb-6 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          {bounceNote}
+        </div>
+      )}
       {/* Breadcrumbs */}
       <nav className="flex items-center gap-1 text-xs text-muted-foreground mb-8 flex-wrap">
         <Link href="/" className="hover:text-foreground">Home</Link>
@@ -247,7 +276,7 @@ export default async function ProductDetailPage(props: PageProps) {
                     </p>
                   </div>
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
-                    <Link href={`/let-us-find-it?product=${product.slug}`}>Source a similar unit</Link>
+                    <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Source a similar unit</Link>
                   </Button>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
@@ -268,7 +297,7 @@ export default async function ProductDetailPage(props: PageProps) {
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
                   <Link
-                    href={`/let-us-find-it?product=${product.slug}`}
+                    href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}
                     className="mt-1 text-center text-xs text-muted-foreground hover:text-foreground"
                   >
                     Buying in volume or need custom terms?{' '}
@@ -278,7 +307,7 @@ export default async function ProductDetailPage(props: PageProps) {
               ) : (
                 <>
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
-                    <Link href={`/let-us-find-it?product=${product.slug}`}>Request a quote</Link>
+                    <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Request a quote</Link>
                   </Button>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
@@ -388,15 +417,25 @@ export default async function ProductDetailPage(props: PageProps) {
               </ul>
             )}
 
-            {session ? (
+            {session && !canReview ? (
+              <p className="mt-5 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                {reviewNote ? 'Your review wasn’t saved — ' : ''}Only verified buyers who purchased this item can leave a review.
+              </p>
+            ) : session ? (
               <form
+                id="write-review"
                 action={submitReview.bind(null, product.slug)}
-                className="mt-5 rounded-2xl border border-border bg-card p-5 space-y-3"
+                className="mt-5 rounded-2xl border border-border bg-card p-5 space-y-3 scroll-mt-24"
               >
                 <p className="text-sm font-semibold">Write a review</p>
                 {reviewNote && (
                   <p className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-300">
                     Only verified buyers who purchased this item can leave a review.
+                  </p>
+                )}
+                {reviewInvalid && (
+                  <p role="alert" className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-300">
+                    Your review wasn&apos;t saved: it must be between 4 and 2,000 characters, with a rating from 1 to 5 stars.
                   </p>
                 )}
                 <select
@@ -412,6 +451,8 @@ export default async function ProductDetailPage(props: PageProps) {
                   name="body"
                   required
                   minLength={4}
+                  maxLength={2000}
+                  aria-label="Your review"
                   rows={3}
                   placeholder="Share your experience with this item…"
                   className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"

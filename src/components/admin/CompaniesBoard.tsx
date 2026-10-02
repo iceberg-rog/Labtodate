@@ -4,19 +4,21 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   BadgeCheck, Star, ExternalLink, Sparkles, Package, Cloud, Settings as SettingsIcon,
-  ChevronRight, ShieldCheck, AlertTriangle, Loader2, Ban,
+  ChevronRight, ShieldCheck, AlertTriangle, Loader2, Ban, Pencil, Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ShopPreviewDialog } from '@/components/admin/ShopPreviewDialog';
 import { ShopPricingDialog } from '@/components/admin/ShopPricingDialog';
-import { setCompanyVerified, setCompanyFeatured, blockSupplier } from '@/app/admin/actions';
+import { ShopEditDialog } from '@/components/admin/ShopEditDialog';
+import { setCompanyVerified, setCompanyFeatured, blockSupplier, deleteCompany } from '@/app/admin/actions';
 
 export interface ShopRow {
   id: string;
   slug: string;
   name: string;
   country: string | null;
+  website: string | null;
   isVerified: boolean;
   isFeatured: boolean;
   productCount: number;
@@ -42,6 +44,7 @@ function bucketOf(s: ShopRow): Bucket {
 export function CompaniesBoard({ shops, categories }: { shops: ShopRow[]; categories: { slug: string; name: string }[] }) {
   const [openShop, setOpenShop] = useState<ShopRow | null>(null);
   const [pricingShop, setPricingShop] = useState<ShopRow | null>(null);
+  const [editShop, setEditShop] = useState<ShopRow | null>(null);
 
   const grouped: Record<Bucket, ShopRow[]> = { imported: [], suggested: [], manual: [] };
   for (const s of shops) grouped[bucketOf(s)].push(s);
@@ -56,7 +59,7 @@ export function CompaniesBoard({ shops, categories }: { shops: ShopRow[]; catego
           count={grouped.imported.length}
         >
           {grouped.imported.map((s) => (
-            <ShopCard key={s.id} shop={s} bucket="imported" onOpen={() => setOpenShop(s)} onOpenPricing={() => setPricingShop(s)} />
+            <ShopCard key={s.id} shop={s} bucket="imported" onOpen={() => setOpenShop(s)} onOpenPricing={() => setPricingShop(s)} onEdit={() => setEditShop(s)} />
           ))}
         </Section>
       )}
@@ -69,7 +72,7 @@ export function CompaniesBoard({ shops, categories }: { shops: ShopRow[]; catego
           count={grouped.suggested.length}
         >
           {grouped.suggested.map((s) => (
-            <ShopCard key={s.id} shop={s} bucket="suggested" onOpen={() => setOpenShop(s)} onOpenPricing={() => setPricingShop(s)} />
+            <ShopCard key={s.id} shop={s} bucket="suggested" onOpen={() => setOpenShop(s)} onOpenPricing={() => setPricingShop(s)} onEdit={() => setEditShop(s)} />
           ))}
         </Section>
       )}
@@ -82,7 +85,7 @@ export function CompaniesBoard({ shops, categories }: { shops: ShopRow[]; catego
           count={grouped.manual.length}
         >
           {grouped.manual.map((s) => (
-            <ShopCard key={s.id} shop={s} bucket="manual" onOpen={() => setOpenShop(s)} onOpenPricing={() => setPricingShop(s)} />
+            <ShopCard key={s.id} shop={s} bucket="manual" onOpen={() => setOpenShop(s)} onOpenPricing={() => setPricingShop(s)} onEdit={() => setEditShop(s)} />
           ))}
         </Section>
       )}
@@ -96,6 +99,7 @@ export function CompaniesBoard({ shops, categories }: { shops: ShopRow[]; catego
 
       <ShopPreviewDialog open={!!openShop} shop={openShop} categories={categories} onClose={() => setOpenShop(null)} />
       <ShopPricingDialog open={!!pricingShop} shop={pricingShop} onClose={() => setPricingShop(null)} />
+      <ShopEditDialog shop={editShop} onClose={() => setEditShop(null)} />
     </div>
   );
 }
@@ -127,15 +131,17 @@ function Section({
 }
 
 function ShopCard({
-  shop, bucket, onOpen, onOpenPricing,
+  shop, bucket, onOpen, onOpenPricing, onEdit,
 }: {
   shop: ShopRow;
   bucket: Bucket;
   onOpen: () => void;
   onOpenPricing: () => void;
+  onEdit: () => void;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
+  const [actionError, setActionError] = useState<string | null>(null);
   const bg =
     bucket === 'imported' ? 'border-emerald-200 dark:border-emerald-800 hover:border-emerald-400 dark:hover:border-emerald-600' :
     bucket === 'suggested' ? 'border-purple-200 dark:border-purple-800 hover:border-purple-400 dark:hover:border-purple-600' :
@@ -156,6 +162,16 @@ function ShopCard({
     e.stopPropagation();
     if (!confirm(`Block “${shop.name}” permanently?\nIt will be removed and its hostname added to the AI-suggest blocklist.`)) return;
     start(async () => { await blockSupplier(shop.slug, 'rejected from list'); router.refresh(); });
+  }
+  function remove(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!confirm(`Delete shop “${shop.name}”? This cannot be undone.`)) return;
+    setActionError(null);
+    start(async () => {
+      const r = await deleteCompany(shop.slug);
+      if (!r.ok) { setActionError(r.message); return; }
+      router.refresh();
+    });
   }
 
   return (
@@ -228,6 +244,9 @@ function ShopCard({
           <Button type="button" variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onOpenPricing(); }} className="rounded-full text-xs">
             <SettingsIcon className="h-3 w-3" /> Pricing
           </Button>
+          <Button type="button" variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onEdit(); }} className="rounded-full text-xs">
+            <Pencil className="h-3 w-3" /> Edit
+          </Button>
           {shop.importSourceUrl && (
             <Button type="button" variant="outline" size="sm" onClick={(e) => { e.stopPropagation(); onOpen(); }} className="rounded-full text-xs">
               <Cloud className="h-3 w-3" /> {bucket === 'imported' ? 'Preview / sync' : 'Preview'}
@@ -238,7 +257,23 @@ function ShopCard({
               <Ban className="h-3 w-3" /> Block
             </Button>
           )}
+          {bucket !== 'suggested' && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={remove}
+              disabled={pending || shop.productCount > 0}
+              title={shop.productCount > 0 ? `Move or delete its ${shop.productCount} products first` : 'Delete shop'}
+              className="rounded-full text-xs text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-950/40 ml-auto"
+            >
+              <Trash2 className="h-3 w-3" /> Delete
+            </Button>
+          )}
         </div>
+        {actionError && (
+          <p role="alert" className="relative z-10 mt-2 text-xs font-medium text-red-700 dark:text-red-300">{actionError}</p>
+        )}
       </div>
     </li>
   );

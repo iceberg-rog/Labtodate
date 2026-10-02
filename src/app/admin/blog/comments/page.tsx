@@ -5,8 +5,10 @@ import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { setBlogCommentApproved, deleteBlogComment } from '@/lib/blog/actions';
+import { SubmitWithConfirm } from '@/components/util/SubmitWithConfirm';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Blog comments' };
 
 export default async function AdminBlogCommentsPage(
   props: {
@@ -103,9 +105,14 @@ export default async function AdminBlogCommentsPage(
                   </Button>
                 </form>
                 <form action={deleteBlogComment.bind(null, c.id)}>
-                  <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium text-destructive">
+                  <SubmitWithConfirm
+                    confirmMessage="Delete this comment permanently? This can't be undone."
+                    variant="outline"
+                    size="sm"
+                    className="rounded-full font-medium text-destructive"
+                  >
                     <Trash2 className="h-3.5 w-3.5" /> Delete
-                  </Button>
+                  </SubmitWithConfirm>
                 </form>
               </div>
             </li>

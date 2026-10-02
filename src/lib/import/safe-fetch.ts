@@ -112,14 +112,21 @@ async function resolvePublicIp(host: string): Promise<ResolvedHost> {
   return { ip: lookup.address, family: lookup.family as 4 | 6 };
 }
 
+/** Optional POST (outbound webhooks). A POST never follows redirects. */
+export interface SafeFetchPost {
+  body: string;
+  contentType: string;
+}
+
 /**
  * Single-hop fetch with IP pinning. Manually walks redirects (revalidating
  * each hop), caps body size, decodes UTF-8.
  */
-export async function safeFetch(rawUrl: string, options: { timeoutMs?: number; maxBytes?: number; accept?: string } = {}): Promise<SafeFetchResult> {
+export async function safeFetch(rawUrl: string, options: { timeoutMs?: number; maxBytes?: number; accept?: string; post?: SafeFetchPost } = {}): Promise<SafeFetchResult> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBytes = options.maxBytes ?? MAX_BODY_BYTES;
   const accept = options.accept ?? '*/*';
+  const post = options.post;
 
   let url = rawUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -133,8 +140,9 @@ export async function safeFetch(rawUrl: string, options: { timeoutMs?: number; m
 
     const pinned = await resolvePublicIp(parsed.hostname);
 
-    const result = await doRequest(parsed, pinned, accept, timeoutMs, maxBytes);
+    const result = await doRequest(parsed, pinned, accept, timeoutMs, maxBytes, post);
     if (result.kind === 'redirect') {
+      if (post) throw new SafeFetchError(`Redirected to ${result.location ?? '(no location)'} — POST targets must not redirect.`, 'STATUS');
       if (!result.location) throw new SafeFetchError('Redirect without Location header.', 'NETWORK');
       url = new URL(result.location, parsed).toString();
       continue;
@@ -153,6 +161,7 @@ function doRequest(
   accept: string,
   timeoutMs: number,
   maxBytes: number,
+  post?: SafeFetchPost,
 ): Promise<RedirectOutcome | BodyOutcome> {
   return new Promise((resolve, reject) => {
     const isHttps = url.protocol === 'https:';
@@ -161,8 +170,9 @@ function doRequest(
     // that IP but send the original hostname in Host and SNI servername so
     // both HTTP and TLS routing resolve correctly. Bypassing DNS at the
     // socket level prevents DNS-rebinding attacks between check and connect.
+    const payload = post ? Buffer.from(post.body, 'utf8') : null;
     const req = mod.request({
-      method: 'GET',
+      method: post ? 'POST' : 'GET',
       host: pinned.ip,
       family: pinned.family,
       port: url.port ? parseInt(url.port, 10) : undefined,
@@ -172,6 +182,7 @@ function doRequest(
         'User-Agent': USER_AGENT,
         'Accept': accept,
         'Accept-Encoding': 'identity',
+        ...(post && payload ? { 'Content-Type': post.contentType, 'Content-Length': String(payload.length) } : {}),
       },
       ...(isHttps ? { servername: url.hostname } : {}),
       timeout: timeoutMs,
@@ -223,6 +234,6 @@ function doRequest(
         reject(new SafeFetchError(`Network error [${code}]: ${e.message}`, 'NETWORK'));
       }
     });
-    req.end();
+    req.end(payload ?? undefined);
   });
 }

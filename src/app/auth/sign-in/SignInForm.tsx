@@ -6,7 +6,17 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Mail, Lock, Loader2, ArrowRight } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { Button } from '@/components/ui/button';
-import { safeRedirect } from '@/lib/safe-redirect';
+import { magicLinkTargets, safeRedirect } from '@/lib/safe-redirect';
+import { VerifyEmailStep, sendVerificationCode } from '../VerifyEmailStep';
+
+// ?error= codes this page can receive: from a magic link (better-auth appends
+// them to errorCallbackURL) or from the magic-link guard in src/lib/auth.ts.
+const LINK_ERRORS: Record<string, string> = {
+  INVALID_TOKEN: 'That sign-in link has expired or was already used. Enter your email below to get a new one.',
+  EXPIRED_TOKEN: 'That sign-in link has expired or was already used. Enter your email below to get a new one.',
+  new_user_signup_disabled: 'There’s no lab2date account for that email yet — create one with “Sign up” below.',
+  ACCOUNT_SUSPENDED: 'This account is suspended. Contact support if you think this is a mistake.',
+};
 
 export default function SignInPage() {
   const router = useRouter();
@@ -16,17 +26,32 @@ export default function SignInPage() {
   // only if it's a same-origin relative path (blocks open-redirect phishing).
   const redirect = safeRedirect(params.get('redirect'));
 
+  const [step, setStep] = useState<'form' | 'verify'>('form');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState<'password' | 'magic' | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(() => {
+    const code = params.get('error');
+    return code ? (LINK_ERRORS[code] ?? 'That sign-in link couldn’t be used. Please sign in again.') : null;
+  });
+  const [codeError, setCodeError] = useState<string | null>(null);
   const [magicSent, setMagicSent] = useState(false);
 
   async function handlePassword(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading('password');
-    const { error: err } = await authClient.signIn.email({ email, password, callbackURL: redirect });
+    // No callbackURL: we navigate ourselves, and better-auth would reject
+    // (403 "Invalid callbackURL") targets it doesn't like.
+    const { error: err } = await authClient.signIn.email({ email, password });
+    if (err?.code === 'EMAIL_NOT_VERIFIED') {
+      // Right password, but the address was never confirmed: confirm it now.
+      const sendErr = await sendVerificationCode(email);
+      setLoading(null);
+      setCodeError(sendErr);
+      setStep('verify');
+      return;
+    }
     setLoading(null);
     if (err) {
       setError(err.message || 'Sign-in failed. Check your email and password.');
@@ -43,13 +68,36 @@ export default function SignInPage() {
     }
     setError(null);
     setLoading('magic');
-    const { error: err } = await authClient.signIn.magicLink({ email, callbackURL: redirect });
+    const { error: err } = await authClient.signIn.magicLink({ email, ...magicLinkTargets(redirect) });
     setLoading(null);
     if (err) {
       setError(err.message || 'Could not send the magic link.');
       return;
     }
     setMagicSent(true);
+  }
+
+  if (step === 'verify') {
+    return (
+      <VerifyEmailStep
+        email={email}
+        password={password}
+        redirect={redirect}
+        title="Confirm your email"
+        lead={
+          <>
+            Your email address hasn&apos;t been confirmed yet. Enter the 5-digit code we sent to{' '}
+            <strong className="text-foreground">{email}</strong> to finish signing in.
+          </>
+        }
+        initialError={codeError}
+        onBack={() => {
+          setStep('form');
+          setError(null);
+        }}
+        backLabel="Back to sign-in"
+      />
+    );
   }
 
   if (magicSent) {
@@ -60,7 +108,8 @@ export default function SignInPage() {
         </div>
         <h1 className="text-xl font-bold tracking-tight">Check your email</h1>
         <p className="text-sm text-muted-foreground mt-2">
-          We sent a sign-in link to <strong className="text-foreground">{email}</strong>. It expires in 10 minutes.
+          We emailed <strong className="text-foreground">{email}</strong>. If it has a lab2date account, the email
+          contains a sign-in link that expires in 10 minutes.
         </p>
         <Button variant="outline" onClick={() => setMagicSent(false)} className="mt-6 w-full">
           Use a different email
@@ -114,7 +163,7 @@ export default function SignInPage() {
         </div>
 
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2">{error}</p>
+          <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2">{error}</p>
         )}
 
         <Button type="submit" disabled={!email || !password || loading !== null} className="w-full">

@@ -4,6 +4,11 @@ import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { X, CreditCard, Loader2, CheckCircle2, XCircle, Upload, FileText } from 'lucide-react';
 import { markOrderPaidManually } from '@/app/admin/actions';
+import { announceAdminResult } from './AdminResultToast';
+
+/** Fired on window after an order was marked paid here — an open order quick
+ *  view (mounted outside the list) re-fetches so it doesn't stay stale. */
+export const ORDER_PAID_EVENT = 'admin:orderpaid';
 
 /**
  * Modal for marking an order PAID without Stripe.
@@ -51,20 +56,25 @@ export function ManualPaidPanel() {
   function submit(e: React.FormEvent) {
     e.preventDefault();
     setRes(null);
+    const target = orderId!;
     const fd = new FormData();
-    fd.set('orderId', orderId!);
+    fd.set('orderId', target);
     fd.set('method', method);
     fd.set('note', note);
     if (file) fd.set('proof', file);
     start(async () => {
       try {
         const r = await markOrderPaidManually(fd);
-        setRes(r);
         if (r.ok) {
-          setTimeout(() => {
-            setOrderId(null);
-            router.refresh();
-          }, 900);
+          // The action revalidates the list: the paid order can leave a
+          // filtered view and take this panel (mounted in the list) with it,
+          // so the result goes to the admin toast and the panel closes.
+          announceAdminResult(r);
+          window.dispatchEvent(new CustomEvent(ORDER_PAID_EVENT, { detail: { id: target, message: r.message } }));
+          setOrderId(null);
+          router.refresh();
+        } else {
+          setRes(r);
         }
       } catch (e) {
         setRes({ ok: false, message: e instanceof Error ? e.message : 'Failed.' });

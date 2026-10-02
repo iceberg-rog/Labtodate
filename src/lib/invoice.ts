@@ -1,3 +1,5 @@
+import { escapeHtml as esc } from './email-html';
+
 export interface InvoiceLine {
   title: string;
   qty: number;
@@ -6,6 +8,10 @@ export interface InvoiceLine {
 
 export interface InvoiceInput {
   kind: 'INVOICE' | 'PROFORMA';
+  /** INVOICE for an order that hasn't been paid yet: rendered as a proforma
+   *  invoice ("Proforma-factuur") with a "not paid yet" notice, never as a
+   *  final Factuur. */
+  unpaid?: boolean;
   number: string;
   dateISO: string;
   currency: string;
@@ -28,7 +34,7 @@ export interface InvoiceInput {
 // Resolved at render time so admin Settings → Company / Payments / Logo
 // changes take effect on the next request (DB → process.env via
 // ensureSettingsLoaded — callers invoke that before renderInvoiceHtml).
-function getCompany() {
+export function getCompany() {
   const addr = (process.env.COMPANY_ADDRESS || '').trim();
   const addrLines = addr ? addr.split(/\r?\n+/).map((s) => s.trim()).filter(Boolean) : [];
   return {
@@ -54,9 +60,6 @@ function logoUrl(logoPath: string): string {
   return origin ? `${origin}${logoPath.startsWith('/') ? '' : '/'}${logoPath}` : logoPath;
 }
 
-const esc = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
 function nl(v: number): string {
   return v.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -72,18 +75,19 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
   const COMPANY = getCompany();
   const isProforma = inv.kind === 'PROFORMA';
   const cur = inv.currency || 'EUR';
-  const symbol = cur === 'EUR' ? '€' : cur;
+  const symbol = cur === 'EUR' ? '€' : esc(cur); // HTML-only use; currency can be typed on a quote
   const subtotal = inv.lines.reduce((s, l) => s + l.unitCents * l.qty, 0);
   const tax = inv.taxCents ?? 0;
   const shipping = inv.shippingCents ?? 0;
   const total = subtotal + shipping + tax;
   const docDate = dateNL(inv.dateISO);
-  const docTitle = isProforma ? 'Offerte' : 'Factuur';
+  const isUnpaidInvoice = !isProforma && !!inv.unpaid;
+  const docTitle = isProforma ? 'Offerte' : isUnpaidInvoice ? 'Proforma-factuur' : 'Factuur';
   const totalLabel = isProforma ? 'Offertebedrag' : 'Te betalen';
 
   const itemRows = inv.lines.map((l) => `
     <tr>
-      <td style="padding:9px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;">${esc(l.title)}</td>
+      <td style="padding:9px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;overflow-wrap:anywhere;word-break:break-word;">${esc(l.title)}</td>
       <td style="padding:9px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:right;white-space:nowrap;">${nl(l.qty)}</td>
       <td style="padding:9px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:right;white-space:nowrap;">${nl(l.unitCents / 100)}</td>
       <td style="padding:9px 8px;border-bottom:1px solid #e5e7eb;font-size:13px;text-align:right;white-space:nowrap;">${nl((l.unitCents * l.qty) / 100)}</td>
@@ -102,7 +106,8 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
   } else {
     buyerLines.push(`<div style="font-size:13px;color:#6b7280;">${esc(inv.buyer.email)}</div>`);
   }
-  const buyerBlock = buyerLines.join('');
+  // Wrap long unbroken lines (e.g. a 200-char address line) inside the card.
+  const buyerBlock = `<div style="overflow-wrap:anywhere;word-break:break-word;">${buyerLines.join('')}</div>`;
 
   const companyAddrRows = (COMPANY.addrLines.length ? COMPANY.addrLines : [''])
     .concat(COMPANY.country ? [COMPANY.country] : [])
@@ -199,7 +204,7 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
   ` : '';
 
   const html = `
-  <div style="font-family:Arial,Helvetica,sans-serif;max-width:760px;margin:0 auto;color:#111827;background:#ffffff;">
+  <div style="font-family:Arial,Helvetica,sans-serif;max-width:760px;margin:0 auto;color:#111827;background:#ffffff;overflow-wrap:anywhere;">
     <!-- HEADER -->
     <table cellpadding="0" cellspacing="0" border="0" style="width:100%;">
       <tr>
@@ -214,6 +219,7 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
 
     <!-- TITLE + CUSTOMER -->
     <h1 style="font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:800;margin:32px 0 14px 0;color:#111827;">${docTitle}</h1>
+    ${isUnpaidInvoice ? `<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin:0 0 18px 0;"><strong>Proforma invoice — not paid yet.</strong> Transfer the amount below quoting the invoice number. Your final invoice is issued once the payment is verified.</p>` : ''}
     <div style="margin-bottom:24px;">${buyerBlock}</div>
 
     <!-- META -->

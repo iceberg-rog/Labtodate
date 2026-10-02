@@ -205,7 +205,7 @@ export function UserQuickView() {
                 title: data.recent.lastSourcing.description.slice(0, 90) || 'Quote request',
                 sub: data.recent.lastSourcing.status.toLowerCase(),
                 date: data.recent.lastSourcing.createdAt,
-                href: `/app/quotes/${data.recent.lastSourcing.id}`,
+                href: `/admin/quotes/${data.recent.lastSourcing.id}`,
               } : null} />
 
               <div className="flex items-center justify-between gap-3 pt-3 border-t border-border flex-wrap">

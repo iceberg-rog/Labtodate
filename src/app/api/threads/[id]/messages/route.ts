@@ -34,7 +34,8 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
     where,
     orderBy: { createdAt: 'desc' },
     take: 200,
-    include: { author: { select: { id: true, name: true, email: true } } },
+    // Only the author id is needed: identities are never returned (see below).
+    include: { author: { select: { id: true } } },
   });
   messages.reverse();
 
@@ -48,14 +49,21 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
     data: { readAt: new Date() },
   });
 
+  // Same masking as the inbox page (src/app/app/inbox/[id]/page.tsx): a buyer
+  // only ever sees "lab2date Verified Supplier", a seller only "lab2date
+  // Buyer" — no real names, no emails, not even in this polling payload.
+  const counterpartLabel = thread.buyerId === session.user.id ? 'lab2date Verified Supplier' : 'lab2date Buyer';
   return NextResponse.json({
-    messages: messages.map((m) => ({
-      id: m.id,
-      body: m.body,
-      createdAt: m.createdAt.toISOString(),
-      authorName: m.author.name,
-      authorEmail: m.author.email,
-      isMine: m.author.id === session.user.id,
-    })),
+    messages: messages.map((m) => {
+      const isMine = m.author.id === session.user.id;
+      return {
+        id: m.id,
+        body: m.body,
+        createdAt: m.createdAt.toISOString(),
+        authorName: isMine ? 'You' : counterpartLabel,
+        authorEmail: null,
+        isMine,
+      };
+    }),
   });
 }

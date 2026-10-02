@@ -4,24 +4,24 @@ import {
   CheckCircle2,
   XCircle,
   ExternalLink,
-  Image as ImageIcon,
   Mail,
   CreditCard,
   Bot,
   Building2,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
-import { SETTING_DEFS, getEffectiveSettings } from '@/lib/settings';
+import { SETTING_DEFS, getEffectiveSettings, getEnvOnlySettingKeys } from '@/lib/settings';
 import { saveAdminSettings, uploadCompanyLogo, listWebhooks } from '../actions';
 import { ConnTest } from '@/components/admin/ConnTest';
 import { TestEmailButton } from '@/components/admin/TestEmailButton';
 import { FieldVerify } from '@/components/admin/FieldVerify';
 import { SettingsTabs } from '@/components/admin/SettingsTabs';
 import { SettingsSaveForm } from '@/components/admin/SettingsSaveForm';
+import { LogoUploadForm } from '@/components/admin/LogoUploadForm';
 import { WebhooksPanel } from '@/components/admin/WebhooksPanel';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Settings' };
 
 const TAB_CONNECTION: Partial<Record<string, { kind: 'resend' | 'stripe' | 'ai' | 'storage'; label: string; help: string }>> = {
   Email: {
@@ -68,6 +68,7 @@ export default async function AdminSettingsPage(
   const searchParams = await props.searchParams;
   await requireCapability('settings:view');
   const current = await getEffectiveSettings();
+  const envOnly = await getEnvOnlySettingKeys();
   const groups = Array.from(new Set(SETTING_DEFS.map((d) => d.group)));
   const requested = (searchParams?.tab ?? '').trim();
   const webhooks = await listWebhooks().catch(() => []);
@@ -80,6 +81,7 @@ export default async function AdminSettingsPage(
     const isSet = val.trim().length > 0;
     const verify = 'verify' in d ? (d as { verify?: string }).verify : undefined;
     const preview = 'preview' in d ? (d as { preview?: string }).preview : undefined;
+    const multiline = 'multiline' in d && d.multiline;
     return (
       <div key={d.key} className="space-y-1.5">
         <div className="flex items-center justify-between gap-3">
@@ -97,6 +99,19 @@ export default async function AdminSettingsPage(
             </span>
           )}
         </div>
+        {multiline ? (
+          // Addresses: a real textarea so line breaks survive and Enter adds a
+          // line instead of submitting the tab.
+          <textarea
+            id={d.key}
+            name={d.key}
+            rows={3}
+            autoComplete="off"
+            defaultValue={val}
+            placeholder={d.key}
+            className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+          />
+        ) : (
         <input
           id={d.key}
           name={d.key}
@@ -118,9 +133,17 @@ export default async function AdminSettingsPage(
           }
           className={field}
         />
+        )}
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">{d.hint}</p>
-          {isSet && (
+          <p className="text-xs text-muted-foreground">
+            {d.hint}
+            {envOnly.has(d.key) && (
+              <span className="block mt-0.5 text-amber-700 dark:text-amber-400">
+                Current value comes from the server .env — enter a new value to override it here; it can only be removed in the .env file.
+              </span>
+            )}
+          </p>
+          {isSet && !envOnly.has(d.key) && (
             <label className="text-xs text-muted-foreground inline-flex items-center gap-1.5 shrink-0">
               <input type="checkbox" name={`__clear_${d.key}`} className="accent-primary" />
               clear
@@ -158,7 +181,7 @@ export default async function AdminSettingsPage(
       <SettingsSaveForm
         action={saveAdminSettings}
         group={g}
-        saveNote="Saves this tab only. Empty secret field = keep current. Tick “clear” to wipe."
+        saveNote="Saves this tab only. Empty a field to remove its value — except secret fields, where empty = keep current (tick “clear” to wipe a secret)."
       >
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">{g}</h2>
@@ -187,50 +210,7 @@ export default async function AdminSettingsPage(
   // Logo upload — separate independent form, lives on its own tab so the
   // Brand/Company tabs aren't crowded with a file picker.
   panels['Logo'] = (
-    <form
-      action={uploadCompanyLogo}
-      className="rounded-2xl border border-border bg-card p-6 space-y-5"
-    >
-      <div className="flex items-center gap-2">
-        <ImageIcon className="h-4 w-4 text-primary" />
-        <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Brand logo</h2>
-      </div>
-      <p className="text-xs leading-relaxed text-muted-foreground bg-foreground/[0.02] border border-border rounded-xl p-3">
-        Uploaded once, then surfaced on every invoice + proforma. Keep a transparent background — looks best on white documents.
-      </p>
-      <div className="flex items-center gap-5 flex-wrap">
-        <div className="h-20 w-48 rounded-lg border border-border bg-card flex items-center justify-center overflow-hidden">
-          {current['COMPANY_LOGO_URL'] ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            (<img
-              src={current['COMPANY_LOGO_URL']}
-              alt="Company logo"
-              className="max-h-16 max-w-[180px] object-contain"
-            />)
-          ) : (
-            <span className="text-xs text-muted-foreground">No logo</span>
-          )}
-        </div>
-        <div className="flex-1 min-w-[220px]">
-          <p className="text-sm font-bold">Replace logo</p>
-          <p className="text-xs text-muted-foreground mb-2">
-            PNG / SVG / JPG / WEBP, max 2MB.
-          </p>
-          <input
-            type="file"
-            name="logo"
-            accept="image/png,image/jpeg,image/svg+xml,image/webp"
-            required
-            className="text-sm"
-          />
-        </div>
-      </div>
-      <div className="pt-2 border-t border-border">
-        <Button type="submit" variant="outline" className="rounded-full font-semibold">
-          Upload logo
-        </Button>
-      </div>
-    </form>
+    <LogoUploadForm action={uploadCompanyLogo} currentUrl={current['COMPANY_LOGO_URL']} />
   );
 
   // Webhooks tab — separate from regular settings, full panel

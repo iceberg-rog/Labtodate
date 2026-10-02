@@ -10,6 +10,17 @@ const MINIO_INTERNAL = 'http://minio:9000';
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  experimental: {
+    serverActions: {
+      // File uploads posted through Server Actions (company logo, payment
+      // receipts from the buyer and the admin "mark as paid" form, which
+      // advertise "max 8 MB") otherwise hit Next's 1 MB default and die with
+      // a 413 / full-page crash before the action's own size check can
+      // answer. 10 MB = 8 MB file + multipart overhead; nginx allows 25 MB,
+      // middleware buffers 10 MB.
+      bodySizeLimit: '10mb',
+    },
+  },
   images: {
     // optimizer fetches /media/* via the rewrite below (same origin).
     // For Product.images that point at external suppliers (lab2.nl,
@@ -25,6 +36,20 @@ const nextConfig = {
     remotePatterns: [
       { protocol: 'https', hostname: '**' },
     ],
+  },
+  async headers() {
+    return [
+      {
+        // User uploads proxied to MinIO from our own origin (deployments
+        // without the nginx /media/ block): never sniff, and never let a
+        // stored file run script here. Mirrors nginx/lab2date.conf.
+        source: '/media/:path*',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Content-Security-Policy', value: "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox" },
+        ],
+      },
+    ];
   },
   async rewrites() {
     return [
