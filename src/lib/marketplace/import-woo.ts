@@ -7,6 +7,7 @@
 
 import { prisma } from '@/lib/db';
 import { ProductCondition, ProductMode, ProductStatus } from '@prisma/client';
+import { cleanSupplierHtml, stripHtml, wooPriceToCents } from '@/lib/marketplace/import-clean';
 
 const KNOWN_BRANDS = [
   'Agilent', 'Waters', 'Thermo', 'Shimadzu', 'PerkinElmer', 'Hitachi', 'Bruker', 'Sciex',
@@ -20,19 +21,9 @@ interface WooProduct {
   slug: string;
   short_description: string;
   description: string;
-  prices: { price: string; currency_code: string };
+  prices: { price: string; currency_code: string; currency_minor_unit?: number };
   images: { src: string }[];
   categories: { id: number; name: string; slug: string }[];
-}
-
-function stripHtml(h: string): string {
-  return h
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&[a-z]+;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 async function brandIdFor(
@@ -149,27 +140,29 @@ export async function runWooImport(target: ImportTarget): Promise<number> {
   }
 
   const whitelist = target.whitelistSlugs ? new Set(target.whitelistSlugs) : null;
+  const supplier = { name: target.name, urls: [target.base] };
 
   let n = 0;
   for (const w of all) {
-    const title = stripHtml(w.name).slice(0, 200) || `Product ${w.id}`;
+    const name = stripHtml(w.name).slice(0, 200);
+    const title = name || `Product ${w.id}`;
     const slug = (w.slug || `${target.slug}-${w.id}`).slice(0, 90);
     if (whitelist && !whitelist.has(slug)) continue;
     const hint = (w.categories ?? []).map((c) => c.name).join(' ');
     const categoryId = await chooseCategory(title, hint, fallback.id);
     const brandId = await brandIdFor(title, hint, brandCache);
-    const priceNum = parseFloat(w.prices?.price ?? '0');
-    const priceCents = priceNum > 0 ? Math.round(priceNum) : null;
+    const priceCents = wooPriceToCents(w.prices);
     const images = (w.images ?? []).map((i) => i.src).filter(Boolean);
-    const summary = stripHtml(w.short_description).slice(0, 280) || null;
+    // Strip the supplier's own name, links and "see our website" copy: the
+    // listing is sold as a lab2date Verified Supplier item.
+    const shortHtml = cleanSupplierHtml(w.short_description, supplier);
+    const summary = stripHtml(shortHtml ?? '').slice(0, 280) || null;
 
     const data = {
-      title,
       summary,
-      description: w.short_description || w.description || null,
+      description: shortHtml || cleanSupplierHtml(w.description, supplier),
       condition: ProductCondition.USED,
       mode: priceCents ? ProductMode.HYBRID : ProductMode.QUOTE_ONLY,
-      status: ProductStatus.PUBLISHED,
       priceCents,
       currency: w.prices?.currency_code || 'EUR',
       images,
@@ -181,10 +174,24 @@ export async function runWooImport(target: ImportTarget): Promise<number> {
       companyId: target.companyId,
     };
 
+    // A product with no name in the source shop must not go live as
+    // "Product 1234": import it into the admin's Pending review queue. On a
+    // re-sync keep any title the admin has since given it, and only re-flag a
+    // listing that still carries the placeholder.
+    let update: typeof data & { title?: string; status?: ProductStatus } = {
+      ...data,
+      title,
+      status: ProductStatus.PUBLISHED,
+    };
+    if (!name) {
+      const existing = await prisma.product.findUnique({ where: { slug }, select: { title: true } });
+      update = existing && existing.title !== title ? data : { ...data, status: ProductStatus.PENDING_REVIEW };
+    }
+
     await prisma.product.upsert({
       where: { slug },
-      update: data,
-      create: { slug, ...data },
+      update,
+      create: { slug, ...data, title, status: name ? ProductStatus.PUBLISHED : ProductStatus.PENDING_REVIEW },
     });
     n++;
   }
