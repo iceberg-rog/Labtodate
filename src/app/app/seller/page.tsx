@@ -7,6 +7,7 @@ import { formatPrice } from '@/lib/utils';
 import type { OrderStatus } from '@prisma/client';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Seller panel' };
 
 // Same "paid" set and company scope as /app/seller/payouts, so the two agree.
 const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];

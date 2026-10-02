@@ -6,6 +6,7 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { OrderStatus } from '@prisma/client';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Payouts & statement' };
 const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 
 export default async function SellerPayoutsPage() {

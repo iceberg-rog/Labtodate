@@ -34,6 +34,9 @@ interface Props {
   description: string;
   status: 'PENDING' | 'RESPONDED' | 'ACCEPTED' | 'DECLINED' | 'CLOSED';
   product?: { title: string; slug: string } | null;
+  /** Category / lab-rental facility of a request without a product
+   *  (e.g. "Lab rental: BioLab … (Berlin, Germany)") — names the thread. */
+  productCategory?: string | null;
   messages: Message[];
   /** Role of the viewer in this thread. */
   viewerRole: 'BUYER' | 'SELLER' | 'ADMIN';
@@ -151,6 +154,18 @@ export function QuoteThread(p: Props) {
     decide('CLOSED');
   }
 
+  // Whose move it is follows who wrote last: a buyer follow-up after a reply or
+  // proforma puts the ball back with the supplier, whatever the status says.
+  const lastPublic = [...p.messages].reverse().find((m) => !m.isInternalNote);
+  const lastFromBuyer = !!lastPublic && !lastPublic.fromStaff;
+
+  // Name the request: the product, else its category / lab facility, else the
+  // first line of what was asked — never just the buyer's own name.
+  const firstLine = p.description.trim().split(/\r?\n/)[0]?.trim() ?? '';
+  const summary = firstLine.length > 90 ? `${firstLine.slice(0, 87).trimEnd()}…` : firstLine;
+  const threadTitle =
+    p.product?.title ?? (p.productCategory?.trim() || summary || `Request from ${p.buyerName}`);
+
   return (
     <div className="space-y-5">
       {/* ───────────────── Header card ───────────────── */}
@@ -161,11 +176,11 @@ export function QuoteThread(p: Props) {
               <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
                 {p.product ? 'Quote about' : 'Sourcing request'}
               </p>
-              <h2 className="text-xl font-bold mt-1 truncate">
-                {p.product ? p.product.title : `Request from ${p.buyerName}`}
-              </h2>
+              <h1 className="text-xl font-bold mt-1 line-clamp-2 [overflow-wrap:anywhere]" title={threadTitle}>
+                {threadTitle}
+              </h1>
             </div>
-            <StatusPill status={p.status} viewerRole={p.viewerRole} />
+            <StatusPill status={p.status} viewerRole={p.viewerRole} lastFromBuyer={lastFromBuyer} />
           </div>
 
           {/* Stepper — gives the buyer instant orientation in the funnel */}
@@ -377,8 +392,27 @@ const SUPPLIER_PILLS: PillMap = {
   CLOSED:    { variant: 'secondary', label: 'Closed' },
 };
 
-function StatusPill({ status, viewerRole }: { status: Props['status']; viewerRole: Props['viewerRole'] }) {
-  const m = (viewerRole === 'BUYER' ? BUYER_PILLS : SUPPLIER_PILLS)[status];
+// RESPONDED only says the supplier answered at some point. When the buyer
+// wrote last, the next move is the supplier's.
+const BUYER_FOLLOWED_UP: Record<Props['viewerRole'], PillMap['RESPONDED']> = {
+  BUYER:  { variant: 'warning', label: 'Waiting for supplier' },
+  SELLER: { variant: 'warning', label: 'Buyer replied — your move' },
+  ADMIN:  { variant: 'warning', label: 'Buyer replied — your move' },
+};
+
+function StatusPill({
+  status,
+  viewerRole,
+  lastFromBuyer,
+}: {
+  status: Props['status'];
+  viewerRole: Props['viewerRole'];
+  lastFromBuyer: boolean;
+}) {
+  const m =
+    status === 'RESPONDED' && lastFromBuyer
+      ? BUYER_FOLLOWED_UP[viewerRole]
+      : (viewerRole === 'BUYER' ? BUYER_PILLS : SUPPLIER_PILLS)[status];
   return <Badge variant={m.variant}>{m.label}</Badge>;
 }
 

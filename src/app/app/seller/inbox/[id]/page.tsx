@@ -6,6 +6,13 @@ import { QuoteThread } from '@/components/quotes/QuoteThread';
 
 export const dynamic = 'force-dynamic';
 
+// The reference comes from the id alone (no lookup), so the title never says
+// more than the URL already does to someone who cannot open the quote.
+export async function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  const { id } = await props.params;
+  return { title: `Quote RFQ-${id.slice(-6).toUpperCase()}` };
+}
+
 export default async function SellerQuoteDetailPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: `/app/seller/inbox/${params.id}` });
@@ -73,6 +80,7 @@ export default async function SellerQuoteDetailPage(props: { params: Promise<{ i
       description={sr.description}
       status={sr.status}
       product={sr.product}
+      productCategory={sr.productCategory}
       messages={sr.messages.map((m) => ({
         id: m.id,
         body: m.body,

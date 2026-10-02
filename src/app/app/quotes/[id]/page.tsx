@@ -174,6 +174,7 @@ export default async function BuyerQuoteDetailPage(
       description={sr.description}
       status={sr.status}
       product={sr.product}
+      productCategory={sr.productCategory}
       messages={sr.messages.map((m) => ({
         id: m.id,
         body: m.body,

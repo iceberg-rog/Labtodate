@@ -10,6 +10,7 @@ import { deleteProduct, publishProduct } from './actions';
 import { DeleteListingButton } from './DeleteListingButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'My listings' };
 
 export default async function SellerProductsPage(
   props: {
