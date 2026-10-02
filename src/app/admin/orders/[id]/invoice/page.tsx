@@ -3,10 +3,24 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { formatPrice } from '@/lib/utils';
-import { humaniseBuyer, smartDate, STATUS_LABEL } from '@/lib/orders/display';
+import { getCompany } from '@/lib/invoice';
+import { humaniseBuyer, STATUS_LABEL } from '@/lib/orders/display';
 import { InvoiceActions } from '@/components/admin/InvoiceActions';
 
 export const dynamic = 'force-dynamic';
+
+/** Absolute date for a legal document — never "Today 12:58". */
+function invoiceDate(d: Date): string {
+  return d.toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'Europe/Amsterdam',
+  });
+}
 
 function fmtAddrLines(a: unknown): { name?: string; lines: string[] } | null {
   if (!a || typeof a !== 'object') return null;
@@ -45,15 +59,19 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
   const ship = fmtAddrLines(order.shippingAddress);
   const bill = fmtAddrLines(order.billingAddress) ?? ship;
 
-  const site = process.env.SITE_NAME || 'lab2date';
+  // Same company source as the buyer / emailed invoice (src/lib/invoice.ts),
+  // so both show the same legal details (incl. KvK + website).
+  const c = getCompany();
   const company = {
-    legal: process.env.COMPANY_LEGAL_NAME || site,
-    address: process.env.COMPANY_ADDRESS || '',
-    country: process.env.COMPANY_COUNTRY || '',
-    phone: process.env.COMPANY_PHONE || '',
-    email: process.env.COMPANY_EMAIL || process.env.SUPPORT_EMAIL || '',
-    vat: process.env.COMPANY_VAT || '',
-    logo: process.env.COMPANY_LOGO_URL || '',
+    legal: c.name,
+    address: c.addrLines.join('\n'),
+    country: c.country,
+    phone: c.phone,
+    email: c.email,
+    web: c.web,
+    vat: c.vat,
+    kvk: c.kvk,
+    logo: c.logoPath,
   };
 
   const itemsSubtotal = order.items.reduce((s, i) => s + i.priceCentsSnapshot * i.quantity, 0);
@@ -66,6 +84,17 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
         @media print {
           .no-print { display: none !important; }
           body { background: white !important; }
+          /* Print only the invoice sheet — never the admin sidebar / top bar
+             (which carry the operator's email) around it. */
+          aside, header { display: none !important; }
+          body * { visibility: hidden !important; }
+          .invoice-sheet, .invoice-sheet * { visibility: visible !important; }
+          .invoice-sheet .no-print, .invoice-sheet .no-print * { visibility: hidden !important; }
+          .invoice-sheet {
+            position: absolute !important; left: 0; top: 0;
+            margin: 0 !important; box-shadow: none !important;
+            width: 100% !important; min-height: 0 !important; padding: 0 !important;
+          }
         }
         body { background: #f4f4f0; }
         .invoice-sheet {
@@ -114,15 +143,17 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
             {company.country && <p style={{ color: '#444' }}>{company.country}</p>}
             {company.phone && <p style={{ color: '#444' }}>Tel: {company.phone}</p>}
             {company.email && <p style={{ color: '#444' }}>Email: {company.email}</p>}
+            {company.web && <p style={{ color: '#444' }}>Web: {company.web}</p>}
             {company.vat && <p style={{ color: '#444' }}>VAT: {company.vat}</p>}
+            {company.kvk && <p style={{ color: '#444' }}>KvK: {company.kvk}</p>}
           </div>
           <div style={{ textAlign: 'right' }}>
             <h1 style={{ fontSize: 28, margin: 0, letterSpacing: '-0.02em' }}>INVOICE</h1>
             <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 700 }}>
               <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{order.orderNumber}</span>
             </p>
-            <p style={{ color: '#666', fontSize: 11 }}>Issued {smartDate(order.createdAt)}</p>
-            {order.paidAt && <p style={{ color: '#666', fontSize: 11 }}>Paid {smartDate(order.paidAt)}</p>}
+            <p style={{ color: '#666', fontSize: 11 }}>Issued {invoiceDate(order.createdAt)}</p>
+            {order.paidAt && <p style={{ color: '#666', fontSize: 11 }}>Paid {invoiceDate(order.paidAt)}</p>}
             <p style={{ marginTop: 10 }}>
               <span
                 className="stamp"
@@ -241,7 +272,7 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
             ) : (
               <em style={{ color: '#888' }}>not yet captured</em>
             )}
-            {order.paidAt && <> · Paid on <strong>{smartDate(order.paidAt)}</strong></>}
+            {order.paidAt && <> · Paid on <strong>{invoiceDate(order.paidAt)}</strong></>}
           </p>
           {order.stripePaymentIntentId && (
             <p style={{ marginTop: 4 }}>
@@ -251,8 +282,8 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
         </div>
 
         {order.adminNotes && (
-          <div style={{ marginTop: 16, padding: 14, background: '#fffae8', border: '1px solid #f0e0a0', borderRadius: 8, fontSize: 11, color: '#5a4400' }}>
-            <p style={{ fontWeight: 700, marginBottom: 4 }}>Internal note (not shown to buyer print)</p>
+          <div className="no-print" style={{ marginTop: 16, padding: 14, background: '#fffae8', border: '1px solid #f0e0a0', borderRadius: 8, fontSize: 11, color: '#5a4400' }}>
+            <p style={{ fontWeight: 700, marginBottom: 4 }}>Internal note (not printed)</p>
             <p style={{ whiteSpace: 'pre-wrap' }}>{order.adminNotes}</p>
           </div>
         )}
@@ -261,6 +292,7 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
         <p style={{ marginTop: 40, fontSize: 10, color: '#888', textAlign: 'center' }}>
           Thank you for your business. {company.legal}
           {company.vat && ` · VAT ${company.vat}`}
+          {company.kvk && ` · KvK ${company.kvk}`}
         </p>
       </main>
     </>
