@@ -3,8 +3,13 @@ import { Package, BarChart3, FileText, Plus, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { formatPrice } from '@/lib/utils';
+import type { OrderStatus } from '@prisma/client';
 
 export const dynamic = 'force-dynamic';
+
+// Same "paid" set and company scope as /app/seller/payouts, so the two agree.
+const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 
 export default async function SellerDashboardPage() {
   const session = await requireSession({
@@ -12,10 +17,31 @@ export default async function SellerDashboardPage() {
     redirectTo: '/app/seller',
   });
 
-  const [productsCount, publishedCount] = await Promise.all([
+  const role = (session.user as { role?: string }).role;
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const [productsCount, publishedCount, pendingQuotes, me] = await Promise.all([
     prisma.product.count({ where: { sellerId: session.user.id } }),
     prisma.product.count({ where: { sellerId: session.user.id, status: 'PUBLISHED' } }),
+    // Same scope as the quote inbox: admins see every request.
+    prisma.sourcingRequest.count({
+      where: { status: 'PENDING', ...(role === 'ADMIN' ? {} : { assignedToId: session.user.id }) },
+    }),
+    prisma.user.findUnique({ where: { id: session.user.id }, select: { companyId: true } }),
   ]);
+  const recentSales = me?.companyId
+    ? await prisma.orderItem.findMany({
+        where: {
+          product: { companyId: me.companyId },
+          order: {
+            status: { in: PAID },
+            OR: [{ paidAt: { gte: since } }, { paidAt: null, createdAt: { gte: since } }],
+          },
+        },
+        select: { priceCentsSnapshot: true, quantity: true, order: { select: { currency: true } } },
+      })
+    : [];
+  const revenue30d = recentSales.reduce((sum, i) => sum + i.priceCentsSnapshot * i.quantity, 0);
+  const revenueCurrency = recentSales[0]?.order.currency || 'EUR';
 
   return (
     <div className="space-y-6">
@@ -33,8 +59,20 @@ export default async function SellerDashboardPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard icon={Package} label="Listings" value={String(productsCount)} hint={`${publishedCount} live`} href="/app/seller/products" />
-        <StatCard icon={FileText} label="Pending quotes" value="0" hint="Phase 5 — Quotes" />
-        <StatCard icon={BarChart3} label="Revenue (30d)" value="€0" hint="Phase 6 — Stripe" />
+        <StatCard
+          icon={FileText}
+          label="Pending quotes"
+          value={String(pendingQuotes)}
+          hint={pendingQuotes === 1 ? 'Request awaiting your reply' : 'Requests awaiting your reply'}
+          href="/app/seller/inbox"
+        />
+        <StatCard
+          icon={BarChart3}
+          label="Revenue (30d)"
+          value={me?.companyId ? formatPrice(revenue30d, revenueCurrency) : '—'}
+          hint={me?.companyId ? 'Paid orders in the last 30 days, before commission' : 'No seller company linked to your account'}
+          href="/app/seller/payouts"
+        />
       </div>
 
       <div className="rounded-2xl border border-border bg-card p-6">
