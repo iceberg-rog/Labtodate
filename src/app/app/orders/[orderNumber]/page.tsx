@@ -77,6 +77,15 @@ export default async function OrderDetailPage({
   const needsAddress =
     (order.status === 'PAID' || order.status === 'PROCESSING') && !shippingAddressIsComplete(order.shippingAddress);
   const ship = (order.shippingAddress ?? null) as { name?: string; phone?: string; address?: Record<string, string | null> } | null;
+  // A quote order canceled because the quote was declined/closed: say so, or
+  // the page reads as a bare "Canceled" with no reason.
+  const endedQuote =
+    order.status === 'CANCELED' && order.sourcingRequestId
+      ? await prisma.sourcingRequest.findFirst({
+          where: { id: order.sourcingRequestId, status: { in: ['DECLINED', 'CLOSED'] } },
+          select: { id: true, status: true },
+        })
+      : null;
 
   return (
     <div className="space-y-6">
@@ -127,6 +136,16 @@ export default async function OrderDetailPage({
           <Badge variant={STATUS_VARIANT[order.status]}>{STATUS_LABEL[order.status]}</Badge>
         </div>
       </div>
+
+      {endedQuote && (
+        <div className="rounded-2xl border border-border bg-muted p-4 text-sm text-muted-foreground">
+          This order was canceled because{' '}
+          {endedQuote.status === 'DECLINED' ? 'you declined the quote' : 'the quote request was closed'}.{' '}
+          <a href={`/app/quotes/${endedQuote.id}`} className="font-semibold text-primary hover:underline">
+            View the quote
+          </a>
+        </div>
+      )}
 
       {returnedRef && (
         <div className="rounded-2xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 text-sm text-emerald-900 dark:text-emerald-300">

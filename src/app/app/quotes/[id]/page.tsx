@@ -48,17 +48,18 @@ export default async function BuyerQuoteDetailPage(
   // see the thread for audit, and buyers can force-see it with ?history=1
   // (linked from the order page so the conversation isn't lost).
   const POST_QUOTE_STATES = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'CANCELED', 'REFUNDED'];
-  if (
-    isBuyer &&
-    role !== 'ADMIN' &&
-    linkedOrder &&
-    POST_QUOTE_STATES.includes(linkedOrder.status) &&
-    searchParams.history !== '1'
-  ) {
+  // Declining (or closing) a quote cancels its unpaid order. That order page
+  // only says "Canceled", so the quote thread stays the buyer's view of the
+  // deal: it says what happened, and the order is linked as a side note.
+  const endedWithoutDeal =
+    (sr.status === 'DECLINED' || sr.status === 'CLOSED') && linkedOrder?.status === 'CANCELED';
+  const orderTakesOver =
+    isBuyer && role !== 'ADMIN' && !!linkedOrder && POST_QUOTE_STATES.includes(linkedOrder.status) && !endedWithoutDeal;
+  if (orderTakesOver && linkedOrder && searchParams.history !== '1') {
     redirect(`/app/orders/${linkedOrder.orderNumber}`);
   }
 
-  const inHistoryMode = !!(isBuyer && role !== 'ADMIN' && linkedOrder && POST_QUOTE_STATES.includes(linkedOrder.status) && searchParams.history === '1');
+  const inHistoryMode = orderTakesOver && searchParams.history === '1';
 
   return (
     <>
@@ -75,6 +76,15 @@ export default async function BuyerQuoteDetailPage(
           ← Back to order
         </a>
       </div>
+    )}
+    {endedWithoutDeal && linkedOrder && (
+      <p className="mb-5 rounded-xl border border-border bg-muted px-4 py-2.5 text-xs text-muted-foreground">
+        {sr.status === 'DECLINED' ? 'You declined this quote' : 'This request was closed'}, so order{' '}
+        <span className="font-mono">{linkedOrder.orderNumber}</span> was canceled.{' '}
+        <a href={`/app/orders/${linkedOrder.orderNumber}`} className="font-semibold text-primary hover:underline">
+          View canceled order
+        </a>
+      </p>
     )}
     {linkedOrder && !(
       // A declined/closed deal has no live order: no banner inviting payment.
