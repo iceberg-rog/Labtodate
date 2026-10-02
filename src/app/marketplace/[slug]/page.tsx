@@ -64,6 +64,7 @@ export default async function ProductDetailPage(props: PageProps) {
   const product = await getProductBySlug(params.slug);
   if (!product) notFound();
   const reviewNote = searchParams?.review === 'needpurchase';
+  const reviewInvalid = searchParams?.review === 'invalid';
   const mk = await getMarketing();
 
   const session = await getServerSession();
@@ -390,13 +391,19 @@ export default async function ProductDetailPage(props: PageProps) {
 
             {session ? (
               <form
+                id="write-review"
                 action={submitReview.bind(null, product.slug)}
-                className="mt-5 rounded-2xl border border-border bg-card p-5 space-y-3"
+                className="mt-5 rounded-2xl border border-border bg-card p-5 space-y-3 scroll-mt-24"
               >
                 <p className="text-sm font-semibold">Write a review</p>
                 {reviewNote && (
                   <p className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-300">
                     Only verified buyers who purchased this item can leave a review.
+                  </p>
+                )}
+                {reviewInvalid && (
+                  <p role="alert" className="rounded-lg border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-300">
+                    Your review wasn&apos;t saved: it must be between 4 and 2,000 characters, with a rating from 1 to 5 stars.
                   </p>
                 )}
                 <select
@@ -412,6 +419,8 @@ export default async function ProductDetailPage(props: PageProps) {
                   name="body"
                   required
                   minLength={4}
+                  maxLength={2000}
+                  aria-label="Your review"
                   rows={3}
                   placeholder="Share your experience with this item…"
                   className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
