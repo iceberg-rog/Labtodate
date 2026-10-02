@@ -6,6 +6,10 @@ import { X, CreditCard, Loader2, CheckCircle2, XCircle, Upload, FileText } from 
 import { markOrderPaidManually } from '@/app/admin/actions';
 import { announceAdminResult } from './AdminResultToast';
 
+/** Fired on window after an order was marked paid here — an open order quick
+ *  view (mounted outside the list) re-fetches so it doesn't stay stale. */
+export const ORDER_PAID_EVENT = 'admin:orderpaid';
+
 /**
  * Modal for marking an order PAID without Stripe.
  * Receives orderId from a window CustomEvent (`admin:manualpaid`).
@@ -52,8 +56,9 @@ export function ManualPaidPanel() {
   function submit(e: React.FormEvent) {
     e.preventDefault();
     setRes(null);
+    const target = orderId!;
     const fd = new FormData();
-    fd.set('orderId', orderId!);
+    fd.set('orderId', target);
     fd.set('method', method);
     fd.set('note', note);
     if (file) fd.set('proof', file);
@@ -65,6 +70,7 @@ export function ManualPaidPanel() {
           // filtered view and take this panel (mounted in the list) with it,
           // so the result goes to the admin toast and the panel closes.
           announceAdminResult(r);
+          window.dispatchEvent(new CustomEvent(ORDER_PAID_EVENT, { detail: { id: target, message: r.message } }));
           setOrderId(null);
           router.refresh();
         } else {

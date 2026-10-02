@@ -38,7 +38,7 @@ import {
   refundOrder,
 } from '@/app/admin/actions';
 import { humaniseBuyer, smartDate, STATUS_LABEL, STATUS_TONE, trackingUrl } from '@/lib/orders/display';
-import { openManualPaid } from './ManualPaidPanel';
+import { openManualPaid, ORDER_PAID_EVENT } from './ManualPaidPanel';
 import { announceAdminResult } from './AdminResultToast';
 import { BuyerEmailReveal } from './BuyerEmailReveal';
 
@@ -145,6 +145,27 @@ export function OrderQuickView() {
     window.addEventListener('admin:orderquick', handler);
     return () => window.removeEventListener('admin:orderquick', handler);
   }, []);
+
+  // "Mark as paid" runs in a separate panel: when it succeeds for the order
+  // shown here, re-fetch so the header, banners and the CTA show it as paid
+  // (the panel already toasted the result; mirror it inline like other actions).
+  useEffect(() => {
+    if (!id) return;
+    const openId = id;
+    function onPaid(e: Event) {
+      const detail = (e as CustomEvent<{ id: string; message?: string }>).detail;
+      if (detail?.id !== openId) return;
+      if (detail.message) setActionMsg({ ok: true, text: detail.message });
+      start(async () => {
+        try {
+          const r = await getOrderQuickDetail(openId);
+          if (r) setData(r);
+        } catch {/* keep stale */}
+      });
+    }
+    window.addEventListener(ORDER_PAID_EVENT, onPaid);
+    return () => window.removeEventListener(ORDER_PAID_EVENT, onPaid);
+  }, [id]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
