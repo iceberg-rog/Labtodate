@@ -6,6 +6,8 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { createCaseStudy, deleteCaseStudy, toggleCaseStudy } from '@/app/admin/actions';
 import { CaseStudyPreviewButton } from '@/components/admin/CaseStudyPreview';
+import { AdminActionForm } from '@/components/admin/AdminActionForm';
+import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +20,7 @@ export default async function AdminCaseStudiesPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Case studies</h1>
         <p className="text-muted-foreground mt-1">
-          {list.length} case stud{list.length === 1 ? 'y' : 'ies'} · published ones appear on /case-studies and the homepage trust bar.
+          {list.length} case stud{list.length === 1 ? 'y' : 'ies'} · published ones appear on /case-studies.
         </p>
       </div>
 
@@ -29,7 +31,7 @@ export default async function AdminCaseStudiesPage() {
           <p className="text-muted-foreground mt-1">
             A longer success story used to convince a hesitant buyer. Each study has a customer (e.g. “Acme Biotech”),
             an outcome metric (e.g. “40% lower capex”), a short excerpt that appears on the listing card, and a body
-            paragraph rendered on its own page. Click <em>Preview</em> on any row to see how it will render before publishing.
+            text rendered on its own page (blank lines start a new paragraph). Click <em>Preview</em> on any row to see how it will render before publishing.
           </p>
           <Link
             href="/case-studies"
@@ -41,12 +43,12 @@ export default async function AdminCaseStudiesPage() {
         </div>
       </div>
 
-      <form action={createCaseStudy} className="rounded-2xl border border-border bg-card p-5 space-y-4">
+      <AdminActionForm action={createCaseStudy} resetOnSuccess className="rounded-2xl border border-border bg-card p-5 space-y-4">
         <h2 className="font-semibold">Add case study</h2>
         <div className="grid sm:grid-cols-2 gap-4">
           <div>
             <label className="text-sm font-medium">Title</label>
-            <input name="title" required className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="How Acme cut instrument spend 40%" />
+            <input name="title" required pattern=".*\S.*" title="Enter a title (not just spaces)" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="How Acme cut instrument spend 40%" />
           </div>
           <div>
             <label className="text-sm font-medium">Customer</label>
@@ -68,7 +70,7 @@ export default async function AdminCaseStudiesPage() {
         <Button type="submit" className="rounded-full font-semibold">
           <Plus className="h-4 w-4" /> Add case study
         </Button>
-      </form>
+      </AdminActionForm>
 
       <ul className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
         {list.length === 0 && (
@@ -115,9 +117,14 @@ export default async function AdminCaseStudiesPage() {
                 </Button>
               </form>
               <form action={deleteCaseStudy.bind(null, c.id)}>
-                <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium text-destructive">
+                <ConfirmSubmitButton
+                  message={`Delete the case study "${c.title || c.slug}"? This cannot be undone.`}
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full font-medium text-destructive"
+                >
                   <Trash2 className="h-3.5 w-3.5" /> Delete
-                </Button>
+                </ConfirmSubmitButton>
               </form>
             </li>
           );

@@ -77,9 +77,10 @@ export async function toggleTestimonial(id: string, published: boolean) {
 }
 
 // ---- Case studies CRUD ----
-export async function createCaseStudy(formData: FormData) {
+export async function createCaseStudy(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('content:cms');
   const title = String(formData.get('title') ?? '').trim();
+  if (!title) return { ok: false, message: 'Enter a title — a case study can’t be published without one.' };
   const slug = await uniqueSlug(title, async (s) =>
     !!(await prisma.caseStudy.findUnique({ where: { slug: s }, select: { id: true } })),
   );
@@ -98,6 +99,7 @@ export async function createCaseStudy(formData: FormData) {
   await audit('casestudy.create', title);
   revalidatePath('/admin/case-studies');
   revalidatePath('/case-studies');
+  return { ok: true, message: `Published “${title}”.` };
 }
 export async function deleteCaseStudy(id: string) {
   await requireCap('content:cms');

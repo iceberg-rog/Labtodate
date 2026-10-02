@@ -49,7 +49,24 @@ export default async function CaseStudyPage(props: { params: Promise<{ slug: str
         {c.excerpt}
       </p>
 
-      <div className="prose-article mt-10 text-foreground" dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(c.body) }} />
+      <div className="prose-article mt-10 text-foreground" dangerouslySetInnerHTML={{ __html: caseStudyBodyHtml(c.body) }} />
     </article>
   );
+}
+
+/** Bodies written in the admin's plain textarea have no markup, so rendering
+ *  them as HTML collapsed every line break into one run-on line. Plain text is
+ *  escaped and split into paragraphs on blank lines (single newline → <br>);
+ *  bodies that already contain HTML (seeded content) are sanitized as before. */
+function caseStudyBodyHtml(body: string | null | undefined): string {
+  if (!body) return '';
+  if (/<[a-z][^>]*>/i.test(body)) return sanitizeRichHtml(body);
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return body
+    .replace(/\r\n/g, '\n')
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`)
+    .join('');
 }

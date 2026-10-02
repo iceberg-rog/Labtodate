@@ -2,6 +2,7 @@ import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { createCategory, updateCategory, deleteCategory } from '../actions';
+import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -80,8 +81,8 @@ export default async function AdminCategoriesPage() {
                   await deleteCategory(c.id);
                 }}
               >
-                <Button
-                  type="submit"
+                <ConfirmSubmitButton
+                  message={`Delete the category "${c.name}"? This cannot be undone.`}
                   variant="ghost"
                   size="sm"
                   className="rounded-full font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40"
@@ -89,7 +90,7 @@ export default async function AdminCategoriesPage() {
                   title={c._count.products > 0 ? 'Move/remove its products first' : 'Delete category'}
                 >
                   Delete
-                </Button>
+                </ConfirmSubmitButton>
               </form>
             </div>
           </li>
