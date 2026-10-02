@@ -16,6 +16,7 @@ import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
 import { readVerifiedUpload } from '@/lib/storage/file-type';
 import { isDeliverableEmail, sendEmail } from '@/lib/email';
+import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getStripe } from '@/lib/stripe/client';
 import { aiConfig } from '@/lib/ai';
@@ -1058,8 +1059,8 @@ export async function sendTestEmail(): Promise<{ ok: boolean; message: string }>
       html:
         '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;">' +
         '<h2 style="margin:0 0 8px;color:#0E4F40;">Your email is working 🎉</h2>' +
-        `<p style="color:#374151;line-height:1.6;">This is a test message from your ${site.replace(/&/g, '&amp;').replace(/</g, '&lt;')} admin settings. ` +
-        `Delivered via <strong>${via.replace(/</g, '&lt;')}</strong>.</p>` +
+        `<p style="color:#374151;line-height:1.6;">This is a test message from your ${escapeHtml(site)} admin settings. ` +
+        `Delivered via <strong>${escapeHtml(via)}</strong>.</p>` +
         '<p style="color:#6b7280;font-size:13px;">If this landed in your inbox, outbound email is configured correctly.</p>' +
         '</div>',
       text: `Your ${site} email is working. Delivered via ${via}.`,
@@ -1329,13 +1330,13 @@ export async function sendAnnouncement(formData: FormData): Promise<{ ok: boolea
           subject: title,
           html: `
           <div style="font-family:system-ui,sans-serif;max-width:560px;">
-            <h2 style="color:#0E4F40;">${title}</h2>
-            <p>Hi ${u.name},</p>
-            <div style="font-size:14px;line-height:1.7;color:#333;">${body.replace(/\n/g, '<br>')}</div>
+            <h2 style="color:#0E4F40;">${escapeHtml(title)}</h2>
+            <p>Hi ${escapeHtml(u.name)},</p>
+            <div style="font-size:14px;line-height:1.7;color:#333;">${escapeHtmlLines(body)}</div>
             <p style="margin:22px 0;">
-              <a href="${link}" style="background:#0E4F40;color:#fff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">View on ${site}</a>
+              <a href="${escapeHtml(link)}" style="background:#0E4F40;color:#fff;padding:11px 20px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">View on ${escapeHtml(site)}</a>
             </p>
-            <p style="color:#999;font-size:11px;">You receive this because you have a ${site} account.</p>
+            <p style="color:#999;font-size:11px;">You receive this because you have a ${escapeHtml(site)} account.</p>
           </div>`,
         });
         emailed++;
@@ -1440,7 +1441,7 @@ export async function refundOrder(formData: FormData): Promise<{ ok: boolean; me
   await sendEmail({
     to: order.buyer.email,
     subject: `Refund issued for order ${order.orderNumber}`,
-    html: `<p>Hi ${order.buyer.name}, a refund for order <strong>${order.orderNumber}</strong> has been processed${
+    html: `<p>Hi ${escapeHtml(order.buyer.name)}, a refund for order <strong>${order.orderNumber}</strong> has been processed${
       stripe && order.stripePaymentIntentId ? ' to your original payment method' : ''
     }. It may take a few business days to appear.</p>`,
   });
@@ -1490,9 +1491,9 @@ async function emailBuyerOrderUpdate(to: string, orderNumber: string, subject: s
       subject,
       html: `
         <div style="font-family:system-ui,sans-serif;max-width:540px;">
-          <h2 style="color:#0E4F40;">${subject}</h2>
-          <p>${line}</p>
-          <p><a href="${link}">View order ${orderNumber}</a></p>
+          <h2 style="color:#0E4F40;">${escapeHtml(subject)}</h2>
+          <p>${escapeHtml(line)}</p>
+          <p><a href="${escapeHtml(link)}">View order ${orderNumber}</a></p>
         </div>`,
       text: `${line}\n\nView order ${orderNumber}: ${link}`,
     });
@@ -1995,11 +1996,11 @@ export async function setOrderFulfillment(formData: FormData): Promise<{ ok: boo
       html: `
         <div style="font-family:system-ui,sans-serif;max-width:540px;">
           <h2 style="color:#0E4F40;">Your order is on its way 🚚</h2>
-          <p>Hi ${order.buyer.name}, order <strong>${order.orderNumber}</strong> has shipped.</p>
-          ${carrier ? `<p><strong>Carrier:</strong> ${carrier}</p>` : ''}
-          ${trackingNumber ? `<p><strong>Tracking #:</strong> ${trackingNumber}</p>` : ''}
+          <p>Hi ${escapeHtml(order.buyer.name)}, order <strong>${order.orderNumber}</strong> has shipped.</p>
+          ${carrier ? `<p><strong>Carrier:</strong> ${escapeHtml(carrier)}</p>` : ''}
+          ${trackingNumber ? `<p><strong>Tracking #:</strong> ${escapeHtml(trackingNumber)}</p>` : ''}
           <p><a href="${base}/app/orders">Track it in your account</a></p>
-          <p style="color:#888;font-size:12px;">${site}</p>
+          <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
         </div>`,
     }).catch(() => { emailFailed = true; });
   }
@@ -3412,7 +3413,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     await sendEmail({
       to: order.buyer.email,
       subject: `Payment verified — order ${order.orderNumber}`,
-      html: `<p>Hi ${order.buyer.name ?? 'there'},</p><p>Your payment for order <strong>${order.orderNumber}</strong> has been verified. We will arrange shipping shortly.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}">View order</a></p>`,
+      html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>Your payment for order <strong>${order.orderNumber}</strong> has been verified. We will arrange shipping shortly.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}">View order</a></p>`,
       text: `Your payment for order ${order.orderNumber} has been verified. We will arrange shipping shortly.`,
     });
   } catch { /* email failure non-fatal */ }
@@ -3498,7 +3499,7 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
     await sendEmail({
       to: order.buyer.email,
       subject: `Payment proof needs attention — order ${order.orderNumber}`,
-      html: `<p>Hi ${order.buyer.name ?? 'there'},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${reason}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
+      html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${escapeHtmlLines(reason)}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
       text: `We need a corrected receipt for order ${order.orderNumber}. Reason: ${reason}\nResubmit: ${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment`,
     });
   } catch { /* email failure non-fatal */ }

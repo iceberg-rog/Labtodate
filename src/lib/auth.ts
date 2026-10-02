@@ -6,6 +6,7 @@ import { createAuthMiddleware, APIError } from 'better-auth/api';
 import { hashPassword } from 'better-auth/crypto';
 import { prisma } from './db';
 import { sendEmail } from './email';
+import { escapeHtml } from './email-html';
 import { cleanName, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_RULE } from './auth-rules';
 import { signInErrorURL } from './safe-redirect';
 
@@ -108,10 +109,10 @@ export const auth = betterAuth({
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
             <h2 style="color:#0E4F40;">Reset your password</h2>
-            <p>Hi ${user.name || 'there'},</p>
+            <p>Hi ${escapeHtml(user.name || 'there')},</p>
             <p>We received a request to reset the password on your lab2date account. Click the button below — the link expires in 1 hour.</p>
             <p style="margin:24px 0;">
-              <a href="${url}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
+              <a href="${escapeHtml(url)}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
                 Reset password
               </a>
             </p>
@@ -141,10 +142,10 @@ export const auth = betterAuth({
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
             <h2 style="color:#0E4F40;">Confirm your email</h2>
-            <p>Hi ${user.name || 'there'},</p>
+            <p>Hi ${escapeHtml(user.name || 'there')},</p>
             <p>Click the button below to confirm that this email belongs to you. The link expires in 1 hour.</p>
             <p style="margin:24px 0;">
-              <a href="${url}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
+              <a href="${escapeHtml(url)}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
                 Verify my email
               </a>
             </p>
@@ -316,7 +317,7 @@ export const auth = betterAuth({
               <h2 style="color: #047857;">Sign in to lab2date</h2>
               <p>Click the link below to sign in. It expires in 10 minutes.</p>
               <p style="margin: 24px 0;">
-                <a href="${url}"
+                <a href="${escapeHtml(url)}"
                    style="background:#047857;color:white;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:600;">
                   Sign in to lab2date
                 </a>

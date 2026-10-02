@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins } from '@/lib/observability';
 import { sendEmail } from '@/lib/email';
+import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 
 function parseAttachments(v: FormDataEntryValue | null): string[] {
   if (typeof v !== 'string' || !v) return [];
@@ -75,7 +76,7 @@ export async function guestReplyByQuoteToken(formData: FormData): Promise<void> 
   await sendEmail({
     to: ops,
     subject: `[${ref}] Guest reply on a quote`,
-    html: `<p>${sr.buyerName} (${sr.buyerEmail}) replied to quote ${ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${body.replace(/\n/g, '<br>')}</blockquote>`,
+    html: `<p>${escapeHtml(sr.buyerName)} (${escapeHtml(sr.buyerEmail)}) replied to quote ${ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
   });
   await notifyAdmins(
     `Guest replied on quote · ${ref}`,

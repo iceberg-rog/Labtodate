@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { isDeliverableEmail, sendEmail } from '@/lib/email';
+import { escapeHtml } from '@/lib/email-html';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
 import { expireProformaTransition } from '@/lib/quotes/proforma-expiry';
 import { orphanSweepTtlMinutes } from '@/lib/orders/orphan-ttl';
@@ -70,8 +71,8 @@ export async function POST(req: NextRequest) {
         await sendEmail({
           to: t.assignedTo.email,
           subject: `[SLA] ${t.ref} — overdue ${overdueMinutes}m`,
-          html: `<p><strong>${t.priority}</strong> ticket <code>${t.ref}</code> has breached its SLA.</p>
-                 <p>${t.subject}</p>
+          html: `<p><strong>${escapeHtml(t.priority)}</strong> ticket <code>${t.ref}</code> has breached its SLA.</p>
+                 <p>${escapeHtml(t.subject)}</p>
                  <p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open in admin</a></p>`,
         }).catch(() => null);
       }
@@ -122,8 +123,8 @@ export async function POST(req: NextRequest) {
         await sendEmail({
           to: slaTo,
           subject: `[SLA] Quote ${ref} — overdue ${overdueMinutes}m`,
-          html: `<p><strong>${q.priority}</strong> quote <code>${ref}</code> has breached its SLA.</p>
-                 <p>${subject}</p>
+          html: `<p><strong>${escapeHtml(q.priority)}</strong> quote <code>${ref}</code> has breached its SLA.</p>
+                 <p>${escapeHtml(subject)}</p>
                  <p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open in admin</a></p>`,
         }).catch(() => null);
       }
@@ -196,8 +197,8 @@ export async function POST(req: NextRequest) {
       await sendEmail({
         to: q.buyerEmail,
         subject: `[${ref}] Your proforma has expired`,
-        html: `<p>Hi ${q.buyerName ?? 'there'},</p>
-               <p>Your proforma <strong>${ref}</strong> for ${item} expired on ${q.validUntilAt?.toISOString().slice(0, 10)}.</p>
+        html: `<p>Hi ${escapeHtml(q.buyerName ?? 'there')},</p>
+               <p>Your proforma <strong>${ref}</strong> for ${escapeHtml(item)} expired on ${q.validUntilAt?.toISOString().slice(0, 10)}.</p>
                <p>If you'd still like to proceed, just reply to your quote thread and we'll re-issue with up-to-date pricing.</p>
                <p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/quotes/${q.id}">Open your quote</a></p>`,
       }).catch(() => null);

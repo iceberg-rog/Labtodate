@@ -8,6 +8,7 @@ import { requireSession } from '@/lib/auth-server';
 import { getStripe, stripeConfigured } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { sendEmail } from '@/lib/email';
+import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 import { audit, logError, notifyAdmins, notifyUser } from '@/lib/observability';
 import { reserveAndCreateOrder } from '@/lib/orders/checkout-tx';
 import { sendOrderReceived } from '@/lib/orders/internal';
@@ -65,7 +66,7 @@ export async function requestReturn(orderNumber: string, formData: FormData) {
   await sendEmail({
     to: ops,
     subject: `Return request ${ref} — order ${orderNumber}`,
-    html: `<p>${session.user.name} (${session.user.email}) requested a return/refund for <strong>${orderNumber}</strong>.</p><p>Reason: ${reason || '—'}</p>`,
+    html: `<p>${escapeHtml(session.user.name)} (${escapeHtml(session.user.email)}) requested a return/refund for <strong>${orderNumber}</strong>.</p><p>Reason: ${reason ? escapeHtmlLines(reason) : '—'}</p>`,
   });
   await sendEmail({
     to: session.user.email,

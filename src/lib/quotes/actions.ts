@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
 import { isDeliverableEmail, sendEmail } from '@/lib/email';
+import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { renderInvoiceHtml } from '@/lib/invoice';
 import { rateLimit } from '@/lib/ratelimit';
@@ -170,15 +171,15 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   await sendEmail({
     to: parsed.buyerEmail,
     subject: created.product
-      ? `Quote request received: ${created.product.title}`
+      ? `Quote request received: ${headerText(created.product.title, 120)}`
       : 'lab2date sourcing request received',
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:540px;">
         <h2 style="color:#0E4F40;">We&rsquo;ve got your request</h2>
-        <p>Hi ${parsed.buyerName}, our team and the supplier will review your request and ${quoteTurnaroundPhrase()}.</p>
-        ${created.product ? `<p><strong>Product:</strong> ${created.product.title}</p>` : ''}
+        <p>Hi ${escapeHtml(parsed.buyerName)}, our team and the supplier will review your request and ${escapeHtml(quoteTurnaroundPhrase())}.</p>
+        ${created.product ? `<p><strong>Product:</strong> ${escapeHtml(created.product.title)}</p>` : ''}
         <p><strong>What you wrote:</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${parsed.description.replace(/\n/g, '<br>')}</blockquote>
+        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
         <p style="margin:18px 0;">
           <a href="${buyerCta}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
             ${accessToken ? 'View / reply to your quote' : 'Open in dashboard'}
@@ -208,19 +209,19 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   await sendEmail({
     to: assigneeEmail,
     subject: created.product
-      ? `New quote request: ${created.product.title}`
-      : facilityLabel ? `New access request — ${facilityLabel}`
-      : toSeller ? 'New sourcing request' : `New sourcing request from ${parsed.buyerName}`,
+      ? `New quote request: ${headerText(created.product.title, 120)}`
+      : facilityLabel ? `New access request — ${headerText(facilityLabel, 120)}`
+      : toSeller ? 'New sourcing request' : `New sourcing request from ${headerText(parsed.buyerName)}`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:540px;">
         <h2 style="color:#0E4F40;">${created.product ? 'Quote request' : 'Sourcing request'}</h2>
-        ${toSeller ? '' : `<p>From <strong>${parsed.buyerName}</strong> &lt;${parsed.buyerEmail}&gt;${parsed.companyName ? ` · ${parsed.companyName}` : ''}</p>`}
-        ${created.product ? `<p><strong>Product:</strong> ${created.product.title}</p>` : ''}
-        ${facilityLabel ? `<p><strong>Facility:</strong> ${facilityLabel}</p>` : ''}
-        ${parsed.budget ? `<p><strong>Budget:</strong> ${parsed.budget}</p>` : ''}
-        ${parsed.timeframe ? `<p><strong>Timeframe:</strong> ${parsed.timeframe}</p>` : ''}
+        ${toSeller ? '' : `<p>From <strong>${escapeHtml(parsed.buyerName)}</strong> &lt;${escapeHtml(parsed.buyerEmail)}&gt;${parsed.companyName ? ` · ${escapeHtml(parsed.companyName)}` : ''}</p>`}
+        ${created.product ? `<p><strong>Product:</strong> ${escapeHtml(created.product.title)}</p>` : ''}
+        ${facilityLabel ? `<p><strong>Facility:</strong> ${escapeHtml(facilityLabel)}</p>` : ''}
+        ${parsed.budget ? `<p><strong>Budget:</strong> ${escapeHtml(parsed.budget)}</p>` : ''}
+        ${parsed.timeframe ? `<p><strong>Timeframe:</strong> ${escapeHtml(parsed.timeframe)}</p>` : ''}
         <p><strong>Description:</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${parsed.description.replace(/\n/g, '<br>')}</blockquote>
+        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
         <p>Reply via lab2date dashboard: <a href="${assigneeLink}">${toSeller ? 'Open in seller inbox' : 'Open in admin'}</a></p>
       </div>
     `,
@@ -616,8 +617,8 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
   const approvalHtml = `
     <div style="font-family:system-ui,sans-serif;max-width:600px;margin:0 auto;">
       <h2 style="color:#0E4F40;">Your proforma is ready — ${number}</h2>
-      <p>Hi ${sr.buyerName},</p>
-      <p>Your quote for <strong>${itemTitle}</strong> is ready: <strong>${(parsed.priceCents / 100).toLocaleString()} ${parsed.currency}</strong>.</p>
+      <p>Hi ${escapeHtml(sr.buyerName)},</p>
+      <p>Your quote for <strong>${escapeHtml(itemTitle)}</strong> is ready: <strong>${(parsed.priceCents / 100).toLocaleString()} ${escapeHtml(parsed.currency)}</strong>.</p>
       ${createdOrder ? `
       <p>We've opened a <strong>purchase workspace</strong> for you to complete the order. Inside, you'll fill in billing &amp; shipping details and upload your payment proof.</p>
       <p style="margin:18px 0;">
@@ -632,13 +633,13 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
       </p>`}
       <p style="color:#374151;font-size:13px;margin-top:24px;"><strong>Valid until ${validUntil.toISOString().slice(0, 10)}</strong>. After this date the price may need to be re-confirmed.</p>
       <h3 style="color:#0E4F40;margin-top:24px;">Payment instructions</h3>
-      <pre style="background:#f3f4f6;padding:12px;border-radius:8px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;">${paymentInstructionsSnapshot}</pre>
+      <pre style="background:#f3f4f6;padding:12px;border-radius:8px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;">${escapeHtml(paymentInstructionsSnapshot)}</pre>
       <p style="color:#6b7280;font-size:12px;">A formal proforma is attached below. Reply to this email if you need a PO or a different format.</p>
       <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
       ${html}
     </div>
   `;
-  await sendEmail({ to: sr.buyerEmail, subject: `Proforma ${number} — ${itemTitle}`, html: approvalHtml });
+  await sendEmail({ to: sr.buyerEmail, subject: `Proforma ${number} — ${headerText(itemTitle, 120)}`, html: approvalHtml });
   const billing = process.env.COMPANY_EMAIL;
   if (billing) await sendEmail({ to: billing, subject: `[copy] Proforma ${number}`, html: approvalHtml });
 
@@ -1132,7 +1133,7 @@ export async function reissueQuoteMagicLink(
     subject: `[${quoteRefOrProforma(sr)}] New link to view your quote`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">Here&rsquo;s a fresh link, ${sr.buyerName}</h2>
+        <h2 style="color:#0E4F40;">Here&rsquo;s a fresh link, ${escapeHtml(sr.buyerName)}</h2>
         <p>Your support team rotated the access link on quote <strong>${quoteRefOrProforma(sr)}</strong>. Any previous link no longer works.</p>
         <p style="margin:18px 0;">
           <a href="${href}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
@@ -1140,7 +1141,7 @@ export async function reissueQuoteMagicLink(
           </a>
         </p>
         <p style="color:#888;font-size:11px;">This link is valid for 14 days. Keep it private.</p>
-        <p style="color:#888;font-size:12px;">${site}</p>
+        <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
       </div>`,
   });
   await audit('quote.magiclink.reissue', quoteRefOrProforma(sr), `by ${session.user.email}`);

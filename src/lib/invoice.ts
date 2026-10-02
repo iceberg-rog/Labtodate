@@ -1,3 +1,5 @@
+import { escapeHtml as esc } from './email-html';
+
 export interface InvoiceLine {
   title: string;
   qty: number;
@@ -58,9 +60,6 @@ function logoUrl(logoPath: string): string {
   return origin ? `${origin}${logoPath.startsWith('/') ? '' : '/'}${logoPath}` : logoPath;
 }
 
-const esc = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
 function nl(v: number): string {
   return v.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -76,7 +75,7 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
   const COMPANY = getCompany();
   const isProforma = inv.kind === 'PROFORMA';
   const cur = inv.currency || 'EUR';
-  const symbol = cur === 'EUR' ? '€' : cur;
+  const symbol = cur === 'EUR' ? '€' : esc(cur); // HTML-only use; currency can be typed on a quote
   const subtotal = inv.lines.reduce((s, l) => s + l.unitCents * l.qty, 0);
   const tax = inv.taxCents ?? 0;
   const shipping = inv.shippingCents ?? 0;

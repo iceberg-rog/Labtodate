@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins } from '@/lib/observability';
 import { sendEmail } from '@/lib/email';
+import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
 
 function parseAttachments(v: FormDataEntryValue | null): string[] {
   if (typeof v !== 'string' || !v) return [];
@@ -71,8 +72,8 @@ export async function guestReplyByToken(formData: FormData): Promise<void> {
     process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
   await sendEmail({
     to: ops,
-    subject: `[${t.ref}] Guest reply: ${t.subject}`,
-    html: `<p>${t.name} (${t.email}) replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${body.replace(/\n/g, '<br>')}</blockquote>`,
+    subject: `[${t.ref}] Guest reply: ${headerText(t.subject, 160)}`,
+    html: `<p>${escapeHtml(t.name)} (${escapeHtml(t.email)}) replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
   });
   await notifyAdmins(
     `Guest replied · ${t.ref}`,

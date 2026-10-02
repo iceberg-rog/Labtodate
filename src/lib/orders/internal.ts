@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { sendEmail } from '@/lib/email';
+import { escapeHtml } from '@/lib/email-html';
 import { renderInvoiceHtml } from '@/lib/invoice';
 import { logError } from '@/lib/observability';
 import { generateOrderNumber } from '@/lib/orders/checkout-tx';
@@ -78,7 +79,7 @@ export async function sendOrderReceived(orderId: string): Promise<void> {
     });
     if (!order) return;
     const lines = order.items
-      .map((i) => `<li>${i.titleSnapshot} × ${i.quantity}</li>`)
+      .map((i) => `<li>${escapeHtml(i.titleSnapshot)} × ${i.quantity}</li>`)
       .join('');
     const base = siteBase();
     // Direct links so the buyer can reach the payment workspace (bank details +
@@ -88,7 +89,7 @@ export async function sendOrderReceived(orderId: string): Promise<void> {
     await sendEmail({
       to: order.buyer.email,
       subject: `Order ${order.orderNumber} received — bank transfer details to follow`,
-      html: `<p>Hi ${order.buyer.name || 'there'},</p>
+      html: `<p>Hi ${escapeHtml(order.buyer.name || 'there')},</p>
 <p>We&rsquo;ve received your order <strong>${order.orderNumber}</strong>. <strong>No charge has been taken.</strong> Payment for this order is by bank transfer, manually verified by our team.</p>
 <p><strong>Next steps:</strong></p>
 <ol>
@@ -107,7 +108,7 @@ export async function sendOrderReceived(orderId: string): Promise<void> {
       await sendEmail({
         to: ops,
         subject: `[action] New order ${order.orderNumber} — send bank-transfer details`,
-        html: `<p>${order.buyer.name} (${order.buyer.email}) placed order <strong>${order.orderNumber}</strong>. Send the bank-transfer instructions (IBAN + reference) so the buyer can wire payment for manual verification.</p>
+        html: `<p>${escapeHtml(order.buyer.name)} (${escapeHtml(order.buyer.email)}) placed order <strong>${order.orderNumber}</strong>. Send the bank-transfer instructions (IBAN + reference) so the buyer can wire payment for manual verification.</p>
 <p><a href="${base}/admin/orders/${order.id}">Open the order in admin</a></p>`,
       });
     }

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
 import { sendEmail } from '@/lib/email';
+import { escapeHtml as esc, escapeHtmlLines, headerText } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
 import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
@@ -117,21 +118,29 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
   ]
     .map(
       ([k, v]) =>
-        `<tr><td style="padding:4px 12px 4px 0;color:#888;">${k}</td><td style="padding:4px 0;"><strong>${v}</strong></td></tr>`,
+        `<tr><td style="padding:4px 12px 4px 0;color:#888;">${k}</td><td style="padding:4px 0;"><strong>${esc(v)}</strong></td></tr>`,
     )
     .join('');
 
   // Emails are best-effort: a transport hiccup must not lose the submission.
   try {
-  // Confirmation to the seller
+  // Confirmation to the seller. This form needs no account and mails the
+  // address that was typed, so the submission (name, item, summary) is echoed
+  // only to the signed-in user's own address. Anyone else gets a generic
+  // receipt — otherwise the form relays arbitrary text from lab2date to any
+  // inbox. The ops copy below carries the full (escaped) details.
+  const echo = !!session && parsed.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
   await sendEmail({
     to: parsed.email,
-    subject: `We received your equipment submission: ${parsed.itemTitle}`,
+    subject: echo
+      ? `We received your equipment submission: ${headerText(parsed.itemTitle, 120)}`
+      : 'We received your equipment submission',
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">Thanks, ${parsed.contactName} — we&rsquo;ve got it</h2>
+        <h2 style="color:#0E4F40;">Thanks${echo ? `, ${esc(parsed.contactName)}` : ''} — we&rsquo;ve got it</h2>
         <p>Our acquisitions team will review your submission and reply within <strong>2 business days</strong> with a valuation and next steps.</p>
-        <table style="border-collapse:collapse;font-size:14px;margin:16px 0;">${summaryRows}</table>
+        ${echo ? `<table style="border-collapse:collapse;font-size:14px;margin:16px 0;">${summaryRows}</table>` : ''}
+        ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t offer equipment to lab2date, you can ignore this email.</p>`}
         <p style="color:#888;font-size:12px;">Reference: ${created.id}</p>
       </div>
     `,
@@ -140,25 +149,22 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
   // Notify acquisitions / ops
   await sendEmail({
     to: OPS_EMAIL,
-    subject: `New sell submission: ${parsed.itemTitle} (${parsed.sellerType})`,
+    subject: `New sell submission: ${headerText(parsed.itemTitle, 120)} (${parsed.sellerType})`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:600px;">
         <h2 style="color:#0E4F40;">New equipment submission</h2>
-        <p>From <strong>${parsed.contactName}</strong> &lt;${parsed.email}&gt;${
-          parsed.phone ? ` · ${parsed.phone}` : ''
-        }${parsed.companyName ? ` · ${parsed.companyName}` : ''}${
-          parsed.country ? ` · ${parsed.country}` : ''
+        <p>From <strong>${esc(parsed.contactName)}</strong> &lt;${esc(parsed.email)}&gt;${
+          parsed.phone ? ` · ${esc(parsed.phone)}` : ''
+        }${parsed.companyName ? ` · ${esc(parsed.companyName)}` : ''}${
+          parsed.country ? ` · ${esc(parsed.country)}` : ''
         }</p>
         <table style="border-collapse:collapse;font-size:14px;margin:12px 0;">${summaryRows}</table>
         <p><strong>Description</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${parsed.description.replace(
-          /\n/g,
-          '<br>',
-        )}</blockquote>
-        ${parsed.accessories ? `<p><strong>Accessories / extras:</strong> ${parsed.accessories}</p>` : ''}
-        ${parsed.reason ? `<p><strong>Reason for selling:</strong> ${parsed.reason}</p>` : ''}
-        ${parsed.availability ? `<p><strong>Availability:</strong> ${parsed.availability}</p>` : ''}
-        ${parsed.photosUrl ? `<p><strong>Photos:</strong> <a href="${parsed.photosUrl}">${parsed.photosUrl}</a></p>` : ''}
+        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
+        ${parsed.accessories ? `<p><strong>Accessories / extras:</strong> ${escapeHtmlLines(parsed.accessories)}</p>` : ''}
+        ${parsed.reason ? `<p><strong>Reason for selling:</strong> ${escapeHtmlLines(parsed.reason)}</p>` : ''}
+        ${parsed.availability ? `<p><strong>Availability:</strong> ${esc(parsed.availability)}</p>` : ''}
+        ${parsed.photosUrl && /^https?:\/\//i.test(parsed.photosUrl) ? `<p><strong>Photos:</strong> <a href="${esc(parsed.photosUrl)}">${esc(parsed.photosUrl)}</a></p>` : ''}
         <p style="color:#888;font-size:12px;">Reference: ${created.id}</p>
       </div>
     `,
@@ -217,11 +223,6 @@ function fmtAmount(cents: number, currency: string): string {
   return `${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })} ${currency}`;
 }
 
-/** Minimal HTML escape for user-typed values in the new emails below. */
-function esc(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
-}
-
 /**
  * Lifecycle milestones (offer, accepted, declined, received, paid) are
  * transactional: the seller always gets the in-app note AND the email. They
@@ -274,9 +275,9 @@ export async function replySellSubmission(formData: FormData) {
     notifTitle: `New reply · ${ref}`,
     notifBody: `Our acquisitions team replied about "${sub.itemTitle}". Open it to respond.`,
     notifHref: `/app/sell-submissions/${id}`,
-    emailSubject: `[${ref}] New reply on your equipment offer "${sub.itemTitle}"`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
-                <p>Our acquisitions team replied on your equipment offer <strong>${sub.itemTitle}</strong>.</p>
+    emailSubject: `[${ref}] New reply on your equipment offer "${headerText(sub.itemTitle, 120)}"`,
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
+                <p>Our acquisitions team replied on your equipment offer <strong>${esc(sub.itemTitle)}</strong>.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Open conversation in your dashboard</a></p>
                 <p style="color:#888;font-size:12px;">We send at most one of these emails every couple of hours while we're actively chatting — check your dashboard for newer replies.</p>`,
     dedupeKey: ref,
@@ -379,10 +380,10 @@ export async function proposeAcquisitionPrice(formData: FormData): Promise<void>
     notifTitle: `New price offer · ${ref}`,
     notifBody: `We proposed ${fmtAmount(cents, currency)} for "${sub.itemTitle}".`,
     notifHref: `/app/sell-submissions/${id}`,
-    emailSubject: `[${ref}] We proposed ${fmtAmount(cents, currency)} for "${sub.itemTitle}"`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
-                <p>We've put a price on your equipment offer:<br><strong style="font-size:18px;">${fmtAmount(cents, currency)}</strong></p>
-                ${note ? `<blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#555;">${note}</blockquote>` : ''}
+    emailSubject: `[${ref}] We proposed ${fmtAmount(cents, currency)} for "${headerText(sub.itemTitle, 120)}"`,
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
+                <p>We've put a price on your equipment offer:<br><strong style="font-size:18px;">${esc(fmtAmount(cents, currency))}</strong></p>
+                ${note ? `<blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#555;">${escapeHtmlLines(note)}</blockquote>` : ''}
                 <p><a href="${base}/app/sell-submissions/${id}">Open offer in your dashboard</a> to accept or counter.</p>`,
   });
   await audit('sell.price.propose', ref, `${cents}c ${currency} by=${session.user.email}`);
@@ -430,7 +431,7 @@ export async function acceptSellSubmissionAtPrice(formData: FormData): Promise<v
     notifHref: `/app/sell-submissions/${id}`,
     emailSubject: `[${ref}] We accepted your offer at ${fmtAmount(cents, currency)}`,
     emailHtml: `<p>Hi ${esc(sub.contactName || 'there')},</p>
-                <p>Good news: we'll buy <strong>${esc(sub.itemTitle)}</strong> for <strong>${fmtAmount(cents, currency)}</strong>.</p>
+                <p>Good news: we'll buy <strong>${esc(sub.itemTitle)}</strong> for <strong>${esc(fmtAmount(cents, currency))}</strong>.</p>
                 <p>Next step: <a href="${base}/app/sell-submissions/${id}">add your bank details</a> so we know where to wire the payout. Then we'll send you the shipping instructions.</p>
                 <p style="color:#888;font-size:12px;">To use the dashboard, sign in (or create an account) with ${esc(sub.email)}.</p>`,
   });
@@ -651,8 +652,8 @@ export async function markAcquisitionReceived(formData: FormData): Promise<void>
     notifTitle: `Package received · ${ref}`,
     notifBody: `We received "${sub.itemTitle}". Inspection in progress — we'll wire payment as soon as QC clears.`,
     notifHref: `/app/sell-submissions/${id}`,
-    emailSubject: `[${ref}] We received "${sub.itemTitle}" — inspection started`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
+    emailSubject: `[${ref}] We received "${headerText(sub.itemTitle, 120)}" — inspection started`,
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
                 <p>Your equipment for offer <strong>${ref}</strong> arrived at our warehouse and is now being inspected.</p>
                 <p>Once QC clears we wire payment to the bank details on file and email you the transfer receipt.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Track status in your dashboard</a></p>`,
@@ -700,8 +701,8 @@ export async function completeAcquisition(formData: FormData): Promise<void> {
     notifBody: `Payment of ${paid} has been wired. Receipt available in your dashboard.`,
     notifHref: `/app/sell-submissions/${id}`,
     emailSubject: `[${ref}] Payment wired — acquisition complete`,
-    emailHtml: `<p>Hi ${sub.contactName ?? 'there'},</p>
-                <p>We've wired <strong>${paid}</strong> to your bank for offer <strong>${ref}</strong>.</p>
+    emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
+                <p>We've wired <strong>${esc(paid)}</strong> to your bank for offer <strong>${ref}</strong>.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Open dashboard</a> to download the transfer receipt.</p>
                 <p>Thanks for selling through lab2date — the instrument is going to a new home.</p>`,
   });

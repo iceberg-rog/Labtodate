@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requireSession } from '@/lib/auth-server';
 import { isDeliverableEmail } from '@/lib/email';
+import { escapeHtml, headerText } from '@/lib/email-html';
 import { notifyUser } from '@/lib/observability';
 import { notifyAndMaybeEmail } from '@/lib/notify-throttled';
 import { submitSourcingRequest } from '@/lib/quotes/actions';
@@ -35,8 +36,8 @@ async function notifyRecipient(
     notifTitle: 'New message',
     notifBody: `You have a new message${about}.`,
     notifHref: href,
-    emailSubject: `[${ref}] New message on lab2date${about}`,
-    emailHtml: `<p>You have a new message${about} on lab2date.</p>
+    emailSubject: `[${ref}] New message on lab2date${productTitle ? ` about "${headerText(productTitle, 120)}"` : ''}`,
+    emailHtml: `<p>You have a new message${escapeHtml(about)} on lab2date.</p>
                 <p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}${href}">Open the conversation</a> to read and reply.</p>
                 <p style="color:#888;font-size:12px;">While a conversation is active we email at most once every couple of hours — newer messages are in your inbox.</p>`,
     dedupeKey: ref,
