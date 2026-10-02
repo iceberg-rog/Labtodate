@@ -1,13 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { ShoppingCart, Menu, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Logo } from '@/components/site/Logo';
 import { HeaderUserMenu } from '@/components/site/HeaderUserMenu';
 import { SearchTypeahead } from '@/components/site/SearchTypeahead';
 import { ThemeToggle } from '@/components/site/ThemeToggle';
+import { CartCountBadge } from '@/components/site/CartCountBadge';
 
 const NAV = [
   { label: 'Marketplace', href: '/marketplace' },
@@ -47,9 +48,12 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
 
         <div className="ml-auto flex items-center gap-1.5">
           <ThemeToggle className="hidden sm:inline-flex" />
-          <Button variant="ghost" size="icon" className="hidden sm:flex" asChild>
+          <Button variant="ghost" size="icon" className="hidden sm:flex relative" asChild>
             <Link href="/app/cart" aria-label="Cart">
               <ShoppingCart className="h-5 w-5" />
+              <Suspense fallback={null}>
+                <CartCountBadge />
+              </Suspense>
             </Link>
           </Button>
           <HeaderUserMenu />

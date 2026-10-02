@@ -26,6 +26,8 @@ export default async function WishlistPage() {
           priceCents: true,
           currency: true,
           yearMade: true,
+          quantity: true,
+          status: true,
           brand: { select: { name: true } },
           company: { select: { name: true } },
         },
@@ -44,7 +46,7 @@ export default async function WishlistPage() {
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <Heart className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
           <p className="text-lg font-semibold">No saved items yet</p>
-          <p className="text-sm text-muted-foreground mt-2">Tap the heart icon on any product to save it.</p>
+          <p className="text-sm text-muted-foreground mt-2">Use &ldquo;Save to wishlist&rdquo; on any product page to keep it here.</p>
           <Button asChild className="rounded-full font-semibold mt-5">
             <Link href="/marketplace">Browse marketplace</Link>
           </Button>
@@ -66,6 +68,9 @@ export default async function WishlistPage() {
                 priceCents: w.product.priceCents,
                 currency: w.product.currency,
                 yearMade: w.product.yearMade,
+                // A saved unit that sold (or was taken off the marketplace)
+                // must not look buyable at its old price.
+                badge: w.product.status !== 'PUBLISHED' ? 'No longer listed' : w.product.quantity <= 0 ? 'Sold' : null,
               }}
             />
           ))}
