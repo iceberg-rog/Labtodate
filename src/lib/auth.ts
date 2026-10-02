@@ -8,6 +8,7 @@ import { prisma } from './db';
 import { sendEmail } from './email';
 import { escapeHtml } from './email-html';
 import { cleanName, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_RULE } from './auth-rules';
+import { isOwnMediaUrl } from './products/image-urls';
 import { safeRedirect, signInErrorURL } from './safe-redirect';
 
 // Startup sanity check (non-fatal): surface a misconfigured production secret
@@ -36,6 +37,27 @@ const SESSION_WRITES = ['/update-user', '/update-session', '/link-social', '/unl
 
 function suspendedError(reason: string | null) {
   return new APIError('FORBIDDEN', { message: `Account suspended: ${reason || 'contact support'}` });
+}
+
+const AVATAR_RULE = 'Profile photos can only be changed by uploading one on your Profile page.';
+// /api/avatar-upload stores `${S3_PUBLIC_URL}/products/avatars/<userId>-<stamp>.<ext>`.
+const AVATAR_FILE = /\/products\/avatars\/([^/]+)$/;
+
+/**
+ * user.image as written through better-auth (/update-user, /sign-up/email).
+ * Photos are set by /api/avatar-upload, which writes the column directly;
+ * here the field may only be cleared or point at one of the account's own
+ * uploads — never javascript:/data: or someone else's host. `ownerId` is the
+ * signed-in account; without one (sign-up) nothing has been uploaded yet.
+ */
+function cleanAvatar(value: unknown, ownerId: string | null): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  const file =
+    ownerId && typeof value === 'string' && isOwnMediaUrl(value)
+      ? AVATAR_FILE.exec(new URL(value, 'http://relative.invalid').pathname)?.[1]
+      : undefined;
+  if (!file?.startsWith(`${ownerId}-`)) throw new APIError('BAD_REQUEST', { message: AVATAR_RULE });
+  return value as string;
 }
 
 // What the person entering a verification code chose: the sign-up and sign-in
@@ -222,20 +244,26 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       // Names are trimmed and 2–120 chars on every write path (sign-up,
-      // Profile → update-user), not just in the forms.
+      // Profile → update-user), not just in the forms. The photo URL is
+      // limited to the account's own uploads (cleanAvatar).
       create: {
         before: async (user) => {
           const name = cleanName(user.name);
           if (!name) throw new APIError('BAD_REQUEST', { message: NAME_RULE });
-          return { data: { ...user, name } };
+          return { data: { ...user, name, image: cleanAvatar(user.image, null) } };
         },
       },
       update: {
-        before: async (data) => {
-          if (data.name === undefined) return;
-          const name = cleanName(data.name);
-          if (!name) throw new APIError('BAD_REQUEST', { message: NAME_RULE });
-          return { data: { ...data, name } };
+        before: async (data, ctx) => {
+          if (data.name === undefined && data.image === undefined) return;
+          const next = { ...data };
+          if (data.name !== undefined) {
+            const name = cleanName(data.name);
+            if (!name) throw new APIError('BAD_REQUEST', { message: NAME_RULE });
+            next.name = name;
+          }
+          if (data.image !== undefined) next.image = cleanAvatar(data.image, ctx?.context.session?.user.id ?? null);
+          return { data: next };
         },
       },
     },
