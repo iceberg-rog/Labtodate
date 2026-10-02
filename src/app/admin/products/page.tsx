@@ -12,18 +12,23 @@ const PAGE_SIZE = 60;
 
 export default async function AdminProductsPage(
   props: {
-    searchParams: Promise<{ status?: string; q?: string; page?: string; category?: string; qty?: string; shop?: string; created?: string; deleted?: string }>;
+    searchParams: Promise<{ status?: string; q?: string; page?: string; category?: string; qty?: string; shop?: string; created?: string; deleted?: string; archived?: string }>;
   }
 ) {
   const searchParams = await props.searchParams;
   await requireCapability('products:view');
 
-  const status = searchParams.status as ProductStatus | undefined;
+  // Unknown values (e.g. ?status=BOGUS) are ignored instead of reaching Prisma.
+  const status = (Object.values(ProductStatus) as string[]).includes(searchParams.status ?? '')
+    ? (searchParams.status as ProductStatus)
+    : undefined;
   const q = (searchParams.q ?? '').trim();
   const categorySlug = (searchParams.category ?? '').trim();
   const shopSlug = (searchParams.shop ?? '').trim();          // '' | 'own' | <company slug>
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
   const qtyFilter = (searchParams.qty ?? '').trim(); // 'lastcopy' | 'oos' | ''
+  // Filters other than status/q, carried by the search box, pager and chips.
+  const filterParams = { category: categorySlug || undefined, shop: shopSlug || undefined, qty: qtyFilter || undefined };
 
   const qtyWhere: Prisma.ProductWhereInput['quantity'] =
     qtyFilter === 'lastcopy' ? { equals: 1 } : qtyFilter === 'oos' ? { equals: 0 } : undefined;
@@ -100,27 +105,33 @@ export default async function AdminProductsPage(
   const counts: Record<string, number> = {};
   for (const s of statusCounts) counts[s.status] = s._count._all;
 
-  const baseHref = (overrides: Partial<{ status?: string; category?: string; q?: string; shop?: string }>) => {
+  const baseHref = (overrides: Partial<{ status?: string; category?: string; q?: string; shop?: string; qty?: string }>) => {
     const sp = new URLSearchParams();
     const next = {
       status: overrides.status !== undefined ? overrides.status : status,
       category: overrides.category !== undefined ? overrides.category : categorySlug,
       q: overrides.q !== undefined ? overrides.q : q,
       shop: overrides.shop !== undefined ? overrides.shop : shopSlug,
+      qty: overrides.qty !== undefined ? overrides.qty : qtyFilter,
     };
     if (next.status) sp.set('status', next.status);
     if (next.category) sp.set('category', next.category);
     if (next.q) sp.set('q', next.q);
     if (next.shop) sp.set('shop', next.shop);
+    if (next.qty) sp.set('qty', next.qty);
     const s = sp.toString();
     return s ? `/admin/products?${s}` : '/admin/products';
   };
 
   return (
     <div className="space-y-6">
-      {(searchParams.created || searchParams.deleted) && (
+      {(searchParams.created || searchParams.deleted || searchParams.archived) && (
         <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm font-medium">
-          {searchParams.created ? `✓ Product created — slug ${searchParams.created}.` : '✓ Product deleted.'}
+          {searchParams.created
+            ? `✓ Product created — slug ${searchParams.created}.`
+            : searchParams.archived
+              ? '✓ Product archived (hidden from the marketplace). It has order history, so it was kept instead of deleted.'
+              : '✓ Product deleted.'}
         </div>
       )}
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -160,7 +171,7 @@ export default async function AdminProductsPage(
         <CountPill label="Archived" value={String(counts['ARCHIVED'] ?? 0)} href={baseHref({ status: 'ARCHIVED' })} active={status === 'ARCHIVED'} />
       </div>
 
-      <AdminSearch basePath="/admin/products" q={q} status={status} placeholder="Search title, brand, category, slug, seller…" />
+      <AdminSearch basePath="/admin/products" q={q} status={status} params={filterParams} placeholder="Search title, brand, category, slug, seller…" />
 
       <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
         <div className="flex gap-2 flex-wrap items-center">
@@ -228,6 +239,7 @@ export default async function AdminProductsPage(
         total={total}
         q={q}
         status={status}
+        params={filterParams}
       />
       <p className="text-[11px] text-muted-foreground -mt-2">
         Click any product card to open the quick-edit popup — change price, stock, or status without leaving this page.

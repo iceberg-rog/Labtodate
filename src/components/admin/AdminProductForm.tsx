@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
 import { TiptapEditor } from '@/components/editor/TiptapEditor';
 import type { AdminProductInputType } from '@/app/admin/actions';
+import { MAX_ADMIN_PRODUCT_IMAGES, MAX_PRICE_CENTS } from '@/lib/products/validation';
 
 const ILLUSTRATIONS: IllustrationName[] = ['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector'];
 const CONDITIONS = ['NEW', 'REFURBISHED', 'USED'] as const;
@@ -27,7 +28,9 @@ interface Props {
   categories: { id: string; name: string }[];
   brands: { id: string; name: string }[];
   companies: { id: string; name: string }[];
-  onSubmit: (input: AdminProductInputType) => Promise<{ ok: true; slug?: string } | { ok: boolean; message: string } | void>;
+  onSubmit: (
+    input: AdminProductInputType,
+  ) => Promise<{ ok: true; slug?: string } | { ok: boolean; message: string; fieldErrors?: Record<string, string> } | void>;
   submitLabel?: string;
 }
 
@@ -36,6 +39,7 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const [title, setTitle] = useState(initial?.title ?? '');
   const [summary, setSummary] = useState(initial?.summary ?? '');
@@ -45,7 +49,7 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
   const [companyId, setCompanyId] = useState(initial?.companyId ?? '');
   const [condition, setCondition] = useState<'NEW' | 'REFURBISHED' | 'USED'>(initial?.condition ?? 'REFURBISHED');
   const [mode, setMode] = useState<'BUY_NOW' | 'QUOTE_ONLY' | 'HYBRID'>(initial?.mode ?? 'HYBRID');
-  const [priceEur, setPriceEur] = useState<string>(initial?.priceCents ? String(initial.priceCents / 100) : '');
+  const [priceEur, setPriceEur] = useState<string>(initial?.priceCents != null ? String(initial.priceCents / 100) : '');
   const [quantity, setQuantity] = useState<string>(initial?.quantity != null ? String(initial.quantity) : '1');
   const [yearMade, setYearMade] = useState<string>(initial?.yearMade ? String(initial.yearMade) : '');
   const [illustration, setIllustration] = useState<IllustrationName>(initial?.illustration ?? 'balance');
@@ -104,6 +108,7 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
     e.preventDefault();
     setError(null);
     setSavedMsg(null);
+    setFieldErrors({});
 
     const specsObj: Record<string, string> = {};
     for (const { k, v } of specs) if (k.trim() && v.trim()) specsObj[k.trim()] = v.trim();
@@ -132,14 +137,16 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
         const r = await onSubmit(input);
         if (r && 'ok' in r && r.ok === false) {
           setError('message' in r ? r.message : 'Save failed.');
+          setFieldErrors(('fieldErrors' in r && r.fieldErrors) || {});
         } else {
           // Persistent success badge — stays until next save or navigation.
           // Tested operator habit: they expect a confirmation to linger.
           setSavedMsg(`✓ Saved at ${new Date().toLocaleTimeString()}`);
           router.refresh();
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Save failed');
+      } catch {
+        // Thrown server errors are redacted in production builds.
+        setError('Saving failed. Please check your connection and try again.');
       }
     });
   }
@@ -149,13 +156,13 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
       {/* Basics + ownership */}
       <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
         <h2 className="text-lg font-bold">Basics</h2>
-        <Field label="Title (required)" hint="Brand + model + form factor.">
-          <input value={title} onChange={(e) => setTitle(e.target.value)} required minLength={6} className={inputCls} placeholder="Beckman Allegra X-30R Refrigerated Benchtop Centrifuge" />
+        <Field label="Title (required)" hint="Brand + model + form factor." error={fieldErrors.title}>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} required minLength={2} maxLength={200} className={inputCls} placeholder="Beckman Allegra X-30R Refrigerated Benchtop Centrifuge" />
         </Field>
-        <Field label="Short summary" hint="One sentence shown on listing cards.">
-          <input value={summary} onChange={(e) => setSummary(e.target.value)} className={inputCls} />
+        <Field label="Short summary" hint="One sentence shown on listing cards (max 300 characters)." error={fieldErrors.summary}>
+          <input value={summary} onChange={(e) => setSummary(e.target.value)} maxLength={300} className={inputCls} />
         </Field>
-        <Field label="Description" hint="Rich text. Renders on the public product page exactly as you see it here.">
+        <Field label="Description" hint="Rich text. Renders on the public product page exactly as you see it here." error={fieldErrors.description} plain>
           <TiptapEditor value={description ?? ''} onChange={setDescription} />
         </Field>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -198,13 +205,13 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
               {STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
             </select>
           </Field>
-          <Field label="Price (EUR)" hint={mode === 'QUOTE_ONLY' ? 'Quote-only — leave blank.' : 'List price ex. VAT.'}>
-            <input type="number" min="0" step="0.01" value={priceEur} onChange={(e) => setPriceEur(e.target.value)} className={inputCls} placeholder="12800" disabled={mode === 'QUOTE_ONLY'} />
+          <Field label="Price (EUR)" hint={mode === 'QUOTE_ONLY' ? 'Quote-only — leave blank.' : 'List price ex. VAT.'} error={fieldErrors.priceCents}>
+            <input type="number" min="0" max={MAX_PRICE_CENTS / 100} step="0.01" value={priceEur} onChange={(e) => setPriceEur(e.target.value)} className={inputCls} placeholder="12800" disabled={mode === 'QUOTE_ONLY'} />
           </Field>
-          <Field label="Quantity in stock">
+          <Field label="Quantity in stock" error={fieldErrors.quantity}>
             <input type="number" min="0" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputCls} />
           </Field>
-          <Field label="Year made">
+          <Field label="Year made" error={fieldErrors.yearMade}>
             <input type="number" min="1900" max="2100" value={yearMade} onChange={(e) => setYearMade(e.target.value)} className={inputCls} placeholder="2020" />
           </Field>
         </div>
@@ -256,7 +263,7 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
           {/* All photos grid */}
           <div>
             <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1.5">
-              All photos ({images.length}/8)
+              All photos ({images.length}/{MAX_ADMIN_PRODUCT_IMAGES})
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
               {images.map((url, idx) => (
@@ -288,7 +295,7 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
                   </div>
                 </div>
               ))}
-              {images.length < 8 && (
+              {images.length < MAX_ADMIN_PRODUCT_IMAGES && (
                 <label className="aspect-[4/3] rounded-xl border-2 border-dashed border-border flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-primary hover:bg-foreground/[0.02] transition-colors">
                   <input
                     type="file"
@@ -377,12 +384,28 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50';
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  error,
+  plain,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  error?: string;
+  /** Render a <div>, not a <label>: a label forwards clicks on its text to its
+   *  first button, which in the rich-text editor is the Bold toolbar button. */
+  plain?: boolean;
+  children: React.ReactNode;
+}) {
+  const Wrapper = plain ? 'div' : 'label';
   return (
-    <label className="block">
+    <Wrapper className="block">
       <span className="block text-sm font-semibold mb-1">{label}</span>
       {hint && <span className="block text-xs text-muted-foreground mb-1.5">{hint}</span>}
       {children}
-    </label>
+      {error && <span className="block text-xs font-medium text-red-600 dark:text-red-400 mt-1">{error}</span>}
+    </Wrapper>
   );
 }

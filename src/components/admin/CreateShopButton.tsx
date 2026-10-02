@@ -58,7 +58,9 @@ export function CreateShopButton() {
   function runPreview() {
     setError(null); setPreview(null); setAi(null);
     if (name.trim().length < 2) { setError('Shop name must be at least 2 characters.'); return; }
-    if (importUrl && !/^https?:\/\//i.test(importUrl)) { setError('Import URL must start with http:// or https://'); return; }
+    // Check the addresses here, before the "Ready to create" step.
+    if (website.trim() && !isWebUrl(website.trim())) { setError('Public website must be a full web address starting with http:// or https://.'); return; }
+    if (importUrl && !isWebUrl(importUrl.trim())) { setError('Import URL must be a full web address starting with http:// or https://.'); return; }
     if (!importUrl) {
       // No import URL — skip preview, go straight to confirm
       setStep('confirm'); return;
@@ -135,11 +137,11 @@ export function CreateShopButton() {
               {step === 'enter' && (
                 <>
                   <Field label="Shop name (required)">
-                    <input value={name} onChange={(e) => setName(e.target.value)} className={input} placeholder="Lab2Parts" />
+                    <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} className={input} placeholder="Lab2Parts" />
                   </Field>
                   <div className="grid grid-cols-2 gap-3">
                     <Field label="Country">
-                      <input value={country} onChange={(e) => setCountry(e.target.value)} className={input} placeholder="Netherlands" />
+                      <input value={country} onChange={(e) => setCountry(e.target.value)} maxLength={80} className={input} placeholder="Netherlands" />
                     </Field>
                     <Field label="Public website">
                       <input value={website} onChange={(e) => setWebsite(e.target.value)} className={input} placeholder="https://…" />
@@ -280,6 +282,14 @@ function StepDots({ step }: { step: Step }) {
       ))}
     </div>
   );
+}
+
+function isWebUrl(v: string): boolean {
+  try {
+    return /^https?:$/.test(new URL(v).protocol);
+  } catch {
+    return false;
+  }
 }
 
 const input = 'w-full h-10 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary';

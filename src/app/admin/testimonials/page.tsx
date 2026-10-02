@@ -1,10 +1,10 @@
 import Link from 'next/link';
-import { Plus, Trash2, Eye, EyeOff, Star, MessageSquareQuote, ArrowRight } from 'lucide-react';
+import { Plus, Trash2, Eye, EyeOff, Star, MessageSquareQuote, ArrowRight, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { createTestimonial, deleteTestimonial, toggleTestimonial } from '@/app/admin/actions';
+import { createTestimonial, deleteTestimonial, toggleTestimonial, updateTestimonial } from '@/app/admin/actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -124,6 +124,22 @@ export default async function AdminTestimonialsPage() {
                     <Trash2 className="h-3.5 w-3.5" /> Delete
                   </Button>
                 </form>
+                <details className="basis-full">
+                  <summary className="cursor-pointer select-none w-fit text-xs font-semibold text-primary hover:underline">Edit</summary>
+                  <form action={updateTestimonial.bind(null, t.id)} className="mt-3 space-y-3">
+                    <textarea name="quote" required rows={3} maxLength={400} defaultValue={t.quote} aria-label="Quote" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                      <input name="author" required defaultValue={t.author} aria-label="Author" placeholder="Author" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="role" defaultValue={t.role ?? ''} aria-label="Role" placeholder="Role" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="company" defaultValue={t.company ?? ''} aria-label="Company" placeholder="Company" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="rating" type="number" min={1} max={5} defaultValue={t.rating} aria-label="Rating (1–5)" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                      <input name="sortOrder" type="number" defaultValue={t.sortOrder} aria-label="Sort order" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                    </div>
+                    <Button type="submit" size="sm" className="rounded-full font-semibold">
+                      <Save className="h-3.5 w-3.5" /> Save changes
+                    </Button>
+                  </form>
+                </details>
               </li>
             ))}
           </ul>

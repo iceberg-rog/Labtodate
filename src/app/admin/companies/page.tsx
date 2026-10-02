@@ -35,7 +35,7 @@ export default async function AdminCompaniesPage({
       where,
       orderBy: { name: 'asc' },
       select: {
-        id: true, slug: true, name: true, country: true, isVerified: true, isFeatured: true,
+        id: true, slug: true, name: true, country: true, website: true, isVerified: true, isFeatured: true,
         importSourceUrl: true, lastImportedAt: true,
         pricingMode: true, pricingMarkupBp: true,
         suggestedByAi: true, aiRiskScore: true, aiRiskNotes: true, aiAnalyzedAt: true,
@@ -53,6 +53,7 @@ export default async function AdminCompaniesPage({
     slug: co.slug,
     name: co.name,
     country: co.country,
+    website: co.website,
     isVerified: co.isVerified,
     isFeatured: co.isFeatured,
     productCount: co._count.products,

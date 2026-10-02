@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Plus, Edit2, Eye, EyeOff } from 'lucide-react';
+import { Plus, Edit2, Eye, EyeOff, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireSession } from '@/lib/auth-server';
@@ -7,22 +7,32 @@ import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
 import { deleteProduct, publishProduct } from './actions';
+import { DeleteListingButton } from './DeleteListingButton';
 
 export const dynamic = 'force-dynamic';
 
 export default async function SellerProductsPage(
   props: {
-    searchParams: Promise<{ created?: string; updated?: string }>;
+    searchParams: Promise<{ created?: string; updated?: string; review?: string; deleted?: string; archived?: string; notice?: string }>;
   }
 ) {
   const searchParams = await props.searchParams;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller/products' });
+  const isAdmin = (session.user as { role?: string }).role === 'ADMIN';
 
   const products = await prisma.product.findMany({
     where: { sellerId: session.user.id },
     orderBy: { updatedAt: 'desc' },
-    include: { category: true, brand: true },
+    include: { category: true, brand: true, _count: { select: { orderItems: true } } },
   });
+
+  const banner =
+    searchParams.created ? '✓ Listing created. Awaiting admin review before it goes live.'
+    : searchParams.updated && searchParams.review ? '✓ Changes saved and sent for admin review. The listing is hidden from buyers until it is approved again.'
+    : searchParams.updated ? '✓ Listing updated.'
+    : searchParams.deleted ? '✓ Listing deleted.'
+    : searchParams.archived ? '✓ This listing has past orders, so it was archived (hidden from buyers) instead of deleted.'
+    : NOTICES[searchParams.notice ?? ''] ?? null;
 
   return (
     <div className="space-y-6">
@@ -38,9 +48,9 @@ export default async function SellerProductsPage(
         </Button>
       </div>
 
-      {(searchParams.created || searchParams.updated) && (
-        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm">
-          ✓ Listing {searchParams.created ? 'created' : 'updated'}. {searchParams.created ? 'Awaiting admin review before it goes live.' : ''}
+      {banner && (
+        <div role="status" className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm">
+          {banner}
         </div>
       )}
 
@@ -81,20 +91,28 @@ export default async function SellerProductsPage(
                 </div>
               </div>
               <div className="flex items-center gap-1.5 flex-shrink-0">
-                <form action={publishProduct.bind(null, p.slug, p.status !== 'PUBLISHED')}>
-                  <Button type="submit" variant="ghost" size="sm" className="rounded-full font-medium">
-                    {p.status === 'PUBLISHED' ? <><EyeOff className="h-3.5 w-3.5" /> Unpublish</> : <><Eye className="h-3.5 w-3.5" /> Publish</>}
+                {/* Sellers can't publish directly (A3): a draft asks for review,
+                    a queued listing just waits, a live one can be taken down. */}
+                {!isAdmin && p.status === 'PENDING_REVIEW' ? (
+                  <Button type="button" variant="ghost" size="sm" disabled className="rounded-full font-medium" title="An admin will review this listing before it goes live.">
+                    <Clock className="h-3.5 w-3.5" /> In review
                   </Button>
-                </form>
+                ) : (
+                  <form action={publishProduct.bind(null, p.slug, p.status !== 'PUBLISHED')}>
+                    <Button type="submit" variant="ghost" size="sm" className="rounded-full font-medium">
+                      {p.status === 'PUBLISHED'
+                        ? <><EyeOff className="h-3.5 w-3.5" /> Unpublish</>
+                        : <><Eye className="h-3.5 w-3.5" /> {isAdmin ? 'Publish' : 'Request review'}</>}
+                    </Button>
+                  </form>
+                )}
                 <Button asChild variant="outline" size="sm" className="rounded-full font-medium">
                   <Link href={`/app/seller/products/${p.slug}/edit`}>
                     <Edit2 className="h-3.5 w-3.5" /> Edit
                   </Link>
                 </Button>
                 <form action={deleteProduct.bind(null, p.slug)}>
-                  <Button type="submit" variant="ghost" size="sm" className="rounded-full font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-700 dark:hover:text-red-300">
-                    Delete
-                  </Button>
+                  <DeleteListingButton title={p.title} hasOrders={p._count.orderItems > 0} />
                 </form>
               </div>
             </li>
@@ -104,6 +122,13 @@ export default async function SellerProductsPage(
     </div>
   );
 }
+
+const NOTICES: Record<string, string> = {
+  requested: '✓ Sent for review. An admin will approve the listing before it goes live.',
+  'in-review': 'This listing is already waiting for admin review.',
+  published: '✓ Listing published.',
+  unpublished: '✓ Listing unpublished. It is hidden from buyers until it is published again.',
+};
 
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, { variant: 'success' | 'warning' | 'secondary' | 'accent'; label: string }> = {

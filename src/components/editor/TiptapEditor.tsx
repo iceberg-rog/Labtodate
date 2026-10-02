@@ -34,7 +34,12 @@ export function TiptapEditor({
   if (!editor) return null;
 
   return (
-    <div className="rounded-2xl border border-border bg-card overflow-hidden">
+    // Forms render the editor inside a <label>. A click on a label's plain
+    // content (the editing area, toolbar gaps) is re-dispatched by the browser
+    // to the label's first control — the Bold button — so every click into the
+    // text toggled Bold. Cancelling the click's default stops that; the toolbar
+    // buttons still run their own onClick, and the caret is placed on mousedown.
+    <div className="rounded-2xl border border-border bg-card overflow-hidden" onClick={(e) => e.preventDefault()}>
       <div className="flex items-center gap-0.5 px-2 py-2 border-b border-border bg-foreground/[0.02] flex-wrap">
         <Btn label="Bold" active={editor.isActive('bold')} onClick={() => editor.chain().focus().toggleBold().run()}><Bold className="h-3.5 w-3.5" /></Btn>
         <Btn label="Italic" active={editor.isActive('italic')} onClick={() => editor.chain().focus().toggleItalic().run()}><Italic className="h-3.5 w-3.5" /></Btn>

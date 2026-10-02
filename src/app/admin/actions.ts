@@ -8,7 +8,7 @@ import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib
 import { expireOnlyApi } from '@/lib/stripe/session-api';
 import { requireSession, requireCapability, hasCapability } from '@/lib/auth-server';
 import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
-import { UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
 import { readVerifiedUpload } from '@/lib/storage/file-type';
@@ -18,6 +18,7 @@ import { getStripe } from '@/lib/stripe/client';
 import { aiConfig } from '@/lib/ai';
 import { ensureBucket } from '@/lib/storage/s3';
 import { audit, notifyUser, notifyAdmins } from '@/lib/observability';
+import { MAX_ADMIN_PRODUCT_IMAGES, MAX_PRICE_CENTS, MAX_PRICE_MESSAGE, zodFieldErrors, zodMessage } from '@/lib/products/validation';
 
 async function requireAdmin() {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
@@ -75,6 +76,27 @@ export async function toggleTestimonial(id: string, published: boolean) {
   revalidatePath('/admin/testimonials');
   revalidatePath('/');
 }
+/** Edit in place. A blank required field keeps its old value instead of
+ *  failing (bare form action: a throw would be a 500 page). */
+export async function updateTestimonial(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const quote = String(formData.get('quote') ?? '').trim().slice(0, 400);
+  const author = String(formData.get('author') ?? '').trim().slice(0, 120);
+  await prisma.testimonial.updateMany({
+    where: { id },
+    data: {
+      ...(quote ? { quote } : {}),
+      ...(author ? { author } : {}),
+      role: (formData.get('role') as string)?.trim() || null,
+      company: (formData.get('company') as string)?.trim() || null,
+      rating: Math.min(5, Math.max(1, parseInt(String(formData.get('rating') ?? '5'), 10) || 5)),
+      sortOrder: parseInt(String(formData.get('sortOrder') ?? '0'), 10) || 0,
+    },
+  });
+  await audit('testimonial.update', id);
+  revalidatePath('/admin/testimonials');
+  revalidatePath('/');
+}
 
 // ---- Case studies CRUD ----
 export async function createCaseStudy(formData: FormData) {
@@ -115,8 +137,37 @@ export async function toggleCaseStudy(id: string, publish: boolean) {
   revalidatePath('/admin/case-studies');
   revalidatePath('/case-studies');
 }
+/** Edit in place; the slug is kept so published links keep working. */
+export async function updateCaseStudy(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const title = String(formData.get('title') ?? '').trim();
+  const cs = await prisma.caseStudy.findUnique({ where: { id }, select: { slug: true } });
+  if (!cs) return;
+  await prisma.caseStudy.update({
+    where: { id },
+    data: {
+      ...(title ? { title } : {}),
+      customer: String(formData.get('customer') ?? '').trim() || '—',
+      outcomeMetric: String(formData.get('outcomeMetric') ?? '').trim() || '—',
+      excerpt: String(formData.get('excerpt') ?? '').trim(),
+      body: String(formData.get('body') ?? '').trim(),
+    },
+  });
+  await audit('casestudy.update', cs.slug);
+  revalidatePath('/admin/case-studies');
+  revalidatePath('/case-studies');
+  revalidatePath(`/case-studies/${cs.slug}`);
+}
 
 // ---- Lab facilities CRUD ----
+/** Optional € rate field → cents (null when blank or out of range). */
+function rateCents(v: FormDataEntryValue | null): number | null {
+  const raw = String(v ?? '').trim();
+  if (!raw) return null;
+  const n = Math.round(Number(raw) * 100);
+  return Number.isFinite(n) && n >= 0 && n <= MAX_PRICE_CENTS ? n : null;
+}
+
 export async function createFacility(formData: FormData) {
   await requireCap('content:cms');
   const name = String(formData.get('name') ?? '').trim();
@@ -134,6 +185,8 @@ export async function createFacility(formData: FormData) {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
+      hourlyRateCents: rateCents(formData.get('hourlyRate')),
+      dailyRateCents: rateCents(formData.get('dailyRate')),
       isPublished: true,
     },
   });
@@ -153,6 +206,32 @@ export async function toggleFacility(id: string, isPublished: boolean) {
   await prisma.labFacility.update({ where: { id }, data: { isPublished } });
   revalidatePath('/admin/lab-rental');
   revalidatePath('/lab-rental');
+}
+/** Edit in place, including the hourly / daily rates shown on /lab-rental. */
+export async function updateFacility(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const name = String(formData.get('name') ?? '').trim();
+  const f = await prisma.labFacility.findUnique({ where: { id }, select: { slug: true } });
+  if (!f) return;
+  await prisma.labFacility.update({
+    where: { id },
+    data: {
+      ...(name ? { name } : {}),
+      city: String(formData.get('city') ?? '').trim() || '—',
+      country: String(formData.get('country') ?? '').trim() || '—',
+      description: String(formData.get('description') ?? '').trim(),
+      capabilities: String(formData.get('capabilities') ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      hourlyRateCents: rateCents(formData.get('hourlyRate')),
+      dailyRateCents: rateCents(formData.get('dailyRate')),
+    },
+  });
+  await audit('facility.update', f.slug);
+  revalidatePath('/admin/lab-rental');
+  revalidatePath('/lab-rental');
+  revalidatePath(`/lab-rental/${f.slug}`);
 }
 
 /* ── Webhook config CRUD + test-fire ─────────────────────────────────── */
@@ -836,9 +915,9 @@ export async function quickUpdateProduct(
     }
   }
   if (patch.quantity !== undefined) {
-    const q = Math.round(Number(patch.quantity));
-    if (!Number.isFinite(q) || q < 0 || q > 100_000)
-      return { ok: false, message: 'Quantity must be between 0 and 100,000.' };
+    const q = Number(patch.quantity);
+    if (!Number.isInteger(q) || q < 0 || q > 100_000)
+      return { ok: false, message: 'Quantity must be a whole number between 0 and 100,000.' };
     data.quantity = q;
   }
   if (patch.status !== undefined) {
@@ -861,6 +940,7 @@ export async function quickUpdateProduct(
 export async function setCompanyVerified(slug: string, verified: boolean) {
   await requireCap('companies:manage');
   await prisma.company.update({ where: { slug }, data: { isVerified: verified } });
+  await audit(verified ? 'company.verify' : 'company.unverify', slug);
   revalidatePath('/admin/companies');
 }
 
@@ -1790,46 +1870,77 @@ export async function setSellStatus(
 export async function setCompanyFeatured(slug: string, featured: boolean) {
   await requireCap('companies:manage');
   await prisma.company.update({ where: { slug }, data: { isFeatured: featured } });
+  await audit(featured ? 'company.feature' : 'company.unfeature', slug);
   revalidatePath('/admin/companies');
 }
 
 const CategoryInput = z.object({
-  name: z.string().min(2).max(80),
-  description: z.string().max(200).optional().nullable(),
+  name: z.string().trim().min(2).max(80),
+  description: z.string().trim().max(200).optional().nullable(),
 });
+const CATEGORY_LABELS = { name: 'Category name', description: 'Description' };
 
-export async function createCategory(input: z.infer<typeof CategoryInput>) {
+// Category actions return {ok,message} instead of throwing: they run from
+// form submits, and a thrown error became a full-page 500.
+
+export async function createCategory(input: z.infer<typeof CategoryInput>): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
-  const parsed = CategoryInput.parse(input);
-  const slug = parsed.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const r = CategoryInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, CATEGORY_LABELS) };
+  const parsed = r.data;
+  const dup = await prisma.category.findFirst({
+    where: { name: { equals: parsed.name, mode: 'insensitive' } },
+    select: { id: true },
+  });
+  if (dup) return { ok: false, message: `A category named “${parsed.name}” already exists.` };
+  // Names with no Latin letters/digits (e.g. Persian) have no ASCII slug of
+  // their own; they get "category", "category-x7k2", … instead of ''.
+  const slug = await uniqueSlug(/[a-z0-9]/i.test(parsed.name) ? parsed.name : 'category', async (s) =>
+    !!(await prisma.category.findUnique({ where: { slug: s }, select: { id: true } })),
+  );
   const count = await prisma.category.count();
   await prisma.category.create({
-    data: { slug, name: parsed.name, description: parsed.description ?? null, sortOrder: count },
+    data: { slug, name: parsed.name, description: parsed.description || null, sortOrder: count },
   });
+  await audit('category.create', slug);
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Category “${parsed.name}” added.` };
 }
 
-export async function updateCategory(input: { id: string; name: string; description?: string | null }) {
+export async function updateCategory(input: { id: string; name: string; description?: string | null }): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
-  const parsed = CategoryInput.parse({ name: input.name, description: input.description ?? null });
+  const r = CategoryInput.safeParse({ name: input.name, description: input.description ?? null });
+  if (!r.success) return { ok: false, message: zodMessage(r.error, CATEGORY_LABELS) };
+  const parsed = r.data;
+  const dup = await prisma.category.findFirst({
+    where: { name: { equals: parsed.name, mode: 'insensitive' }, NOT: { id: input.id } },
+    select: { id: true },
+  });
+  if (dup) return { ok: false, message: `Another category is already named “${parsed.name}”.` };
+  const existing = await prisma.category.findUnique({ where: { id: input.id }, select: { id: true } });
+  if (!existing) return { ok: false, message: 'Category not found — it may have been deleted.' };
   await prisma.category.update({
     where: { id: input.id },
-    data: { name: parsed.name, description: parsed.description ?? null },
+    data: { name: parsed.name, description: parsed.description || null },
   });
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Saved “${parsed.name}”.` };
 }
 
-export async function deleteCategory(id: string) {
+export async function deleteCategory(id: string): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
   const [products, children] = await Promise.all([
     prisma.product.count({ where: { categoryId: id } }),
     prisma.category.count({ where: { parentId: id } }),
   ]);
-  if (products > 0) throw new Error(`Cannot delete: ${products} product(s) still use this category.`);
-  if (children > 0) throw new Error(`Cannot delete: it has ${children} sub-categor(ies).`);
+  if (products > 0) return { ok: false, message: `Cannot delete: ${products} product(s) still use this category.` };
+  if (children > 0) return { ok: false, message: `Cannot delete: it has ${children} sub-categor(ies).` };
+  const cat = await prisma.category.findUnique({ where: { id }, select: { name: true } });
+  if (!cat) return { ok: false, message: 'Category not found — it may already be deleted.' };
   await prisma.category.delete({ where: { id } });
   await audit('category.delete', id);
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Category “${cat.name}” deleted.` };
 }
 
 export async function replyToThread(threadId: string, body: string) {
@@ -1846,14 +1957,25 @@ export async function replyToThread(threadId: string, body: string) {
   revalidatePath('/admin/messages');
 }
 
-const BrandInput = z.object({ name: z.string().min(2).max(80), logoUrl: z.string().url().nullish() });
+const BrandInput = z.object({ name: z.string().trim().min(2).max(80), logoUrl: z.string().url().nullish() });
+const BRAND_LABELS = { name: 'Brand name', logoUrl: 'Logo' };
+
+/** Case-insensitive name clash (duplicates showed up twice in product dropdowns). */
+async function brandNameTaken(name: string, exceptId?: string): Promise<boolean> {
+  return !!(await prisma.brand.findFirst({
+    where: { name: { equals: name, mode: 'insensitive' }, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+    select: { id: true },
+  }));
+}
 
 export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string; slug?: string }> {
   await requireCap('products:edit');
-  const parsed = BrandInput.parse(input);
+  const r = BrandInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, BRAND_LABELS) };
+  const parsed = r.data;
+  if (await brandNameTaken(parsed.name)) return { ok: false, message: `A brand named “${parsed.name}” already exists.` };
   const baseSlug = parsed.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  if (baseSlug.length < 2) return { ok: false, message: 'Brand name produces an empty slug.' };
-  const slug = await uniqueSlug(baseSlug, async (s) =>
+  const slug = await uniqueSlug(baseSlug.length >= 2 ? baseSlug : 'brand', async (s) =>
     !!(await prisma.brand.findUnique({ where: { slug: s }, select: { id: true } })),
   );
   await prisma.brand.create({ data: { slug, name: parsed.name, logoUrl: parsed.logoUrl ?? null } });
@@ -1865,9 +1987,12 @@ export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ 
 
 export async function updateBrand(id: string, input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string }> {
   await requireCap('products:edit');
-  const parsed = BrandInput.parse(input);
+  const r = BrandInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, BRAND_LABELS) };
+  const parsed = r.data;
   const existing = await prisma.brand.findUnique({ where: { id } });
   if (!existing) return { ok: false, message: 'Brand not found.' };
+  if (await brandNameTaken(parsed.name, id)) return { ok: false, message: `Another brand is already named “${parsed.name}”.` };
   await prisma.brand.update({ where: { id }, data: { name: parsed.name, logoUrl: parsed.logoUrl ?? null } });
   await audit('brand.update', existing.slug);
   revalidatePath('/admin/brands');
@@ -1888,20 +2013,23 @@ export async function deleteBrand(id: string): Promise<{ ok: boolean; message: s
 
 // ─── Admin product create / edit (admin own inventory, full edit) ──────────
 
+// Limits are wide enough for every row the shop / URL importers write (titles
+// up to 200 chars, all supplier photos, full descriptions), so an imported
+// product can always be re-saved from the edit page.
 const AdminProductInput = z.object({
-  title: z.string().min(6).max(180),
+  title: z.string().trim().min(2).max(200),
   summary: z.string().max(300).nullish(),
-  description: z.string().max(8000).nullish(),
+  description: z.string().max(100_000).nullish(),
   categoryId: z.string().min(1),
   brandId: z.string().nullish(),
   companyId: z.string().nullish(),               // null = lab2date own inventory
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']),
   mode: z.enum(['BUY_NOW', 'QUOTE_ONLY', 'HYBRID']),
-  priceCents: z.number().int().nonnegative().nullable(),
+  priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
   currency: z.string().default('EUR'),
   yearMade: z.number().int().min(1900).max(2100).nullable(),
   illustration: z.enum(['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector']),
-  images: z.array(z.string().url()).max(8).default([]),
+  images: z.array(z.string().url()).max(MAX_ADMIN_PRODUCT_IMAGES).default([]),
   specs: z.record(z.string()).default({}),
   status: z.enum(['DRAFT', 'PENDING_REVIEW', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
   quantity: z.number().int().min(0).max(100000).default(1),
@@ -1909,15 +2037,46 @@ const AdminProductInput = z.object({
 
 export type AdminProductInputType = z.infer<typeof AdminProductInput>;
 
-export async function adminCreateProduct(input: AdminProductInputType): Promise<{ ok: true; slug: string } | { ok: false; message: string }> {
+const ADMIN_PRODUCT_LABELS: Record<string, string> = {
+  title: 'Title',
+  summary: 'Short summary',
+  description: 'Description',
+  categoryId: 'Category',
+  brandId: 'Brand',
+  companyId: 'Shop / supplier',
+  condition: 'Condition',
+  mode: 'Buying mode',
+  priceCents: 'Price',
+  currency: 'Currency',
+  yearMade: 'Year made',
+  illustration: 'Fallback illustration',
+  images: 'Photos',
+  specs: 'Technical specs',
+  status: 'Status',
+  quantity: 'Quantity in stock',
+};
+
+type AdminProductError = { ok: false; message: string; fieldErrors?: Record<string, string> };
+
+/** safeParse with readable per-field messages (never the raw zod JSON). */
+function parseAdminProduct(input: AdminProductInputType): { data: AdminProductInputType } | { error: AdminProductError } {
+  const r = AdminProductInput.safeParse(input);
+  if (r.success) return { data: r.data };
+  return {
+    error: {
+      ok: false,
+      message: zodMessage(r.error, ADMIN_PRODUCT_LABELS),
+      fieldErrors: zodFieldErrors(r.error, ADMIN_PRODUCT_LABELS),
+    },
+  };
+}
+
+export async function adminCreateProduct(input: AdminProductInputType): Promise<{ ok: true; slug: string } | AdminProductError> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: AdminProductInputType;
-  try {
-    parsed = AdminProductInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const result = parseAdminProduct(input);
+  if ('error' in result) return result.error;
+  const parsed = result.data;
   let slug = parsed.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
   if (slug.length < 3) slug = `product-${Date.now().toString(36)}`;
   slug = await uniqueSlug(slug, async (s) => !!(await prisma.product.findUnique({ where: { slug: s }, select: { id: true } })));
@@ -1951,15 +2110,12 @@ export async function adminCreateProduct(input: AdminProductInputType): Promise<
   return { ok: true, slug };
 }
 
-export async function adminUpdateProduct(slug: string, input: AdminProductInputType): Promise<{ ok: boolean; message: string }> {
+export async function adminUpdateProduct(slug: string, input: AdminProductInputType): Promise<{ ok: true; message: string } | AdminProductError> {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: AdminProductInputType;
-  try {
-    parsed = AdminProductInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const result = parseAdminProduct(input);
+  if ('error' in result) return result.error;
+  const parsed = result.data;
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
   if (!existing) return { ok: false, message: 'Product not found.' };
   await prisma.product.update({
@@ -1978,7 +2134,9 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
       illustration: parsed.illustration,
       images: parsed.images,
       hasImages: parsed.images.length > 0,
-      specs: Object.keys(parsed.specs).length ? parsed.specs : undefined,
+      // DbNull, not undefined: undefined means "leave unchanged", so removing
+      // every spec row used to keep the old specs.
+      specs: Object.keys(parsed.specs).length ? parsed.specs : Prisma.DbNull,
       categoryId: parsed.categoryId,
       brandId: parsed.brandId || null,
       companyId: parsed.companyId || null,
@@ -1991,7 +2149,7 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
   return { ok: true, message: 'Saved.' };
 }
 
-export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; message: string }> {
+export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; message: string; outcome?: 'deleted' | 'archived' }> {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
@@ -2005,10 +2163,10 @@ export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; m
   if (outcome === 'archived') {
     await audit('product.admin.archive', slug, 'had order history — archived instead of hard-deleted');
     revalidatePath(`/marketplace/${slug}`);
-    return { ok: true, message: 'Product has order history — archived instead of deleted.' };
+    return { ok: true, message: 'Product has order history — archived instead of deleted.', outcome: 'archived' };
   }
   await audit('product.admin.delete', slug);
-  return { ok: true, message: 'Deleted.' };
+  return { ok: true, message: 'Deleted.', outcome: 'deleted' };
 }
 
 // ─── Company pricing rules + Cloud-API import trigger ──────────────────────
@@ -2021,12 +2179,9 @@ const CompanyPricingInput = z.object({
 export async function updateCompanyPricing(slug: string, input: z.infer<typeof CompanyPricingInput>): Promise<{ ok: boolean; message: string }> {
   await requireAdmin();
   await requireCap('companies:manage');
-  let parsed: z.infer<typeof CompanyPricingInput>;
-  try {
-    parsed = CompanyPricingInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const r = CompanyPricingInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, { pricingMode: 'Pricing mode', pricingMarkupBp: 'Markup' }) };
+  const parsed = r.data;
   const co = await prisma.company.findUnique({ where: { slug } });
   if (!co) return { ok: false, message: 'Company not found.' };
   await prisma.company.update({
@@ -2044,20 +2199,29 @@ export async function updateCompanyPricing(slug: string, input: z.infer<typeof C
 }
 
 const CreateCompanyInput = z.object({
-  name: z.string().min(2).max(120),
-  country: z.string().max(80).nullish(),
-  website: z.string().url().nullish(),
-  importSourceUrl: z.string().url().nullish(),       // e.g. https://lab2parts.com
+  name: z.string().trim().min(2).max(120),
+  country: z.string().trim().max(80).nullish(),
+  website: z.string().trim().url().nullish(),
+  importSourceUrl: z.string().trim().url().nullish(),       // e.g. https://lab2parts.com
 });
+const COMPANY_LABELS = { name: 'Shop name', country: 'Country', website: 'Public website', importSourceUrl: 'Import URL' };
+
+/** Case-insensitive name clash — two shops with one name are indistinguishable in every picker. */
+async function companyNameTaken(name: string, exceptSlug?: string): Promise<boolean> {
+  return !!(await prisma.company.findFirst({
+    where: { name: { equals: name, mode: 'insensitive' }, ...(exceptSlug ? { NOT: { slug: exceptSlug } } : {}) },
+    select: { id: true },
+  }));
+}
 
 export async function createCompany(input: z.infer<typeof CreateCompanyInput>): Promise<{ ok: boolean; message: string; slug?: string }> {
   await requireAdmin();
   await requireCap('companies:manage');
-  let parsed: z.infer<typeof CreateCompanyInput>;
-  try {
-    parsed = CreateCompanyInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
+  const r = CreateCompanyInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, COMPANY_LABELS) };
+  const parsed = r.data;
+  if (await companyNameTaken(parsed.name)) {
+    return { ok: false, message: `A shop named “${parsed.name}” already exists. Use a different name or edit the existing shop.` };
   }
   const slug = await uniqueSlug(parsed.name, async (s) =>
     !!(await prisma.company.findUnique({ where: { slug: s }, select: { id: true } })),
@@ -2075,6 +2239,53 @@ export async function createCompany(input: z.infer<typeof CreateCompanyInput>): 
   await audit('company.create', slug, parsed.importSourceUrl ?? '');
   revalidatePath('/admin/companies');
   return { ok: true, message: `Shop “${parsed.name}” added.`, slug };
+}
+
+/** Edit a shop's name, country, website and import URL. The slug is kept so
+ *  existing links and ?shop= filters keep working. */
+export async function updateCompany(slug: string, input: z.infer<typeof CreateCompanyInput>): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  await requireCap('companies:manage');
+  const r = CreateCompanyInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, COMPANY_LABELS) };
+  const parsed = r.data;
+  const co = await prisma.company.findUnique({ where: { slug }, select: { id: true } });
+  if (!co) return { ok: false, message: 'Shop not found — it may have been deleted.' };
+  if (await companyNameTaken(parsed.name, slug)) return { ok: false, message: `Another shop is already named “${parsed.name}”.` };
+  await prisma.company.update({
+    where: { id: co.id },
+    data: {
+      name: parsed.name,
+      country: parsed.country || null,
+      website: parsed.website || null,
+      importSourceUrl: parsed.importSourceUrl || null,
+    },
+  });
+  await audit('company.update', slug, parsed.importSourceUrl ?? '');
+  revalidatePath('/admin/companies');
+  revalidatePath('/admin/products');
+  return { ok: true, message: `Shop “${parsed.name}” saved.` };
+}
+
+/** Delete a shop. Refused while products, user accounts or lab facilities are
+ *  linked: those FKs are ON DELETE SET NULL, so deleting would silently turn
+ *  the shop's products into lab2date own inventory. */
+export async function deleteCompany(slug: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  await requireCap('companies:manage');
+  const co = await prisma.company.findUnique({
+    where: { slug },
+    select: { id: true, name: true, _count: { select: { products: true, users: true, facilities: true } } },
+  });
+  if (!co) return { ok: false, message: 'Shop not found — it may already be deleted.' };
+  const { products, users, facilities } = co._count;
+  if (products > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${products} product${products === 1 ? ' is' : 's are'} still linked. Move or delete them first.` };
+  if (users > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${users} user account${users === 1 ? ' belongs' : 's belong'} to this shop.` };
+  if (facilities > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${facilities} lab facilit${facilities === 1 ? 'y is' : 'ies are'} owned by this shop.` };
+  await prisma.company.delete({ where: { id: co.id } });
+  await audit('company.delete', slug, 'manual delete');
+  revalidatePath('/admin/companies');
+  return { ok: true, message: `Shop “${co.name}” deleted.` };
 }
 
 /**
@@ -2464,14 +2675,14 @@ export async function previewProductFromUrl(url: string): Promise<ImportRunResul
 
 const DraftFromExtraction = z.object({
   sourceUrl: z.string().url(),
-  title: z.string().min(6).max(200),
+  title: z.string().trim().min(2).max(200),
   summary: z.string().max(280).nullish(),
   description: z.string().max(8000).nullish(),
   brand: z.string().max(80).nullish(),                  // free-text, we map → Brand
   categorySlug: z.string().min(1).max(64),
   companySlug: z.string().max(64).nullish(),            // optional supplier
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']).default('REFURBISHED'),
-  priceCents: z.number().int().nonnegative().nullable(),
+  priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
   currency: z.string().min(2).max(8).default('EUR'),
   images: z.array(z.string().url()).max(8).default([]),
   specs: z.record(z.string()).default({}),
@@ -2483,12 +2694,14 @@ export type DraftFromExtractionInput = z.infer<typeof DraftFromExtraction>;
 export async function createDraftFromExtraction(input: DraftFromExtractionInput): Promise<{ ok: boolean; slug?: string; message: string; existing?: { slug: string; title: string } }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: DraftFromExtractionInput;
-  try {
-    parsed = DraftFromExtraction.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 240) : 'Invalid input.' };
+  const r = DraftFromExtraction.safeParse(input);
+  if (!r.success) {
+    return {
+      ok: false,
+      message: zodMessage(r.error, { ...ADMIN_PRODUCT_LABELS, sourceUrl: 'Source URL', brand: 'Brand', categorySlug: 'Category', companySlug: 'Shop' }),
+    };
   }
+  const parsed = r.data;
 
   // Duplicate guard: same source URL already imported?
   const dup = await prisma.product.findUnique({

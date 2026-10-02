@@ -99,6 +99,7 @@ export function BrandManager({ brands }: { brands: BrandRow[] }) {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="Brand name (e.g. Sartorius)"
+            maxLength={80}
             className="h-10 px-3 rounded-lg border border-input bg-background text-sm"
           />
           <label className="inline-flex items-center gap-2 px-3 h-10 rounded-lg border border-input bg-background text-sm cursor-pointer hover:bg-foreground/[0.03]">
@@ -159,6 +160,7 @@ export function BrandManager({ brands }: { brands: BrandRow[] }) {
                   <input
                     value={editing.name}
                     onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                    maxLength={80}
                     className="h-9 px-3 rounded-lg border border-input bg-background text-sm flex-1 min-w-[160px]"
                   />
                   <label className="inline-flex items-center gap-2 px-3 h-9 rounded-lg border border-input bg-background text-xs cursor-pointer hover:bg-foreground/[0.03]">
