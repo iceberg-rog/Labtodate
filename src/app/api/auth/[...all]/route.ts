@@ -10,13 +10,16 @@ export const GET = handlers.GET;
 // credential-sensitive auth POST endpoints (credential stuffing, email
 // enumeration, sign-up spam, email bombing via magic-link/forgot-password).
 // All other auth traffic (session refresh, callbacks, sign-out) passes
-// through untouched.
+// through untouched. The first matching rule wins, so specific paths come
+// first (/sign-in/magic-link must not fall into the generic sign-in bucket).
 const LIMITS: Array<{ match: RegExp; bucket: string; max: number; windowMs: number }> = [
+  { match: /\/magic-link\b/, bucket: 'auth:magic', max: 5, windowMs: 15 * 60_000 },
   { match: /\/sign-in\b/, bucket: 'auth:sign-in', max: 10, windowMs: 15 * 60_000 },
   { match: /\/sign-up\b/, bucket: 'auth:sign-up', max: 5, windowMs: 60 * 60_000 },
-  { match: /\/(forget|forgot)-password\b/, bucket: 'auth:forgot', max: 5, windowMs: 15 * 60_000 },
+  // better-auth 1.6 calls the forgot-password endpoint /request-password-reset.
+  { match: /\/(request-password-reset|forget-password|forgot-password)\b/, bucket: 'auth:forgot', max: 5, windowMs: 15 * 60_000 },
   { match: /\/reset-password\b/, bucket: 'auth:reset', max: 5, windowMs: 15 * 60_000 },
-  { match: /\/magic-link\b/, bucket: 'auth:magic', max: 5, windowMs: 15 * 60_000 },
+  { match: /\/send-verification-email\b/, bucket: 'auth:verify-email', max: 5, windowMs: 15 * 60_000 },
   // Email-OTP send is a Resend-cost + email-bombing lever (each hit emails an
   // arbitrary address). Verify is capped too so a single IP can't grind codes.
   { match: /\/email-otp\/send/, bucket: 'auth:otp-send', max: 5, windowMs: 15 * 60_000 },
