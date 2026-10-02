@@ -11,7 +11,7 @@ import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
 import { UserRole } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
-import { sendEmail } from '@/lib/email';
+import { isDeliverableEmail, sendEmail } from '@/lib/email';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getStripe } from '@/lib/stripe/client';
 import { aiConfig } from '@/lib/ai';
@@ -585,8 +585,9 @@ export async function getAdminUserSummary(id: string): Promise<{
   };
 }
 
-export async function setUserRole(userId: string, role: UserRole) {
+export async function setUserRole(userId: string, role: UserRole): Promise<{ ok: boolean; message: string }> {
   await requireCap('users:manage');
+  if (!Object.values(UserRole).includes(role)) return { ok: false, message: 'Unknown role.' };
   // Never let the LAST admin be demoted — that locks everyone out of /admin
   // with no in-app way back (recovery then needs a direct DB update).
   if (role !== 'ADMIN') {
@@ -594,7 +595,7 @@ export async function setUserRole(userId: string, role: UserRole) {
     if (target?.role === 'ADMIN') {
       const otherAdmins = await prisma.user.count({ where: { role: 'ADMIN', NOT: { id: userId } } });
       if (otherAdmins === 0) {
-        throw new Error('Cannot change the last admin to a non-admin role — promote another admin first.');
+        return { ok: false, message: 'Cannot change the last admin to a non-admin role — promote another admin first.' };
       }
     }
   }
@@ -602,23 +603,24 @@ export async function setUserRole(userId: string, role: UserRole) {
   await audit('user.role', userId, `role=${role}`);
   revalidatePath('/admin/users');
   revalidatePath(`/admin/users/${userId}`);
+  return { ok: true, message: `Role changed to ${role === 'SELLER' ? 'internal supplier' : role.toLowerCase()}.` };
 }
 
 /** Soft-suspend a user: blocks sign-in and wipes active sessions.
  *  Reversible via [[unsuspendUser]]. */
-export async function suspendUser(formData: FormData): Promise<void> {
+export async function suspendUser(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('users:manage');
   const id = String(formData.get('userId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim().slice(0, 240) || 'Suspended by admin';
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing user.' };
   const target = await prisma.user.findUnique({ where: { id }, select: { role: true, email: true } });
-  if (!target) throw new Error('User not found.');
+  if (!target) return { ok: false, message: 'User not found.' };
   if (target.role === 'ADMIN') {
     // Refuse to suspend the LAST active admin so we don't get locked out.
     const remainingAdmins = await prisma.user.count({
       where: { role: 'ADMIN', suspendedAt: null, NOT: { id } },
     });
-    if (remainingAdmins === 0) throw new Error('Cannot suspend the last active admin.');
+    if (remainingAdmins === 0) return { ok: false, message: 'Cannot suspend the last active admin.' };
   }
   await prisma.$transaction([
     prisma.user.update({
@@ -630,6 +632,7 @@ export async function suspendUser(formData: FormData): Promise<void> {
   await audit('user.suspend', id, reason);
   revalidatePath('/admin/users');
   revalidatePath(`/admin/users/${id}`);
+  return { ok: true, message: `${target.email} is suspended and signed out everywhere.` };
 }
 
 export async function unsuspendUser(formData: FormData): Promise<void> {
@@ -717,41 +720,51 @@ export async function bulkSuspendUsers(
 }
 
 /** Permanently delete a user and their owned data. Use only for GDPR
- *  erasure / clear spam accounts — soft-suspend is the safe default. */
-export async function deleteUser(formData: FormData): Promise<void> {
+ *  erasure / clear spam accounts — soft-suspend is the safe default.
+ *  Returns {ok, message}: refusals used to be thrown, which production shows
+ *  only as the generic "Server Components render" error. */
+export async function deleteUser(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('users:manage');
   const id = String(formData.get('userId') ?? '');
   const confirm = String(formData.get('confirmEmail') ?? '').trim().toLowerCase();
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing user.' };
   const target = await prisma.user.findUnique({
     where: { id },
     select: { email: true, role: true },
   });
-  if (!target) throw new Error('User not found.');
+  if (!target) return { ok: false, message: 'User not found.' };
   if (confirm !== target.email.toLowerCase()) {
-    throw new Error('Email confirmation did not match — refusing to delete.');
+    return { ok: false, message: 'Email confirmation did not match — nothing was deleted.' };
   }
   if (target.role === 'ADMIN') {
     const remainingAdmins = await prisma.user.count({
       where: { role: 'ADMIN', NOT: { id } },
     });
-    if (remainingAdmins === 0) throw new Error('Cannot delete the last admin.');
+    if (remainingAdmins === 0) return { ok: false, message: 'Cannot delete the last admin.' };
+  }
+  // Orders reference the buyer without a cascade (kept for the money trail),
+  // so an account with orders can't be hard-deleted — say so up front.
+  const orderCount = await prisma.order.count({ where: { buyerId: id } });
+  if (orderCount > 0) {
+    return {
+      ok: false,
+      message: `Delete blocked — this account has ${orderCount} order${orderCount === 1 ? '' : 's'}, which must be kept. Suspend the account instead.`,
+    };
   }
   // Cascading via FK onDelete handles sessions, accounts, wishlists, cart,
-  // notifications, reviews, blog/wiki author (where allowed). Orders &
-  // tickets keep the snapshot fields (no FK cascade) for audit trail —
-  // those are by design.
+  // notifications, reviews. Records that reference the user WITHOUT a cascade
+  // (authored content, seller chats, …) make the delete fail below.
   try {
     await prisma.user.delete({ where: { id } });
-  } catch (e) {
-    throw new Error(
-      e instanceof Error
-        ? `Delete blocked: ${e.message.slice(0, 200)}. Suspend the account instead.`
-        : 'Delete failed.',
-    );
+  } catch {
+    return {
+      ok: false,
+      message: 'Delete blocked — this account still owns records that must be kept (content, conversations or history). Suspend the account instead.',
+    };
   }
   await audit('user.delete', id, target.email);
   revalidatePath('/admin/users');
+  return { ok: true, message: `${target.email} was deleted.` };
 }
 
 /** Send the user a password-reset email (admin-initiated). Useful when a
@@ -1165,7 +1178,7 @@ export async function saveHomepage(formData: FormData): Promise<{ ok: boolean; m
   };
 }
 
-export async function sendAnnouncement(formData: FormData) {
+export async function sendAnnouncement(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('content:cms');
   await ensureSettingsLoaded();
   const title = String(formData.get('title') ?? '').trim();
@@ -1174,7 +1187,11 @@ export async function sendAnnouncement(formData: FormData) {
   const kind = (String(formData.get('kind') ?? 'ANNOUNCEMENT') || 'ANNOUNCEMENT').toUpperCase();
   const audience = String(formData.get('audience') ?? 'ALL');
   const alsoEmail = formData.get('email') === 'on';
-  if (title.length < 3 || body.length < 3) throw new Error('Title and message are required');
+  // Returned, not thrown — a thrown error replaced the whole admin page.
+  if (title.length < 3 || body.length < 3) {
+    return { ok: false, message: 'Title and message are required (at least 3 characters each, not just spaces).' };
+  }
+  if (!['OFFER', 'ANNOUNCEMENT', 'SYSTEM'].includes(kind)) return { ok: false, message: 'Unknown announcement type.' };
 
   const where =
     audience === 'BUYER'
@@ -1190,10 +1207,15 @@ export async function sendAnnouncement(formData: FormData) {
     take: 5000,
   });
 
+  if (users.length === 0) return { ok: false, message: 'Nobody in that audience — nothing was sent.' };
+
   await prisma.notification.createMany({
     data: users.map((u) => ({ userId: u.id, title, body, href, kind })),
   });
 
+  let emailed = 0;
+  let emailFailed = 0;
+  let skipped = 0;
   if (alsoEmail) {
     const site = process.env.SITE_NAME || 'lab2date';
     const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
@@ -1203,6 +1225,12 @@ export async function sendAnnouncement(formData: FormData) {
         : `${base}${href.startsWith('/') ? '' : '/'}${href}`
       : `${base}/app/notifications`;
     for (const u of users) {
+      // Seed / importer accounts carry placeholder addresses (sales@shop.import,
+      // *.example …) that bounce and hurt sender reputation — in-app only.
+      if (!isDeliverableEmail(u.email)) {
+        skipped++;
+        continue;
+      }
       // Best-effort per recipient — one bad address must not abort the whole
       // broadcast (and every notification row is already persisted above).
       try {
@@ -1220,8 +1248,10 @@ export async function sendAnnouncement(formData: FormData) {
             <p style="color:#999;font-size:11px;">You receive this because you have a ${site} account.</p>
           </div>`,
         });
+        emailed++;
       } catch {
         // swallow — logged in EmailLog by sendEmail; continue the broadcast
+        emailFailed++;
       }
     }
   }
@@ -1229,6 +1259,13 @@ export async function sendAnnouncement(formData: FormData) {
   await audit('announcement.send', audience, title);
   revalidatePath('/admin/announcements');
   revalidatePath('/app/notifications');
+  const parts = [`Sent to ${users.length} user${users.length === 1 ? '' : 's'} in-app.`];
+  if (alsoEmail) {
+    parts.push(`Emailed ${emailed}.`);
+    if (skipped) parts.push(`Skipped ${skipped} placeholder address${skipped === 1 ? '' : 'es'}.`);
+    if (emailFailed) parts.push(`${emailFailed} email${emailFailed === 1 ? '' : 's'} failed (see the email log).`);
+  }
+  return { ok: true, message: parts.join(' ') };
 }
 
 export async function refundOrder(formData: FormData) {
@@ -1333,6 +1370,32 @@ function stripeExpireApi(): StripeSessionApi | null {
   return stripe ? expireOnlyApi(stripe) : null;
 }
 
+/**
+ * Short buyer email for an order-state change (cancel / paid / delivered used
+ * to be in-app only). Only system values (order number, fixed copy, link) go
+ * into the HTML — no user-typed text. Best-effort: returns false, never throws.
+ */
+async function emailBuyerOrderUpdate(to: string, orderNumber: string, subject: string, line: string): Promise<boolean> {
+  if (!isDeliverableEmail(to)) return true; // placeholder/seed address — nothing to send
+  try {
+    const link = `${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app/orders/${orderNumber}`;
+    await sendEmail({
+      to,
+      subject,
+      html: `
+        <div style="font-family:system-ui,sans-serif;max-width:540px;">
+          <h2 style="color:#0E4F40;">${subject}</h2>
+          <p>${line}</p>
+          <p><a href="${link}">View order ${orderNumber}</a></p>
+        </div>`,
+      text: `${line}\n\nView order ${orderNumber}: ${link}`,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Cancel an order that hasn't been paid (or is in PROCESSING). Releases
  *  reserved stock back to the catalog. Distinct from refundOrder which
  *  applies once money is taken. */
@@ -1379,6 +1442,12 @@ export async function cancelOrder(formData: FormData): Promise<void> {
     'Your order was canceled before payment. No charge was made. Items are back in stock.',
     `/app/orders/${order.orderNumber}`,
   );
+  await emailBuyerOrderUpdate(
+    order.buyer.email,
+    order.orderNumber,
+    `Order ${order.orderNumber} canceled`,
+    'Your order was canceled before payment. No charge was made.',
+  );
   await notifyAdmins(
     `Order ${order.orderNumber}: canceled (pre-payment)`,
     'Reserved stock has been returned. No charge was made.',
@@ -1420,7 +1489,7 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
   }
   const order = await prisma.order.findUnique({
     where: { id },
-    select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, buyer: { select: { id: true } } },
+    select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, buyer: { select: { id: true, email: true } } },
   });
   if (!order) return { ok: false, message: 'Order not found.' };
   if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
@@ -1477,6 +1546,12 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     `Payment received — order ${order.orderNumber}`,
     `Your payment has been confirmed${method === 'BANK_TRANSFER' ? ' (bank transfer)' : method === 'INVOICE' ? ' (invoice)' : ''}. We'll prepare your order for shipping.`,
     `/app/orders/${order.orderNumber}`,
+  );
+  await emailBuyerOrderUpdate(
+    order.buyer.email,
+    order.orderNumber,
+    `Payment received — order ${order.orderNumber}`,
+    `Your payment has been confirmed${method === 'BANK_TRANSFER' ? ' (bank transfer)' : method === 'INVOICE' ? ' (invoice)' : ''}. We'll prepare your order for shipping.`,
   );
   await notifyAdmins(
     `Order ${order.orderNumber} marked PAID manually — ${(order.totalCents / 100).toFixed(2)} ${order.currency}`,
@@ -1634,7 +1709,9 @@ export async function bulkMarkAllShipped(): Promise<{ ok: boolean; count: number
   };
 }
 
-export async function setOrderFulfillment(formData: FormData) {
+/** Returns {ok, message} rather than throwing — a rejected transition used to
+ *  crash the whole admin page (production redacts thrown messages). */
+export async function setOrderFulfillment(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:fulfil');
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
@@ -1642,7 +1719,7 @@ export async function setOrderFulfillment(formData: FormData) {
     | 'PAID' | 'PROCESSING' | 'SHIPPED' | 'DELIVERED' | 'CANCELED' | 'REFUNDED';
   const carrier = String(formData.get('carrier') ?? '').trim() || null;
   const trackingNumber = String(formData.get('trackingNumber') ?? '').trim() || null;
-  if (!id || !status) return;
+  if (!id || !status) return { ok: false, message: 'Pick a status first.' };
 
   const order = await prisma.order.findUnique({
     where: { id },
@@ -1655,7 +1732,7 @@ export async function setOrderFulfillment(formData: FormData) {
       buyer: { select: { id: true, name: true, email: true } },
     },
   });
-  if (!order) throw new Error('Order not found');
+  if (!order) return { ok: false, message: 'Order not found.' };
 
   // F12 / S3 guard: REFUNDED and CANCELED are terminal money-states. Once an
   // order is refunded or canceled, no fulfilment transition may move it back
@@ -1668,9 +1745,10 @@ export async function setOrderFulfillment(formData: FormData) {
   // allowed; only a status CHANGE out of a terminal state is blocked.
   const TERMINAL_ORDER_STATES = new Set(['REFUNDED', 'CANCELED']);
   if (TERMINAL_ORDER_STATES.has(order.status) && status !== order.status) {
-    throw new Error(
-      `Cannot change order ${order.orderNumber} to ${status.toLowerCase()} — it is ${order.status.toLowerCase()} (terminal). Refunded or canceled orders cannot be re-fulfilled.`,
-    );
+    return {
+      ok: false,
+      message: `Cannot change order ${order.orderNumber} to ${status.toLowerCase()} — it is ${order.status.toLowerCase()} (terminal). Refunded or canceled orders cannot be re-fulfilled.`,
+    };
   }
 
   // Admin entered a tracking number on a not-yet-shipped order → that IS the
@@ -1697,19 +1775,22 @@ export async function setOrderFulfillment(formData: FormData) {
   const stageRank = (s: string) => (FULFILMENT_CHAIN as readonly string[]).indexOf(s);
   if (status !== order.status) {
     if (status === 'CANCELED' || status === 'REFUNDED') {
-      throw new Error(
-        `Cannot set order ${order.orderNumber} to ${status.toLowerCase()} from the fulfilment panel — use the ${status === 'REFUNDED' ? 'Refund' : 'Cancel'} action so reserved stock is restocked correctly.`,
-      );
+      return {
+        ok: false,
+        message: `Cannot set order ${order.orderNumber} to ${status.toLowerCase()} from the fulfilment panel — use the ${status === 'REFUNDED' ? 'Refund' : 'Cancel'} action so reserved stock is restocked correctly.`,
+      };
     }
     if (stageRank(order.status) === -1) {
-      throw new Error(
-        `Cannot fulfil order ${order.orderNumber} — it is ${order.status.toLowerCase()}, not yet paid. Record payment first (manual payment / verify proof) before moving it through fulfilment.`,
-      );
+      return {
+        ok: false,
+        message: `Cannot fulfil order ${order.orderNumber} — it is ${order.status.toLowerCase()}, not yet paid. Record payment first (manual payment / verify proof) before moving it through fulfilment.`,
+      };
     }
     if (stageRank(status) < stageRank(order.status)) {
-      throw new Error(
-        `Cannot move order ${order.orderNumber} backward from ${order.status.toLowerCase()} to ${status.toLowerCase()} — fulfilment status only moves forward (paid → processing → shipped → delivered).`,
-      );
+      return {
+        ok: false,
+        message: `Cannot move order ${order.orderNumber} backward from ${order.status.toLowerCase()} to ${status.toLowerCase()} — fulfilment status only moves forward (paid → processing → shipped → delivered).`,
+      };
     }
   }
 
@@ -1717,9 +1798,10 @@ export async function setOrderFulfillment(formData: FormData) {
   // 5LX2KB shipped without an address through single + bulk + inline
   // paths. Block the transition server-side instead of trusting the UI.
   if ((status === 'SHIPPED' || status === 'DELIVERED') && !shippingAddressIsComplete(order.shippingAddress)) {
-    throw new Error(
-      `Cannot mark order ${order.orderNumber} as ${status.toLowerCase()} — no complete shipping address on file. Capture the buyer's address first.`,
-    );
+    return {
+      ok: false,
+      message: `Cannot mark order ${order.orderNumber} as ${status.toLowerCase()} — no complete shipping address on file. Capture the buyer's address first.`,
+    };
   }
 
   // RB-fix: idempotency. Previously the action wrote + audited even when
@@ -1732,7 +1814,7 @@ export async function setOrderFulfillment(formData: FormData) {
   if (statusUnchanged && carrierUnchanged && trackingUnchanged) {
     // Pure no-op — no write, no audit, no notification, no email.
     revalidatePath(`/admin/orders/${id}`);
-    return;
+    return { ok: true, message: 'Nothing changed.' };
   }
 
   // RB-fix: atomic transition. updateMany with the precondition that the
@@ -1752,9 +1834,12 @@ export async function setOrderFulfillment(formData: FormData) {
   if (res.count !== 1) {
     // Lost the race; another admin moved the row. Skip side effects.
     revalidatePath(`/admin/orders/${id}`);
-    return;
+    return { ok: false, message: 'Someone else updated this order a moment ago — refresh and check its status.' };
   }
 
+  // The status change is already committed — an email failure must not turn
+  // into an error for a save that DID happen; report it in the message.
+  let emailFailed = false;
   if (status === 'SHIPPED' && order.status !== 'SHIPPED') {
     const site = process.env.SITE_NAME || 'lab2date';
     const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
@@ -1770,7 +1855,15 @@ export async function setOrderFulfillment(formData: FormData) {
           <p><a href="${base}/app/orders">Track it in your account</a></p>
           <p style="color:#888;font-size:12px;">${site}</p>
         </div>`,
-    });
+    }).catch(() => { emailFailed = true; });
+  }
+  if (status === 'DELIVERED' && order.status !== 'DELIVERED') {
+    emailFailed = !(await emailBuyerOrderUpdate(
+      order.buyer.email,
+      order.orderNumber,
+      `Order ${order.orderNumber} delivered`,
+      'Your order has been marked as delivered. If anything is wrong with it, contact us from your order page.',
+    ));
   }
   if (status !== order.status) {
     const msg =
@@ -1802,6 +1895,12 @@ export async function setOrderFulfillment(formData: FormData) {
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
   revalidatePath('/app/orders');
+  return {
+    ok: true,
+    message:
+      (status !== order.status ? `Saved — order is now ${status.toLowerCase()}; buyer notified.` : 'Saved — tracking details updated.') +
+      (emailFailed ? ' (The buyer email could not be sent — check Settings → Email; the in-app notification went out.)' : ''),
+  };
 }
 
 export async function setSellStatus(

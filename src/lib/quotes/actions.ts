@@ -332,8 +332,24 @@ const ProformaInput = z.object({
   note: z.string().max(2000).optional().nullable(),
 });
 
-export async function sendProforma(input: z.infer<typeof ProformaInput>) {
-  const parsed = ProformaInput.parse(input);
+/** Validation / guard failures come back as `{ error }` (shown by the composer)
+ *  instead of being thrown — production builds redact thrown messages to a
+ *  generic "Server Components render" error. Success resolves to undefined. */
+export async function sendProforma(input: z.infer<typeof ProformaInput>): Promise<{ error: string } | undefined> {
+  const check = ProformaInput.safeParse(input);
+  if (!check.success) {
+    const issue = check.error.issues[0];
+    const field = issue?.path[0];
+    return {
+      error:
+        field === 'priceCents'
+          ? 'Price must be between €0.01 and €1,000,000.'
+          : field === 'note'
+            ? 'The note is too long (max 2,000 characters).'
+            : 'Please check the proforma details and try again.',
+    };
+  }
+  const parsed = check.data;
   await ensureSettingsLoaded();
   const session = await requireSession({ redirectTo: '/app' });
 
@@ -341,13 +357,13 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>) {
     where: { id: parsed.sourcingRequestId },
     include: { product: { select: { title: true } } },
   });
-  if (!sr) throw new Error('Quote not found');
+  if (!sr) return { error: 'Quote not found — it may have been deleted.' };
 
   const role = (session.user as { role?: string }).role;
   const isAdmin = role === 'ADMIN';
   const isAssignee = !!sr.assignedToId && sr.assignedToId === session.user.id;
   const allowed = isAdmin || isAssignee;
-  if (!allowed) throw new Error('Forbidden');
+  if (!allowed) return { error: 'You are not allowed to send a proforma for this quote.' };
   // Admin path needs explicit cap. Assignee seller is already gated by
   // ownership (they were the chosen supplier for this product/quote).
   if (isAdmin && !isAssignee) {
@@ -374,9 +390,9 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>) {
     linkedOrder.status !== 'PENDING_PAYMENT' &&
     (linkedOrder.subtotalCents !== parsed.priceCents || linkedOrder.currency !== parsed.currency)
   ) {
-    throw new Error(
-      `Order ${linkedOrder.orderNumber} is ${linkedOrder.status} — its amounts can no longer be changed by re-issuing a proforma. Refund/cancel the order first, or open a new quote.`,
-    );
+    return {
+      error: `Order ${linkedOrder.orderNumber} is ${linkedOrder.status} — its amounts can no longer be changed by re-issuing a proforma. Refund/cancel the order first, or open a new quote.`,
+    };
   }
 
   // Re-issuing a proforma keeps the same number for AR continuity; only the

@@ -76,14 +76,22 @@ export function QuoteThread(p: Props) {
       setError('Enter a valid price');
       return;
     }
+    if (cents > 100_000_000) {
+      setError('Maximum proforma price is €1,000,000.');
+      return;
+    }
     startTransition(async () => {
       try {
-        await sendProforma({
+        const r = await sendProforma({
           sourcingRequestId: p.sourcingRequestId,
           priceCents: cents,
           currency: 'EUR',
           note: qnote.trim() || null,
         });
+        if (r?.error) {
+          setError(r.error);
+          return;
+        }
         setPrice('');
         setQnote('');
         router.refresh();
@@ -184,6 +192,7 @@ export function QuoteThread(p: Props) {
                 <input
                   type="number"
                   min="1"
+                  max="1000000"
                   step="0.01"
                   value={price}
                   onChange={(e) => setPrice(e.target.value)}

@@ -22,6 +22,7 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { setOrderNotes, setOrderFulfillment, verifyPayment, rejectPayment } from '@/app/admin/actions';
+import { AdminActionForm, AdminActionStatus } from '@/components/admin/AdminActionForm';
 import { BuyerEmailReveal } from '@/components/admin/BuyerEmailReveal';
 import {
   humaniseBuyer,
@@ -411,7 +412,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 <Truck className="h-4 w-4 text-primary" />
                 <h2 className="text-sm font-bold">Fulfillment</h2>
               </div>
-              <form action={setOrderFulfillment} className="p-5 grid sm:grid-cols-4 gap-3 items-end text-sm">
+              <AdminActionForm action={setOrderFulfillment} statusInChildren className="p-5 grid sm:grid-cols-4 gap-3 items-end text-sm">
                 <input type="hidden" name="orderId" value={order.id} />
                 <label className="block sm:col-span-1">
                   <span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">Status</span>
@@ -420,9 +421,12 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     defaultValue={order.status}
                     className="h-9 px-2 rounded-md border border-input bg-background text-xs font-medium w-full"
                   >
-                    {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const).map((s) => (
-                      <option key={s} value={s}>{s.toLowerCase()}</option>
-                    ))}
+                    {/* Forward-only, like the server guard: never offer a move it rejects. */}
+                    {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const)
+                      .filter((s, i, all) => i >= all.indexOf(order.status as (typeof all)[number]))
+                      .map((s) => (
+                        <option key={s} value={s}>{s.toLowerCase()}</option>
+                      ))}
                   </select>
                 </label>
                 <label className="block sm:col-span-1">
@@ -457,7 +461,8 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   Entering a tracking number auto-advances status to <strong>Shipped</strong>. Mark{' '}
                   <strong>Delivered</strong> manually here, or the buyer can confirm receipt from their order page.
                 </p>
-              </form>
+                <AdminActionStatus className="sm:col-span-4" />
+              </AdminActionForm>
               {order.shippedAt && (
                 <div className="px-5 pb-4 text-xs text-muted-foreground">
                   Shipped {smartDate(order.shippedAt)}

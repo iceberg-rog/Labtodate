@@ -1,5 +1,4 @@
 import { Megaphone, Sparkles, AlertOctagon } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { sendAnnouncement } from '../actions';
@@ -22,30 +21,38 @@ const KIND_TINT: Record<string, string> = {
 export default async function AdminAnnouncementsPage() {
   await requireCapability('content:cms');
 
-  const [recent, allCount, buyerCount, sellerCount] = await Promise.all([
-    prisma.notification.findMany({
+  const [sendLog, allCount, buyerCount, sellerCount] = await Promise.all([
+    // One audit row per broadcast (target = audience, meta = title). The list
+    // used to group ALL notifications, so every order/quote system notice
+    // showed up here as if it were an announcement.
+    prisma.auditLog.findMany({
+      where: { action: 'announcement.send' },
       orderBy: { createdAt: 'desc' },
-      take: 400,
-      select: { title: true, kind: true, createdAt: true, href: true },
+      take: 30,
+      select: { target: true, meta: true, createdAt: true },
     }),
     prisma.user.count(),
     prisma.user.count({ where: { role: 'BUYER' } }),
     prisma.user.count({ where: { role: 'SELLER' } }),
   ]);
 
-  // Group recent notifications into batches by title + minute so 1 send
-  // doesn't look like N rows.
-  const batches = new Map<
-    string,
-    { title: string; kind: string; at: Date; count: number; href: string | null }
-  >();
-  for (const n of recent) {
-    const key = `${n.title}@${new Date(n.createdAt).toISOString().slice(0, 16)}`;
-    const b = batches.get(key);
-    if (b) b.count++;
-    else batches.set(key, { title: n.title, kind: n.kind, at: n.createdAt, count: 1, href: n.href });
-  }
-  const sends = Array.from(batches.values()).slice(0, 30);
+  // Recipient count per send: that broadcast's notification rows (same title,
+  // written before the audit row — emails go out in between).
+  const sends = await Promise.all(
+    sendLog.map(async (a) => {
+      const title = a.meta ?? '';
+      const where = {
+        title,
+        kind: { in: Object.keys(KIND_ICON) },
+        createdAt: { lte: a.createdAt, gte: new Date(a.createdAt.getTime() - 2 * 3600e3) },
+      };
+      const [count, sample] = await Promise.all([
+        prisma.notification.count({ where }),
+        prisma.notification.findFirst({ where, select: { kind: true, href: true } }),
+      ]);
+      return { title, kind: sample?.kind ?? 'ANNOUNCEMENT', at: a.createdAt, count, href: sample?.href ?? null };
+    }),
+  );
 
   const resendConfigured = !!process.env.RESEND_API_KEY;
 
@@ -58,20 +65,11 @@ export default async function AdminAnnouncementsPage() {
         </p>
       </div>
 
-      <form action={sendAnnouncement} className="space-y-6">
-        <AnnouncementComposer
-          audienceCounts={{ ALL: allCount, BUYER: buyerCount, SELLER: sellerCount }}
-          resendConfigured={resendConfigured}
-        />
-        <div className="sticky bottom-3 z-10 flex items-center gap-3 bg-background/95 backdrop-blur p-3 rounded-2xl border border-border shadow-sm">
-          <Button type="submit" size="lg" className="rounded-2xl font-semibold">
-            <Megaphone className="h-4 w-4" /> Send to users
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            In-app notifications deliver instantly. Emails are best-effort — check the Recent sends list below.
-          </span>
-        </div>
-      </form>
+      <AnnouncementComposer
+        action={sendAnnouncement}
+        audienceCounts={{ ALL: allCount, BUYER: buyerCount, SELLER: sellerCount }}
+        resendConfigured={resendConfigured}
+      />
 
       <div>
         <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-muted-foreground mb-3">
@@ -82,7 +80,7 @@ export default async function AdminAnnouncementsPage() {
             <Megaphone className="h-7 w-7 mx-auto text-muted-foreground mb-2" />
             <p className="text-sm font-semibold">Nothing sent yet</p>
             <p className="text-xs text-muted-foreground mt-1">
-              When you send an announcement, recipient batches appear here grouped by title + minute.
+              Each announcement you send appears here with its recipient count.
             </p>
           </div>
         ) : (

@@ -136,6 +136,7 @@ export function OrderRow(p: OrderRowProps) {
   const [pending, start] = useTransition();
   const [copied, setCopied] = useState(false);
   const [confirmDanger, setConfirmDanger] = useState(false);
+  const [fulfilMsg, setFulfilMsg] = useState<{ ok: boolean; message: string } | null>(null);
 
   const canFulfil = p.status === 'PAID' || p.status === 'PROCESSING' || p.status === 'SHIPPED';
   const isAwaitingVerify = p.paymentVerificationStatus === 'AWAITING_VERIFICATION';
@@ -399,7 +400,22 @@ export function OrderRow(p: OrderRowProps) {
       {/* === Footer action bar === */}
       {canFulfil && (
         <form
-          action={setOrderFulfillment}
+          // onSubmit + returned result: a rejected move (e.g. no address) now
+          // shows its reason here instead of crashing the orders page.
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            setFulfilMsg(null);
+            start(async () => {
+              try {
+                const r = await setOrderFulfillment(fd);
+                setFulfilMsg(r);
+                if (r.ok) router.refresh();
+              } catch {
+                setFulfilMsg({ ok: false, message: 'Save failed — please try again.' });
+              }
+            });
+          }}
           className="border-t border-border bg-foreground/[0.02] px-5 py-2.5 flex flex-wrap items-end gap-2"
           data-noopen
           onClick={(e) => e.stopPropagation()}
@@ -409,6 +425,8 @@ export function OrderRow(p: OrderRowProps) {
             <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Status</span>
             <select name="status" defaultValue={p.status} className="h-8 px-2 rounded-md border border-input bg-background text-xs font-medium">
               {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const)
+                // Forward-only (the server rejects backward moves).
+                .filter((s, i, all) => i >= all.indexOf(p.status as (typeof all)[number]))
                 .filter((s) => p.hasShippingAddress !== false || (s !== 'SHIPPED' && s !== 'DELIVERED'))
                 .map((s) => (
                   <option key={s} value={s}>{s.toLowerCase()}</option>
@@ -431,8 +449,8 @@ export function OrderRow(p: OrderRowProps) {
             <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Tracking #</span>
             <input name="trackingNumber" defaultValue={p.trackingNumber ?? ''} placeholder="1Z…" className="h-8 px-2 rounded-md border border-input bg-background text-xs font-mono w-full" />
           </label>
-          <button type="submit" className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90 shadow-sm">
-            <Truck className="h-3.5 w-3.5" /> Save &amp; notify
+          <button type="submit" disabled={pending} className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90 shadow-sm disabled:opacity-50">
+            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Truck className="h-3.5 w-3.5" />} Save &amp; notify
           </button>
           {canRefund && (
             <DestructiveAction
@@ -445,6 +463,11 @@ export function OrderRow(p: OrderRowProps) {
               activeLabel="Refund this order?"
               toneText="text-red-700 dark:text-red-300"
             />
+          )}
+          {fulfilMsg && (
+            <span className={`basis-full text-[11px] font-semibold ${fulfilMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
+              {fulfilMsg.message}
+            </span>
           )}
         </form>
       )}

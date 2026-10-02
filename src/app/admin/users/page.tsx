@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 
 async function updateRole(formData: FormData) {
   'use server';
-  await setUserRole(String(formData.get('userId')), formData.get('role') as UserRole);
+  return setUserRole(String(formData.get('userId')), formData.get('role') as UserRole);
 }
 
 const PAGE_SIZE = 50;
