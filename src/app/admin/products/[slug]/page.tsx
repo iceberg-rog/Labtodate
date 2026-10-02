@@ -4,6 +4,7 @@ import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { adminDetailTitle } from '@/app/admin/admin-title';
+import { resolveProductSlug } from '@/lib/products/slug';
 import { AdminProductForm } from '@/components/admin/AdminProductForm';
 import { adminUpdateProduct, adminDeleteProduct, type AdminProductInputType } from '@/app/admin/actions';
 import { Button } from '@/components/ui/button';
@@ -16,7 +17,7 @@ export const dynamic = 'force-dynamic';
 export function generateMetadata(props: { params: Promise<{ slug: string }> }) {
   return adminDetailTitle('products:edit', 'Edit product', async () => {
     const { slug } = await props.params;
-    const p = await prisma.product.findUnique({ where: { slug }, select: { title: true } });
+    const p = await prisma.product.findUnique({ where: { slug: await resolveProductSlug(slug) }, select: { title: true } });
     return p && `Edit: ${p.title}`;
   });
 }
@@ -25,7 +26,8 @@ export default async function AdminProductEditPage(props: { params: Promise<{ sl
   const params = await props.params;
   await requireCapability('products:edit');
 
-  const product = await prisma.product.findUnique({ where: { slug: params.slug } });
+  // Matches imported slugs stored with a literal '%c2%b5' (see resolveProductSlug).
+  const product = await prisma.product.findUnique({ where: { slug: await resolveProductSlug(params.slug) } });
   if (!product) notFound();
 
   const [categories, brands, companies, orderLines] = await Promise.all([

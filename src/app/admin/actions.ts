@@ -1585,15 +1585,17 @@ export async function cancelOrder(formData: FormData): Promise<{ ok: boolean; me
 }
 
 /** Save (or clear) the internal-only operator notes on an order. */
-export async function setOrderNotes(formData: FormData): Promise<void> {
+export async function setOrderNotes(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:fulfil');
   const id = String(formData.get('orderId') ?? '');
   const notes = String(formData.get('notes') ?? '').slice(0, 4000).trim() || null;
-  if (!id) return;
-  await prisma.order.update({ where: { id }, data: { adminNotes: notes } });
+  if (!id) return { ok: false, message: 'Missing order id.' };
+  const updated = await prisma.order.updateMany({ where: { id }, data: { adminNotes: notes } });
+  if (updated.count === 0) return { ok: false, message: 'Order not found — it may have been deleted.' };
   await audit('order.notes', id, notes ? 'set' : 'cleared');
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
+  return { ok: true, message: notes ? 'Notes saved.' : 'Notes cleared.' };
 }
 
 /** Mark every PAID/PROCESSING order as SHIPPED in one shot — bulk fulfilment

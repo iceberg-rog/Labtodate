@@ -18,6 +18,7 @@ import { WishlistButton } from '@/components/marketplace/WishlistButton';
 import { ProductGallery } from '@/components/marketplace/ProductGallery';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import { getProductBySlug, getSimilarProducts } from '@/lib/marketplace/queries';
+import { resolveProductSlug } from '@/lib/products/slug';
 import { prisma } from '@/lib/db';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 import { startCheckout } from '@/lib/orders/actions';
@@ -36,7 +37,7 @@ interface PageProps {
 
 export async function generateMetadata(props: PageProps): Promise<Metadata> {
   const params = await props.params;
-  const product = await getProductBySlug(params.slug);
+  const product = await getProductBySlug(await resolveProductSlug(params.slug));
   // BUG-024 / S10: don't leak titles of non-public (DRAFT/PENDING_REVIEW/
   // ARCHIVED) products via metadata. Owner/admin preview still renders the
   // page itself; generic metadata is acceptable there.
@@ -61,7 +62,9 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
 export default async function ProductDetailPage(props: PageProps) {
   const searchParams = await props.searchParams;
   const params = await props.params;
-  const product = await getProductBySlug(params.slug);
+  // Imported slugs can hold a literal '%c2%b5' that the URL segment never
+  // spells the same way — match it as stored (see resolveProductSlug).
+  const product = await getProductBySlug(await resolveProductSlug(params.slug));
   if (!product) notFound();
   const reviewNote = searchParams?.review === 'needpurchase';
   const reviewInvalid = searchParams?.review === 'invalid';
@@ -273,7 +276,7 @@ export default async function ProductDetailPage(props: PageProps) {
                     </p>
                   </div>
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
-                    <Link href={`/let-us-find-it?product=${product.slug}`}>Source a similar unit</Link>
+                    <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Source a similar unit</Link>
                   </Button>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
@@ -294,7 +297,7 @@ export default async function ProductDetailPage(props: PageProps) {
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
                   <Link
-                    href={`/let-us-find-it?product=${product.slug}`}
+                    href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}
                     className="mt-1 text-center text-xs text-muted-foreground hover:text-foreground"
                   >
                     Buying in volume or need custom terms?{' '}
@@ -304,7 +307,7 @@ export default async function ProductDetailPage(props: PageProps) {
               ) : (
                 <>
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
-                    <Link href={`/let-us-find-it?product=${product.slug}`}>Request a quote</Link>
+                    <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Request a quote</Link>
                   </Button>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
