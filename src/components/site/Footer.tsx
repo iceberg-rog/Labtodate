@@ -9,7 +9,8 @@ const COLUMNS = [
     title: 'Marketplace',
     links: [
       { label: 'Browse all', href: '/marketplace' },
-      { label: 'Categories', href: '/marketplace#categories' },
+      // The category grid (id="categories") lives on the home page, not /marketplace.
+      { label: 'Categories', href: '/#categories' },
       { label: 'Request a quote', href: '/let-us-find-it' },
     ],
   },
