@@ -27,6 +27,8 @@ const TAB_STATUSES: Array<{ key: string; label: string; statusFilter?: TicketSta
   { key: 'spam', label: 'Spam', statusFilter: ['SPAM'] },
   { key: 'all', label: 'All', statusFilter: undefined },
 ];
+// A ticket reference as listed ("TKT-2026-XXXXXX").
+const isRefSearch = (q: string) => /^TKT-/i.test(q);
 
 const SORT_OPTIONS = [
   { key: 'urgency', label: 'Urgency' },
@@ -49,17 +51,22 @@ export default async function AdminTicketsPage(
   await requireCapability('tickets:view');
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();
-  const tab = TAB_STATUSES.find((t) => t.key === searchParams.tab) ?? TAB_STATUSES[0];
-  const view = searchParams.view === 'archived' ? 'archived' : '';
+  // A reference (TKT-…) names one ticket wherever it is, so searched from the
+  // default view it is looked up across every status tab — the Open default
+  // never holds a resolved/closed ticket. A tab picked explicitly still applies
+  // (its match count below shows where the hits are).
+  const tab =
+    TAB_STATUSES.find((t) => t.key === searchParams.tab) ??
+    (isRefSearch(q) ? TAB_STATUSES.find((t) => t.key === 'all')! : TAB_STATUSES[0]);
+  const explicitView = searchParams.view === 'archived' ? 'archived' : '';
   const assignee = searchParams.assignee ?? '';
   const priority = searchParams.priority ?? '';
   const sortRaw = searchParams.sort ?? '';
   const sort: SortKey = (SORT_OPTIONS.find((s) => s.key === sortRaw)?.key ?? 'urgency') as SortKey;
 
-  // Build query: respect tab/view/assignee/priority/search.
-  const where: Prisma.SupportTicketWhereInput = {
-    ...(view === 'archived' ? { archivedAt: { not: null } } : { archivedAt: null }),
-    ...(tab.statusFilter ? { status: { in: tab.statusFilter } } : {}),
+  // The filters shared by every tab (the tab adds its own status scope).
+  const filterWhere = (archived: boolean): Prisma.SupportTicketWhereInput => ({
+    ...(archived ? { archivedAt: { not: null } } : { archivedAt: null }),
     ...(assignee === 'me' && session?.user.id ? { assignedToId: session.user.id } : {}),
     ...(assignee === 'unassigned' ? { assignedToId: null } : {}),
     ...(priority ? { priority } : {}),
@@ -74,7 +81,28 @@ export default async function AdminTicketsPage(
           ],
         }
       : {}),
-  };
+  });
+  const tabWhere = (t: (typeof TAB_STATUSES)[number]): Prisma.SupportTicketWhereInput =>
+    t.statusFilter ? { status: { in: t.statusFilter } } : {};
+
+  // While searching, every tab (and Archived) shows how many tickets match, so
+  // a hit outside the tab being viewed is visible from it.
+  const [tabMatchCounts, archivedMatchCount] = q
+    ? await Promise.all([
+        Promise.all(TAB_STATUSES.map((t) => prisma.supportTicket.count({ where: { ...filterWhere(false), ...tabWhere(t) } })))
+          .then((counts) => new Map(TAB_STATUSES.map((t, i) => [t.key, counts[i]]))),
+        prisma.supportTicket.count({ where: filterWhere(true) }),
+      ])
+    : [null, null];
+  // Closing a ticket archives it, so a reference that matches nothing live but
+  // an archived ticket opens the Archived view instead of "0 tickets".
+  const refInArchive =
+    !explicitView && !searchParams.tab && isRefSearch(q) &&
+    tabMatchCounts?.get('all') === 0 && (archivedMatchCount ?? 0) > 0;
+  const view = explicitView || (refInArchive ? 'archived' : '');
+
+  // Build query: respect tab/view/assignee/priority/search.
+  const where: Prisma.SupportTicketWhereInput = { ...filterWhere(view === 'archived'), ...tabWhere(tab) };
 
   // Sort: fetch a wider slice (200) for urgency/SLA so post-sort top-100 truly
   // reflects the overall queue, not just the most recent 100 createdAt rows.
@@ -174,13 +202,14 @@ export default async function AdminTicketsPage(
     const sp = new URLSearchParams();
     const merged = {
       tab: over.tab !== undefined ? over.tab : (searchParams.tab ?? ''),
-      view: over.view !== undefined ? over.view : view,
+      view: over.view !== undefined ? over.view : explicitView,
       assignee: over.assignee !== undefined ? over.assignee : assignee,
       priority: over.priority !== undefined ? over.priority : priority,
       q: over.q !== undefined ? over.q : q,
       sort: over.sort !== undefined ? over.sort : (sort === 'urgency' ? '' : sort),
     };
-    if (merged.tab && merged.tab !== 'open') sp.set('tab', merged.tab);
+    // 'open' is the default — except for a reference search, whose default is 'all'.
+    if (merged.tab && (merged.tab !== 'open' || isRefSearch(merged.q))) sp.set('tab', merged.tab);
     if (merged.view) sp.set('view', merged.view);
     if (merged.assignee) sp.set('assignee', merged.assignee);
     if (merged.priority) sp.set('priority', merged.priority);
@@ -200,6 +229,7 @@ export default async function AdminTicketsPage(
           </h1>
           <p className="text-muted-foreground mt-1 text-sm">
             {`${tickets.length} ticket${tickets.length === 1 ? '' : 's'} ${view === 'archived' ? 'archived' : `· ${tab.label.toLowerCase()}`}${q ? ` · matching "${q}"` : ''}`}
+            {refInArchive && ' — found in Archived (closing a ticket archives it).'}
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs flex-wrap">
@@ -212,7 +242,7 @@ export default async function AdminTicketsPage(
       {/* Search + sort */}
       <form method="GET" className="flex gap-2 flex-wrap items-center">
         {searchParams.tab && <input type="hidden" name="tab" value={searchParams.tab} />}
-        {view && <input type="hidden" name="view" value={view} />}
+        {explicitView && <input type="hidden" name="view" value={explicitView} />}
         {assignee && <input type="hidden" name="assignee" value={assignee} />}
         {priority && <input type="hidden" name="priority" value={priority} />}
         <input
@@ -234,7 +264,7 @@ export default async function AdminTicketsPage(
           </select>
         </label>
         <Button type="submit" size="sm" className="rounded-full font-semibold">Search</Button>
-        {(q || assignee || priority || view || sort !== 'urgency') && (
+        {(q || assignee || priority || explicitView || sort !== 'urgency') && (
           <a
             href="/admin/tickets"
             className="inline-flex items-center px-3 h-10 rounded-full text-xs font-semibold bg-foreground/5 hover:bg-foreground/10"
@@ -257,6 +287,7 @@ export default async function AdminTicketsPage(
             }`}
           >
             {t.label}
+            {tabMatchCounts && <span className="opacity-60 tabular-nums"> {tabMatchCounts.get(t.key) ?? 0}</span>}
           </a>
         ))}
         <a
@@ -267,7 +298,7 @@ export default async function AdminTicketsPage(
               : 'bg-card border-border text-foreground hover:bg-foreground/5'
           }`}
         >
-          Archived <span className="opacity-60 tabular-nums">{archivedCount}</span>
+          Archived <span className="opacity-60 tabular-nums">{archivedMatchCount ?? archivedCount}</span>
         </a>
       </div>
 
@@ -294,7 +325,11 @@ export default async function AdminTicketsPage(
       {tickets.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <Inbox className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
-          <p className="text-lg font-semibold">No tickets match this view</p>
+          <p className="text-lg font-semibold">
+            {q
+              ? `No tickets ${view === 'archived' ? 'in archived' : `in ${tab.label.toLowerCase()}`} match “${q}”`
+              : 'No tickets match this view'}
+          </p>
           <p className="text-sm text-muted-foreground mt-2">Try a different tab or clear the filters.</p>
         </div>
       ) : (
