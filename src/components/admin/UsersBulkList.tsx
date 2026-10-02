@@ -21,6 +21,7 @@ export type UserRow = {
   company: string | null;
   role: UserRole;
   joinedLabel: string;
+  suspended?: boolean;
 };
 
 type BulkResult = { ok: boolean; count: number; message: string };
@@ -41,7 +42,7 @@ export function UsersBulkList({
 }: {
   users: UserRow[];
   canManage: boolean;
-  roleAction: (fd: FormData) => Promise<void>;
+  roleAction: (fd: FormData) => Promise<{ ok: boolean; message: string } | void>;
   bulkDelete: (fd: FormData) => Promise<BulkResult>;
   bulkSuspend: (fd: FormData) => Promise<BulkResult>;
 }) {
@@ -175,6 +176,9 @@ export function UsersBulkList({
                     <Badge variant={u.role === 'ADMIN' ? 'accent' : u.role === 'SELLER' ? 'success' : 'secondary'}>
                       {ROLE_LABEL[u.role] ?? u.role.toLowerCase()}
                     </Badge>
+                    {u.suspended && (
+                      <Badge variant="warning" className="ml-1">suspended</Badge>
+                    )}
                   </td>
                   <td className="px-5 py-3 text-muted-foreground tabular-nums">{u.joinedLabel}</td>
                   <td className="px-5 py-3 text-right">

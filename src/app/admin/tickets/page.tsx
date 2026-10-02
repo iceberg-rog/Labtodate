@@ -17,6 +17,7 @@ import { TicketBulkList } from '@/components/admin/TicketBulkList';
 import type { TicketRowProps } from '@/components/admin/TicketRow';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Support tickets' };
 
 const TAB_STATUSES: Array<{ key: string; label: string; statusFilter?: TicketStatus[] }> = [
   { key: 'open', label: 'Open', statusFilter: ['OPEN', 'WAITING_ON_SUPPORT'] },

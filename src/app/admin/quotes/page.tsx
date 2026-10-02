@@ -8,6 +8,7 @@ import { QuoteBulkList } from '@/components/admin/QuoteBulkList';
 import type { QuoteRowProps } from '@/components/admin/QuoteRow';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Quote requests' };
 
 /**
  * Tab definitions for the operator queue. The "waiting" tab is special: it
@@ -90,6 +91,8 @@ export default async function AdminQuotesPage(
             { productCategory: { contains: q, mode: 'insensitive' as const } },
             { proformaNumber: { contains: q, mode: 'insensitive' as const } },
             { product: { title: { contains: q, mode: 'insensitive' as const } } },
+            // The list shows "RFQ-XXXXXX" (last 6 of the id) — make that searchable.
+            ...(/^RFQ-?[a-z0-9]{6}$/i.test(q) ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
           ],
         }
       : {}),

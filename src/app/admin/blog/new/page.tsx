@@ -21,7 +21,7 @@ export default async function NewBlogPostPage() {
       readMinutes: data.readMinutes ?? 5,
       publish: data.publish,
     };
-    await createBlogPost(input);
+    return createBlogPost(input);
   }
 
   return (

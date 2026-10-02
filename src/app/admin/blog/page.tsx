@@ -1,11 +1,14 @@
 import Link from 'next/link';
-import { Plus, Edit2, Eye, MessageSquare, ShieldCheck } from 'lucide-react';
+import { Plus, Edit2, Eye, EyeOff, MessageSquare, ShieldCheck, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { setBlogPostPublished, deleteBlogPost } from '@/lib/content/actions';
+import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Blog' };
 
 export default async function AdminBlogPage() {
   await requireCapability('content:write');
@@ -58,9 +61,13 @@ export default async function AdminBlogPage() {
         {posts.map((p) => (
           <li key={p.id} className="p-4 flex items-center gap-4 flex-wrap">
             <div className="flex-1 min-w-0">
-              <Link href={`/blog/${p.slug}`} className="font-semibold truncate hover:text-primary block">
-                {p.title}
-              </Link>
+              {p.slug ? (
+                <Link href={`/blog/${p.slug}`} className="font-semibold truncate hover:text-primary block">
+                  {p.title}
+                </Link>
+              ) : (
+                <span className="font-semibold truncate block">{p.title}</span>
+              )}
               <p className="text-xs text-muted-foreground mt-1">
                 {p.category ?? '—'} · {p.readMinutes} min
               </p>
@@ -73,10 +80,26 @@ export default async function AdminBlogPage() {
             </span>
             <Badge variant={p.status === 'PUBLISHED' ? 'success' : 'secondary'}>{p.status.toLowerCase()}</Badge>
             <Button asChild variant="outline" size="sm" className="rounded-full font-medium">
-              <Link href={`/admin/blog/${p.slug}/edit`}>
+              <Link href={`/admin/blog/${p.slug || p.id}/edit`}>
                 <Edit2 className="h-3.5 w-3.5" /> Edit
               </Link>
             </Button>
+            <form action={setBlogPostPublished.bind(null, p.id, p.status !== 'PUBLISHED')}>
+              <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium">
+                {p.status === 'PUBLISHED' ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                {p.status === 'PUBLISHED' ? 'Unpublish' : 'Publish'}
+              </Button>
+            </form>
+            <form action={deleteBlogPost.bind(null, p.id)}>
+              <ConfirmSubmitButton
+                message={`Delete the post "${p.title}" and its ${p._count.comments} comment(s)? This cannot be undone.`}
+                variant="outline"
+                size="sm"
+                className="rounded-full font-medium text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" /> Delete
+              </ConfirmSubmitButton>
+            </form>
           </li>
         ))}
       </ul>

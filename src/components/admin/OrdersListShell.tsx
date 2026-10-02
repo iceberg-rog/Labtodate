@@ -277,7 +277,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                 ? "Archived orders are hidden from the default queues but kept forever — nothing is deleted. You can restore them from the Archived tab."
                 : confirm === 'unarchive'
                 ? 'Restored orders return to the default operator queues and will reappear in the relevant status tabs.'
-                : 'This is irreversible. Order rows, items, and notifications about them are wiped. An audit log entry preserves the order number, buyer, total, and item snapshot for forensic recovery, but the order itself cannot be recovered.'}
+                : 'This is irreversible. The order and its items are wiped (in-app notifications that mention it are kept). An audit log entry preserves the order number, buyer, total, and item snapshot for forensic recovery, but the order itself cannot be recovered.'}
             </p>
             {confirm === 'delete' && (
               <p className="text-[11px] text-red-700 dark:text-red-300 font-semibold mt-2">

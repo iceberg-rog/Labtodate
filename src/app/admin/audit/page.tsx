@@ -3,6 +3,7 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Audit log' };
 
 export default async function AdminAuditPage() {
   await requireCapability('audit:view');

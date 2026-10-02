@@ -8,11 +8,11 @@ import { Testimonials } from '@/components/home/Testimonials';
 import { CTASection } from '@/components/home/CTASection';
 import { Reveal } from '@/components/motion/Reveal';
 import { JsonLd } from '@/components/seo/JsonLd';
-import { prisma } from '@/lib/db';
-import { LIVE_PRODUCT_WHERE, countSearchMatches } from '@/lib/marketplace/queries';
+import { countSearchMatches } from '@/lib/marketplace/queries';
 import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { HOME_SECTIONS, type HomeSection, getHomeContent, type HomeStat } from '@/lib/home-sections';
+import { type HomeSection, getHomeContent, getHomeSectionOrder, parseHeroStats } from '@/lib/home-sections';
+import { getLiveHeroStats } from '@/lib/home-stats';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,28 +20,11 @@ export default async function HomePage() {
   await ensureSettingsLoaded();
   const content = getHomeContent();
 
-  // If admin hasn't overridden HERO_STATS in settings, replace the seed values
-  // with REAL counts so the headline never lies. process.env.HERO_STATS is set
-  // by saveHomepage when (and only when) admin types real numbers in.
-  if (!isBuildPhase() && !process.env.HERO_STATS?.trim()) {
-    // Count what a buyer can actually browse (same rule as /marketplace), and
-    // only suppliers that have such a listing — not sold units or empty shops.
-    const withListings = { products: { some: LIVE_PRODUCT_WHERE } };
-    const [listings, suppliers, countriesRow] = await Promise.all([
-      prisma.product.count({ where: LIVE_PRODUCT_WHERE }),
-      prisma.company.count({ where: withListings }),
-      prisma.company.findMany({
-        where: { country: { not: null }, ...withListings },
-        select: { country: true },
-        distinct: ['country'],
-      }),
-    ]);
-    const realStats: HomeStat[] = [
-      { value: listings, suffix: '', label: listings === 1 ? 'instrument listed' : 'instruments listed' },
-      { value: suppliers, suffix: '', label: suppliers === 1 ? 'supplier onboarded' : 'suppliers onboarded' },
-      { value: countriesRow.length, suffix: '', label: countriesRow.length === 1 ? 'country served' : 'countries served' },
-    ];
-    content.stats = realStats;
+  // Unless admin typed explicit (parseable) HERO_STATS, show REAL counts so the
+  // headline never lies — an unparseable value falls back to live counts too,
+  // never to the zero placeholders.
+  if (!isBuildPhase() && !parseHeroStats(process.env.HERO_STATS)) {
+    content.stats = await getLiveHeroStats();
   }
 
   // "Popular" chips (defaults or admin's HOMEPAGE_POPULAR) must lead somewhere:
@@ -51,11 +34,7 @@ export default async function HomePage() {
     content.popular = content.popular.filter((_, i) => counts[i] > 0);
   }
 
-  const configured = (process.env.HOMEPAGE_SECTIONS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s): s is HomeSection => (HOME_SECTIONS as readonly string[]).includes(s));
-  const order: HomeSection[] = configured.length ? configured : [...HOME_SECTIONS];
+  const order: HomeSection[] = getHomeSectionOrder();
 
   const render: Record<HomeSection, React.ReactNode> = {
     hero: <Hero key="hero" content={content} />,

@@ -16,7 +16,7 @@ export default async function NewWikiPage() {
       category: data.category ?? null,
       publish: data.publish,
     };
-    await createWikiArticle(input);
+    return createWikiArticle(input);
   }
 
   return (

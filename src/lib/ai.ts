@@ -94,7 +94,7 @@ export async function aiChat(history: AIMessage[]): Promise<string> {
       body: JSON.stringify({
         model: c.model,
         max_tokens: 500,
-        system: SYSTEM,
+        system: `${SYSTEM}\nYour name is ${c.name}.`,
         messages,
         temperature: 0.3,
       }),
@@ -122,7 +122,7 @@ export async function aiChat(history: AIMessage[]): Promise<string> {
     },
     body: JSON.stringify({
       model: c.model,
-      messages: [{ role: 'system', content: SYSTEM }, ...history].slice(-12),
+      messages: [{ role: 'system', content: `${SYSTEM}\nYour name is ${c.name}.` }, ...history].slice(-12),
       temperature: 0.3,
       max_tokens: 500,
     }),

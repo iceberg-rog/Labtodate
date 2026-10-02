@@ -81,6 +81,51 @@ export const SETTING_DEFS = [
 
 export type SettingKey = (typeof SETTING_DEFS)[number]['key'];
 
+type SettingDef = (typeof SETTING_DEFS)[number];
+
+// .env values as they were at boot, before ensureSettingsLoaded copied any DB
+// override over them — so clearing a DB value falls back to the .env default
+// instead of leaving the stale DB value live (or wiping .env until restart).
+const ENV_DEFAULTS: Record<string, string | undefined> = Object.fromEntries(
+  SETTING_DEFS.map((d) => [d.key, process.env[d.key]]),
+);
+
+function restoreEnvDefault(key: string, removedValue?: string): void {
+  const def = ENV_DEFAULTS[key];
+  if (def !== undefined && def !== removedValue) process.env[key] = def;
+  else delete process.env[key];
+}
+
+/** Per-type check run BEFORE anything is written. Returns a reason or null. */
+function validateSettingValue(d: SettingDef, value: string): string | null {
+  const verify = 'verify' in d ? d.verify : undefined;
+  if (verify === 'number') {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return `“${value}” is not a number.`;
+    if (d.key === 'SMTP_PORT' && !(Number.isInteger(n) && n >= 1 && n <= 65535)) return 'must be a whole number between 1 and 65535.';
+    if (d.key === 'PROFORMA_VALID_DAYS' && !(Number.isInteger(n) && n >= 1 && n <= 365)) return 'must be a whole number of days between 1 and 365.';
+    return null;
+  }
+  if (verify === 'email') {
+    // EMAIL_FROM may be written as `Name <addr@domain>`.
+    const addr = value.match(/<([^>]+)>\s*$/)?.[1] ?? value;
+    return /^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(addr.trim()) ? null : `“${value}” is not a valid email address.`;
+  }
+  if (verify === 'url' || verify === 'image') {
+    if (verify === 'image' && value.startsWith('/')) return null; // site-relative upload path
+    try {
+      const u = new URL(value);
+      return u.protocol === 'http:' || u.protocol === 'https:' ? null : 'must start with https:// (or http://).';
+    } catch {
+      return `“${value}” is not a valid URL (include https://).`;
+    }
+  }
+  if (d.key === 'SMTP_SECURE' && !/^(true|false|1|0)$/i.test(value)) {
+    return 'use true or false (or leave blank to auto-detect from the port).';
+  }
+  return null;
+}
+
 let lastLoad = 0;
 let inflight: Promise<void> | null = null;
 const TTL_MS = 5000;
@@ -114,6 +159,14 @@ export async function getEffectiveSettings(): Promise<Record<string, string>> {
   return out;
 }
 
+/** Keys whose effective value comes from the server .env (no DB override) —
+ *  emptying such a field can't clear it; the settings page says so. */
+export async function getEnvOnlySettingKeys(): Promise<Set<string>> {
+  const rows = await prisma.setting.findMany({ select: { key: true, value: true } });
+  const inDb = new Set(rows.filter((r) => r.value?.trim()).map((r) => r.key));
+  return new Set(SETTING_DEFS.filter((d) => !inDb.has(d.key) && (process.env[d.key] ?? '').trim()).map((d) => d.key));
+}
+
 export async function saveSettings(input: Record<string, string>): Promise<void> {
   // A set Resend key overrides SMTP, so an autofilled login password in that
   // field silently breaks all email. Real keys start with "re_"; reject anything
@@ -122,19 +175,45 @@ export async function saveSettings(input: Record<string, string>): Promise<void>
   if (resendKey && input.__clear_RESEND_API_KEY !== 'on' && !resendKey.startsWith('re_')) {
     throw new Error('Resend API key must start with "re_" (browser autofill?). Empty that field and save again.');
   }
+  // Type checks (numbers, emails, URLs) — all fields first, so a bad submit
+  // changes nothing (a "fourteen" in a days field used to save as "Saved ✓").
+  const problems: string[] = [];
+  for (const d of SETTING_DEFS) {
+    if (input[`__clear_${d.key}`] === 'on') continue;
+    const value = (input[d.key] ?? '').trim();
+    if (!value) continue;
+    const why = validateSettingValue(d, value);
+    if (why) problems.push(`${d.label}: ${why}`);
+  }
+  if (problems.length) throw new Error(`${problems.join(' · ')} Nothing was saved.`);
+
+  const rows = await prisma.setting.findMany({
+    where: { key: { in: SETTING_DEFS.map((d) => d.key) } },
+    select: { key: true, value: true },
+  });
+  const inDb = new Map(rows.map((r) => [r.key, r.value]));
+
   for (const d of SETTING_DEFS) {
     const clear = input[`__clear_${d.key}`] === 'on';
-    if (clear) {
-      await prisma.setting.deleteMany({ where: { key: d.key } });
-      delete process.env[d.key];
+    const raw = input[d.key];
+    const value = (raw ?? '').replace(/\r\n/g, '\n').trim(); // textareas post CRLF
+    // Secret fields are never pre-filled, so empty = keep the current value.
+    // Plain fields ARE pre-filled with their current value, so an emptied
+    // field means "remove it" (it used to report "Saved ✓" and keep it).
+    // Only a DB override can be removed here; a value that comes from the
+    // server .env stays (the settings page says so instead of pretending).
+    if (clear || (raw !== undefined && value === '' && !d.secret)) {
+      if (inDb.has(d.key)) {
+        await prisma.setting.deleteMany({ where: { key: d.key } });
+        restoreEnvDefault(d.key, inDb.get(d.key));
+      }
       continue;
     }
-    const raw = input[d.key];
-    if (raw === undefined) continue;
-    const value = raw.trim();
-    // Empty input = leave the existing value untouched (avoids wiping a
-    // secret when the admin re-submits the form without re-typing it).
-    if (value === '') continue;
+    if (raw === undefined || value === '') continue;
+    if (inDb.get(d.key) === value) continue; // unchanged
+    // A pre-filled .env default submitted untouched is not an admin choice —
+    // copying it into the DB silently froze it against later .env changes.
+    if (!inDb.has(d.key) && value === (ENV_DEFAULTS[d.key] ?? '').trim()) continue;
     await prisma.setting.upsert({
       where: { key: d.key },
       update: { value },

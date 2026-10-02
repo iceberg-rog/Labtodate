@@ -20,6 +20,7 @@ import {
 } from '@/lib/orders/display';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Orders' };
 
 const PAID_STATES: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 const FULFIL_PENDING: OrderStatus[] = ['PAID', 'PROCESSING'];
@@ -55,7 +56,12 @@ export default async function AdminOrdersPage(
   if (awaiting) {
     statusFilter = FULFIL_PENDING;
   } else if (searchParams.status) {
-    const parts = searchParams.status.split(',').map((s) => s.trim()).filter(Boolean) as OrderStatus[];
+    // Keep only real enum values — ?status=FOO used to reach Prisma and 500.
+    const valid = Object.values(OrderStatus) as string[];
+    const parts = searchParams.status
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s): s is OrderStatus => valid.includes(s));
     statusFilter = parts.length ? parts : undefined;
   }
 

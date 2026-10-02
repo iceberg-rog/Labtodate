@@ -4,8 +4,10 @@ import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { createFacility, deleteFacility, toggleFacility, updateFacility } from '@/app/admin/actions';
+import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Lab rental' };
 
 export default async function AdminLabRentalPage() {
   await requireCapability('content:cms');
@@ -78,9 +80,14 @@ export default async function AdminLabRentalPage() {
               </Button>
             </form>
             <form action={deleteFacility.bind(null, f.id)}>
-              <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium text-destructive">
+              <ConfirmSubmitButton
+                message={`Delete the facility "${f.name}"? This cannot be undone.`}
+                variant="outline"
+                size="sm"
+                className="rounded-full font-medium text-destructive"
+              >
                 <Trash2 className="h-3.5 w-3.5" /> Delete
-              </Button>
+              </ConfirmSubmitButton>
             </form>
             <details className="basis-full">
               <summary className="cursor-pointer select-none w-fit text-xs font-semibold text-primary hover:underline">Edit</summary>
