@@ -8,7 +8,7 @@ import { prisma } from './db';
 import { sendEmail } from './email';
 import { escapeHtml } from './email-html';
 import { cleanName, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_RULE } from './auth-rules';
-import { signInErrorURL } from './safe-redirect';
+import { safeRedirect, signInErrorURL } from './safe-redirect';
 
 // Startup sanity check (non-fatal): surface a misconfigured production secret
 // in the logs without taking the site down. A placeholder/short secret means
@@ -29,6 +29,11 @@ const SITE_URL = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
 // or a sign-in email — blocked up front for suspended accounts.
 const SUSPENSION_GATED = ['/sign-up/email', '/email-otp/send-verification-otp', '/email-otp/verify-email'];
 
+// better-auth endpoints that change the account on the strength of a session
+// found via `sessionMiddleware`, which trusts the cookie cache (the sensitive
+// ones — change-password, revoke-sessions, … — already bypass it).
+const SESSION_WRITES = ['/update-user', '/update-session', '/link-social', '/unlink-account'];
+
 function suspendedError(reason: string | null) {
   return new APIError('FORBIDDEN', { message: `Account suspended: ${reason || 'contact support'}` });
 }
@@ -47,9 +52,13 @@ const chosenAtVerification = new WeakMap<Request, { password?: unknown; name?: u
  * all existing sessions are signed out, and the password becomes the one the
  * verifier typed — or, when they typed none (magic link), is removed so the
  * owner sets one via "Forgot password". A sign-up name sent with the code
- * replaces the earlier one too.
+ * replaces the earlier one too. Reports whether a password was removed, so
+ * the owner can be told (they may well have chosen it themselves).
  */
-async function claimUnverifiedAccount(userId: string, chosen?: { password?: unknown; name?: unknown }) {
+async function claimUnverifiedAccount(
+  userId: string,
+  chosen?: { password?: unknown; name?: unknown },
+): Promise<{ passwordRemoved: boolean }> {
   const password =
     typeof chosen?.password === 'string' &&
     chosen.password.length >= MIN_PASSWORD_LENGTH &&
@@ -58,11 +67,45 @@ async function claimUnverifiedAccount(userId: string, chosen?: { password?: unkn
       : null;
   const hash = password ? await hashPassword(password) : null;
   const name = cleanName(chosen?.name);
+  const passwordRemoved = !hash && (await hasPassword(userId));
   await prisma.$transaction([
     prisma.session.deleteMany({ where: { userId } }),
     prisma.account.updateMany({ where: { userId, providerId: 'credential' }, data: { password: hash } }),
     ...(name ? [prisma.user.update({ where: { id: userId }, data: { name } })] : []),
   ]);
+  return { passwordRemoved };
+}
+
+async function hasPassword(userId: string): Promise<boolean> {
+  const count = await prisma.account.count({
+    where: { userId, providerId: 'credential', password: { not: null } },
+  });
+  return count > 0;
+}
+
+// Added to the magic-link / verification-link email of an unverified account
+// that has a password: following the link verifies the address, and
+// claimUnverifiedAccount then removes that password.
+const PASSWORD_REMOVAL_NOTE =
+  'This address hasn’t been confirmed yet, so opening the link confirms it and, for your security, removes the password set on the account before then. After signing in, set a new one with “Forgot password” on the sign-in page.';
+
+/** encodeURIComponent that also escapes !'()*~, which better-auth refuses in a relative callbackURL. */
+function encodeStrict(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*~]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/**
+ * Magic-link callbackURL that lands on the "your email is verified, set a
+ * password" notice (src/app/auth/verified) and then continues to where the
+ * link was going. better-auth URL-decodes callbackURL once more before
+ * redirecting, hence the double encoding.
+ */
+function passwordRemovedNoticeURL(callbackURL: string): string {
+  let target = '/auth/continue';
+  try {
+    target = safeRedirect(decodeURIComponent(callbackURL));
+  } catch {}
+  return `/auth/verified?redirect=${encodeStrict(encodeStrict(target))}`;
 }
 
 export const auth = betterAuth({
@@ -136,6 +179,7 @@ export const auth = betterAuth({
       await claimUnverifiedAccount(user.id, request ? chosenAtVerification.get(request) : undefined);
     },
     sendVerificationEmail: async ({ user, url }) => {
+      const note = !user.emailVerified && (await hasPassword(user.id)) ? PASSWORD_REMOVAL_NOTE : null;
       await sendEmail({
         to: user.email,
         subject: 'Verify your lab2date email',
@@ -149,10 +193,11 @@ export const auth = betterAuth({
                 Verify my email
               </a>
             </p>
+            ${note ? `<p style="color:#374151;">${note}</p>` : ''}
             <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
           </div>
         `,
-        text: `Verify your lab2date email: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.`,
+        text: `Verify your lab2date email: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.${note ? `\n\n${note}` : ''}`,
       });
     },
   },
@@ -234,9 +279,16 @@ export const auth = betterAuth({
     ipAddress: { ipAddressHeaders: ['x-real-ip'] },
   },
 
-  // Email-OTP sign-in verifies an address without the claim step above and
-  // would create accounts with no name / Terms; the UI never uses it.
-  disabledPaths: ['/sign-in/email-otp'],
+  disabledPaths: [
+    // Email-OTP sign-in verifies an address without the claim step above and
+    // would create accounts with no name / Terms; the UI never uses it.
+    '/sign-in/email-otp',
+    // Password reset is by emailed link (/request-password-reset). The OTP
+    // variants are unused and mailed owners the sign-up code email.
+    '/email-otp/request-password-reset',
+    '/forget-password/email-otp',
+    '/email-otp/reset-password',
+  ],
 
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
@@ -246,6 +298,7 @@ export const auth = betterAuth({
       // following the link proves the address.
       if (ctx.path === '/magic-link/verify') {
         const query = (ctx.query ?? {}) as { token?: string; callbackURL?: string; errorCallbackURL?: string };
+        const next = { ...query };
         const row = query.token ? await ctx.context.internalAdapter.findVerificationValue(query.token) : null;
         if (row && row.expiresAt > new Date()) {
           let email = '';
@@ -259,18 +312,30 @@ export const auth = betterAuth({
               })
             : null;
           if (user?.suspendedAt) throw ctx.redirect('/auth/sign-in?error=ACCOUNT_SUSPENDED');
-          if (user && !user.emailVerified) await claimUnverifiedAccount(user.id);
+          if (user && !user.emailVerified) {
+            const { passwordRemoved } = await claimUnverifiedAccount(user.id);
+            // The password they chose at sign-up is gone: say so and offer
+            // to set one, instead of a silent "Invalid email or password"
+            // on their next password sign-in.
+            if (passwordRemoved && query.callbackURL) next.callbackURL = passwordRemovedNoticeURL(query.callbackURL);
+          }
         }
         // Links without an error target (older emails, hand-edited URLs) had
         // ?error= appended to the destination page, which never shows it.
-        if (!query.errorCallbackURL) {
-          return { context: { query: { ...query, errorCallbackURL: signInErrorURL(query.callbackURL) } } };
-        }
-        return;
+        if (!query.errorCallbackURL) next.errorCallbackURL = signInErrorURL(query.callbackURL);
+        return { context: { query: next } };
+      }
+
+      // Session-backed writes inside better-auth (Profile name / photo via
+      // update-user, …) re-read the session row instead of trusting the ≤60s
+      // cookie cache, so a signed-out, revoked or suspended session can't
+      // keep changing the account. (Password / email changes already do.)
+      if (SESSION_WRITES.includes(ctx.path)) {
+        return { context: { query: { ...(ctx.query ?? {}), disableCookieCache: true } } };
       }
 
       if (!ctx.path.startsWith('/sign-in/') && !SUSPENSION_GATED.includes(ctx.path)) return;
-      const body = (ctx.body ?? {}) as { email?: unknown; password?: unknown; name?: unknown };
+      const body = (ctx.body ?? {}) as { email?: unknown; password?: unknown; name?: unknown; type?: unknown };
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
       if (email) {
         const user = await prisma.user.findUnique({
@@ -278,6 +343,12 @@ export const auth = betterAuth({
           select: { suspendedAt: true, suspendedReason: true },
         });
         if (user?.suspendedAt) throw suspendedError(user.suspendedReason);
+      }
+      // Only email-confirmation codes are used. Sign-in and password-reset
+      // codes have nothing left to redeem them (disabledPaths) and would just
+      // mail the owner a code they never asked for.
+      if (ctx.path === '/email-otp/send-verification-otp' && body.type !== 'email-verification') {
+        throw new APIError('BAD_REQUEST', { message: 'Invalid code type.' });
       }
       if (ctx.path === '/email-otp/verify-email' && ctx.request) {
         chosenAtVerification.set(ctx.request, { password: body.password, name: body.name });
@@ -292,7 +363,10 @@ export const auth = betterAuth({
       disableSignUp: true,
       expiresIn: 60 * 10, // 10 minutes
       sendMagicLink: async ({ email, url }) => {
-        const exists = await prisma.user.findUnique({ where: { email: email.toLowerCase() }, select: { id: true } });
+        const exists = await prisma.user.findUnique({
+          where: { email: email.toLowerCase() },
+          select: { id: true, emailVerified: true },
+        });
         if (!exists) {
           await sendEmail({
             to: email,
@@ -309,6 +383,7 @@ export const auth = betterAuth({
           });
           return;
         }
+        const note = !exists.emailVerified && (await hasPassword(exists.id)) ? PASSWORD_REMOVAL_NOTE : null;
         await sendEmail({
           to: email,
           subject: 'Your lab2date sign-in link',
@@ -322,10 +397,11 @@ export const auth = betterAuth({
                   Sign in to lab2date
                 </a>
               </p>
+              ${note ? `<p style="color:#374151;">${note}</p>` : ''}
               <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore the email.</p>
             </div>
           `,
-          text: `Sign in to lab2date: ${url}\n\nThis link expires in 10 minutes.`,
+          text: `Sign in to lab2date: ${url}\n\nThis link expires in 10 minutes.${note ? `\n\n${note}` : ''}`,
         });
       },
     }),
