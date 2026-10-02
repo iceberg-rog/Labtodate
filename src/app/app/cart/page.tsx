@@ -103,13 +103,14 @@ export default async function CartPage(
                 {i.product.quantity > 0 && (
                   <form action={async (fd: FormData) => { 'use server'; await setCartQty(i.id, parseInt(String(fd.get('q')), 10)); }} className="flex items-center gap-1">
                     <input name="q" type="number" min={1} max={Math.min(99, i.product.quantity)} defaultValue={Math.min(i.quantity, i.product.quantity)}
+                      aria-label={`Quantity of ${i.product.title}`}
                       className="h-9 w-16 px-2 rounded-lg border border-input bg-background text-sm text-center" />
                     <Button type="submit" variant="outline" size="sm" className="rounded-full">Update</Button>
                   </form>
                 )}
                 <p className="font-bold data w-24 text-right">{i.product.quantity <= 0 ? '—' : formatPrice((i.product.priceCents ?? 0) * i.quantity, currency)}</p>
                 <form action={async () => { 'use server'; await removeFromCart(i.id); }}>
-                  <Button type="submit" variant="ghost" size="icon" className="rounded-full text-red-600 dark:text-red-400">
+                  <Button type="submit" variant="ghost" size="icon" className="rounded-full text-red-600 dark:text-red-400" aria-label={`Remove ${i.product.title} from cart`}>
                     <Trash2 className="h-4 w-4" />
                   </Button>
                 </form>

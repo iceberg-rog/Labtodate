@@ -42,7 +42,9 @@ export interface HomeContent {
 }
 
 export const HOME_DEFAULTS: HomeContent = {
-  popular: ['Centrifuges', 'HPLC', 'PCR', 'Microscopes', 'Mass Spec'],
+  // Terms that match the current HPLC/GC/MS inventory. The home page also
+  // hides any chip that would return no results (see src/app/page.tsx).
+  popular: ['HPLC', 'Gas Chromatography', 'Mass Spec', 'Autosampler', 'Agilent'],
   heroBadge: 'Refurbished lab equipment',
   heroTitle: 'The marketplace for',
   heroAccent: 'science.',
@@ -61,6 +63,17 @@ export const HOME_DEFAULTS: HomeContent = {
   ctaSubtitle:
     "Tell us what you need. We'll come back with quotes — typically within a few business days.",
 };
+
+/**
+ * Search placeholder built from the popular terms (which the home page has
+ * already checked return results), instead of examples we may not stock.
+ */
+export function searchPlaceholderFor(popular: string[]): string {
+  const [a, b] = popular;
+  if (a && b) return `Try ‘${a}’ or ‘${b}’…`;
+  if (a) return `Try ‘${a}’…`;
+  return 'Search instruments, brands, part numbers…';
+}
 
 /** Parse "12400|+|instruments listed" lines; fall back to defaults. */
 function parseStats(raw: string | undefined): HomeStat[] {

@@ -7,6 +7,7 @@
  */
 
 import { prisma } from '@/lib/db';
+import { productTextWhere } from '@/lib/search/where';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 
 export interface SearchHit {
@@ -30,15 +31,12 @@ class PostgresSearchProvider implements SearchProvider {
     if (q.length < 2) return [];
 
     const rows = await prisma.product.findMany({
+      // Same text match as the marketplace `q` filter (listProducts), so every
+      // hit shown here is also on the "See all matches" page.
       where: {
         status: 'PUBLISHED',
         quantity: { gt: 0 },
-        OR: [
-          { title:   { contains: q, mode: 'insensitive' } },
-          { summary: { contains: q, mode: 'insensitive' } },
-          { brand:    { name: { contains: q, mode: 'insensitive' } } },
-          { category: { name: { contains: q, mode: 'insensitive' } } },
-        ],
+        ...productTextWhere(q),
       },
       take: limit,
       orderBy: [{ priceCents: 'asc' }],

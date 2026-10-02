@@ -9,6 +9,7 @@ import { CTASection } from '@/components/home/CTASection';
 import { Reveal } from '@/components/motion/Reveal';
 import { JsonLd } from '@/components/seo/JsonLd';
 import { prisma } from '@/lib/db';
+import { LIVE_PRODUCT_WHERE, countSearchMatches } from '@/lib/marketplace/queries';
 import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { HOME_SECTIONS, type HomeSection, getHomeContent, type HomeStat } from '@/lib/home-sections';
@@ -23,11 +24,14 @@ export default async function HomePage() {
   // with REAL counts so the headline never lies. process.env.HERO_STATS is set
   // by saveHomepage when (and only when) admin types real numbers in.
   if (!isBuildPhase() && !process.env.HERO_STATS?.trim()) {
+    // Count what a buyer can actually browse (same rule as /marketplace), and
+    // only suppliers that have such a listing — not sold units or empty shops.
+    const withListings = { products: { some: LIVE_PRODUCT_WHERE } };
     const [listings, suppliers, countriesRow] = await Promise.all([
-      prisma.product.count({ where: { status: 'PUBLISHED' } }),
-      prisma.company.count(),
+      prisma.product.count({ where: LIVE_PRODUCT_WHERE }),
+      prisma.company.count({ where: withListings }),
       prisma.company.findMany({
-        where: { country: { not: null } },
+        where: { country: { not: null }, ...withListings },
         select: { country: true },
         distinct: ['country'],
       }),
@@ -38,6 +42,13 @@ export default async function HomePage() {
       { value: countriesRow.length, suffix: '', label: countriesRow.length === 1 ? 'country served' : 'countries served' },
     ];
     content.stats = realStats;
+  }
+
+  // "Popular" chips (defaults or admin's HOMEPAGE_POPULAR) must lead somewhere:
+  // drop any term the marketplace search would return nothing for.
+  if (!isBuildPhase()) {
+    const counts = await Promise.all(content.popular.map((t) => countSearchMatches(t)));
+    content.popular = content.popular.filter((_, i) => counts[i] > 0);
   }
 
   const configured = (process.env.HOMEPAGE_SECTIONS || '')

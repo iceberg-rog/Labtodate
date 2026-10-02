@@ -65,7 +65,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           {navLinks}
         </aside>
 
-        <main className="min-w-0">{children}</main>
+        {/* Not <main>: PublicChrome already wraps every page in the one main landmark. */}
+        <div className="min-w-0">{children}</div>
       </div>
     </div>
   );
