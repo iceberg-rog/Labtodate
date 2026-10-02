@@ -861,6 +861,7 @@ export async function quickUpdateProduct(
 export async function setCompanyVerified(slug: string, verified: boolean) {
   await requireCap('companies:manage');
   await prisma.company.update({ where: { slug }, data: { isVerified: verified } });
+  await audit(verified ? 'company.verify' : 'company.unverify', slug);
   revalidatePath('/admin/companies');
 }
 
@@ -1779,6 +1780,7 @@ export async function setSellStatus(
 export async function setCompanyFeatured(slug: string, featured: boolean) {
   await requireCap('companies:manage');
   await prisma.company.update({ where: { slug }, data: { isFeatured: featured } });
+  await audit(featured ? 'company.feature' : 'company.unfeature', slug);
   revalidatePath('/admin/companies');
 }
 
@@ -2087,12 +2089,9 @@ const CompanyPricingInput = z.object({
 export async function updateCompanyPricing(slug: string, input: z.infer<typeof CompanyPricingInput>): Promise<{ ok: boolean; message: string }> {
   await requireAdmin();
   await requireCap('companies:manage');
-  let parsed: z.infer<typeof CompanyPricingInput>;
-  try {
-    parsed = CompanyPricingInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const r = CompanyPricingInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, { pricingMode: 'Pricing mode', pricingMarkupBp: 'Markup' }) };
+  const parsed = r.data;
   const co = await prisma.company.findUnique({ where: { slug } });
   if (!co) return { ok: false, message: 'Company not found.' };
   await prisma.company.update({
@@ -2110,20 +2109,29 @@ export async function updateCompanyPricing(slug: string, input: z.infer<typeof C
 }
 
 const CreateCompanyInput = z.object({
-  name: z.string().min(2).max(120),
-  country: z.string().max(80).nullish(),
-  website: z.string().url().nullish(),
-  importSourceUrl: z.string().url().nullish(),       // e.g. https://lab2parts.com
+  name: z.string().trim().min(2).max(120),
+  country: z.string().trim().max(80).nullish(),
+  website: z.string().trim().url().nullish(),
+  importSourceUrl: z.string().trim().url().nullish(),       // e.g. https://lab2parts.com
 });
+const COMPANY_LABELS = { name: 'Shop name', country: 'Country', website: 'Public website', importSourceUrl: 'Import URL' };
+
+/** Case-insensitive name clash — two shops with one name are indistinguishable in every picker. */
+async function companyNameTaken(name: string, exceptSlug?: string): Promise<boolean> {
+  return !!(await prisma.company.findFirst({
+    where: { name: { equals: name, mode: 'insensitive' }, ...(exceptSlug ? { NOT: { slug: exceptSlug } } : {}) },
+    select: { id: true },
+  }));
+}
 
 export async function createCompany(input: z.infer<typeof CreateCompanyInput>): Promise<{ ok: boolean; message: string; slug?: string }> {
   await requireAdmin();
   await requireCap('companies:manage');
-  let parsed: z.infer<typeof CreateCompanyInput>;
-  try {
-    parsed = CreateCompanyInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
+  const r = CreateCompanyInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, COMPANY_LABELS) };
+  const parsed = r.data;
+  if (await companyNameTaken(parsed.name)) {
+    return { ok: false, message: `A shop named “${parsed.name}” already exists. Use a different name or edit the existing shop.` };
   }
   const slug = await uniqueSlug(parsed.name, async (s) =>
     !!(await prisma.company.findUnique({ where: { slug: s }, select: { id: true } })),
@@ -2141,6 +2149,53 @@ export async function createCompany(input: z.infer<typeof CreateCompanyInput>): 
   await audit('company.create', slug, parsed.importSourceUrl ?? '');
   revalidatePath('/admin/companies');
   return { ok: true, message: `Shop “${parsed.name}” added.`, slug };
+}
+
+/** Edit a shop's name, country, website and import URL. The slug is kept so
+ *  existing links and ?shop= filters keep working. */
+export async function updateCompany(slug: string, input: z.infer<typeof CreateCompanyInput>): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  await requireCap('companies:manage');
+  const r = CreateCompanyInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, COMPANY_LABELS) };
+  const parsed = r.data;
+  const co = await prisma.company.findUnique({ where: { slug }, select: { id: true } });
+  if (!co) return { ok: false, message: 'Shop not found — it may have been deleted.' };
+  if (await companyNameTaken(parsed.name, slug)) return { ok: false, message: `Another shop is already named “${parsed.name}”.` };
+  await prisma.company.update({
+    where: { id: co.id },
+    data: {
+      name: parsed.name,
+      country: parsed.country || null,
+      website: parsed.website || null,
+      importSourceUrl: parsed.importSourceUrl || null,
+    },
+  });
+  await audit('company.update', slug, parsed.importSourceUrl ?? '');
+  revalidatePath('/admin/companies');
+  revalidatePath('/admin/products');
+  return { ok: true, message: `Shop “${parsed.name}” saved.` };
+}
+
+/** Delete a shop. Refused while products, user accounts or lab facilities are
+ *  linked: those FKs are ON DELETE SET NULL, so deleting would silently turn
+ *  the shop's products into lab2date own inventory. */
+export async function deleteCompany(slug: string): Promise<{ ok: boolean; message: string }> {
+  await requireAdmin();
+  await requireCap('companies:manage');
+  const co = await prisma.company.findUnique({
+    where: { slug },
+    select: { id: true, name: true, _count: { select: { products: true, users: true, facilities: true } } },
+  });
+  if (!co) return { ok: false, message: 'Shop not found — it may already be deleted.' };
+  const { products, users, facilities } = co._count;
+  if (products > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${products} product${products === 1 ? ' is' : 's are'} still linked. Move or delete them first.` };
+  if (users > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${users} user account${users === 1 ? ' belongs' : 's belong'} to this shop.` };
+  if (facilities > 0) return { ok: false, message: `Cannot delete “${co.name}”: ${facilities} lab facilit${facilities === 1 ? 'y is' : 'ies are'} owned by this shop.` };
+  await prisma.company.delete({ where: { id: co.id } });
+  await audit('company.delete', slug, 'manual delete');
+  revalidatePath('/admin/companies');
+  return { ok: true, message: `Shop “${co.name}” deleted.` };
 }
 
 /**
