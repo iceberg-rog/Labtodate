@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, Save, Send, Upload, X, Image as ImageIcon } from 'lucide-react';
+import { Loader2, Save, Send, Upload, X, EyeOff, Image as ImageIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { TiptapEditor } from './TiptapEditor';
 
@@ -10,6 +10,9 @@ type Kind = 'blog' | 'wiki';
 
 interface BlogInitial {
   kind: 'blog';
+  /** Current status when editing — a published item gets "Update" /
+   *  "Unpublish" buttons instead of "Save as draft" / "Publish". */
+  status?: string;
   title?: string;
   excerpt?: string | null;
   body?: string;
@@ -21,6 +24,7 @@ interface BlogInitial {
 }
 interface WikiInitial {
   kind: 'wiki';
+  status?: string;
   title?: string;
   body?: string;
   category?: string | null;
@@ -31,7 +35,9 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
   onSubmit,
 }: {
   initial: T;
-  onSubmit: (data: { title: string; excerpt?: string | null; body: string; category?: string | null; illustration?: string | null; coverImage?: string | null; coverGradient?: string | null; readMinutes?: number; publish: boolean }) => Promise<void>;
+  /** Resolves with {ok:false,message} on a validation error (shown inline);
+   *  success redirects server-side. */
+  onSubmit: (data: { title: string; excerpt?: string | null; body: string; category?: string | null; illustration?: string | null; coverImage?: string | null; coverGradient?: string | null; readMinutes?: number; publish: boolean }) => Promise<{ ok: false; message: string } | void>;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -68,11 +74,23 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
     }
   }
 
+  const isPublished = initial.status === 'PUBLISHED';
+
   function submit(publish: boolean) {
     setError(null);
+    // Same rules as the server (src/lib/content/actions.ts) — checked here
+    // because "Publish" is a type=button and skips the browser's minLength.
+    if (title.trim().length < 6) {
+      setError('Title must be at least 6 characters.');
+      return;
+    }
+    if (bodyTextLength(body) < 20) {
+      setError('Body must be at least 20 characters of text.');
+      return;
+    }
     startTransition(async () => {
       try {
-        await onSubmit({
+        const r = await onSubmit({
           title: title.trim(),
           body,
           category: category.trim() || null,
@@ -83,15 +101,17 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
           readMinutes: initial.kind === 'blog' ? readMinutes : undefined,
           publish,
         });
+        if (r && !r.ok) setError(r.message);
       } catch (err) {
         if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
-        setError(err instanceof Error ? err.message : 'Save failed');
+        setError('Save failed — the server rejected the request. Nothing was saved; please try again.');
       }
     });
   }
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); submit(false); }} className="space-y-6">
+    // Enter keeps the current state: updates a live item, saves a draft as draft.
+    <form onSubmit={(e) => { e.preventDefault(); submit(isPublished); }} className="space-y-6">
       <Field label="Title">
         <input value={title} onChange={(e) => setTitle(e.target.value)} required minLength={6}
           className="w-full h-11 px-3 rounded-lg border border-input bg-background text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
@@ -191,17 +211,34 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
 
       {error && <p className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-3 py-2 text-sm">{error}</p>}
 
-      <div className="flex items-center gap-3">
-        <Button type="submit" variant="outline" disabled={pending} className="rounded-full font-semibold">
-          {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save as draft
-        </Button>
-        <Button type="button" onClick={() => submit(true)} disabled={pending} className="rounded-full font-semibold">
-          {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Publish
-        </Button>
+      <div className="flex items-center gap-3 flex-wrap">
+        {isPublished ? (
+          <>
+            <Button type="submit" disabled={pending} className="rounded-full font-semibold">
+              {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Update (stays live)
+            </Button>
+            <Button type="button" variant="outline" onClick={() => submit(false)} disabled={pending} className="rounded-full font-semibold">
+              {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <EyeOff className="h-4 w-4" />} Unpublish &amp; save as draft
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button type="submit" variant="outline" disabled={pending} className="rounded-full font-semibold">
+              {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save as draft
+            </Button>
+            <Button type="button" onClick={() => submit(true)} disabled={pending} className="rounded-full font-semibold">
+              {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />} Publish
+            </Button>
+          </>
+        )}
         <Button type="button" variant="ghost" onClick={() => router.back()} className="rounded-full font-medium ml-auto">Cancel</Button>
       </div>
     </form>
   );
+}
+
+function bodyTextLength(html: string): number {
+  return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim().length;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

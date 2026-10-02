@@ -10,7 +10,10 @@ export const dynamic = 'force-dynamic';
 export default async function EditBlogPostPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
   await requireCapability('content:write');
-  const post = await prisma.blogPost.findUnique({ where: { slug: params.slug } });
+  // Rows whose slug came out empty (non-Latin title) are linked by id instead.
+  const post =
+    (await prisma.blogPost.findUnique({ where: { slug: params.slug } })) ??
+    (await prisma.blogPost.findUnique({ where: { id: params.slug } }));
   if (!post) notFound();
 
   const slug = post.slug;
@@ -27,7 +30,7 @@ export default async function EditBlogPostPage(props: { params: Promise<{ slug: 
       readMinutes: data.readMinutes ?? 5,
       publish: data.publish,
     };
-    await updateBlogPost(slug, input);
+    return updateBlogPost(slug, input);
   }
 
   return (
@@ -36,6 +39,7 @@ export default async function EditBlogPostPage(props: { params: Promise<{ slug: 
       <ContentForm
         initial={{
           kind: 'blog',
+          status: post.status,
           title: post.title,
           excerpt: post.excerpt,
           body: post.body,
