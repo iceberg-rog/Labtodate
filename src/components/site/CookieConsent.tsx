@@ -26,8 +26,11 @@ export function CookieConsent() {
   }, [hidden]);
   if (hidden || !show) return null;
   return (
-    <div className="fixed inset-x-0 bottom-0 z-[90] p-3 sm:p-4">
-      <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-card shadow-lg p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+    // The full-width wrapper is click-through and keeps clear of the
+    // bottom-right corner (below lg), where the assistant button sits —
+    // otherwise the notice blocked "Open assistant" until dismissed.
+    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[90] p-3 pr-24 sm:p-4 sm:pr-24 lg:pr-4">
+      <div className="pointer-events-auto mx-auto max-w-3xl rounded-2xl border border-border bg-card shadow-lg p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
         <p className="text-sm text-muted-foreground flex-1">
           We use only essential cookies to keep you signed in and secure — no tracking or ads.{' '}
           <Link href="/legal/cookies" className="text-primary underline underline-offset-2">

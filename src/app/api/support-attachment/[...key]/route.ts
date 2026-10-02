@@ -15,6 +15,8 @@ export const dynamic = 'force-dynamic';
  *     (matched by submittedById OR ticket.email == session.user.email)
  *   - An anonymous request that passes `?t=<accessToken>` matching the GUEST
  *     ticket the attachment belongs to.
+ * The same rules cover quote, sell-offer and live-chat messages (assigned
+ * seller / offer submitter / chat owner incl. the guest widget cookie).
  *
  * On success: 302 redirect to a 60s-presigned S3 URL.
  * Otherwise: 404 (never reveal whether the key exists vs is forbidden).
@@ -76,7 +78,32 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
       })
     : null;
 
-  if (!ticketMsg?.ticket && !quoteMsg?.sourcingRequest) {
+  // 3) Sell-offer (acquisitions) message — seller is the submitter.
+  const sellMsg = !ticketMsg && !quoteMsg
+    ? await prisma.sellMessage.findFirst({
+        where: { attachments: { has: proxiedUrl } },
+        select: { submission: { select: { submittedById: true, email: true } } },
+      })
+    : null;
+
+  // 4) Live-chat message — owner is the signed-in user or the guest whose
+  //    widget cookie matches the conversation.
+  const chatMsg = !ticketMsg && !quoteMsg && !sellMsg
+    ? await prisma.assistantMessage.findFirst({
+        where: { attachments: { has: proxiedUrl } },
+        select: { conversation: { select: { userId: true, guestToken: true } } },
+      })
+    : null;
+
+  if (chatMsg?.conversation) {
+    const c = chatMsg.conversation;
+    const guestCookie = req.cookies.get('lab2_asst_g')?.value ?? null;
+    const ownsChat = c.userId ? c.userId === userId : !!c.guestToken && c.guestToken === guestCookie;
+    if (!isAdmin && !ownsChat) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    return streamAttachment(key);
+  }
+
+  if (!ticketMsg?.ticket && !quoteMsg?.sourcingRequest && !sellMsg?.submission) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
@@ -87,12 +114,20 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
         accessToken: ticketMsg.ticket.accessToken,
         accessTokenExpiresAt: ticketMsg.ticket.accessTokenExpiresAt,
       }
+    : quoteMsg?.sourcingRequest
+    ? {
+        submittedById: quoteMsg.sourcingRequest.submittedById,
+        contactEmail: quoteMsg.sourcingRequest.buyerEmail,
+        assignedToId: quoteMsg.sourcingRequest.assignedToId,
+        accessToken: quoteMsg.sourcingRequest.accessToken,
+        accessTokenExpiresAt: quoteMsg.sourcingRequest.accessTokenExpiresAt,
+      }
     : {
-        submittedById: quoteMsg!.sourcingRequest.submittedById,
-        contactEmail: quoteMsg!.sourcingRequest.buyerEmail,
-        assignedToId: quoteMsg!.sourcingRequest.assignedToId,
-        accessToken: quoteMsg!.sourcingRequest.accessToken,
-        accessTokenExpiresAt: quoteMsg!.sourcingRequest.accessTokenExpiresAt,
+        // Sell offers have no magic link; the seller signs in.
+        submittedById: sellMsg!.submission.submittedById,
+        contactEmail: sellMsg!.submission.email,
+        accessToken: null,
+        accessTokenExpiresAt: null,
       };
 
   const isBuyer =
@@ -112,9 +147,13 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
-  // Stream the bytes through our auth-gated route — the browser never sees
-  // an S3 URL. Works even when the public reverse-proxy path differs from
-  // the internal MinIO path (no signature-mismatch headache).
+  return streamAttachment(key);
+}
+
+// Stream the bytes through our auth-gated route — the browser never sees
+// an S3 URL. Works even when the public reverse-proxy path differs from
+// the internal MinIO path (no signature-mismatch headache).
+async function streamAttachment(key: string): Promise<NextResponse> {
   try {
     const { body, contentType, contentLength } = await streamSupportAttachment(key);
     if (!body) return NextResponse.json({ error: 'not found' }, { status: 404 });

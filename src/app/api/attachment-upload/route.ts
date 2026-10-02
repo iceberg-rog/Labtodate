@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { uploadObject, supportAttachmentKey } from '@/lib/storage/s3';
 import { rateLimit } from '@/lib/ratelimit';
+import { getServerSession } from '@/lib/auth-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,8 +23,14 @@ const ALLOWED = [
  * exposed to the client.
  */
 export async function POST(req: Request) {
+  // Per-IP window sized by who is uploading: staff attach files all day across
+  // tickets, quotes and chats; signed-in customers attach up to 5 per message;
+  // anonymous guests (magic-link replies, chat widget) stay tight.
+  const session = await getServerSession();
+  const role = (session?.user as { role?: string } | undefined)?.role;
+  const max = role === 'ADMIN' ? 200 : session ? 30 : 10;
   try {
-    await rateLimit('attachment-upload');
+    await rateLimit(role === 'ADMIN' ? 'attachment-upload-staff' : 'attachment-upload', max, 10 * 60_000);
   } catch {
     return NextResponse.json({ error: 'Too many uploads, slow down.' }, { status: 429 });
   }

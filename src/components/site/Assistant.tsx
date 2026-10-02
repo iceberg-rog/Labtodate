@@ -205,8 +205,10 @@ export function Assistant() {
           <MessageCircle className="h-6 w-6" />
         </button>
       )}
+      {/* The open panel stacks above the cookie notice (z-90) so the notice
+          can't cover the message box on small screens. */}
       {open && (
-        <div className="fixed bottom-5 right-5 z-[80] w-[92vw] max-w-sm h-[72vh] max-h-[600px] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden">
+        <div className="fixed bottom-5 right-5 z-[95] w-[92vw] max-w-sm h-[72vh] max-h-[600px] rounded-2xl border border-border bg-card shadow-2xl flex flex-col overflow-hidden">
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground">
             <div className="flex items-center gap-2">
