@@ -5,6 +5,7 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Message thread' };
 
 /**
  * Read-only admin view of a buyer ↔ seller MessageThread. The user profile's

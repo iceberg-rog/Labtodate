@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { UrlImportForm } from '@/components/admin/UrlImportForm';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Import product from URL' };
 
 export default async function ImportProductFromUrlPage() {
   await requireCapability('products:edit');

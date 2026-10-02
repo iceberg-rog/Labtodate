@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { requireCapability, getServerSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { TicketHeaderControls } from '@/components/admin/TicketHeaderControls';
@@ -32,6 +33,14 @@ import { ReissueMagicLink } from '@/components/admin/ReissueMagicLink';
 import { EmailText } from '@/components/util/EmailText';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('tickets:view', 'Ticket', async () => {
+    const { id } = await props.params;
+    const t = await prisma.supportTicket.findUnique({ where: { id }, select: { ref: true } });
+    return t && `Ticket ${t.ref}`;
+  });
+}
 
 function priorityChip(priority: string) {
   const styles: Record<string, { cls: string; icon: JSX.Element; label: string }> = {

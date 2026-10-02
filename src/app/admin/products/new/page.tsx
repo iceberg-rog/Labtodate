@@ -7,6 +7,7 @@ import { AdminProductForm } from '@/components/admin/AdminProductForm';
 import { adminCreateProduct, type AdminProductInputType } from '@/app/admin/actions';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'New product' };
 
 export default async function NewAdminProductPage() {
   await requireCapability('products:edit');

@@ -26,7 +26,9 @@ import { LineChart } from '@/components/admin/Charts';
 import { BulkShipButton } from '@/components/admin/BulkShipButton';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Overview' };
+// The layout's "%s · Admin" template only applies to child segments, so this
+// page (same segment as the layout) would read "Overview · <site name>".
+export const metadata = { title: { absolute: 'Overview · Admin' } };
 export const revalidate = 30;
 
 const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];

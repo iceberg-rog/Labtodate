@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { formatPrice } from '@/lib/utils';
 import {
   setUserRole,
@@ -20,6 +21,14 @@ import { UserRole } from '@prisma/client';
 import { RoleSelect } from '../RoleSelect';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('users:view', 'User', async () => {
+    const { id } = await props.params;
+    const u = await prisma.user.findUnique({ where: { id }, select: { name: true } });
+    return u && `User ${u.name}`;
+  });
+}
 
 async function updateRole(formData: FormData) {
   'use server';

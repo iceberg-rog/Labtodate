@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { formatPrice } from '@/lib/utils';
 import { getCompany } from '@/lib/invoice';
@@ -8,6 +9,14 @@ import { humaniseBuyer, STATUS_LABEL } from '@/lib/orders/display';
 import { InvoiceActions } from '@/components/admin/InvoiceActions';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('orders:view', 'Invoice', async () => {
+    const { id } = await props.params;
+    const o = await prisma.order.findUnique({ where: { id }, select: { orderNumber: true } });
+    return o && `Invoice ${o.orderNumber}`;
+  });
+}
 
 /** Absolute date for a legal document — never "Today 12:58". */
 function invoiceDate(d: Date): string {
@@ -129,7 +138,8 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
       <div className="no-print sticky top-0 z-50 bg-foreground/[0.04] border-b border-border px-4 py-2.5">
         <InvoiceActions backHref={`/admin/orders/${order.id}`} />
       </div>
-      <main className="invoice-sheet">
+      {/* <article>, not <main>: the admin layout already renders the page's <main>. */}
+      <article className="invoice-sheet">
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 32 }}>
           <div>
@@ -294,7 +304,7 @@ export default async function InvoicePage(props: { params: Promise<{ id: string 
           {company.vat && ` · VAT ${company.vat}`}
           {company.kvk && ` · KvK ${company.kvk}`}
         </p>
-      </main>
+      </article>
     </>
   );
 }

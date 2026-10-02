@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { AdminProductForm } from '@/components/admin/AdminProductForm';
 import { adminUpdateProduct, adminDeleteProduct, type AdminProductInputType } from '@/app/admin/actions';
 import { Button } from '@/components/ui/button';
@@ -11,6 +12,14 @@ import type { IllustrationName } from '@/components/illustrations/instruments';
 import { DeleteProductButton } from './DeleteProductButton';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ slug: string }> }) {
+  return adminDetailTitle('products:edit', 'Edit product', async () => {
+    const { slug } = await props.params;
+    const p = await prisma.product.findUnique({ where: { slug }, select: { title: true } });
+    return p && `Edit: ${p.title}`;
+  });
+}
 
 export default async function AdminProductEditPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;

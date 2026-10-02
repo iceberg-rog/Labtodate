@@ -16,6 +16,7 @@ import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { ReplyForm } from '@/components/util/ReplyForm';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Assistant conversation' };
 
 function smartDate(d: Date | null | undefined): string {
   if (!d) return '';

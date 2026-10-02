@@ -20,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { formatPrice } from '@/lib/utils';
 import {
   setOrderNotes,
@@ -42,6 +43,14 @@ import {
 } from '@/lib/orders/display';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('orders:view', 'Order', async () => {
+    const { id } = await props.params;
+    const o = await prisma.order.findUnique({ where: { id }, select: { orderNumber: true } });
+    return o && `Order ${o.orderNumber}`;
+  });
+}
 
 const TONE_CLASS: Record<string, string> = {
   amber: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',
