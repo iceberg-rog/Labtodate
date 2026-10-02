@@ -7,13 +7,15 @@ import { OrderRow, type OrderRowProps } from './OrderRow';
 import { ManualPaidPanel, openManualPaid } from './ManualPaidPanel';
 import {
   bulkCancelOrders,
-  bulkMarkAllShipped,
+  bulkMarkSelectedShipped,
   bulkArchiveOrders,
   bulkUnarchiveOrders,
   bulkDeleteOrders,
 } from '@/app/admin/actions';
 
 type Row = Omit<OrderRowProps, 'selected' | 'onToggleSelect' | 'onOpenManualPaid'>;
+
+const FAILED = 'Something went wrong — refresh to see what changed, then retry.';
 
 // Result text is unioned across action returns + errors, so we always have a
 // string to render even if a server action returns nothing (e.g. transparent
@@ -30,7 +32,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pending, start] = useTransition();
   const [confirm, setConfirm] = useState<'cancel' | 'ship' | 'archive' | 'unarchive' | 'delete' | null>(null);
-  const [result, setResult] = useState<string | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const isArchivedView = view === 'archived';
 
   // Reset selection when the row list changes (router.refresh).
@@ -70,10 +72,10 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', cancelable.map((r) => r.id).join(','));
       try {
         const r = await bulkCancelOrders(fd);
-        setResult(resultText(r, 'Cancelled.'));
+        setResult({ ok: !!r?.ok, text: resultText(r, 'Cancelled.') });
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
-      } catch (e) {
-        setResult(e instanceof Error ? e.message : 'Failed.');
+      } catch {
+        setResult({ ok: false, text: FAILED });
       }
       setConfirm(null);
     });
@@ -81,12 +83,15 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
   function runShip() {
     setResult(null);
     start(async () => {
+      // Only the selected PAID/PROCESSING rows — never every paid order.
+      const fd = new FormData();
+      fd.set('ids', shippable.map((r) => r.id).join(','));
       try {
-        const r = await bulkMarkAllShipped();
-        setResult(`Marked ${r?.count ?? 0} order${r?.count === 1 ? '' : 's'} as shipped.`);
+        const r = await bulkMarkSelectedShipped(fd);
+        setResult({ ok: !!r?.ok, text: resultText(r, `Marked ${r?.count ?? 0} order${r?.count === 1 ? '' : 's'} as shipped.`) });
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
-      } catch (e) {
-        setResult(e instanceof Error ? e.message : 'Failed.');
+      } catch {
+        setResult({ ok: false, text: FAILED });
       }
       setConfirm(null);
     });
@@ -98,10 +103,10 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', Array.from(selected).join(','));
       try {
         const r = await bulkArchiveOrders(fd);
-        setResult(resultText(r, 'Archived.'));
+        setResult({ ok: !!r?.ok, text: resultText(r, 'Archived.') });
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
-      } catch (e) {
-        setResult(e instanceof Error ? e.message : 'Failed.');
+      } catch {
+        setResult({ ok: false, text: FAILED });
       }
       setConfirm(null);
     });
@@ -113,10 +118,10 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', Array.from(selected).join(','));
       try {
         const r = await bulkUnarchiveOrders(fd);
-        setResult(resultText(r, 'Restored.'));
+        setResult({ ok: !!r?.ok, text: resultText(r, 'Restored.') });
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
-      } catch (e) {
-        setResult(e instanceof Error ? e.message : 'Failed.');
+      } catch {
+        setResult({ ok: false, text: FAILED });
       }
       setConfirm(null);
     });
@@ -128,10 +133,10 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', Array.from(selected).join(','));
       try {
         const r = await bulkDeleteOrders(fd);
-        setResult(resultText(r, 'Deleted.'));
+        setResult({ ok: !!r?.ok, text: resultText(r, 'Deleted.') });
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
-      } catch (e) {
-        setResult(e instanceof Error ? e.message : 'Failed.');
+      } catch {
+        setResult({ ok: false, text: FAILED });
       }
       setConfirm(null);
     });
@@ -172,7 +177,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                       disabled={pending}
                       className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90"
                     >
-                      <Truck className="h-3.5 w-3.5" /> Mark all PAID/PROCESSING as shipped
+                      <Truck className="h-3.5 w-3.5" /> Mark {shippable.length} selected as shipped
                     </button>
                   )}
                   {!isArchivedView && cancelable.length > 0 && (
@@ -235,7 +240,12 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
             )}
           </div>
           {result && (
-            <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold mt-2">{result}</p>
+            <p
+              role="status"
+              className={`text-[11px] font-semibold mt-2 ${result.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}
+            >
+              {result.text}
+            </p>
           )}
         </div>
       </div>
@@ -261,7 +271,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
               {confirm === 'cancel'
                 ? `Cancel ${cancelable.length} pending order${cancelable.length === 1 ? '' : 's'}?`
                 : confirm === 'ship'
-                ? `Mark all PAID/PROCESSING as shipped (${shippable.length})?`
+                ? `Mark ${shippable.length} selected order${shippable.length === 1 ? '' : 's'} as shipped?`
                 : confirm === 'archive'
                 ? `Archive ${selected.size} order${selected.size === 1 ? '' : 's'}?`
                 : confirm === 'unarchive'
@@ -272,12 +282,12 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
               {confirm === 'cancel'
                 ? 'Reserved stock will be returned. Buyers will be notified. No refunds (these orders were not paid).'
                 : confirm === 'ship'
-                ? 'Buyers will get a "shipped" notification. Carrier + tracking can be added per-order afterwards.'
+                ? `Only the selected paid/processing order${shippable.length === 1 ? '' : 's'} with a complete shipping address will move to shipped; buyers get a "shipped" notification. Carrier + tracking can be added per-order afterwards.`
                 : confirm === 'archive'
                 ? "Archived orders are hidden from the default queues but kept forever — nothing is deleted. You can restore them from the Archived tab."
                 : confirm === 'unarchive'
                 ? 'Restored orders return to the default operator queues and will reappear in the relevant status tabs.'
-                : 'This is irreversible. Order rows, items, and notifications about them are wiped. An audit log entry preserves the order number, buyer, total, and item snapshot for forensic recovery, but the order itself cannot be recovered.'}
+                : 'This is irreversible. Order rows and items are wiped; unpaid orders release their reserved stock first. An audit log entry preserves the order number, buyer, total, and item snapshot for forensic recovery, but the order itself cannot be recovered.'}
             </p>
             {confirm === 'delete' && (
               <p className="text-[11px] text-red-700 dark:text-red-300 font-semibold mt-2">

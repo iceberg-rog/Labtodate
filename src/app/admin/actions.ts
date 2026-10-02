@@ -5,6 +5,9 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/delete-guard';
 import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
+import { orderReservedStock } from '@/lib/orders/checkout-tx';
+import { sendOrderInvoice } from '@/lib/orders/internal';
+import { proxyProofUrl } from '@/lib/orders/display';
 import { expireOnlyApi } from '@/lib/stripe/session-api';
 import { requireSession, requireCapability, hasCapability } from '@/lib/auth-server';
 import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
@@ -433,7 +436,9 @@ export async function getOrderQuickDetail(id: string): Promise<{
     paymentMethodLast4: o.paymentMethodLast4,
     paymentMethodWallet: o.paymentMethodWallet,
     paymentMethodManual: o.paymentMethodManual,
-    paymentProofUrl: o.paymentProofUrl,
+    // Receipts live in the private order-proofs/ prefix — hand the modal the
+    // auth-gated proxy URL, never the raw bucket URL.
+    paymentProofUrl: proxyProofUrl(o.paymentProofUrl),
     paymentNote: o.paymentNote,
     paidByAdminEmail: o.paidByAdminId
       ? (await prisma.user.findUnique({ where: { id: o.paidByAdminId }, select: { email: true } }))?.email ?? null
@@ -1176,24 +1181,25 @@ export async function sendAnnouncement(formData: FormData) {
   revalidatePath('/app/notifications');
 }
 
-export async function refundOrder(formData: FormData) {
+export async function refundOrder(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:refund');
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing order id.' };
   const order = await prisma.order.findUnique({
     where: { id },
     select: {
       status: true,
       stripePaymentIntentId: true,
       orderNumber: true,
+      sourcingRequestId: true,
       buyer: { select: { id: true, name: true, email: true } },
       totalCents: true,
       currency: true,
       items: { select: { productId: true, quantity: true } },
     },
   });
-  if (!order) throw new Error('Order not found');
+  if (!order) return { ok: false, message: 'Order not found.' };
   // BUG-043: refund is only meaningful once money has actually been captured.
   // Positively allow-list the money-captured statuses (mirrors the UI's
   // `canRefund` gate and every sibling money-path action) instead of the old
@@ -1211,7 +1217,12 @@ export async function refundOrder(formData: FormData) {
   if (!REFUNDABLE.includes(order.status as (typeof REFUNDABLE)[number])) {
     // Includes the already-REFUNDED case (idempotent no-op) and every
     // non-captured status. No Stripe call, no restock, no email.
-    return;
+    return {
+      ok: false,
+      message: order.status === 'REFUNDED'
+        ? `Order ${order.orderNumber} is already refunded.`
+        : `Order ${order.orderNumber} is ${order.status.toLowerCase().replace(/_/g, ' ')} — only paid orders can be refunded.`,
+    };
   }
 
   const stripe = getStripe();
@@ -1220,7 +1231,7 @@ export async function refundOrder(formData: FormData) {
       await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
     } catch (e) {
       console.error('stripe refund failed', e);
-      throw new Error('Stripe refund failed — check the payment in Stripe');
+      return { ok: false, message: 'Stripe refund failed — check the payment in Stripe. Nothing was changed here.' };
     }
   }
   // BUG-036: claim the REFUNDED transition atomically. The status guard at the
@@ -1233,14 +1244,20 @@ export async function refundOrder(formData: FormData) {
     where: { id, status: { in: [...REFUNDABLE] } },
     data: { status: 'REFUNDED' },
   });
-  if (flip.count !== 1) return; // a concurrent click already refunded + restocked
-  // Return the reserved unit(s) to stock so the item can be sold again.
-  for (const it of order.items) {
-    if (it.productId) {
-      await prisma.product.update({
-        where: { id: it.productId },
-        data: { quantity: { increment: it.quantity } },
-      });
+  // A concurrent click already refunded + restocked.
+  if (flip.count !== 1) return { ok: false, message: `Order ${order.orderNumber} was already refunded by another action.` };
+  // Return the reserved unit(s) to stock so the item can be sold again. Proforma
+  // orders never reserved stock, so restocking them would mint phantom units.
+  // updateMany: a hard-deleted product no-ops instead of throwing mid-loop.
+  const restock = orderReservedStock(order);
+  if (restock) {
+    for (const it of order.items) {
+      if (it.productId) {
+        await prisma.product.updateMany({
+          where: { id: it.productId },
+          data: { quantity: { increment: it.quantity } },
+        });
+      }
     }
   }
   await sendEmail({
@@ -1258,13 +1275,17 @@ export async function refundOrder(formData: FormData) {
   );
   await notifyAdmins(
     `Order ${order.orderNumber}: refunded — ${(order.totalCents / 100).toFixed(2)} ${order.currency}`,
-    `Refund issued${stripe && order.stripePaymentIntentId ? ' via Stripe' : ' (manual)'}. Stock returned to catalog.`,
+    `Refund issued${stripe && order.stripePaymentIntentId ? ' via Stripe' : ' (manual)'}.${restock ? ' Stock returned to catalog.' : ''}`,
     `/admin/orders/${id}`,
     'ORDER_REFUNDED',
   );
   await audit('order.refund', order.orderNumber, `${order.totalCents} ${order.currency}`);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
+  return {
+    ok: true,
+    message: `Order ${order.orderNumber} marked refunded${stripe && order.stripePaymentIntentId ? ' (Stripe refund issued)' : ' — return the money by bank transfer'}.${restock ? ' Stock returned to the catalog.' : ''}`,
+  };
 }
 
 /** Build the expire-only Stripe adapter the cancel saga needs (create() is never
@@ -1281,25 +1302,28 @@ function stripeExpireApi(): StripeSessionApi | null {
 /** Cancel an order that hasn't been paid (or is in PROCESSING). Releases
  *  reserved stock back to the catalog. Distinct from refundOrder which
  *  applies once money is taken. */
-export async function cancelOrder(formData: FormData): Promise<void> {
+export async function cancelOrder(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:fulfil');
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
-  if (!id) return;
+  if (!id) return { ok: false, message: 'Missing order id.' };
   const order = await prisma.order.findUnique({
     where: { id },
     select: {
       status: true,
       orderNumber: true,
       paymentSubmittedAt: true,
+      sourcingRequestId: true,
       buyer: { select: { id: true, name: true, email: true } },
       items: { select: { productId: true, quantity: true } },
     },
   });
-  if (!order) throw new Error('Order not found.');
-  if (['CANCELED', 'REFUNDED', 'DELIVERED'].includes(order.status)) return;
-  if (['PAID', 'PROCESSING', 'SHIPPED'].includes(order.status)) {
-    throw new Error('Order has been paid — use Refund instead.');
+  if (!order) return { ok: false, message: 'Order not found.' };
+  if (['CANCELED', 'REFUNDED'].includes(order.status)) {
+    return { ok: false, message: `Order ${order.orderNumber} is already ${order.status.toLowerCase()}.` };
+  }
+  if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
+    return { ok: false, message: 'Order has been paid — use Refund instead.' };
   }
   // BUG-035: a buyer receipt awaiting verification leaves status=PENDING_PAYMENT
   // but paymentSubmittedAt set. Canceling here would bypass the verify/reject
@@ -1307,7 +1331,7 @@ export async function cancelOrder(formData: FormData): Promise<void> {
   // Decline via Reject first (which clears paymentSubmittedAt), then cancel.
   // Keeps "admin verify is the ONLY path that changes payment state" intact.
   if (order.paymentSubmittedAt) {
-    throw new Error('This order has a payment receipt awaiting verification — use Verify or Reject, not Cancel.');
+    return { ok: false, message: 'This order has a payment receipt awaiting verification — use Verify or Reject, not Cancel.' };
   }
   // Stripe-aware atomic cancel: expire any active payment session FIRST, then
   // claim PENDING_PAYMENT + restock in ONE transaction (CAS on the same session id
@@ -1315,24 +1339,30 @@ export async function cancelOrder(formData: FormData): Promise<void> {
   // an active payable session is never left pointing at canceled/restocked stock.
   const outcome = await cancelOrderSaga(prisma, stripeExpireApi(), id, { requireNoProof: true });
   if (outcome === 'expire-failed') {
-    throw new Error("Could not expire the buyer's active payment session — the order was left reserved; please retry.");
+    return { ok: false, message: "Could not expire the buyer's active payment session — the order was left reserved; please retry." };
   }
-  if (outcome !== 'canceled') return; // already canceled / raced / receipt in flight
+  if (outcome !== 'canceled') {
+    // already canceled / raced / receipt in flight
+    revalidatePath('/admin/orders');
+    return { ok: false, message: `Order ${order.orderNumber} could not be canceled — its status changed. Refresh and check.` };
+  }
+  const restocked = orderReservedStock(order);
   await notifyUser(
     order.buyer.id,
     `Order ${order.orderNumber}: canceled`,
-    'Your order was canceled before payment. No charge was made. Items are back in stock.',
+    `Your order was canceled before payment. No charge was made.${restocked ? ' Items are back in stock.' : ''}`,
     `/app/orders/${order.orderNumber}`,
   );
   await notifyAdmins(
     `Order ${order.orderNumber}: canceled (pre-payment)`,
-    'Reserved stock has been returned. No charge was made.',
+    `${restocked ? 'Reserved stock has been returned. ' : ''}No charge was made.`,
     `/admin/orders/${id}`,
     'ORDER_CANCELED',
   );
   await audit('order.cancel', order.orderNumber);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
+  return { ok: true, message: `Order ${order.orderNumber} canceled.${restocked ? ' Reserved stock released.' : ''}` };
 }
 
 /** Save (or clear) the internal-only operator notes on an order. */
@@ -1365,7 +1395,7 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
   }
   const order = await prisma.order.findUnique({
     where: { id },
-    select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, buyer: { select: { id: true } } },
+    select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, shippingAddress: true, buyer: { select: { id: true } } },
   });
   if (!order) return { ok: false, message: 'Order not found.' };
   if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
@@ -1430,9 +1460,17 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     'ORDER_PAID',
   );
   await audit('order.paid.manual', order.orderNumber, `${method}${proofUrl ? ' +proof' : ''}${note ? ` "${note.slice(0, 60)}"` : ''}`);
+  // The order is now PAID: email the real invoice (the checkout success page
+  // promises it). Never blocks — sendOrderInvoice swallows + logs failures.
+  await sendOrderInvoice(order.id);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
-  return { ok: true, message: 'Marked as paid.' };
+  return {
+    ok: true,
+    message: shippingAddressIsComplete(order.shippingAddress)
+      ? 'Marked as paid. Invoice emailed to the buyer.'
+      : 'Marked as paid. Invoice emailed to the buyer. No complete shipping address on file yet — add it on the order page before shipping.',
+  };
 }
 
 /** Bulk cancel a list of order IDs (PENDING_PAYMENT only — safe). */
@@ -1524,13 +1562,35 @@ function shippingAddressIsComplete(sa: unknown): boolean {
   return Boolean(name && line1 && city && postal && country.length === 2);
 }
 
-export async function bulkMarkAllShipped(): Promise<{ ok: boolean; count: number; skipped: number; message?: string }> {
+type BulkShipResult = { ok: boolean; count: number; skipped: number; message: string };
+
+/** Overview tile: ship EVERY PAID/PROCESSING order that has a complete address.
+ *  The button that calls this says so explicitly; row selections in the orders
+ *  list use bulkMarkSelectedShipped instead. */
+export async function bulkMarkAllShipped(): Promise<BulkShipResult> {
   await requireCap('orders:fulfil');
+  return markShipped(null);
+}
+
+/** Orders list bulk bar: ship ONLY the selected PAID/PROCESSING orders. */
+export async function bulkMarkSelectedShipped(formData: FormData): Promise<BulkShipResult> {
+  await requireCap('orders:fulfil');
+  const ids = String(formData.get('ids') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) return { ok: false, count: 0, skipped: 0, message: 'No orders selected.' };
+  return markShipped(ids);
+}
+
+/** Shared body. `ids === null` means "all PAID/PROCESSING orders" (overview
+ *  only); otherwise the WHERE is restricted to exactly those ids. */
+async function markShipped(ids: string[] | null): Promise<BulkShipResult> {
+  const scope = ids ? { id: { in: ids } } : {};
   const candidates = await prisma.order.findMany({
-    where: { status: { in: ['PAID', 'PROCESSING'] } },
+    where: { ...scope, status: { in: ['PAID', 'PROCESSING'] } },
     select: { id: true, orderNumber: true, shippingAddress: true, buyer: { select: { id: true } } },
   });
-  if (candidates.length === 0) return { ok: true, count: 0, skipped: 0 };
+  if (candidates.length === 0) {
+    return { ok: false, count: 0, skipped: 0, message: 'No paid or processing orders to ship.' };
+  }
 
   // RB-fix: address-less orders cannot ship. Filter them out and surface
   // the skip count so the operator knows to chase those buyers first.
@@ -1567,19 +1627,20 @@ export async function bulkMarkAllShipped(): Promise<{ ok: boolean; count: number
         `/app/orders/${o.orderNumber}`,
       );
     }
-    await audit('order.bulkship', undefined, `${res.count} orders${skipped ? ` (skipped ${skipped} address-less)` : ''}`);
+    await audit('order.bulkship', undefined, `${res.count} orders${ids ? ' (selected)' : ' (all)'}${skipped ? ` (skipped ${skipped} address-less)` : ''}`);
   }
   revalidatePath('/admin');
   revalidatePath('/admin/orders');
+  const shippedMsg = `Marked ${res.count} order${res.count === 1 ? '' : 's'} as shipped.`;
   return {
     ok: true,
     count: res.count,
     skipped,
-    message: skipped > 0 ? `Shipped ${res.count}; skipped ${skipped} (no address).` : undefined,
+    message: skipped > 0 ? `${shippedMsg} Skipped ${skipped} with no complete shipping address.` : shippedMsg,
   };
 }
 
-export async function setOrderFulfillment(formData: FormData) {
+export async function setOrderFulfillment(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('orders:fulfil');
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
@@ -1587,7 +1648,7 @@ export async function setOrderFulfillment(formData: FormData) {
     | 'PAID' | 'PROCESSING' | 'SHIPPED' | 'DELIVERED' | 'CANCELED' | 'REFUNDED';
   const carrier = String(formData.get('carrier') ?? '').trim() || null;
   const trackingNumber = String(formData.get('trackingNumber') ?? '').trim() || null;
-  if (!id || !status) return;
+  if (!id || !status) return { ok: false, message: 'Pick a status first.' };
 
   const order = await prisma.order.findUnique({
     where: { id },
@@ -1600,7 +1661,7 @@ export async function setOrderFulfillment(formData: FormData) {
       buyer: { select: { id: true, name: true, email: true } },
     },
   });
-  if (!order) throw new Error('Order not found');
+  if (!order) return { ok: false, message: 'Order not found.' };
 
   // F12 / S3 guard: REFUNDED and CANCELED are terminal money-states. Once an
   // order is refunded or canceled, no fulfilment transition may move it back
@@ -1613,9 +1674,10 @@ export async function setOrderFulfillment(formData: FormData) {
   // allowed; only a status CHANGE out of a terminal state is blocked.
   const TERMINAL_ORDER_STATES = new Set(['REFUNDED', 'CANCELED']);
   if (TERMINAL_ORDER_STATES.has(order.status) && status !== order.status) {
-    throw new Error(
-      `Cannot change order ${order.orderNumber} to ${status.toLowerCase()} — it is ${order.status.toLowerCase()} (terminal). Refunded or canceled orders cannot be re-fulfilled.`,
-    );
+    return {
+      ok: false,
+      message: `Cannot change order ${order.orderNumber} to ${status.toLowerCase()} — it is ${order.status.toLowerCase()} (terminal). Refunded or canceled orders cannot be re-fulfilled.`,
+    };
   }
 
   // Admin entered a tracking number on a not-yet-shipped order → that IS the
@@ -1642,19 +1704,22 @@ export async function setOrderFulfillment(formData: FormData) {
   const stageRank = (s: string) => (FULFILMENT_CHAIN as readonly string[]).indexOf(s);
   if (status !== order.status) {
     if (status === 'CANCELED' || status === 'REFUNDED') {
-      throw new Error(
-        `Cannot set order ${order.orderNumber} to ${status.toLowerCase()} from the fulfilment panel — use the ${status === 'REFUNDED' ? 'Refund' : 'Cancel'} action so reserved stock is restocked correctly.`,
-      );
+      return {
+        ok: false,
+        message: `Cannot set order ${order.orderNumber} to ${status.toLowerCase()} from the fulfilment panel — use the ${status === 'REFUNDED' ? 'Refund' : 'Cancel'} action so reserved stock is restocked correctly.`,
+      };
     }
     if (stageRank(order.status) === -1) {
-      throw new Error(
-        `Cannot fulfil order ${order.orderNumber} — it is ${order.status.toLowerCase()}, not yet paid. Record payment first (manual payment / verify proof) before moving it through fulfilment.`,
-      );
+      return {
+        ok: false,
+        message: `Cannot fulfil order ${order.orderNumber} — it is ${order.status.toLowerCase()}, not yet paid. Record payment first (manual payment / verify proof) before moving it through fulfilment.`,
+      };
     }
     if (stageRank(status) < stageRank(order.status)) {
-      throw new Error(
-        `Cannot move order ${order.orderNumber} backward from ${order.status.toLowerCase()} to ${status.toLowerCase()} — fulfilment status only moves forward (paid → processing → shipped → delivered).`,
-      );
+      return {
+        ok: false,
+        message: `Cannot move order ${order.orderNumber} backward from ${order.status.toLowerCase()} to ${status.toLowerCase()} — fulfilment status only moves forward (paid → processing → shipped → delivered).`,
+      };
     }
   }
 
@@ -1662,9 +1727,10 @@ export async function setOrderFulfillment(formData: FormData) {
   // 5LX2KB shipped without an address through single + bulk + inline
   // paths. Block the transition server-side instead of trusting the UI.
   if ((status === 'SHIPPED' || status === 'DELIVERED') && !shippingAddressIsComplete(order.shippingAddress)) {
-    throw new Error(
-      `Cannot mark order ${order.orderNumber} as ${status.toLowerCase()} — no complete shipping address on file. Capture the buyer's address first.`,
-    );
+    return {
+      ok: false,
+      message: `Cannot mark order ${order.orderNumber} as ${status.toLowerCase()} — no complete shipping address on file. Add the shipping address on the order page first.`,
+    };
   }
 
   // RB-fix: idempotency. Previously the action wrote + audited even when
@@ -1677,7 +1743,7 @@ export async function setOrderFulfillment(formData: FormData) {
   if (statusUnchanged && carrierUnchanged && trackingUnchanged) {
     // Pure no-op — no write, no audit, no notification, no email.
     revalidatePath(`/admin/orders/${id}`);
-    return;
+    return { ok: true, message: 'Nothing changed.' };
   }
 
   // RB-fix: atomic transition. updateMany with the precondition that the
@@ -1697,7 +1763,7 @@ export async function setOrderFulfillment(formData: FormData) {
   if (res.count !== 1) {
     // Lost the race; another admin moved the row. Skip side effects.
     revalidatePath(`/admin/orders/${id}`);
-    return;
+    return { ok: false, message: 'Another admin just changed this order — refresh to see its current status.' };
   }
 
   if (status === 'SHIPPED' && order.status !== 'SHIPPED') {
@@ -1747,6 +1813,78 @@ export async function setOrderFulfillment(formData: FormData) {
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
   revalidatePath('/app/orders');
+  return {
+    ok: true,
+    message: status !== order.status ? `Saved — order is now ${status.toLowerCase()}; buyer notified.` : 'Saved — tracking updated.',
+  };
+}
+
+/**
+ * Capture or correct an order's shipping address from the admin order page.
+ * Proforma orders are created without an address, and the buyer's payment form
+ * closes once the order is PAID, so without this a paid address-less order could
+ * never ship. Allowed until the order ships; merges into the existing JSON so
+ * company / VAT / email captured elsewhere survive.
+ */
+export async function setOrderShippingAddress(formData: FormData): Promise<{ ok: boolean; message: string }> {
+  await requireCap('orders:fulfil');
+  const id = String(formData.get('orderId') ?? '');
+  if (!id) return { ok: false, message: 'Missing order id.' };
+  const get = (k: string) => String(formData.get(k) ?? '').trim();
+  const f = {
+    name: get('name').slice(0, 120),
+    phone: get('phone').slice(0, 40),
+    line1: get('line1').slice(0, 200),
+    line2: get('line2').slice(0, 200),
+    city: get('city').slice(0, 80),
+    postal: get('postal').slice(0, 24),
+    state: get('state').slice(0, 80),
+    country: get('country').toUpperCase(),
+  };
+  const missing: string[] = [];
+  if (!f.name) missing.push('recipient name');
+  if (!f.line1) missing.push('address line 1');
+  if (!f.city) missing.push('city');
+  if (!f.postal) missing.push('postal code');
+  if (!/^[A-Z]{2}$/.test(f.country)) missing.push('2-letter country code');
+  if (missing.length) return { ok: false, message: `Please fill in: ${missing.join(', ')}.` };
+
+  const order = await prisma.order.findUnique({
+    where: { id },
+    select: { orderNumber: true, status: true, shippingAddress: true },
+  });
+  if (!order) return { ok: false, message: 'Order not found.' };
+  const EDITABLE = ['PENDING_PAYMENT', 'PAID', 'PROCESSING'];
+  if (!EDITABLE.includes(order.status)) {
+    return { ok: false, message: `The address can't be changed once an order is ${order.status.toLowerCase()}.` };
+  }
+  const existing = (order.shippingAddress as Record<string, unknown> | null) ?? {};
+  const existingAddr = (existing.address as Record<string, unknown> | undefined) ?? {};
+  const next = {
+    ...existing,
+    name: f.name,
+    phone: f.phone || (existing.phone as string | undefined) || '',
+    address: {
+      ...existingAddr,
+      line1: f.line1,
+      line2: f.line2 || null,
+      city: f.city,
+      postal_code: f.postal,
+      state: f.state || null,
+      country: f.country,
+    },
+  };
+  // Status precondition in the WHERE: a concurrent ship can't be re-addressed.
+  const res = await prisma.order.updateMany({
+    where: { id, status: { in: EDITABLE as ('PENDING_PAYMENT' | 'PAID' | 'PROCESSING')[] } },
+    data: { shippingAddress: next },
+  });
+  if (res.count !== 1) return { ok: false, message: 'The order changed while you were editing — refresh and try again.' };
+  await audit('order.address', order.orderNumber, `${f.city}, ${f.country}`);
+  revalidatePath('/admin/orders');
+  revalidatePath(`/admin/orders/${id}`);
+  revalidatePath(`/app/orders/${order.orderNumber}`);
+  return { ok: true, message: 'Shipping address saved.' };
 }
 
 export async function setSellStatus(
@@ -2729,6 +2867,12 @@ export async function deleteOrderPermanently(formData: FormData): Promise<{ ok: 
   });
   if (!o) return { ok: false, message: 'Order not found.' };
   if (!o.archivedAt) return { ok: false, message: 'Archive the order first, then delete.' };
+  // An unpaid order still holds its reserved unit(s). Release them through the
+  // same Stripe-aware cancel saga as "Cancel order" BEFORE the row disappears —
+  // otherwise the product sits at 0 stock forever (nothing can restock an order
+  // that no longer exists).
+  const release = await releaseBeforeDelete(o.id, o.status);
+  if (!release.ok) return { ok: false, message: `Order ${o.orderNumber}: ${release.message}` };
 
   // Forensic snapshot — written BEFORE the row vanishes so the audit trail
   // can answer "what existed and was wiped?" without the live row.
@@ -2744,13 +2888,42 @@ export async function deleteOrderPermanently(formData: FormData): Promise<{ ok: 
 
   // Cascade: delete child rows first (OrderItem). Notification rows that
   // referenced this order via title/body text stay — they're a separate
-  // audit dimension. Stock is NOT restored on delete (the row is gone for
-  // ops reasons, not because the buyer asked for a return).
+  // audit dimension. Stock of a PAID-family order is NOT restored on delete
+  // (the row is gone for ops reasons, not because the buyer asked for a
+  // return); an unpaid reservation was already released above.
   await prisma.orderItem.deleteMany({ where: { orderId: id } });
   await prisma.order.delete({ where: { id } });
 
   revalidatePath('/admin/orders');
-  return { ok: true, message: `Order ${o.orderNumber} permanently deleted.` };
+  return {
+    ok: true,
+    message: `Order ${o.orderNumber} permanently deleted.${release.restocked ? ' Its reserved stock was released.' : ''}`,
+  };
+}
+
+/** Pre-delete step for unpaid orders: cancel (and restock, when the order
+ *  reserved stock) via the cancel saga. Paid-family / already-closed orders
+ *  pass straight through — their stock is not ours to touch on delete. */
+async function releaseBeforeDelete(
+  orderId: string,
+  status: string,
+): Promise<{ ok: true; restocked: boolean } | { ok: false; message: string }> {
+  if (status !== 'PENDING_PAYMENT') return { ok: true, restocked: false };
+  const snap = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { paymentSubmittedAt: true, sourcingRequestId: true },
+  });
+  if (snap?.paymentSubmittedAt) {
+    return { ok: false, message: 'has a payment receipt awaiting verification — verify or reject it before deleting.' };
+  }
+  const outcome = await cancelOrderSaga(prisma, stripeExpireApi(), orderId, { requireNoProof: true });
+  if (outcome === 'expire-failed') {
+    return { ok: false, message: "the buyer's payment session could not be expired — nothing was deleted; please retry." };
+  }
+  if (outcome !== 'canceled') {
+    return { ok: false, message: 'its status changed while deleting — refresh and try again.' };
+  }
+  return { ok: true, restocked: !!snap && orderReservedStock(snap) };
 }
 
 /** Bulk permanent delete. Same archived-first guard + cap as the single-row
@@ -2760,23 +2933,45 @@ export async function bulkDeleteOrders(formData: FormData): Promise<{ ok: boolea
   await requireCap('orders:delete');
   const ids = String(formData.get('ids') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) return { ok: false, count: 0, message: 'No orders selected.' };
-  const targets = await prisma.order.findMany({
+  const candidates = await prisma.order.findMany({
     where: { id: { in: ids }, archivedAt: { not: null } },
     select: {
       id: true, orderNumber: true, status: true, totalCents: true, currency: true,
       buyer: { select: { email: true } },
     },
   });
-  if (targets.length === 0) {
+  if (candidates.length === 0) {
     return { ok: false, count: 0, message: 'None of the selected orders are archived. Archive them first.' };
+  }
+  // Unpaid orders release their reserved stock first (same as the single-row
+  // delete); any that can't be released are kept and reported, never dropped.
+  const targets: typeof candidates = [];
+  const kept: string[] = [];
+  let restocked = 0;
+  for (const o of candidates) {
+    const release = await releaseBeforeDelete(o.id, o.status);
+    if (!release.ok) { kept.push(`${o.orderNumber} ${release.message}`); continue; }
+    if (release.restocked) restocked++;
+    targets.push(o);
   }
   for (const o of targets) {
     await audit('order.delete.permanent', o.orderNumber, `bulk · ${(o.totalCents / 100).toFixed(2)} ${o.currency} · buyer=${o.buyer.email} · status=${o.status}`);
   }
-  await prisma.orderItem.deleteMany({ where: { orderId: { in: targets.map((o) => o.id) } } });
-  await prisma.order.deleteMany({ where: { id: { in: targets.map((o) => o.id) } } });
+  if (targets.length > 0) {
+    await prisma.orderItem.deleteMany({ where: { orderId: { in: targets.map((o) => o.id) } } });
+    await prisma.order.deleteMany({ where: { id: { in: targets.map((o) => o.id) } } });
+  }
   revalidatePath('/admin/orders');
-  return { ok: true, count: targets.length, message: `Deleted ${targets.length} order${targets.length === 1 ? '' : 's'}.` };
+  const skippedNote = ids.length > candidates.length
+    ? ` ${ids.length - candidates.length} not archived — skipped.`
+    : '';
+  const keptNote = kept.length ? ` Not deleted: ${kept.join('; ')}.` : '';
+  const stockNote = restocked ? ` Reserved stock released for ${restocked} unpaid order${restocked === 1 ? '' : 's'}.` : '';
+  return {
+    ok: targets.length > 0,
+    count: targets.length,
+    message: `Deleted ${targets.length} order${targets.length === 1 ? '' : 's'}.${stockNote}${skippedNote}${keptNote}`,
+  };
 }
 
 /**
@@ -2800,6 +2995,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
       paymentVerificationStatus: true, paymentSubmittedAt: true,
       paymentMethodManual: true,
       sourcingRequestId: true,
+      shippingAddress: true,
       buyer: { select: { id: true, email: true, name: true } },
     },
   });
@@ -2864,6 +3060,9 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     'PAYMENT_VERIFIED',
   );
   await audit('order.payment.verify', order.orderNumber, `verifier=${session.user.email}`);
+  // The order is now PAID: email the real invoice (+ billing copy), as the
+  // checkout success page promises. Never blocks — failures are logged.
+  await sendOrderInvoice(order.id);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
   revalidatePath('/app/quotes');
@@ -2872,7 +3071,12 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     revalidatePath(`/app/quotes/${order.sourcingRequestId}`);
     revalidatePath(`/admin/quotes/${order.sourcingRequestId}`);
   }
-  return { ok: true, message: 'Payment verified.' };
+  return {
+    ok: true,
+    message: shippingAddressIsComplete(order.shippingAddress)
+      ? 'Payment verified. Invoice emailed to the buyer.'
+      : 'Payment verified. Invoice emailed to the buyer. No complete shipping address on file yet — add it on the order page before shipping.',
+  };
 }
 
 /** Admin rejects a buyer-submitted payment proof; buyer can resubmit. */

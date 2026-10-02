@@ -90,6 +90,19 @@ export function shippingAddressIsComplete(raw: unknown): boolean {
   return Boolean(name && line1 && city && postal && country.length === 2);
 }
 
+/**
+ * Receipts are stored in a PRIVATE S3 prefix. The DB still has the raw S3
+ * URL for back-compat, but every UI link must go through /api/order-proof/<key>,
+ * which auth-checks the requester is admin or the order's buyer. Returns null if
+ * the URL doesn't look like an order-proofs key (defensive — never fall back to
+ * the raw bucket URL).
+ */
+export function proxyProofUrl(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl) return null;
+  const m = rawUrl.match(/order-proofs\/[^?#]+/);
+  return m ? `/api/order-proof/${m[0]}` : null;
+}
+
 /** Compact "name · city, country" string for list rows, so an operator
  *  can read the shipping target without opening the detail page. */
 export function shipAddressOneLiner(raw: unknown): { name: string | null; line: string | null; country: string | null; phone: string | null } | null {
