@@ -96,6 +96,13 @@ function restoreEnvDefault(key: string, removedValue?: string): void {
   else delete process.env[key];
 }
 
+/** A path on this site ("/media/…"), as an uploaded logo is stored — not a
+ *  protocol-relative "//host/…" (or "/\host/…") URL. Save and Verify share
+ *  this rule, so a value Save accepts is one Verify can check. */
+export function isSiteRelativePath(value: string): boolean {
+  return /^\/(?![/\\])/.test(value);
+}
+
 /** Per-type check run BEFORE anything is written. Returns a reason or null. */
 function validateSettingValue(d: SettingDef, value: string): string | null {
   const verify = 'verify' in d ? d.verify : undefined;
@@ -112,7 +119,7 @@ function validateSettingValue(d: SettingDef, value: string): string | null {
     return /^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(addr.trim()) ? null : `“${value}” is not a valid email address.`;
   }
   if (verify === 'url' || verify === 'image') {
-    if (verify === 'image' && value.startsWith('/')) return null; // site-relative upload path
+    if (verify === 'image' && isSiteRelativePath(value)) return null; // site-relative upload path
     try {
       const u = new URL(value);
       return u.protocol === 'http:' || u.protocol === 'https:' ? null : 'must start with https:// (or http://).';
