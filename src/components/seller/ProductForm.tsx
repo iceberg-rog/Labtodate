@@ -276,6 +276,9 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
             <span className="text-xs font-medium text-muted-foreground">{uploading ? 'Uploading…' : 'Add image'}</span>
           </label>
         </div>
+        {fieldErrors.images && (
+          <p role="alert" className="text-xs font-medium text-red-600 dark:text-red-400">{fieldErrors.images}</p>
+        )}
       </section>
 
       {error && (

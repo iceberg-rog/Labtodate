@@ -77,6 +77,15 @@ export default async function OrderDetailPage({
   const needsAddress =
     (order.status === 'PAID' || order.status === 'PROCESSING') && !shippingAddressIsComplete(order.shippingAddress);
   const ship = (order.shippingAddress ?? null) as { name?: string; phone?: string; address?: Record<string, string | null> } | null;
+  // A quote order canceled because the quote was declined/closed: say so, or
+  // the page reads as a bare "Canceled" with no reason.
+  const endedQuote =
+    order.status === 'CANCELED' && order.sourcingRequestId
+      ? await prisma.sourcingRequest.findFirst({
+          where: { id: order.sourcingRequestId, status: { in: ['DECLINED', 'CLOSED'] } },
+          select: { id: true, status: true },
+        })
+      : null;
 
   return (
     <div className="space-y-6">
@@ -127,6 +136,16 @@ export default async function OrderDetailPage({
           <Badge variant={STATUS_VARIANT[order.status]}>{STATUS_LABEL[order.status]}</Badge>
         </div>
       </div>
+
+      {endedQuote && (
+        <div className="rounded-2xl border border-border bg-muted p-4 text-sm text-muted-foreground">
+          This order was canceled because{' '}
+          {endedQuote.status === 'DECLINED' ? 'you declined the quote' : 'the quote request was closed'}.{' '}
+          <a href={`/app/quotes/${endedQuote.id}`} className="font-semibold text-primary hover:underline">
+            View the quote
+          </a>
+        </div>
+      )}
 
       {returnedRef && (
         <div className="rounded-2xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 text-sm text-emerald-900 dark:text-emerald-300">
@@ -181,7 +200,9 @@ export default async function OrderDetailPage({
       )}
 
       {order.status === 'PENDING_PAYMENT' && (
-        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+        // [overflow-wrap:anywhere]: the address and rejection reason are
+        // buyer/admin text and may hold long unbroken words.
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300 [overflow-wrap:anywhere]">
           <p className="font-bold">
             {order.paymentVerificationStatus === 'AWAITING_VERIFICATION'
               ? 'Your payment proof is being reviewed'
@@ -256,7 +277,7 @@ export default async function OrderDetailPage({
           {(order.trackingNumber || order.trackingCarrier) && (
             <div className="mt-6 pt-5 border-t text-sm">
               <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Tracking</p>
-              <p className="font-semibold">
+              <p className="font-semibold [overflow-wrap:anywhere]">
                 {order.trackingCarrier ?? 'Carrier'} · {order.trackingNumber ?? '—'}
               </p>
             </div>
@@ -289,7 +310,7 @@ export default async function OrderDetailPage({
           {fmtAddr(order.shippingAddress) && (
             <div className="mt-5 pt-5 border-t text-sm">
               <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Shipping to</p>
-              <p>{fmtAddr(order.shippingAddress)}</p>
+              <p className="[overflow-wrap:anywhere]">{fmtAddr(order.shippingAddress)}</p>
             </div>
           )}
         </div>
@@ -301,7 +322,7 @@ export default async function OrderDetailPage({
             <div className="h-12 w-12 rounded-lg bg-primary/10 text-primary flex items-center justify-center flex-shrink-0">
               <Package className="h-5 w-5" />
             </div>
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 [overflow-wrap:anywhere]">
               {it.product ? (
                 <Link href={`/marketplace/${it.product.slug}`} className="font-semibold hover:text-primary">
                   {it.titleSnapshot}
