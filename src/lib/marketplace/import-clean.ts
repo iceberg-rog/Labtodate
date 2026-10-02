@@ -134,21 +134,58 @@ function blockText(html: string): string {
   return `${text} ${hrefs.join(' ')}`;
 }
 
+// An <img> loading from another host ("https://…", "http://…", "//…"): in
+// imported shop copy that is the supplier's own server — a hotlink (often plain
+// http, i.e. mixed content on our https pages). Listing photos live in
+// Product.images; site-relative images are kept.
+const EXTERNAL_IMG_RE = /<img\b[^>]*?\ssrc\s*=\s*["']?\s*(?:https?:)?\/\/[^>]*>/gi;
+
+/** True when the HTML embeds an image hotlinked from another host. */
+export function hasExternalImage(html: string): boolean {
+  return new RegExp(EXTERNAL_IMG_RE.source, 'i').test(html);
+}
+
+// A text block: paragraph, heading, list item, or a <div> holding no other
+// block (WooCommerce short descriptions are often one <div> per line, nested
+// in a wrapper <div>; only such leaf <div>s are a single line of copy — a
+// wrapper is never dropped whole for one line inside it).
+const BLOCK_RE =
+  /<(p|h[1-6]|li)\b[^>]*>[\s\S]*?<\/\1\s*>|<div\b[^>]*>(?:(?!<(?:div|p|h[1-6]|li|ul|ol|table)\b)[\s\S])*?<\/div\s*>/gi;
+const EMPTY_INNER = String.raw`(?:\s|&nbsp;|&#160;|<br\s*\/?>)*`;
+const EMPTY_P_RE = new RegExp(String.raw`<p\b[^>]*>${EMPTY_INNER}<\/p\s*>`, 'gi');
+const EMPTY_DIV_RE = new RegExp(String.raw`<div\b[^>]*>${EMPTY_INNER}<\/div\s*>`, 'gi');
+
+function cleanSupplierPass(html: string, re: RegExp): string {
+  return html
+    .replace(EXTERNAL_IMG_RE, '')
+    .replace(BLOCK_RE, (block) => (re.test(blockText(block)) ? '' : block))
+    .replace(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/gi, '$1')
+    .replace(EMPTY_P_RE, '')
+    .replace(EMPTY_DIV_RE, '')
+    .replace(/<(ul|ol)\b[^>]*>\s*<\/\1\s*>/gi, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
 /**
- * Drop paragraphs, headings and list items that identify the supplier, unwrap
- * any remaining links (no outbound links on listings), and tidy up the empty
- * paragraphs / lists left behind. Returns null when nothing is left.
+ * Drop paragraphs, headings, list items and single-line <div>s that identify
+ * the supplier, remove images hotlinked from another host, unwrap any
+ * remaining links (no outbound links on listings), and tidy up the empty
+ * paragraphs / divs / lists left behind. Returns null when nothing is left.
+ *
+ * Runs to a fixed point (removing a block can empty its wrapper), so cleaning
+ * already-cleaned HTML returns it unchanged — the cleanup script relies on
+ * that to converge.
  */
 export function cleanSupplierHtml(html: string | null | undefined, s: SupplierRef): string | null {
   if (!html) return null;
   const re = supplierPattern(s);
-  const out = html
-    .replace(/<(p|h[1-6]|li)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, (block) => (re.test(blockText(block)) ? '' : block))
-    .replace(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/gi, '$1')
-    .replace(/<p\b[^>]*>(?:\s|&nbsp;|&#160;|<br\s*\/?>)*<\/p\s*>/gi, '')
-    .replace(/<(ul|ol)\b[^>]*>\s*<\/\1\s*>/gi, '')
-    .replace(/\n{2,}/g, '\n')
-    .trim();
+  let out = html;
+  for (let i = 0; i < 10; i++) {
+    const next = cleanSupplierPass(out, re);
+    if (next === out) break;
+    out = next;
+  }
   return out || null;
 }
 
