@@ -1,10 +1,14 @@
 /**
  * One-time cleanup for products imported from supplier WooCommerce shops
- * before the importer stripped supplier branding (src/lib/marketplace/
- * import-clean.ts). For imported listings only (seed_user_seller_* owners):
+ * before the importer stripped supplier branding and decoded HTML entities
+ * (src/lib/marketplace/import-clean.ts). For imported listings only
+ * (seed_user_seller_* owners):
  *   - drops description paragraphs that name the supplier, link to its site
  *     or say "see our website", and unwraps outbound links;
  *   - rebuilds a summary that mentions the supplier from the cleaned text;
+ *   - decodes HTML entities left in titles and summaries ("&#8211;", "&#038;"
+ *     → "–", "&"); a summary the old importer built from the description is
+ *     rebuilt from it, which also restores characters it blanked ("&deg;");
  *   - moves PUBLISHED "Product 1234" placeholder titles to Pending review so
  *     an admin gives them a real title before they go live again.
  *
@@ -15,6 +19,7 @@
 import { PrismaClient, ProductStatus } from '@prisma/client';
 import {
   cleanSupplierHtml,
+  decodeEntities,
   stripHtml,
   supplierPattern,
   PLACEHOLDER_TITLE_RE,
@@ -22,6 +27,22 @@ import {
 
 const prisma = new PrismaClient();
 const APPLY = process.argv.includes('--apply');
+
+/** stripHtml as the importers had it before entities were decoded. */
+function legacyStripHtml(h: string): string {
+  return h
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&[a-z]+;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Plain text with its entities decoded once and whitespace collapsed. */
+function decodeText(s: string): string {
+  return decodeEntities(s).replace(/\s+/g, ' ').trim();
+}
 
 async function main() {
   const products = await prisma.product.findMany({
@@ -38,12 +59,13 @@ async function main() {
   });
 
   let cleaned = 0;
+  let decoded = 0;
   let flagged = 0;
   for (const p of products) {
     if (!p.company) continue;
     const supplier = { name: p.company.name, urls: [p.company.website, p.company.importSourceUrl] };
     const re = supplierPattern(supplier);
-    const data: { description?: string | null; summary?: string | null; status?: ProductStatus } = {};
+    const data: { title?: string; description?: string | null; summary?: string | null; status?: ProductStatus } = {};
 
     // Only rewrite descriptions that actually carry supplier copy or links, so
     // untouched listings keep their original markup byte for byte.
@@ -51,19 +73,32 @@ async function main() {
     if (re.test(description) || /<a\b/i.test(description)) {
       data.description = cleanSupplierHtml(description, supplier);
     }
+    let branded = data.description !== undefined;
     if (p.summary && re.test(p.summary)) {
       // The importer builds the summary from the same short description.
       const source = data.description !== undefined ? data.description : p.description;
       data.summary = stripHtml(source ?? '').slice(0, 280) || null;
+      branded = true;
+    } else if (p.summary) {
+      // Entities only. The old stripHtml kept numeric ones and blanked named
+      // ones, so a summary it built from this description is rebuilt from it;
+      // any other summary is decoded in place.
+      const fromDescription = p.description && p.summary === legacyStripHtml(p.description).slice(0, 280);
+      const summary = fromDescription ? stripHtml(p.description ?? '').slice(0, 280) || null : decodeText(p.summary);
+      if (summary !== p.summary) data.summary = summary;
     }
+    const title = decodeText(p.title).slice(0, 200);
+    if (title && title !== p.title) data.title = title;
     if (p.status === ProductStatus.PUBLISHED && PLACEHOLDER_TITLE_RE.test(p.title)) {
       data.status = ProductStatus.PENDING_REVIEW;
       flagged++;
     }
     if (!Object.keys(data).length) continue;
-    if (data.description !== undefined || data.summary !== undefined) cleaned++;
+    if (branded) cleaned++;
+    else if (data.title !== undefined || data.summary !== undefined) decoded++;
 
     console.log(`• ${p.slug} (${p.title})`);
+    if (data.title !== undefined) console.log(`    title → ${JSON.stringify(data.title)}`);
     if (data.summary !== undefined) console.log(`    summary → ${JSON.stringify(data.summary)}`);
     if (data.description !== undefined) console.log(`    description: ${p.description?.length ?? 0} → ${data.description?.length ?? 0} chars`);
     if (data.status) console.log(`    status PUBLISHED → ${data.status} (placeholder title)`);
@@ -72,7 +107,8 @@ async function main() {
   }
 
   console.log(
-    `\n${APPLY ? 'Updated' : 'Would update'}: ${cleaned} cleaned listing(s), ${flagged} placeholder title(s) sent to Pending review` +
+    `\n${APPLY ? 'Updated' : 'Would update'}: ${cleaned} cleaned listing(s), ${decoded} more with only HTML entities decoded, ` +
+      `${flagged} placeholder title(s) sent to Pending review` +
       (APPLY ? '' : '\nDry run — re-run with --apply to write.'),
   );
 }
