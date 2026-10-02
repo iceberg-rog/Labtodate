@@ -7,7 +7,8 @@ import { prisma } from '@/lib/db';
 import { requireSession } from '@/lib/auth-server';
 import { getStripe, stripeConfigured } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { sendOrderReceived } from '@/lib/orders/actions';
+import { sendOrderReceived } from '@/lib/orders/internal';
+import { parseCheckoutCountry } from '@/lib/orders/countries';
 import { reserveAndCreateOrder } from '@/lib/orders/checkout-tx';
 import { stripeCheckoutHandoff, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
 import { safeExpire } from '@/lib/stripe/session-api';
@@ -81,6 +82,19 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
   const session = await requireSession({ redirectTo: '/checkout/cart' });
 
   const get = (k: string) => String(formData.get(k) ?? '').trim();
+  // "Other — request a shipping quote": no order, no reservation — send the
+  // buyer to the sourcing form instead (checked on the RAW value; see
+  // parseCheckoutCountry). A single-item cart prefills that product.
+  const country = parseCheckoutCountry(get('country'));
+  if (country.kind === 'other') {
+    const rows = await prisma.cartItem.findMany({
+      where: { userId: session.user.id },
+      select: { product: { select: { slug: true } } },
+      take: 2,
+    });
+    const product = rows.length === 1 ? `product=${encodeURIComponent(rows[0].product.slug)}&` : '';
+    redirect(`/let-us-find-it?${product}reason=shipping`);
+  }
   const addr = {
     name: get('name').slice(0, 120),
     phone: get('phone').slice(0, 40),
@@ -90,18 +104,15 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
     city: get('city').slice(0, 80),
     postal: get('postal').slice(0, 24),
     state: get('state').slice(0, 80),
-    country: get('country').slice(0, 2).toUpperCase(),
+    country: country.kind === 'ok' ? country.code : '',
   };
-  if (addr.country === '__OTHER' || addr.country === 'OT') {
-    redirect('/let-us-find-it?reason=shipping');
-  }
   const missing: string[] = [];
   if (!addr.name) missing.push('name');
   if (!addr.phone) missing.push('phone');
   if (!addr.line1) missing.push('line1');
   if (!addr.city) missing.push('city');
   if (!addr.postal) missing.push('postal');
-  if (addr.country.length !== 2) missing.push('country');
+  if (!addr.country) missing.push('country');
   if (missing.length > 0) {
     redirect(`/checkout/cart?missing=${missing.join(',')}`);
   }
