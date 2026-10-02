@@ -234,9 +234,16 @@ export const auth = betterAuth({
     ipAddress: { ipAddressHeaders: ['x-real-ip'] },
   },
 
-  // Email-OTP sign-in verifies an address without the claim step above and
-  // would create accounts with no name / Terms; the UI never uses it.
-  disabledPaths: ['/sign-in/email-otp'],
+  disabledPaths: [
+    // Email-OTP sign-in verifies an address without the claim step above and
+    // would create accounts with no name / Terms; the UI never uses it.
+    '/sign-in/email-otp',
+    // Password reset is by emailed link (/request-password-reset). The OTP
+    // variants are unused and mailed owners the sign-up code email.
+    '/email-otp/request-password-reset',
+    '/forget-password/email-otp',
+    '/email-otp/reset-password',
+  ],
 
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
@@ -270,7 +277,7 @@ export const auth = betterAuth({
       }
 
       if (!ctx.path.startsWith('/sign-in/') && !SUSPENSION_GATED.includes(ctx.path)) return;
-      const body = (ctx.body ?? {}) as { email?: unknown; password?: unknown; name?: unknown };
+      const body = (ctx.body ?? {}) as { email?: unknown; password?: unknown; name?: unknown; type?: unknown };
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
       if (email) {
         const user = await prisma.user.findUnique({
@@ -278,6 +285,12 @@ export const auth = betterAuth({
           select: { suspendedAt: true, suspendedReason: true },
         });
         if (user?.suspendedAt) throw suspendedError(user.suspendedReason);
+      }
+      // Only email-confirmation codes are used. Sign-in and password-reset
+      // codes have nothing left to redeem them (disabledPaths) and would just
+      // mail the owner a code they never asked for.
+      if (ctx.path === '/email-otp/send-verification-otp' && body.type !== 'email-verification') {
+        throw new APIError('BAD_REQUEST', { message: 'Invalid code type.' });
       }
       if (ctx.path === '/email-otp/verify-email' && ctx.request) {
         chosenAtVerification.set(ctx.request, { password: body.password, name: body.name });
