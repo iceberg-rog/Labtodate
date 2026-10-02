@@ -8,6 +8,7 @@ import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/dele
 import { requireSession } from '@/lib/auth-server';
 import { notifyAdmins } from '@/lib/observability';
 import { MAX_PRICE_CENTS, MAX_PRICE_MESSAGE, zodFieldErrors, zodMessage } from '@/lib/products/validation';
+import { isOwnMediaUrl, isSafeImageUrl } from '@/lib/products/image-urls';
 import { Prisma, type ProductCondition, type ProductMode } from '@prisma/client';
 
 const ProductInput = z.object({
@@ -22,7 +23,8 @@ const ProductInput = z.object({
   currency: z.string().default('EUR'),
   yearMade: z.number().int().min(1900).max(2100).nullable(),
   illustration: z.enum(['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector']),
-  images: z.array(z.string().url()).max(8).default([]),
+  // Where each photo may point is checked by checkImages() below.
+  images: z.array(z.string().max(2048)).max(8).default([]),
   specs: z.record(z.string()).default({}),
 });
 
@@ -60,6 +62,25 @@ function parseInput(input: ProductInputType): { data: ProductInputType } | { err
   };
 }
 
+/**
+ * Photos must be files from our own upload store (the form's "Add image" →
+ * /api/upload). A URL already on the listing — e.g. a supplier photo from a
+ * shop import — may stay if it is a plain http(s) address, so such listings
+ * remain editable; no new outside URL can be added. javascript:, data: and
+ * other schemes are refused always.
+ */
+function checkImages(images: string[], alreadyOnListing: readonly string[] = []): ProductActionError | null {
+  for (const [i, url] of images.entries()) {
+    if (isOwnMediaUrl(url)) continue;
+    if (alreadyOnListing.includes(url) && isSafeImageUrl(url)) continue;
+    const message = isSafeImageUrl(url)
+      ? `Photo ${i + 1} is not one of your uploads. Remove it and add the picture with “Add image” instead.`
+      : `Photo ${i + 1} has an address we can't use. Remove it and add the picture with “Add image” instead.`;
+    return { ok: false, message, fieldErrors: { images: message } };
+  }
+  return null;
+}
+
 function slugify(s: string): string {
   return s
     .toLowerCase()
@@ -78,6 +99,8 @@ export async function createProduct(input: ProductInputType): Promise<ProductAct
   const result = parseInput(input);
   if ('error' in result) return result.error;
   const parsed = result.data;
+  const imageError = checkImages(parsed.images);
+  if (imageError) return imageError;
 
   const me = await prisma.user.findUnique({
     where: { id: userId },
@@ -126,6 +149,8 @@ export async function updateProduct(slug: string, input: ProductInputType): Prom
   const existing = await prisma.product.findUnique({ where: { slug } });
   if (!existing) return { ok: false, message: 'This listing no longer exists.' };
   if (existing.sellerId !== userId && role !== 'ADMIN') return { ok: false, message: 'You can only edit your own listings.' };
+  const imageError = checkImages(parsed.images, existing.images);
+  if (imageError) return imageError;
 
   // INVARIANTS A3: an approved listing can't be swapped for different content.
   // When a seller changes anything buyers see on a PUBLISHED listing, it goes
