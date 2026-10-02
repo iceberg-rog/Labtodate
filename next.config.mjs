@@ -26,6 +26,20 @@ const nextConfig = {
       { protocol: 'https', hostname: '**' },
     ],
   },
+  async headers() {
+    return [
+      {
+        // User uploads proxied to MinIO from our own origin (deployments
+        // without the nginx /media/ block): never sniff, and never let a
+        // stored file run script here. Mirrors nginx/lab2date.conf.
+        source: '/media/:path*',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'Content-Security-Policy', value: "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox" },
+        ],
+      },
+    ];
+  },
   async rewrites() {
     return [
       { source: '/media/:path*', destination: `${MINIO_INTERNAL}/:path*` },
