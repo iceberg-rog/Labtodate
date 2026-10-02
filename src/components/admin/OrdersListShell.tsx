@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { XCircle, Loader2, CheckSquare, Square, Truck, Download, Archive, ArchiveRestore, Trash2 } from 'lucide-react';
 import { OrderRow, type OrderRowProps } from './OrderRow';
 import { ManualPaidPanel, openManualPaid } from './ManualPaidPanel';
+import { announceAdminResult } from './AdminResultToast';
 import {
   bulkCancelOrders,
   bulkMarkSelectedShipped,
@@ -25,6 +26,25 @@ function resultText(r: unknown, fallback: string): string {
     return (r as { message: string }).message;
   }
   return fallback;
+}
+
+/**
+ * Report a bulk result. A success goes to the admin-wide toast: the refresh
+ * that follows can empty this list (the page then renders its empty state
+ * instead of this shell), and an inline result went with it. A failure
+ * changed nothing, so it stays inline under the bulk bar.
+ */
+function report(
+  setResult: (r: { ok: boolean; text: string } | null) => void,
+  ok: boolean,
+  text: string,
+) {
+  if (ok) {
+    announceAdminResult({ ok, message: text });
+    setResult(null);
+  } else {
+    setResult({ ok, text });
+  }
 }
 
 export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived' | 'awaiting_verify' | '' }) {
@@ -72,7 +92,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', cancelable.map((r) => r.id).join(','));
       try {
         const r = await bulkCancelOrders(fd);
-        setResult({ ok: !!r?.ok, text: resultText(r, 'Cancelled.') });
+        report(setResult, !!r?.ok, resultText(r, 'Cancelled.'));
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
       } catch {
         setResult({ ok: false, text: FAILED });
@@ -88,7 +108,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', shippable.map((r) => r.id).join(','));
       try {
         const r = await bulkMarkSelectedShipped(fd);
-        setResult({ ok: !!r?.ok, text: resultText(r, `Marked ${r?.count ?? 0} order${r?.count === 1 ? '' : 's'} as shipped.`) });
+        report(setResult, !!r?.ok, resultText(r, `Marked ${r?.count ?? 0} order${r?.count === 1 ? '' : 's'} as shipped.`));
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
       } catch {
         setResult({ ok: false, text: FAILED });
@@ -103,7 +123,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', Array.from(selected).join(','));
       try {
         const r = await bulkArchiveOrders(fd);
-        setResult({ ok: !!r?.ok, text: resultText(r, 'Archived.') });
+        report(setResult, !!r?.ok, resultText(r, 'Archived.'));
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
       } catch {
         setResult({ ok: false, text: FAILED });
@@ -118,7 +138,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', Array.from(selected).join(','));
       try {
         const r = await bulkUnarchiveOrders(fd);
-        setResult({ ok: !!r?.ok, text: resultText(r, 'Restored.') });
+        report(setResult, !!r?.ok, resultText(r, 'Restored.'));
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
       } catch {
         setResult({ ok: false, text: FAILED });
@@ -133,7 +153,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       fd.set('ids', Array.from(selected).join(','));
       try {
         const r = await bulkDeleteOrders(fd);
-        setResult({ ok: !!r?.ok, text: resultText(r, 'Deleted.') });
+        report(setResult, !!r?.ok, resultText(r, 'Deleted.'));
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
       } catch {
         setResult({ ok: false, text: FAILED });
