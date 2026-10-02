@@ -4,13 +4,11 @@ import {
   CheckCircle2,
   XCircle,
   ExternalLink,
-  Image as ImageIcon,
   Mail,
   CreditCard,
   Bot,
   Building2,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
 import { SETTING_DEFS, getEffectiveSettings } from '@/lib/settings';
 import { saveAdminSettings, uploadCompanyLogo, listWebhooks } from '../actions';
@@ -19,6 +17,7 @@ import { TestEmailButton } from '@/components/admin/TestEmailButton';
 import { FieldVerify } from '@/components/admin/FieldVerify';
 import { SettingsTabs } from '@/components/admin/SettingsTabs';
 import { SettingsSaveForm } from '@/components/admin/SettingsSaveForm';
+import { LogoUploadForm } from '@/components/admin/LogoUploadForm';
 import { WebhooksPanel } from '@/components/admin/WebhooksPanel';
 
 export const dynamic = 'force-dynamic';
@@ -187,50 +186,7 @@ export default async function AdminSettingsPage(
   // Logo upload — separate independent form, lives on its own tab so the
   // Brand/Company tabs aren't crowded with a file picker.
   panels['Logo'] = (
-    <form
-      action={uploadCompanyLogo}
-      className="rounded-2xl border border-border bg-card p-6 space-y-5"
-    >
-      <div className="flex items-center gap-2">
-        <ImageIcon className="h-4 w-4 text-primary" />
-        <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Brand logo</h2>
-      </div>
-      <p className="text-xs leading-relaxed text-muted-foreground bg-foreground/[0.02] border border-border rounded-xl p-3">
-        Uploaded once, then surfaced on every invoice + proforma. Keep a transparent background — looks best on white documents.
-      </p>
-      <div className="flex items-center gap-5 flex-wrap">
-        <div className="h-20 w-48 rounded-lg border border-border bg-card flex items-center justify-center overflow-hidden">
-          {current['COMPANY_LOGO_URL'] ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            (<img
-              src={current['COMPANY_LOGO_URL']}
-              alt="Company logo"
-              className="max-h-16 max-w-[180px] object-contain"
-            />)
-          ) : (
-            <span className="text-xs text-muted-foreground">No logo</span>
-          )}
-        </div>
-        <div className="flex-1 min-w-[220px]">
-          <p className="text-sm font-bold">Replace logo</p>
-          <p className="text-xs text-muted-foreground mb-2">
-            PNG / SVG / JPG / WEBP, max 2MB.
-          </p>
-          <input
-            type="file"
-            name="logo"
-            accept="image/png,image/jpeg,image/svg+xml,image/webp"
-            required
-            className="text-sm"
-          />
-        </div>
-      </div>
-      <div className="pt-2 border-t border-border">
-        <Button type="submit" variant="outline" className="rounded-full font-semibold">
-          Upload logo
-        </Button>
-      </div>
-    </form>
+    <LogoUploadForm action={uploadCompanyLogo} currentUrl={current['COMPANY_LOGO_URL']} />
   );
 
   // Webhooks tab — separate from regular settings, full panel
