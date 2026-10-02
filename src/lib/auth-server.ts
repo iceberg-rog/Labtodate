@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import { auth, type Session } from './auth';
 import { prisma } from './db';
 import { capsAllow, type Capability } from './capabilities';
+import { rateLimit } from './ratelimit';
 
 /**
  * Read the current session in a server component / server action / route handler.
@@ -58,6 +59,35 @@ export async function requireSession(opts?: {
     redirect('/app?error=forbidden');
   }
   return session;
+}
+
+const ADMIN_RESET_WINDOW_MS = 15 * 60_000;
+
+/**
+ * Admin "Send reset email": mails the account a password-reset link through
+ * better-auth in-process. Over HTTP it went through the public forgot-password
+ * limit, keyed per client IP, where every server-side call shares one address —
+ * so five resets locked the button for all admins. It has its own caps
+ * instead: a few emails per account (so no inbox can be flooded) and a ceiling
+ * per admin. Throws an Error with a readable message when refused or failed.
+ */
+export async function sendAdminPasswordReset(adminId: string, user: { id: string; email: string }): Promise<void> {
+  try {
+    await rateLimit(`admin-reset:by:${adminId}`, 50, ADMIN_RESET_WINDOW_MS);
+  } catch {
+    throw new Error('You’ve sent a lot of reset emails in the last 15 minutes. Wait a few minutes and try again.');
+  }
+  try {
+    await rateLimit(`admin-reset:to:${user.id}`, 5, ADMIN_RESET_WINDOW_MS);
+  } catch {
+    throw new Error(
+      `${user.email} was already sent several reset emails in the last 15 minutes. Ask them to check spam, or try again later.`,
+    );
+  }
+  await auth.api.requestPasswordReset({
+    body: { email: user.email, redirectTo: '/auth/reset-password' },
+    headers: await headers(),
+  });
 }
 
 /** Fetch the current admin's capability set (empty if not an admin). */

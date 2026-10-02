@@ -9,7 +9,7 @@ import { orderReservedStock } from '@/lib/orders/checkout-tx';
 import { sendOrderInvoice } from '@/lib/orders/internal';
 import { proxyProofUrl } from '@/lib/orders/display';
 import { expireOnlyApi } from '@/lib/stripe/session-api';
-import { requireSession, requireCapability, hasCapability } from '@/lib/auth-server';
+import { requireSession, requireCapability, hasCapability, sendAdminPasswordReset } from '@/lib/auth-server';
 import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
 import { Prisma, UserRole } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
@@ -855,27 +855,17 @@ export async function deleteUser(formData: FormData): Promise<{ ok: boolean; mes
 
 /** Send the user a password-reset email (admin-initiated). Useful when a
  *  customer can't get the link themselves. Email is sent via the same
- *  Better-Auth pipeline as the public "forgot password" flow. */
+ *  Better-Auth pipeline as the public "forgot password" flow, called
+ *  in-process with its own per-account / per-admin caps. */
 export async function adminSendPasswordReset(formData: FormData): Promise<{ ok: boolean; message: string }> {
-  await requireCap('users:manage');
+  const session = await requireCap('users:manage');
   await ensureSettingsLoaded();
   const id = String(formData.get('userId') ?? '');
   if (!id) return { ok: false, message: 'Missing user.' };
   const target = await prisma.user.findUnique({ where: { id }, select: { email: true } });
   if (!target) return { ok: false, message: 'User not found.' };
   try {
-    const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
-    const res = await fetch(`${base}/api/auth/request-password-reset`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email: target.email,
-        redirectTo: '/auth/reset-password',
-      }),
-    });
-    if (!res.ok) {
-      return { ok: false, message: `Better-Auth refused: HTTP ${res.status}` };
-    }
+    await sendAdminPasswordReset(session.user.id, { id, email: target.email });
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Reset request failed.' };
   }
