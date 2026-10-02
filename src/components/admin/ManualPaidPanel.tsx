@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { X, CreditCard, Loader2, CheckCircle2, XCircle, Upload, FileText } from 'lucide-react';
 import { markOrderPaidManually } from '@/app/admin/actions';
+import { announceAdminResult } from './AdminResultToast';
 
 /**
  * Modal for marking an order PAID without Stripe.
@@ -59,12 +60,15 @@ export function ManualPaidPanel() {
     start(async () => {
       try {
         const r = await markOrderPaidManually(fd);
-        setRes(r);
         if (r.ok) {
-          setTimeout(() => {
-            setOrderId(null);
-            router.refresh();
-          }, 900);
+          // The action revalidates the list: the paid order can leave a
+          // filtered view and take this panel (mounted in the list) with it,
+          // so the result goes to the admin toast and the panel closes.
+          announceAdminResult(r);
+          setOrderId(null);
+          router.refresh();
+        } else {
+          setRes(r);
         }
       } catch (e) {
         setRes({ ok: false, message: e instanceof Error ? e.message : 'Failed.' });

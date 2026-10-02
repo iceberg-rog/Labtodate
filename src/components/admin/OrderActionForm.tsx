@@ -19,9 +19,11 @@ import { announceAdminResult } from './AdminResultToast';
  * `confirmText` adds a confirmation step (for refund / cancel / delete).
  *
  * `announce`: report a success in the admin-wide toast instead of inline — for
- * forms that disappear once the action lands (a refunded order loses its
- * "Order actions" card, a moved row leaves a filtered list), which would take
- * an inline message with them.
+ * forms that may disappear once the action lands (a refunded order loses its
+ * "Order actions" card, a moved row leaves a filtered list), so every outcome
+ * of that control reads the same. When the form is already gone by the time
+ * the result arrives, <AdminActionForm> hands it to the toast itself (with or
+ * without `announce`).
  */
 export function OrderActionForm({
   action,

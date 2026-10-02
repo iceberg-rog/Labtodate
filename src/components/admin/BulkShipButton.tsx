@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Truck, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { bulkMarkAllShipped } from '@/app/admin/actions';
+import { announceAdminResult } from './AdminResultToast';
 
 /**
  * Overview "ship everything" control. It calls bulkMarkAllShipped, which ships
@@ -21,8 +22,14 @@ export function BulkShipButton({ count }: { count: number }) {
     start(async () => {
       try {
         const r = await bulkMarkAllShipped();
-        setRes({ ok: r.ok, message: r.message });
-        if (r.ok) router.refresh();
+        if (r.ok) {
+          // Shipping everything drops the count to 0 and this control renders
+          // nothing after the refresh, so the result goes to the admin toast.
+          announceAdminResult(r);
+          router.refresh();
+        } else {
+          setRes({ ok: r.ok, message: r.message });
+        }
       } catch {
         setRes({ ok: false, message: 'Something went wrong — refresh to see what shipped, then retry.' });
       }

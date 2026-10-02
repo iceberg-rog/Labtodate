@@ -961,7 +961,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
             </div>
           </section>
 
-          <form action={setOrderNotes} className="rounded-2xl border border-border bg-card overflow-hidden">
+          <OrderActionForm action={setOrderNotes} className="rounded-2xl border border-border bg-card overflow-hidden" messageClassName="px-5 pb-4">
             <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
               <StickyNote className="h-4 w-4 text-primary" />
               <h2 className="text-sm font-bold">Internal notes</h2>
@@ -983,7 +983,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 Internal only — never sent to buyer. Audit-logged.
               </p>
             </div>
-          </form>
+          </OrderActionForm>
         </aside>
       </div>
     </div>
