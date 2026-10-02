@@ -1783,42 +1783,72 @@ export async function setCompanyFeatured(slug: string, featured: boolean) {
 }
 
 const CategoryInput = z.object({
-  name: z.string().min(2).max(80),
-  description: z.string().max(200).optional().nullable(),
+  name: z.string().trim().min(2).max(80),
+  description: z.string().trim().max(200).optional().nullable(),
 });
+const CATEGORY_LABELS = { name: 'Category name', description: 'Description' };
 
-export async function createCategory(input: z.infer<typeof CategoryInput>) {
+// Category actions return {ok,message} instead of throwing: they run from
+// form submits, and a thrown error became a full-page 500.
+
+export async function createCategory(input: z.infer<typeof CategoryInput>): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
-  const parsed = CategoryInput.parse(input);
-  const slug = parsed.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const r = CategoryInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, CATEGORY_LABELS) };
+  const parsed = r.data;
+  const dup = await prisma.category.findFirst({
+    where: { name: { equals: parsed.name, mode: 'insensitive' } },
+    select: { id: true },
+  });
+  if (dup) return { ok: false, message: `A category named “${parsed.name}” already exists.` };
+  // Names with no Latin letters/digits (e.g. Persian) have no ASCII slug of
+  // their own; they get "category", "category-x7k2", … instead of ''.
+  const slug = await uniqueSlug(/[a-z0-9]/i.test(parsed.name) ? parsed.name : 'category', async (s) =>
+    !!(await prisma.category.findUnique({ where: { slug: s }, select: { id: true } })),
+  );
   const count = await prisma.category.count();
   await prisma.category.create({
-    data: { slug, name: parsed.name, description: parsed.description ?? null, sortOrder: count },
+    data: { slug, name: parsed.name, description: parsed.description || null, sortOrder: count },
   });
+  await audit('category.create', slug);
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Category “${parsed.name}” added.` };
 }
 
-export async function updateCategory(input: { id: string; name: string; description?: string | null }) {
+export async function updateCategory(input: { id: string; name: string; description?: string | null }): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
-  const parsed = CategoryInput.parse({ name: input.name, description: input.description ?? null });
+  const r = CategoryInput.safeParse({ name: input.name, description: input.description ?? null });
+  if (!r.success) return { ok: false, message: zodMessage(r.error, CATEGORY_LABELS) };
+  const parsed = r.data;
+  const dup = await prisma.category.findFirst({
+    where: { name: { equals: parsed.name, mode: 'insensitive' }, NOT: { id: input.id } },
+    select: { id: true },
+  });
+  if (dup) return { ok: false, message: `Another category is already named “${parsed.name}”.` };
+  const existing = await prisma.category.findUnique({ where: { id: input.id }, select: { id: true } });
+  if (!existing) return { ok: false, message: 'Category not found — it may have been deleted.' };
   await prisma.category.update({
     where: { id: input.id },
-    data: { name: parsed.name, description: parsed.description ?? null },
+    data: { name: parsed.name, description: parsed.description || null },
   });
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Saved “${parsed.name}”.` };
 }
 
-export async function deleteCategory(id: string) {
+export async function deleteCategory(id: string): Promise<{ ok: boolean; message: string }> {
   await requireCap('categories:manage');
   const [products, children] = await Promise.all([
     prisma.product.count({ where: { categoryId: id } }),
     prisma.category.count({ where: { parentId: id } }),
   ]);
-  if (products > 0) throw new Error(`Cannot delete: ${products} product(s) still use this category.`);
-  if (children > 0) throw new Error(`Cannot delete: it has ${children} sub-categor(ies).`);
+  if (products > 0) return { ok: false, message: `Cannot delete: ${products} product(s) still use this category.` };
+  if (children > 0) return { ok: false, message: `Cannot delete: it has ${children} sub-categor(ies).` };
+  const cat = await prisma.category.findUnique({ where: { id }, select: { name: true } });
+  if (!cat) return { ok: false, message: 'Category not found — it may already be deleted.' };
   await prisma.category.delete({ where: { id } });
   await audit('category.delete', id);
   revalidatePath('/admin/categories');
+  return { ok: true, message: `Category “${cat.name}” deleted.` };
 }
 
 export async function replyToThread(threadId: string, body: string) {
@@ -1835,14 +1865,25 @@ export async function replyToThread(threadId: string, body: string) {
   revalidatePath('/admin/messages');
 }
 
-const BrandInput = z.object({ name: z.string().min(2).max(80), logoUrl: z.string().url().nullish() });
+const BrandInput = z.object({ name: z.string().trim().min(2).max(80), logoUrl: z.string().url().nullish() });
+const BRAND_LABELS = { name: 'Brand name', logoUrl: 'Logo' };
+
+/** Case-insensitive name clash (duplicates showed up twice in product dropdowns). */
+async function brandNameTaken(name: string, exceptId?: string): Promise<boolean> {
+  return !!(await prisma.brand.findFirst({
+    where: { name: { equals: name, mode: 'insensitive' }, ...(exceptId ? { NOT: { id: exceptId } } : {}) },
+    select: { id: true },
+  }));
+}
 
 export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string; slug?: string }> {
   await requireCap('products:edit');
-  const parsed = BrandInput.parse(input);
+  const r = BrandInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, BRAND_LABELS) };
+  const parsed = r.data;
+  if (await brandNameTaken(parsed.name)) return { ok: false, message: `A brand named “${parsed.name}” already exists.` };
   const baseSlug = parsed.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  if (baseSlug.length < 2) return { ok: false, message: 'Brand name produces an empty slug.' };
-  const slug = await uniqueSlug(baseSlug, async (s) =>
+  const slug = await uniqueSlug(baseSlug.length >= 2 ? baseSlug : 'brand', async (s) =>
     !!(await prisma.brand.findUnique({ where: { slug: s }, select: { id: true } })),
   );
   await prisma.brand.create({ data: { slug, name: parsed.name, logoUrl: parsed.logoUrl ?? null } });
@@ -1854,9 +1895,12 @@ export async function createBrand(input: z.infer<typeof BrandInput>): Promise<{ 
 
 export async function updateBrand(id: string, input: z.infer<typeof BrandInput>): Promise<{ ok: boolean; message: string }> {
   await requireCap('products:edit');
-  const parsed = BrandInput.parse(input);
+  const r = BrandInput.safeParse(input);
+  if (!r.success) return { ok: false, message: zodMessage(r.error, BRAND_LABELS) };
+  const parsed = r.data;
   const existing = await prisma.brand.findUnique({ where: { id } });
   if (!existing) return { ok: false, message: 'Brand not found.' };
+  if (await brandNameTaken(parsed.name, id)) return { ok: false, message: `Another brand is already named “${parsed.name}”.` };
   await prisma.brand.update({ where: { id }, data: { name: parsed.name, logoUrl: parsed.logoUrl ?? null } });
   await audit('brand.update', existing.slug);
   revalidatePath('/admin/brands');
