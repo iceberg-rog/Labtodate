@@ -1,3 +1,4 @@
+import { cache } from 'react';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { auth, type Session } from './auth';
@@ -6,12 +7,37 @@ import { capsAllow, type Capability } from './capabilities';
 
 /**
  * Read the current session in a server component / server action / route handler.
- * Returns null if not signed in.
+ * Returns null if not signed in, or if the account hasn't verified its email
+ * (such sessions predate verification being enforced and must not be usable).
+ * May be up to a minute stale (cookie cache) — see getActiveSession.
  */
 export async function getServerSession(): Promise<Session | null> {
   const session = await auth.api.getSession({ headers: await headers() });
+  if (!session?.user.emailVerified) return null;
   return session;
 }
+
+/**
+ * Like getServerSession, but re-reads the session row instead of trusting the
+ * ≤60s cookie cache, and refuses suspended accounts — so a sign-out, revoked
+ * session or suspension takes effect immediately. Used by requireSession and
+ * by the sign-in / sign-up pages' "already signed in" redirect, which must
+ * agree with requireSession or the two would bounce a user between them.
+ * Cached per request (layout + page both call requireSession).
+ */
+export const getActiveSession = cache(async (): Promise<Session | null> => {
+  const session = await auth.api.getSession({
+    headers: await headers(),
+    query: { disableCookieCache: true },
+  });
+  if (!session?.user.emailVerified) return null;
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { suspendedAt: true },
+  });
+  if (!user || user.suspendedAt) return null;
+  return session;
+});
 
 /**
  * Require a session in a server component. Redirects to /auth/sign-in if missing.
@@ -21,7 +47,7 @@ export async function requireSession(opts?: {
   roles?: readonly ('BUYER' | 'SELLER' | 'ADMIN')[];
   redirectTo?: string;
 }): Promise<Session> {
-  const session = await getServerSession();
+  const session = await getActiveSession();
   if (!session) {
     const signInUrl = new URL('/auth/sign-in', process.env.BETTER_AUTH_URL || 'http://localhost:3000');
     if (opts?.redirectTo) signInUrl.searchParams.set('redirect', opts.redirectTo);
