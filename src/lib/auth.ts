@@ -29,6 +29,11 @@ const SITE_URL = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
 // or a sign-in email — blocked up front for suspended accounts.
 const SUSPENSION_GATED = ['/sign-up/email', '/email-otp/send-verification-otp', '/email-otp/verify-email'];
 
+// better-auth endpoints that change the account on the strength of a session
+// found via `sessionMiddleware`, which trusts the cookie cache (the sensitive
+// ones — change-password, revoke-sessions, … — already bypass it).
+const SESSION_WRITES = ['/update-user', '/update-session', '/link-social', '/unlink-account'];
+
 function suspendedError(reason: string | null) {
   return new APIError('FORBIDDEN', { message: `Account suspended: ${reason || 'contact support'}` });
 }
@@ -274,6 +279,14 @@ export const auth = betterAuth({
           return { context: { query: { ...query, errorCallbackURL: signInErrorURL(query.callbackURL) } } };
         }
         return;
+      }
+
+      // Session-backed writes inside better-auth (Profile name / photo via
+      // update-user, …) re-read the session row instead of trusting the ≤60s
+      // cookie cache, so a signed-out, revoked or suspended session can't
+      // keep changing the account. (Password / email changes already do.)
+      if (SESSION_WRITES.includes(ctx.path)) {
+        return { context: { query: { ...(ctx.query ?? {}), disableCookieCache: true } } };
       }
 
       if (!ctx.path.startsWith('/sign-in/') && !SUSPENSION_GATED.includes(ctx.path)) return;
