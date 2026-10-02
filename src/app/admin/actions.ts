@@ -12,7 +12,7 @@ import { expireOnlyApi } from '@/lib/stripe/session-api';
 import { requireSession, requireCapability, hasCapability } from '@/lib/auth-server';
 import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
 import { Prisma, UserRole } from '@prisma/client';
-import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
+import { saveSettings as persistSettings, SETTING_DEFS, isSiteRelativePath } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
 import { readVerifiedUpload } from '@/lib/storage/file-type';
 import { isDeliverableEmail, sendEmail } from '@/lib/email';
@@ -1103,6 +1103,25 @@ export async function verifySetting(
         : { ok: false, message: `“${val}” is not a valid non-negative number.` };
     }
     if (verify === 'url' || verify === 'image') {
+      // A site-relative image path (an uploaded logo is stored as /media/…) is
+      // accepted on Save — check it on this site, resolved exactly like the
+      // invoice does (`${BETTER_AUTH_URL}${path}`), instead of rejecting it as
+      // "not a valid URL". The host is our own configured origin, never the
+      // setting's value, so this needs no SSRF guard (and the dev origin is
+      // localhost, which safeFetch would refuse); redirects are not followed.
+      if (verify === 'image' && isSiteRelativePath(val)) {
+        const origin = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
+        if (!origin) return { ok: false, message: 'Site-relative path, but the site address (BETTER_AUTH_URL) is not set — enter a full https:// URL instead.' };
+        const target = new URL(`${origin}${val}`);
+        if (target.origin !== new URL(origin).origin) return { ok: false, message: `“${val}” is not a valid path on this site.` };
+        const r = await fetch(target, { redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(12000) });
+        await r.body?.cancel().catch(() => {});
+        if (r.status < 200 || r.status >= 300) return { ok: false, message: `Not found on this site — HTTP ${r.status} for ${target.pathname}.` };
+        const ct = r.headers.get('content-type') || '';
+        return ct.startsWith('image/')
+          ? { ok: true, message: `Reachable image on this site (${ct}).` }
+          : { ok: false, message: `Reachable but not an image (content-type: ${ct || 'unknown'}).` };
+      }
       let u: URL;
       try {
         u = new URL(val);

@@ -4,6 +4,7 @@ import { createWikiArticle } from '@/lib/content/actions';
 import type { WikiInputType } from '@/lib/content/actions';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'New wiki article' };
 
 export default async function NewWikiPage() {
   await requireCapability('content:write');

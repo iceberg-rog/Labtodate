@@ -20,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { formatPrice } from '@/lib/utils';
 import {
   setOrderNotes,
@@ -32,6 +33,7 @@ import {
 } from '@/app/admin/actions';
 import { BuyerEmailReveal } from '@/components/admin/BuyerEmailReveal';
 import { OrderActionForm } from '@/components/admin/OrderActionForm';
+import { StickyDetails } from '@/components/admin/StickyDetails';
 import {
   humaniseBuyer,
   proxyProofUrl,
@@ -42,6 +44,14 @@ import {
 } from '@/lib/orders/display';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('orders:view', 'Order', async () => {
+    const { id } = await props.params;
+    const o = await prisma.order.findUnique({ where: { id }, select: { orderNumber: true } });
+    return o && `Order ${o.orderNumber}`;
+  });
+}
 
 const TONE_CLASS: Record<string, string> = {
   amber: 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',
@@ -409,7 +419,9 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
               </div>
             </div>
             {canEditAddress && (
-              <details className="border-t border-border" open={!hasCompleteAddress}>
+              // Stays open after a save (the address is complete now), so the
+              // operator sees "Shipping address saved.".
+              <StickyDetails className="border-t border-border" defaultOpen={!hasCompleteAddress}>
                 <summary className="cursor-pointer px-5 py-2.5 text-xs font-semibold text-primary hover:bg-foreground/[0.02]">
                   {hasCompleteAddress ? 'Edit shipping address' : 'Add the shipping address (required before shipping)'}
                 </summary>
@@ -433,7 +445,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     </Button>
                   </div>
                 </OrderActionForm>
-              </details>
+              </StickyDetails>
             )}
             <div className="px-5 py-3 border-t border-border bg-foreground/[0.02] grid sm:grid-cols-2 gap-4 text-sm">
               <div>
@@ -663,14 +675,14 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
 
                 <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200 dark:border-amber-800">
                   {/* Verify */}
-                  <OrderActionForm action={verifyPayment} className="space-y-2">
+                  <OrderActionForm action={verifyPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
                     <Button type="submit" size="sm" className="w-full rounded-full bg-emerald-600 hover:bg-emerald-700 text-white">
                       <ShieldCheck className="h-3.5 w-3.5" /> Verify payment
                     </Button>
                   </OrderActionForm>
                   {/* Reject — reason required */}
-                  <OrderActionForm action={rejectPayment} className="space-y-2">
+                  <OrderActionForm action={rejectPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
                     <input
                       type="text"
@@ -848,9 +860,11 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
               </div>
               <div className="p-5 space-y-3 text-sm">
                 {canRefund && (
+                  // announce: the card is gone once the order is refunded.
                   <OrderActionForm
                     action={refundOrder}
                     className="space-y-2"
+                    announce
                     confirmText={`Refund order ${order.orderNumber} (${formatPrice(order.totalCents, order.currency)})? The order is marked refunded and the buyer is emailed${order.sourcingRequestId ? '' : '; the stock goes back to the catalog'}. This cannot be undone.`}
                   >
                     <input type="hidden" name="orderId" value={order.id} />
@@ -866,6 +880,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   <OrderActionForm
                     action={cancelOrder}
                     className="space-y-2"
+                    announce
                     confirmText={`Cancel unpaid order ${order.orderNumber}? The buyer is notified${order.sourcingRequestId ? '' : ' and the reserved stock is released'}.`}
                   >
                     <input type="hidden" name="orderId" value={order.id} />

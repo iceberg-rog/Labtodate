@@ -86,10 +86,12 @@ export function AdminActionForm({
   );
 }
 
-/** Inline result of the enclosing <AdminActionForm> (renders nothing idle). */
-export function AdminActionStatus({ className = '' }: { className?: string }) {
+/** Inline result of the enclosing <AdminActionForm> (renders nothing idle).
+ *  `hideSuccess`: a success is reported elsewhere (the admin result toast). */
+export function AdminActionStatus({ className = '', hideSuccess = false }: { className?: string; hideSuccess?: boolean }) {
   const ctx = useContext(StatusCtx);
   if (!ctx || (!ctx.pending && !ctx.state)) return null;
+  if (hideSuccess && !ctx.pending && ctx.state?.ok) return null;
   const { state, pending } = ctx;
   return (
     <p

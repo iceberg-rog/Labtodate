@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { requireCapability, getServerSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { EmailText } from '@/components/util/EmailText';
 import { QuoteComposer } from '@/components/admin/QuoteComposer';
@@ -23,6 +24,14 @@ import { MessageAttachments } from '@/components/util/MessageAttachments';
 import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('quotes:view', 'Quote request', async () => {
+    const { id } = await props.params;
+    const sr = await prisma.sourcingRequest.findUnique({ where: { id }, select: { id: true, proformaNumber: true } });
+    return sr && `Quote ${sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`}`;
+  });
+}
 
 function priorityChip(priority: string) {
   const styles: Record<string, { cls: string; icon: JSX.Element; label: string }> = {

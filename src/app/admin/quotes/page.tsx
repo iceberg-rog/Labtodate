@@ -24,6 +24,8 @@ const TAB_STATUSES: Array<{
   label: string;
   statusFilter?: QuoteStatus[];
   extraWhere?: Prisma.SourcingRequestWhereInput;
+  /** Not a tab button — the view the header signal chips link to. */
+  hidden?: boolean;
 }> = [
   {
     key: 'open',
@@ -43,7 +45,13 @@ const TAB_STATUSES: Array<{
   { key: 'won',      label: 'Won',      statusFilter: ['ACCEPTED'] },
   { key: 'lost',     label: 'Lost',     statusFilter: ['DECLINED', 'CLOSED'] },
   { key: 'all',      label: 'All',      statusFilter: undefined },
+  // Open + Waiting together: every live deal. The VIP/Urgent, My queue and
+  // Unassigned chips count exactly this set, so they link here — linking to
+  // Open hid the proforma'd deals they had counted.
+  { key: 'active',   label: 'Open + waiting', statusFilter: ['PENDING', 'RESPONDED'], hidden: true },
 ];
+// The statuses the signal chips count (= the 'active' tab).
+const ACTIVE_STATUSES: QuoteStatus[] = ['PENDING', 'RESPONDED'];
 
 const SORT_OPTIONS = [
   { key: 'urgency', label: 'Urgency' },
@@ -53,6 +61,8 @@ const SORT_OPTIONS = [
 ] as const;
 type SortKey = (typeof SORT_OPTIONS)[number]['key'];
 const PRIORITY_WEIGHT: Record<string, number> = { VIP: 0, URGENT: 1, HIGH: 2, NORMAL: 3, LOW: 4 };
+// The "VIP/Urgent" chip: one definition for its count and its list.
+const HOT_PRIORITIES = ['VIP', 'URGENT'];
 const STATUS_WEIGHT: Record<string, number> = {
   PENDING: 0, RESPONDED: 1, ACCEPTED: 2, DECLINED: 3, CLOSED: 4,
 };
@@ -71,7 +81,15 @@ export default async function AdminQuotesPage(
   const tab = TAB_STATUSES.find((t) => t.key === searchParams.tab) ?? TAB_STATUSES[0];
   const view = searchParams.view === 'archived' ? 'archived' : '';
   const assignee = searchParams.assignee ?? '';
-  const priority = searchParams.priority ?? '';
+  // One or more priorities, comma-separated (the VIP/Urgent chip sends both);
+  // unknown values are ignored.
+  const priorities = Array.from(new Set(
+    (searchParams.priority ?? '')
+      .split(',')
+      .map((p) => p.trim().toUpperCase())
+      .filter((p) => p in PRIORITY_WEIGHT),
+  ));
+  const priority = priorities.join(',');
   const sort: SortKey = (SORT_OPTIONS.find((s) => s.key === searchParams.sort)?.key ?? 'urgency') as SortKey;
 
   const where: Prisma.SourcingRequestWhereInput = {
@@ -80,7 +98,7 @@ export default async function AdminQuotesPage(
     ...(tab.extraWhere ?? {}),
     ...(assignee === 'me' && session?.user.id ? { assignedToId: session.user.id } : {}),
     ...(assignee === 'unassigned' ? { assignedToId: null } : {}),
-    ...(priority ? { priority } : {}),
+    ...(priorities.length ? { priority: { in: priorities } } : {}),
     ...(q
       ? {
           OR: [
@@ -176,10 +194,10 @@ export default async function AdminQuotesPage(
   const [archivedCount, myCount, unassignedCount, urgentVipCount] = await Promise.all([
     prisma.sourcingRequest.count({ where: { archivedAt: { not: null } } }),
     session?.user.id
-      ? prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: session.user.id, status: { in: ['PENDING', 'RESPONDED'] } } })
+      ? prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: session.user.id, status: { in: ACTIVE_STATUSES } } })
       : 0,
-    prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: null, status: { in: ['PENDING', 'RESPONDED'] } } }),
-    prisma.sourcingRequest.count({ where: { archivedAt: null, priority: { in: ['VIP', 'URGENT'] }, status: { in: ['PENDING', 'RESPONDED'] } } }),
+    prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: null, status: { in: ACTIVE_STATUSES } } }),
+    prisma.sourcingRequest.count({ where: { archivedAt: null, priority: { in: HOT_PRIORITIES }, status: { in: ACTIVE_STATUSES } } }),
   ]);
 
   function href(over: Partial<{ tab: string; view: string; assignee: string; priority: string; q: string; sort: string }>) {
@@ -215,9 +233,11 @@ export default async function AdminQuotesPage(
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs flex-wrap">
-          <SignalChip label="VIP/Urgent" value={urgentVipCount} tone={urgentVipCount > 0 ? 'red' : 'neutral'} href={href({ priority: 'URGENT', view: '' })} />
-          <SignalChip label="My queue" value={myCount} tone={myCount > 0 ? 'amber' : 'neutral'} href={href({ assignee: 'me', view: '' })} />
-          <SignalChip label="Unassigned" value={unassignedCount} tone={unassignedCount > 0 ? 'amber' : 'neutral'} href={href({ assignee: 'unassigned', view: '' })} />
+          {/* Each chip links to exactly the set it counts: live deals (Open +
+              waiting, not archived) with that filter alone. */}
+          <SignalChip label="VIP/Urgent" value={urgentVipCount} tone={urgentVipCount > 0 ? 'red' : 'neutral'} href={href({ tab: 'active', view: '', priority: HOT_PRIORITIES.join(','), assignee: '', q: '' })} />
+          <SignalChip label="My queue" value={myCount} tone={myCount > 0 ? 'amber' : 'neutral'} href={href({ tab: 'active', view: '', assignee: 'me', priority: '', q: '' })} />
+          <SignalChip label="Unassigned" value={unassignedCount} tone={unassignedCount > 0 ? 'amber' : 'neutral'} href={href({ tab: 'active', view: '', assignee: 'unassigned', priority: '', q: '' })} />
         </div>
       </div>
 
@@ -253,7 +273,7 @@ export default async function AdminQuotesPage(
       </form>
 
       <div className="flex gap-1.5 flex-wrap border-b border-border pb-2">
-        {TAB_STATUSES.map((t) => (
+        {TAB_STATUSES.filter((t) => !t.hidden || tab.key === t.key).map((t) => (
           <a
             key={t.key}
             href={href({ tab: t.key, view: '' })}
@@ -289,7 +309,7 @@ export default async function AdminQuotesPage(
           )}
           {priority && (
             <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 font-semibold">
-              Priority: {priority}
+              Priority: {priorities.join(' / ')}
               <a href={href({ priority: '' })} className="ml-1 opacity-60 hover:opacity-100">×</a>
             </span>
           )}

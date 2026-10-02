@@ -140,7 +140,7 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
                 className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
             </Field>
           </div>
-          <Field label="Cover photo (overrides illustration when set)">
+          <Field label="Cover photo (overrides illustration when set)" plain>
             <div className="rounded-2xl border border-border bg-card p-4">
               <div className="flex gap-4 flex-wrap items-start">
                 <div className="aspect-[16/10] w-56 rounded-xl border border-border bg-muted overflow-hidden flex items-center justify-center flex-shrink-0">
@@ -205,7 +205,7 @@ export function ContentForm<T extends BlogInitial | WikiInitial>({
         </Field>
       )}
 
-      <Field label="Body">
+      <Field label="Body" plain>
         <TiptapEditor value={body} onChange={setBody} />
       </Field>
 
@@ -241,11 +241,23 @@ function bodyTextLength(html: string): number {
   return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim().length;
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  plain,
+  children,
+}: {
+  label: string;
+  /** Render a <div>, not a <label>: a label forwards clicks on its caption to
+   *  its first control — in the rich-text editor that is the Bold button, on
+   *  the cover photo the file picker. */
+  plain?: boolean;
+  children: React.ReactNode;
+}) {
+  const Wrapper = plain ? 'div' : 'label';
   return (
-    <label className="block">
+    <Wrapper className="block">
       <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5">{label}</span>
       {children}
-    </label>
+    </Wrapper>
   );
 }

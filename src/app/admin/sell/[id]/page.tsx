@@ -8,6 +8,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { requireCapability, getServerSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { adminDetailTitle } from '@/app/admin/admin-title';
 import { setSellStatus } from '@/app/admin/actions';
 import {
   replySellSubmission,
@@ -25,6 +26,14 @@ import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { computeSellState, sellToneClasses } from '@/lib/sell/deal-state';
 
 export const dynamic = 'force-dynamic';
+
+export function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  return adminDetailTitle('sell:view', 'Sell submission', async () => {
+    const { id } = await props.params;
+    const sub = await prisma.sellSubmission.findUnique({ where: { id }, select: { id: true } });
+    return sub && `Sell submission SS-${sub.id.slice(-6).toUpperCase()}`;
+  });
+}
 
 function smartDate(d: Date | null | undefined): string {
   if (!d) return '';

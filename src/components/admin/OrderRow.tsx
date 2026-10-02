@@ -35,6 +35,7 @@ import {
 } from '@/app/admin/actions';
 import { BuyerEmailReveal } from './BuyerEmailReveal';
 import { OrderActionForm } from './OrderActionForm';
+import { announceAdminResult } from './AdminResultToast';
 import {
   PRIORITY_CLASS,
   PRIORITY_LABEL,
@@ -139,8 +140,10 @@ export function OrderRow(p: OrderRowProps) {
   // One armed confirmation at a time, keyed by action — a single shared flag
   // armed "Cancel" and "Delete forever" together on archived pending rows.
   const [confirm, setConfirm] = useState<null | 'refund' | 'cancel' | 'delete'>(null);
-  // Result of the last row action, shown in the row (server messages are
-  // returned, not thrown — production redacts thrown messages).
+  // Result of the last FAILED row action, shown in the row (server messages
+  // are returned, not thrown — production redacts thrown messages). Successes
+  // go to the admin-wide toast: a deleted, archived/restored or re-statused
+  // order leaves the current list on refresh, taking an in-row message with it.
   const [rowMsg, setRowMsg] = useState<{ ok: boolean; message: string } | null>(null);
 
   const canFulfil = p.status === 'PAID' || p.status === 'PROCESSING' || p.status === 'SHIPPED';
@@ -177,10 +180,12 @@ export function OrderRow(p: OrderRowProps) {
       for (const [k, v] of Object.entries(extra ?? {})) fd.set(k, v);
       try {
         const r = await action(fd);
-        setRowMsg(r ?? { ok: false, message: 'No response — refresh to check the order.' });
         if (r?.ok) {
+          announceAdminResult(r);
           onOk?.();
           router.refresh();
+        } else {
+          setRowMsg(r ?? { ok: false, message: 'No response — refresh to check the order.' });
         }
       } catch {
         setRowMsg({ ok: false, message: 'Something went wrong — refresh to check the order, then retry.' });
@@ -420,6 +425,7 @@ export function OrderRow(p: OrderRowProps) {
             action={setOrderFulfillment}
             className="border-t border-border bg-foreground/[0.02] px-5 py-2.5 flex flex-wrap items-end gap-2"
             messageClassName="basis-full"
+            announce
           >
             <input type="hidden" name="orderId" value={p.id} />
             <label className="block">

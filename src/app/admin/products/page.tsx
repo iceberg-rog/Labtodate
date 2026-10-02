@@ -7,6 +7,7 @@ import { ProductBrowser, type ProductRow } from '@/components/admin/ProductQuick
 import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Products' };
 
 const PAGE_SIZE = 60;
 

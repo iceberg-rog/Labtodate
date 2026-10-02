@@ -4,6 +4,7 @@ import { createBlogPost } from '@/lib/content/actions';
 import type { BlogInputType } from '@/lib/content/actions';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'New blog post' };
 
 export default async function NewBlogPostPage() {
   await requireCapability('content:write');

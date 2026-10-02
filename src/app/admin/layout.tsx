@@ -27,6 +27,7 @@ import { TICKETS_AWAITING_SUPPORT } from '@/lib/support/statuses';
 import { AdminNavLink, NavSection } from '@/components/admin/AdminNavLink';
 import { AdminTopBar } from '@/components/admin/AdminTopBar';
 import { NewOrderToast } from '@/components/admin/NewOrderToast';
+import { AdminResultToast } from '@/components/admin/AdminResultToast';
 import { MobileDrawer } from '@/components/util/MobileDrawer';
 
 export const dynamic = 'force-dynamic';
@@ -208,6 +209,8 @@ export default async function AdminLayout({ children }: { children: React.ReactN
        *  admin route, not just /admin/orders, so an admin on the dashboard
        *  or in settings still sees a sale arrive. */}
       <NewOrderToast />
+      {/* Results of actions that remove their own row/card (see announceAdminResult). */}
+      <AdminResultToast />
     </div>
   );
 }

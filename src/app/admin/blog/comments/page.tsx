@@ -8,6 +8,7 @@ import { setBlogCommentApproved, deleteBlogComment } from '@/lib/blog/actions';
 import { SubmitWithConfirm } from '@/components/util/SubmitWithConfirm';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Blog comments' };
 
 export default async function AdminBlogCommentsPage(
   props: {

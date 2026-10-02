@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { AdminActionForm, AdminActionStatus } from './AdminActionForm';
+import { announceAdminResult } from './AdminResultToast';
 
 /**
  * <form> wrapper for admin order actions that return `{ ok, message }`.
@@ -16,18 +17,25 @@ import { AdminActionForm, AdminActionStatus } from './AdminActionForm';
  * renders through <AdminActionStatus>.
  *
  * `confirmText` adds a confirmation step (for refund / cancel / delete).
+ *
+ * `announce`: report a success in the admin-wide toast instead of inline — for
+ * forms that disappear once the action lands (a refunded order loses its
+ * "Order actions" card, a moved row leaves a filtered list), which would take
+ * an inline message with them.
  */
 export function OrderActionForm({
   action,
   className,
   messageClassName,
   confirmText,
+  announce = false,
   children,
 }: {
   action: (formData: FormData) => Promise<{ ok: boolean; message: string }>;
   className?: string;
   messageClassName?: string;
   confirmText?: string;
+  announce?: boolean;
   children: React.ReactNode;
 }) {
   const router = useRouter();
@@ -38,11 +46,12 @@ export function OrderActionForm({
       confirmMessage={confirmText}
       statusInChildren
       onResult={(r) => {
+        if (r.ok && announce) announceAdminResult(r);
         if (r.ok) router.refresh();
       }}
     >
       {children}
-      <AdminActionStatus className={messageClassName} />
+      <AdminActionStatus className={messageClassName} hideSuccess={announce} />
     </AdminActionForm>
   );
 }
