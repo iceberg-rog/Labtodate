@@ -52,6 +52,9 @@ const TAB_STATUSES: Array<{
 ];
 // The statuses the signal chips count (= the 'active' tab).
 const ACTIVE_STATUSES: QuoteStatus[] = ['PENDING', 'RESPONDED'];
+// The reference shown on a row: the proforma number, or "RFQ-XXXXXX" (last 6 of the id).
+const RFQ_REF = /^RFQ-?[a-z0-9]{6}$/i;
+const isRefSearch = (q: string) => /^PRO-/i.test(q) || RFQ_REF.test(q);
 
 const SORT_OPTIONS = [
   { key: 'urgency', label: 'Urgency' },
@@ -78,7 +81,14 @@ export default async function AdminQuotesPage(
   await requireCapability('quotes:view');
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();
-  const tab = TAB_STATUSES.find((t) => t.key === searchParams.tab) ?? TAB_STATUSES[0];
+  // A reference (PRO-… proforma or RFQ-XXXXXX) names one deal wherever it is,
+  // so searched from the default view it is looked up across every tab — the
+  // Open default excludes every quote with a proforma, so a PRO- search there
+  // could never match. A tab picked explicitly still applies (its match count
+  // below shows where the hits are).
+  const tab =
+    TAB_STATUSES.find((t) => t.key === searchParams.tab) ??
+    (isRefSearch(q) ? TAB_STATUSES.find((t) => t.key === 'all')! : TAB_STATUSES[0]);
   const view = searchParams.view === 'archived' ? 'archived' : '';
   const assignee = searchParams.assignee ?? '';
   // One or more priorities, comma-separated (the VIP/Urgent chip sends both);
@@ -92,10 +102,9 @@ export default async function AdminQuotesPage(
   const priority = priorities.join(',');
   const sort: SortKey = (SORT_OPTIONS.find((s) => s.key === searchParams.sort)?.key ?? 'urgency') as SortKey;
 
-  const where: Prisma.SourcingRequestWhereInput = {
-    ...(view === 'archived' ? { archivedAt: { not: null } } : { archivedAt: null }),
-    ...(tab.statusFilter ? { status: { in: tab.statusFilter } } : {}),
-    ...(tab.extraWhere ?? {}),
+  // The filters shared by every tab (the tab adds its own status scope).
+  const filterWhere = (archived: boolean): Prisma.SourcingRequestWhereInput => ({
+    ...(archived ? { archivedAt: { not: null } } : { archivedAt: null }),
     ...(assignee === 'me' && session?.user.id ? { assignedToId: session.user.id } : {}),
     ...(assignee === 'unassigned' ? { assignedToId: null } : {}),
     ...(priorities.length ? { priority: { in: priorities } } : {}),
@@ -110,11 +119,16 @@ export default async function AdminQuotesPage(
             { proformaNumber: { contains: q, mode: 'insensitive' as const } },
             { product: { title: { contains: q, mode: 'insensitive' as const } } },
             // The list shows "RFQ-XXXXXX" (last 6 of the id) — make that searchable.
-            ...(/^RFQ-?[a-z0-9]{6}$/i.test(q) ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
+            ...(RFQ_REF.test(q) ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
           ],
         }
       : {}),
-  };
+  });
+  const tabWhere = (t: (typeof TAB_STATUSES)[number]): Prisma.SourcingRequestWhereInput => ({
+    ...(t.statusFilter ? { status: { in: t.statusFilter } } : {}),
+    ...(t.extraWhere ?? {}),
+  });
+  const where: Prisma.SourcingRequestWhereInput = { ...filterWhere(view === 'archived'), ...tabWhere(tab) };
 
   // For urgency/sla, fetch wider then sort post-fetch
   const orderByForFetch =
@@ -199,6 +213,16 @@ export default async function AdminQuotesPage(
     prisma.sourcingRequest.count({ where: { archivedAt: null, assignedToId: null, status: { in: ACTIVE_STATUSES } } }),
     prisma.sourcingRequest.count({ where: { archivedAt: null, priority: { in: HOT_PRIORITIES }, status: { in: ACTIVE_STATUSES } } }),
   ]);
+  // While searching, every tab (and Archived) shows how many of its deals
+  // match, so a hit outside the tab being viewed is visible from it.
+  const visibleTabs = TAB_STATUSES.filter((t) => !t.hidden || tab.key === t.key);
+  const [tabMatchCounts, archivedMatchCount] = q
+    ? await Promise.all([
+        Promise.all(visibleTabs.map((t) => prisma.sourcingRequest.count({ where: { ...filterWhere(false), ...tabWhere(t) } })))
+          .then((counts) => new Map(visibleTabs.map((t, i) => [t.key, counts[i]]))),
+        prisma.sourcingRequest.count({ where: filterWhere(true) }),
+      ])
+    : [null, null];
 
   function href(over: Partial<{ tab: string; view: string; assignee: string; priority: string; q: string; sort: string }>) {
     const sp = new URLSearchParams();
@@ -210,7 +234,8 @@ export default async function AdminQuotesPage(
       q: over.q !== undefined ? over.q : q,
       sort: over.sort !== undefined ? over.sort : (sort === 'urgency' ? '' : sort),
     };
-    if (merged.tab && merged.tab !== 'open') sp.set('tab', merged.tab);
+    // 'open' is the default — except for a reference search, whose default is 'all'.
+    if (merged.tab && (merged.tab !== 'open' || isRefSearch(merged.q))) sp.set('tab', merged.tab);
     if (merged.view) sp.set('view', merged.view);
     if (merged.assignee) sp.set('assignee', merged.assignee);
     if (merged.priority) sp.set('priority', merged.priority);
@@ -273,7 +298,7 @@ export default async function AdminQuotesPage(
       </form>
 
       <div className="flex gap-1.5 flex-wrap border-b border-border pb-2">
-        {TAB_STATUSES.filter((t) => !t.hidden || tab.key === t.key).map((t) => (
+        {visibleTabs.map((t) => (
           <a
             key={t.key}
             href={href({ tab: t.key, view: '' })}
@@ -284,6 +309,7 @@ export default async function AdminQuotesPage(
             }`}
           >
             {t.label}
+            {tabMatchCounts && <span className="opacity-60 tabular-nums"> {tabMatchCounts.get(t.key) ?? 0}</span>}
           </a>
         ))}
         <a
@@ -294,7 +320,7 @@ export default async function AdminQuotesPage(
               : 'bg-card border-border text-foreground hover:bg-foreground/5'
           }`}
         >
-          Archived <span className="opacity-60 tabular-nums">{archivedCount}</span>
+          Archived <span className="opacity-60 tabular-nums">{archivedMatchCount ?? archivedCount}</span>
         </a>
       </div>
 
