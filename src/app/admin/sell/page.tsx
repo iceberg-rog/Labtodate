@@ -11,6 +11,7 @@ import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
 import { computeSellState, sellToneClasses, type SellState } from '@/lib/sell/deal-state';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Acquisitions' };
 
 const PAGE_SIZE = 50;
 
@@ -88,6 +89,8 @@ export default async function AdminSellPage(
             { model: { contains: q, mode: 'insensitive' as const } },
             { itemTitle: { contains: q, mode: 'insensitive' as const } },
             { description: { contains: q, mode: 'insensitive' as const } },
+            // Submissions are shown as "SS-XXXXXX" (last 6 of the id) — make that searchable.
+            ...(/^SS-?[a-z0-9]{6}$/i.test(q) ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
           ],
         }
       : {}),

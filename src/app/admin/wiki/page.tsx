@@ -8,6 +8,7 @@ import { setWikiArticlePublished, deleteWikiArticle } from '@/lib/content/action
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Wiki' };
 
 export default async function AdminWikiPage() {
   await requireCapability('content:write');

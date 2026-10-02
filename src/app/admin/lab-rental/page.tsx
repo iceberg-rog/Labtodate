@@ -7,6 +7,7 @@ import { createFacility, deleteFacility, toggleFacility } from '@/app/admin/acti
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Lab rental' };
 
 export default async function AdminLabRentalPage() {
   await requireCapability('content:cms');

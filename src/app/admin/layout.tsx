@@ -29,6 +29,9 @@ import { NewOrderToast } from '@/components/admin/NewOrderToast';
 import { MobileDrawer } from '@/components/util/MobileDrawer';
 
 export const dynamic = 'force-dynamic';
+// Each admin page sets its own title ("Orders · Admin"); every tab used to read
+// the same generic storefront title.
+export const metadata = { title: { default: 'Admin', template: '%s · Admin' } };
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });

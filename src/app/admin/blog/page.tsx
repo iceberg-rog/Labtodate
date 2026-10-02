@@ -8,6 +8,7 @@ import { setBlogPostPublished, deleteBlogPost } from '@/lib/content/actions';
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Blog' };
 
 export default async function AdminBlogPage() {
   await requireCapability('content:write');

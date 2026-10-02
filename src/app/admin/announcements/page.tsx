@@ -5,6 +5,7 @@ import { sendAnnouncement } from '../actions';
 import { AnnouncementComposer } from '@/components/admin/AnnouncementComposer';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Announcements' };
 
 const KIND_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   OFFER: Sparkles,

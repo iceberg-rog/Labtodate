@@ -16,6 +16,7 @@ import { HomepageReorder, HomepagePreview, type ModuleRow } from '@/components/a
 import { AdminActionForm, AdminActionStatus } from '@/components/admin/AdminActionForm';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Homepage' };
 
 export default async function AdminHomepagePage() {
   await requireCapability('content:cms');

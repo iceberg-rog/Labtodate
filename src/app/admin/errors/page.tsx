@@ -3,6 +3,7 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Errors' };
 
 export default async function AdminErrorsPage() {
   await requireCapability('errors:view');

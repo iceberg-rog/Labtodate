@@ -20,7 +20,7 @@ export function TicketLinkOrder({
   const router = useRouter();
   const [pending, start] = useTransition();
   const [value, setValue] = useState(currentOrderNumber ?? '');
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   function call(orderNumber: string) {
     setMsg(null);
@@ -30,10 +30,10 @@ export function TicketLinkOrder({
       fd.set('orderNumber', orderNumber);
       try {
         const r = await linkTicketToOrder(fd);
-        setMsg(r?.message ?? 'Done.');
-        router.refresh();
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : 'Failed.');
+        setMsg({ ok: r.ok, text: r.message });
+        if (r.ok) router.refresh();
+      } catch {
+        setMsg({ ok: false, text: 'Could not update the link — please try again.' });
       }
     });
   }
@@ -43,7 +43,14 @@ export function TicketLinkOrder({
       <p className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1.5 inline-flex items-center gap-1">
         <Link2 className="h-3 w-3" /> Link order
       </p>
-      <div className="flex items-center gap-2">
+      {/* A form so Enter links too (the button used to be the only way). */}
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!pending && value.trim()) call(value.trim());
+        }}
+      >
         <input
           type="text"
           value={value}
@@ -52,9 +59,8 @@ export function TicketLinkOrder({
           className="flex-1 h-8 px-2 rounded-md border border-input bg-background text-[11px] font-mono"
         />
         <button
-          type="button"
+          type="submit"
           disabled={pending || !value.trim()}
-          onClick={() => call(value.trim())}
           className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md bg-primary text-primary-foreground text-[11px] font-bold hover:bg-primary/90 disabled:opacity-50"
         >
           {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Link'}
@@ -70,8 +76,12 @@ export function TicketLinkOrder({
             <X className="h-3 w-3" />
           </button>
         )}
-      </div>
-      {msg && <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold mt-1">{msg}</p>}
+      </form>
+      {msg && (
+        <p className={`text-[10px] font-semibold mt-1 ${msg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
+          {msg.text}
+        </p>
+      )}
     </div>
   );
 }

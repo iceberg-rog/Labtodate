@@ -7,6 +7,7 @@ import { UserQuickView } from '@/components/admin/UserQuickView';
 import { UsersBulkList } from '@/components/admin/UsersBulkList';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Users' };
 
 async function updateRole(formData: FormData) {
   'use server';

@@ -23,6 +23,7 @@ import { WebhooksPanel } from '@/components/admin/WebhooksPanel';
 import { AdminActionForm } from '@/components/admin/AdminActionForm';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Settings' };
 
 const TAB_CONNECTION: Partial<Record<string, { kind: 'resend' | 'stripe' | 'ai' | 'storage'; label: string; help: string }>> = {
   Email: {

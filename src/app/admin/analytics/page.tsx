@@ -15,6 +15,7 @@ import { OrderStatus, QuoteStatus } from '@prisma/client';
 import { LineChart, BarList, FunnelChart, Donut } from '@/components/admin/Charts';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Analytics' };
 export const revalidate = 60;
 
 const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];

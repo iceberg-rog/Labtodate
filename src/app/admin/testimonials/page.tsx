@@ -8,6 +8,7 @@ import { createTestimonial, deleteTestimonial, toggleTestimonial } from '@/app/a
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Testimonials' };
 
 export default async function AdminTestimonialsPage() {
   await requireCapability('content:cms');

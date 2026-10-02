@@ -24,7 +24,12 @@ export function PublicChrome({
   const isAdmin = pathname === '/admin' || pathname.startsWith('/admin/');
   const isAuth = pathname === '/auth' || pathname.startsWith('/auth/');
 
-  if (isAdmin || isAuth) {
+  if (isAdmin) {
+    // The admin layout renders its own <main> — a wrapper <main> here nested
+    // two main landmarks on every admin page.
+    return <div className="flex-1">{children}</div>;
+  }
+  if (isAuth) {
     // Standalone chrome — the route's own layout supplies its header/logo.
     return <main className="flex-1">{children}</main>;
   }

@@ -25,6 +25,7 @@ import { LineChart } from '@/components/admin/Charts';
 import { BulkShipButton } from '@/components/admin/BulkShipButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Overview' };
 export const revalidate = 30;
 
 const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];

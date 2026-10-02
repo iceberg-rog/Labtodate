@@ -8,6 +8,7 @@ import { AiSuggestShopsButton } from '@/components/admin/AiSuggestShopsButton';
 import { CompaniesBoard, type ShopRow } from '@/components/admin/CompaniesBoard';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Shops & suppliers' };
 
 const PAGE_SIZE = 50;
 

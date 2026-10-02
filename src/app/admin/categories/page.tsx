@@ -5,6 +5,7 @@ import { createCategory, updateCategory, deleteCategory } from '../actions';
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Categories' };
 
 export default async function AdminCategoriesPage() {
   await requireCapability('categories:manage');

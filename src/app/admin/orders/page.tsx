@@ -20,6 +20,7 @@ import {
 } from '@/lib/orders/display';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Orders' };
 
 const PAID_STATES: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 const FULFIL_PENDING: OrderStatus[] = ['PAID', 'PROCESSING'];

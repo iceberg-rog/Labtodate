@@ -10,6 +10,7 @@ import { AdminActionForm } from '@/components/admin/AdminActionForm';
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Case studies' };
 
 export default async function AdminCaseStudiesPage() {
   await requireCapability('content:cms');
