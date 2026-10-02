@@ -305,11 +305,18 @@ export default async function AdminAnalyticsPage(
             <LifeBuoy className="h-4 w-4 text-primary" /> Tickets · {days}d
           </h3>
           <ul className="space-y-1.5 text-sm">
-            {(['OPEN', 'PENDING', 'RESOLVED', 'CLOSED'] as const).map((s) => {
-              const n = rangeTickets.filter((x) => x.status === s).length;
+            {/* Every status is in exactly one row, so the rows add up to Total. */}
+            {([
+              ['Awaiting support', ['OPEN', 'WAITING_ON_SUPPORT']],
+              ['Waiting on customer', ['WAITING_ON_CUSTOMER', 'PENDING']],
+              ['Resolved', ['RESOLVED']],
+              ['Closed', ['CLOSED']],
+              ['Spam', ['SPAM']],
+            ] as const).map(([label, statuses]) => {
+              const n = rangeTickets.filter((x) => (statuses as readonly string[]).includes(x.status)).length;
               return (
-                <li key={s} className="flex justify-between">
-                  <span className="text-muted-foreground capitalize">{s.toLowerCase()}</span>
+                <li key={label} className="flex justify-between">
+                  <span className="text-muted-foreground">{label}</span>
                   <span className="font-bold tabular-nums">{n}</span>
                 </li>
               );

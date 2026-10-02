@@ -4,6 +4,7 @@ import { Package, ChevronRight, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { ACTIVE_TICKET_STATUSES } from '@/lib/support/statuses';
 import { formatPrice } from '@/lib/utils';
 import { confirmDelivery, requestReturn } from '@/lib/orders/actions';
 
@@ -63,7 +64,7 @@ export default async function OrderDetailPage({
     where: {
       submittedById: session.user.id,
       subject: `Return / refund — order ${order.orderNumber}`,
-      status: { in: ['OPEN', 'PENDING'] },
+      status: { in: ACTIVE_TICKET_STATUSES },
     },
     select: { ref: true },
   });
