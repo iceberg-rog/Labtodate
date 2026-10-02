@@ -34,9 +34,10 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
 
   // Only PENDING_PAYMENT orders accept proof. Once VERIFIED/PAID we don't
   // want to overwrite the receipt. AWAITING_VERIFICATION can be replaced
-  // (buyer corrects a wrong file before admin reviews).
+  // (buyer corrects a wrong file before admin reviews). A canceled order gets
+  // its own message: the buyer must not think a transfer is still expected.
   if (order.status !== 'PENDING_PAYMENT') {
-    redirect(`/app/orders/${orderNumber}/payment?err=closed`);
+    redirect(`/app/orders/${orderNumber}/payment?err=${order.status === 'CANCELED' ? 'canceled' : 'closed'}`);
   }
 
   // Defense-in-depth: re-check proforma TTL on the server. The cron sweep
@@ -48,12 +49,12 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
     select: { status: true, validUntilAt: true },
   });
   if (sr?.validUntilAt && sr.validUntilAt.getTime() < Date.now()) {
-    redirect(`/app/orders/${orderNumber}/payment?err=closed`);
+    redirect(`/app/orders/${orderNumber}/payment?err=expired`);
   }
   // A declined/closed quote ended the deal (its order is canceled on decline;
   // this also covers orders left over from before that).
   if (sr && (sr.status === 'DECLINED' || sr.status === 'CLOSED')) {
-    redirect(`/app/orders/${orderNumber}/payment?err=closed`);
+    redirect(`/app/orders/${orderNumber}/payment?err=canceled`);
   }
 
   const get = (k: string) => String(formData.get(k) ?? '').trim();

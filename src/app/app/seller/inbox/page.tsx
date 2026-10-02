@@ -5,6 +5,7 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Quote inbox' };
 
 export default async function SellerInboxPage() {
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller/inbox' });
@@ -13,7 +14,16 @@ export default async function SellerInboxPage() {
   const items = await prisma.sourcingRequest.findMany({
     where: role === 'ADMIN' ? {} : { assignedToId: session.user.id },
     orderBy: { updatedAt: 'desc' },
-    include: { product: { select: { title: true } } },
+    include: {
+      product: { select: { title: true } },
+      // Last customer-visible message: who wrote last decides whose move it is.
+      messages: {
+        where: { isInternalNote: false },
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        select: { fromStaff: true },
+      },
+    },
   });
 
   return (
@@ -48,7 +58,7 @@ export default async function SellerInboxPage() {
                   <p className="text-sm text-muted-foreground line-clamp-1 mt-1">{q.description}</p>
                 </div>
                 <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                  <StatusPill status={q.status} />
+                  <StatusPill status={q.status} lastFromBuyer={q.messages[0]?.fromStaff === false} />
                   <p className="text-xs text-muted-foreground tabular-nums">
                     {new Date(q.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </p>
@@ -63,14 +73,25 @@ export default async function SellerInboxPage() {
   );
 }
 
-function StatusPill({ status }: { status: 'PENDING' | 'RESPONDED' | 'ACCEPTED' | 'DECLINED' | 'CLOSED' }) {
+function StatusPill({
+  status,
+  lastFromBuyer,
+}: {
+  status: 'PENDING' | 'RESPONDED' | 'ACCEPTED' | 'DECLINED' | 'CLOSED';
+  lastFromBuyer: boolean;
+}) {
   const map: Record<typeof status, { variant: 'success' | 'warning' | 'accent' | 'secondary'; label: string }> = {
     PENDING:   { variant: 'warning', label: 'New · awaiting reply' },
-    RESPONDED: { variant: 'accent', label: 'You replied' },
+    RESPONDED: { variant: 'accent', label: 'Awaiting buyer' },
     ACCEPTED:  { variant: 'success', label: 'Accepted' },
     DECLINED:  { variant: 'secondary', label: 'Declined' },
     CLOSED:    { variant: 'secondary', label: 'Closed' },
   };
-  const m = map[status];
+  // RESPONDED stays set after the buyer follows up; their message makes it
+  // the seller's move again (same rule as the thread's header pill).
+  const m =
+    status === 'RESPONDED' && lastFromBuyer
+      ? { variant: 'warning' as const, label: 'Buyer replied — your move' }
+      : map[status];
   return <Badge variant={m.variant}>{m.label}</Badge>;
 }

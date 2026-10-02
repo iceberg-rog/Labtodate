@@ -4,6 +4,7 @@ import { ProductForm } from '@/components/seller/ProductForm';
 import { createProduct } from '../actions';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'New listing' };
 
 export default async function NewProductPage() {
   await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller/products/new' });

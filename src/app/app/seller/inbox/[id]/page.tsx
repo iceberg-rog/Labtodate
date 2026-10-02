@@ -6,6 +6,13 @@ import { QuoteThread } from '@/components/quotes/QuoteThread';
 
 export const dynamic = 'force-dynamic';
 
+// The reference comes from the id alone (no lookup), so the title never says
+// more than the URL already does to someone who cannot open the quote.
+export async function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  const { id } = await props.params;
+  return { title: `Quote RFQ-${id.slice(-6).toUpperCase()}` };
+}
+
 export default async function SellerQuoteDetailPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: `/app/seller/inbox/${params.id}` });
@@ -34,21 +41,33 @@ export default async function SellerQuoteDetailPage(props: { params: Promise<{ i
   const isAdmin = role === 'ADMIN';
   const buyerName = isAdmin ? sr.buyerName : 'lab2date Buyer';
   const buyerEmail = isAdmin ? sr.buyerEmail : 'Hidden — reply here, lab2date relays it';
+  // Declined / closed: the proforma is void and its unpaid order canceled.
+  const dealEnded = sr.status === 'DECLINED' || sr.status === 'CLOSED';
 
   return (
     <>
     <AutoRefresh />
     {sr.quotedPriceCents != null && (
-      <div className="mb-5 rounded-2xl border-2 border-accent/40 bg-accent/[0.05] p-5 flex items-center justify-between gap-4 flex-wrap">
+      <div
+        className={`mb-5 rounded-2xl border-2 p-5 flex items-center justify-between gap-4 flex-wrap ${
+          dealEnded ? 'border-border bg-muted' : 'border-accent/40 bg-accent/[0.05]'
+        }`}
+      >
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">Quoted price (proforma sent)</p>
-          <p className="text-2xl font-bold data mt-1">
+          <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+            {dealEnded ? 'Quoted price · void (no deal)' : 'Quoted price (proforma sent)'}
+          </p>
+          <p className={`text-2xl font-bold data mt-1 ${dealEnded ? 'line-through text-muted-foreground' : ''}`}>
             {(sr.quotedPriceCents / 100).toLocaleString()} {sr.quotedCurrency || 'EUR'}
           </p>
         </div>
         <a
           href={`/app/quotes/${sr.id}/proforma`}
-          className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90"
+          className={
+            dealEnded
+              ? 'rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-muted-foreground hover:text-foreground'
+              : 'rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90'
+          }
         >
           View proforma
         </a>
@@ -61,6 +80,7 @@ export default async function SellerQuoteDetailPage(props: { params: Promise<{ i
       description={sr.description}
       status={sr.status}
       product={sr.product}
+      productCategory={sr.productCategory}
       messages={sr.messages.map((m) => ({
         id: m.id,
         body: m.body,

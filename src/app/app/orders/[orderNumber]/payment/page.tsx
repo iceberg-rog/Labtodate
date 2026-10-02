@@ -22,6 +22,8 @@ const ERR_MSG: Record<string, string> = {
   type: 'Receipt must be a JPG / PNG / WEBP / GIF or PDF.',
   proofreq: 'Please attach the receipt file — it is required for bank transfers and "Other" payments.',
   closed: 'This order is no longer accepting payment proof.',
+  canceled: 'This order was canceled, so no payment is due. Please do not send a transfer for it.',
+  expired: 'This proforma has expired, so it can no longer be paid. Ask us to re-issue it on the quote thread.',
 };
 
 export default async function PaymentWorkspacePage({
@@ -78,7 +80,23 @@ export default async function PaymentWorkspacePage({
   const isProformaExpired =
     !!sourcing?.validUntilAt &&
     sourcing.validUntilAt.getTime() < Date.now() &&
+    sourcing.status !== 'DECLINED' && // a decline is its own reason, even past validity
     (sourcing.status === 'CLOSED' || order.status === 'CANCELED');
+  // A canceled order, or a quote order whose deal ended (declined / closed
+  // without a deal — older ones may still have a PENDING_PAYMENT order), is not
+  // payable: no "Complete your purchase", no bank details, no receipt upload.
+  // (A receipt already under review is left to the admin's verify/reject.)
+  const quoteEnded = !!sourcing && (sourcing.status === 'DECLINED' || sourcing.status === 'CLOSED');
+  const isVoid =
+    order.status === 'CANCELED' ||
+    (quoteEnded && order.status === 'PENDING_PAYMENT' && !order.paymentSubmittedAt);
+  const voidReason = isProformaExpired
+    ? null // the expired banner below explains it
+    : sourcing?.status === 'DECLINED'
+      ? 'You declined the quote, so this order was canceled.'
+      : sourcing?.status === 'CLOSED'
+        ? 'The quote request was closed without a deal, so this order was canceled.'
+        : 'This order was canceled.';
 
   const ship = order.shippingAddress as
     | { name?: string; phone?: string; company?: string; vat?: string; address?: Record<string, string> }
@@ -101,6 +119,7 @@ export default async function PaymentWorkspacePage({
   // page (and the bank/totals for reference) but cannot submit a receipt.
   const canSubmit =
     !isProformaExpired &&
+    !isVoid &&
     order.status === 'PENDING_PAYMENT' &&
     verState !== 'AWAITING_VERIFICATION';
   // ok=1: receipt file stored; ok=2: details sent without a file (invoice terms).
@@ -125,12 +144,48 @@ export default async function PaymentWorkspacePage({
       </Link>
 
       <div className="mb-6">
-        <h1 className="text-3xl font-bold tracking-tight">Complete your purchase</h1>
+        <h1 className="text-3xl font-bold tracking-tight">
+          {isVoid ? (isProformaExpired ? 'Proforma expired' : 'Order canceled') : 'Complete your purchase'}
+        </h1>
         <p className="text-muted-foreground mt-1">
           Order <span className="font-mono font-semibold">{order.orderNumber}</span> ·{' '}
-          <span className="font-semibold">{formatPrice(order.totalCents, order.currency)}</span>
+          <span className={isVoid ? 'font-semibold line-through' : 'font-semibold'}>
+            {formatPrice(order.totalCents, order.currency)}
+          </span>
+          {isVoid && <> · no payment due</>}
         </p>
       </div>
+
+      {/* === Canceled / closed deal banner ============================== */}
+      {isVoid && voidReason && (
+        <div className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-4 mb-6 flex items-start gap-3">
+          <XCircle className="h-5 w-5 text-red-700 dark:text-red-300 mt-0.5 flex-shrink-0" />
+          <div className="text-sm flex-1 min-w-0">
+            <p className="font-bold text-red-900 dark:text-red-300">{voidReason}</p>
+            <p className="text-red-800 dark:text-red-300 mt-1">
+              No payment is due — please don&apos;t send a transfer for this order. If you already
+              paid, contact support and we&apos;ll sort it out.
+              {sourcing && ' If you still need the item, please open a new request.'}
+            </p>
+            <div className="flex items-center gap-2 flex-wrap mt-3">
+              {sourcing && (
+                <Link
+                  href={`/app/quotes/${sourcing.id}`}
+                  className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full border border-red-300 dark:border-red-800 bg-white dark:bg-transparent text-red-900 dark:text-red-300 text-xs font-bold hover:bg-red-100 dark:hover:bg-red-950/60"
+                >
+                  View the quote
+                </Link>
+              )}
+              <Link
+                href="/app/support"
+                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-full text-red-900 dark:text-red-300 text-xs font-bold hover:underline"
+              >
+                Contact support
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* === 4-step roadmap so the buyer knows what's expected =========== */}
       {canSubmit && (
@@ -184,7 +239,8 @@ export default async function PaymentWorkspacePage({
       )}
 
       {/* === Status banners ============================================ */}
-      {verState === 'AWAITING_VERIFICATION' && (
+      {/* A canceled order's receipt state is moot — the banner above explains it. */}
+      {!isVoid && verState === 'AWAITING_VERIFICATION' && (
         <div className="rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 p-4 mb-6 flex items-start gap-3">
           <Clock className="h-5 w-5 text-sky-700 dark:text-sky-300 mt-0.5" />
           <div className="text-sm">
@@ -197,7 +253,7 @@ export default async function PaymentWorkspacePage({
         </div>
       )}
 
-      {verState === 'VERIFIED' && (
+      {!isVoid && verState === 'VERIFIED' && (
         <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 mb-6 flex items-start gap-3">
           <CheckCircle2 className="h-5 w-5 text-emerald-700 dark:text-emerald-300 mt-0.5" />
           <div className="text-sm">
@@ -209,10 +265,12 @@ export default async function PaymentWorkspacePage({
         </div>
       )}
 
-      {verState === 'REJECTED' && (
+      {!isVoid && verState === 'REJECTED' && (
         <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 mb-6 flex items-start gap-3">
-          <AlertTriangle className="h-5 w-5 text-amber-700 dark:text-amber-300 mt-0.5" />
-          <div className="text-sm flex-1">
+          <AlertTriangle className="h-5 w-5 text-amber-700 dark:text-amber-300 mt-0.5 flex-shrink-0" />
+          {/* min-w-0 + overflow-wrap: the admin's reason is free text and may be
+              one long unbroken word — it must wrap, not widen the page. */}
+          <div className="text-sm flex-1 min-w-0 [overflow-wrap:anywhere]">
             <p className="font-bold text-amber-900 dark:text-amber-300">Your receipt needs attention.</p>
             <p className="text-amber-800 dark:text-amber-300 mt-1">
               {order.paymentRejectionReason || 'Please upload a corrected receipt below.'}
@@ -244,76 +302,89 @@ export default async function PaymentWorkspacePage({
                 <FileText className="h-4 w-4 text-primary" />
               </div>
               <div className="min-w-0">
-                <p className="text-sm font-bold leading-tight">Your proforma</p>
+                <p className="text-sm font-bold leading-tight">
+                  Your proforma
+                  {isVoid && <Badge variant="secondary" className="ml-2 align-middle">Void</Badge>}
+                </p>
                 <p className="text-xs text-muted-foreground mt-0.5 truncate">
                   <span className="font-mono">{sourcing.proformaNumber ?? `PRO-${new Date(sourcing.quotedAt ?? sourcing.createdAt).getFullYear()}-${sourcing.id.slice(-6).toUpperCase()}`}</span>
                   {' · '}
-                  {formatPrice(sourcing.quotedPriceCents, sourcing.quotedCurrency || 'EUR')}
+                  <span className={isVoid ? 'line-through' : undefined}>
+                    {formatPrice(sourcing.quotedPriceCents, sourcing.quotedCurrency || 'EUR')}
+                  </span>
                 </p>
               </div>
             </div>
             <Link
               href={`/app/quotes/${sourcing.id}/proforma`}
-              className="inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:bg-primary/90 flex-shrink-0"
+              className={
+                isVoid
+                  ? 'inline-flex items-center gap-1.5 rounded-full border border-border px-4 py-2 text-sm font-semibold text-muted-foreground hover:text-foreground flex-shrink-0'
+                  : 'inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:bg-primary/90 flex-shrink-0'
+              }
             >
-              Open / print →
+              {isVoid ? 'View (void)' : 'Open / print →'}
             </Link>
           </div>
-          <details className="border-t border-border">
-            <summary className="cursor-pointer px-4 py-2 text-xs font-semibold text-primary/90 hover:bg-foreground/[0.02]">
-              Show preview
-            </summary>
-            <div className="px-4 py-4 bg-white border-t border-border" dangerouslySetInnerHTML={{ __html: proformaHtml }} />
-          </details>
+          {!isVoid && (
+            <details className="border-t border-border">
+              <summary className="cursor-pointer px-4 py-2 text-xs font-semibold text-primary/90 hover:bg-foreground/[0.02]">
+                Show preview
+              </summary>
+              <div className="px-4 py-4 bg-white border-t border-border" dangerouslySetInnerHTML={{ __html: proformaHtml }} />
+            </details>
+          )}
         </section>
       )}
 
-      {/* === Payment instructions ====================================== */}
-      <section className="rounded-2xl border border-border bg-card p-6 space-y-4 mb-6">
-        <div className="flex items-center gap-2">
-          <Banknote className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-bold">Bank transfer instructions</h2>
-        </div>
-        {bank.iban ? (
-          <dl className="grid sm:grid-cols-[160px_1fr] gap-x-4 gap-y-2 text-sm">
-            {bank.company && (
-              <>
-                <dt className="text-muted-foreground">Beneficiary</dt>
-                <dd className="font-semibold">{bank.company}</dd>
-              </>
-            )}
-            {bank.name && (
-              <>
-                <dt className="text-muted-foreground">Bank</dt>
-                <dd className="font-semibold">{bank.name}</dd>
-              </>
-            )}
-            <dt className="text-muted-foreground">IBAN</dt>
-            <dd className="font-mono font-semibold inline-flex items-center gap-2 select-all">
-              {bank.iban}
-            </dd>
-            {bank.swift && (
-              <>
-                <dt className="text-muted-foreground">SWIFT / BIC</dt>
-                <dd className="font-mono font-semibold select-all">{bank.swift}</dd>
-              </>
-            )}
-            <dt className="text-muted-foreground">Reference</dt>
-            <dd className="font-mono font-semibold select-all">{order.orderNumber}</dd>
-            <dt className="text-muted-foreground">Amount</dt>
-            <dd className="font-bold">{formatPrice(order.totalCents, order.currency)}</dd>
-          </dl>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            Bank details haven't been configured yet. Please contact support — we'll send transfer
-            instructions by email.
+      {/* === Payment instructions (never for a canceled order) ========== */}
+      {!isVoid && (
+        <section className="rounded-2xl border border-border bg-card p-6 space-y-4 mb-6">
+          <div className="flex items-center gap-2">
+            <Banknote className="h-5 w-5 text-primary" />
+            <h2 className="text-lg font-bold">Bank transfer instructions</h2>
+          </div>
+          {bank.iban ? (
+            <dl className="grid sm:grid-cols-[160px_1fr] gap-x-4 gap-y-2 text-sm">
+              {bank.company && (
+                <>
+                  <dt className="text-muted-foreground">Beneficiary</dt>
+                  <dd className="font-semibold">{bank.company}</dd>
+                </>
+              )}
+              {bank.name && (
+                <>
+                  <dt className="text-muted-foreground">Bank</dt>
+                  <dd className="font-semibold">{bank.name}</dd>
+                </>
+              )}
+              <dt className="text-muted-foreground">IBAN</dt>
+              <dd className="font-mono font-semibold inline-flex items-center gap-2 select-all">
+                {bank.iban}
+              </dd>
+              {bank.swift && (
+                <>
+                  <dt className="text-muted-foreground">SWIFT / BIC</dt>
+                  <dd className="font-mono font-semibold select-all">{bank.swift}</dd>
+                </>
+              )}
+              <dt className="text-muted-foreground">Reference</dt>
+              <dd className="font-mono font-semibold select-all">{order.orderNumber}</dd>
+              <dt className="text-muted-foreground">Amount</dt>
+              <dd className="font-bold">{formatPrice(order.totalCents, order.currency)}</dd>
+            </dl>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Bank details haven't been configured yet. Please contact support — we'll send transfer
+              instructions by email.
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground border-t border-border pt-3">
+            {bank.refHint}. Once your transfer is sent, upload the bank confirmation below and we'll
+            verify within 1 business day.
           </p>
-        )}
-        <p className="text-xs text-muted-foreground border-t border-border pt-3">
-          {bank.refHint}. Once your transfer is sent, upload the bank confirmation below and we'll
-          verify within 1 business day.
-        </p>
-      </section>
+        </section>
+      )}
 
       {/* === Submit form ============================================== */}
       {canSubmit && (

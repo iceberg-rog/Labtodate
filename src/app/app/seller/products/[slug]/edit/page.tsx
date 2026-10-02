@@ -7,6 +7,7 @@ import type { IllustrationName } from '@/components/illustrations/instruments';
 import type { ProductInputType } from '../../actions';
 
 export const dynamic = 'force-dynamic';
+export const metadata = { title: 'Edit listing' };
 
 export default async function EditProductPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;

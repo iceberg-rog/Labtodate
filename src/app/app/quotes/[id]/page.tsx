@@ -136,22 +136,37 @@ export default async function BuyerQuoteDetailPage(
         </div>
       );
     })()}
-    {sr.quotedPriceCents != null && (
-      <div className="mb-5 rounded-2xl border-2 border-accent/40 bg-accent/[0.05] p-5 flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">Quoted price</p>
-          <p className="text-2xl font-bold data mt-1">
-            {((sr.quotedPriceCents) / 100).toLocaleString()} {sr.quotedCurrency || 'EUR'}
-          </p>
-        </div>
-        <a
-          href={`/app/quotes/${sr.id}/proforma`}
-          className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90"
+    {sr.quotedPriceCents != null && (() => {
+      // The deal ended (declined / closed / its order canceled): the price card
+      // stays for reference but must not read as a live, payable offer.
+      const quoteVoid = sr.status === 'DECLINED' || sr.status === 'CLOSED' || linkedOrder?.status === 'CANCELED';
+      return (
+        <div
+          className={`mb-5 rounded-2xl border-2 p-5 flex items-center justify-between gap-4 flex-wrap ${
+            quoteVoid ? 'border-border bg-muted' : 'border-accent/40 bg-accent/[0.05]'
+          }`}
         >
-          View / download proforma
-        </a>
-      </div>
-    )}
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+              {quoteVoid ? 'Quoted price · void, no payment due' : 'Quoted price'}
+            </p>
+            <p className={`text-2xl font-bold data mt-1 ${quoteVoid ? 'line-through text-muted-foreground' : ''}`}>
+              {((sr.quotedPriceCents) / 100).toLocaleString()} {sr.quotedCurrency || 'EUR'}
+            </p>
+          </div>
+          <a
+            href={`/app/quotes/${sr.id}/proforma`}
+            className={
+              quoteVoid
+                ? 'rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-muted-foreground hover:text-foreground'
+                : 'rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90'
+            }
+          >
+            {quoteVoid ? 'View void proforma' : 'View / download proforma'}
+          </a>
+        </div>
+      );
+    })()}
     <QuoteThread
       sourcingRequestId={sr.id}
       buyerName={sr.buyerName}
@@ -159,6 +174,7 @@ export default async function BuyerQuoteDetailPage(
       description={sr.description}
       status={sr.status}
       product={sr.product}
+      productCategory={sr.productCategory}
       messages={sr.messages.map((m) => ({
         id: m.id,
         body: m.body,

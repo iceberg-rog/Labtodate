@@ -34,6 +34,9 @@ interface Props {
   description: string;
   status: 'PENDING' | 'RESPONDED' | 'ACCEPTED' | 'DECLINED' | 'CLOSED';
   product?: { title: string; slug: string } | null;
+  /** Category / lab-rental facility of a request without a product
+   *  (e.g. "Lab rental: BioLab … (Berlin, Germany)") — names the thread. */
+  productCategory?: string | null;
   messages: Message[];
   /** Role of the viewer in this thread. */
   viewerRole: 'BUYER' | 'SELLER' | 'ADMIN';
@@ -56,6 +59,9 @@ export function QuoteThread(p: Props) {
   const [pending, startTransition] = useTransition();
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Outcome of a successful status change (e.g. "Order … was canceled") — the
+  // reply form that shows `error` is gone once the request is closed.
+  const [notice, setNotice] = useState<string | null>(null);
 
   function send(e: React.FormEvent) {
     e.preventDefault();
@@ -115,6 +121,7 @@ export function QuoteThread(p: Props) {
 
   function decide(status: 'ACCEPTED' | 'DECLINED' | 'CLOSED') {
     setError(null);
+    setNotice(null);
     startTransition(async () => {
       try {
         const r = await setQuoteStatus(p.sourcingRequestId, status);
@@ -122,6 +129,7 @@ export function QuoteThread(p: Props) {
           setError(r.error);
           return;
         }
+        if (r?.notice) setNotice(r.notice);
         router.refresh();
       } catch (err) {
         // Accepting converts the quote into an order and redirects there —
@@ -131,6 +139,32 @@ export function QuoteThread(p: Props) {
       }
     });
   }
+
+  // Closing ends the deal for good (a closed quote cannot be accepted again)
+  // and cancels the buyer's unpaid proforma order — same confirm as the admin
+  // "Close (no deal)".
+  function closeRequest() {
+    if (
+      !window.confirm(
+        "Close this request without a deal? The buyer's unpaid order (if any) is canceled, the buyer and the lab2date team are notified, and the request cannot be reopened.",
+      )
+    ) {
+      return;
+    }
+    decide('CLOSED');
+  }
+
+  // Whose move it is follows who wrote last: a buyer follow-up after a reply or
+  // proforma puts the ball back with the supplier, whatever the status says.
+  const lastPublic = [...p.messages].reverse().find((m) => !m.isInternalNote);
+  const lastFromBuyer = !!lastPublic && !lastPublic.fromStaff;
+
+  // Name the request: the product, else its category / lab facility, else the
+  // first line of what was asked — never just the buyer's own name.
+  const firstLine = p.description.trim().split(/\r?\n/)[0]?.trim() ?? '';
+  const summary = firstLine.length > 90 ? `${firstLine.slice(0, 87).trimEnd()}…` : firstLine;
+  const threadTitle =
+    p.product?.title ?? (p.productCategory?.trim() || summary || `Request from ${p.buyerName}`);
 
   return (
     <div className="space-y-5">
@@ -142,11 +176,11 @@ export function QuoteThread(p: Props) {
               <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
                 {p.product ? 'Quote about' : 'Sourcing request'}
               </p>
-              <h2 className="text-xl font-bold mt-1 truncate">
-                {p.product ? p.product.title : `Request from ${p.buyerName}`}
-              </h2>
+              <h1 className="text-xl font-bold mt-1 line-clamp-2 [overflow-wrap:anywhere]" title={threadTitle}>
+                {threadTitle}
+              </h1>
             </div>
-            <StatusPill status={p.status} viewerRole={p.viewerRole} />
+            <StatusPill status={p.status} viewerRole={p.viewerRole} lastFromBuyer={lastFromBuyer} />
           </div>
 
           {/* Stepper — gives the buyer instant orientation in the funnel */}
@@ -288,9 +322,9 @@ export function QuoteThread(p: Props) {
                 </span>
               )
             )}
-            {/* Seller can close anytime */}
+            {/* Seller can close anytime — behind a confirm (see closeRequest). */}
             {p.viewerRole === 'SELLER' && (
-              <Button type="button" variant="ghost" onClick={() => decide('CLOSED')} className="rounded-full font-medium" disabled={pending}>
+              <Button type="button" variant="ghost" onClick={closeRequest} className="rounded-full font-medium" disabled={pending}>
                 Close request
               </Button>
             )}
@@ -299,13 +333,23 @@ export function QuoteThread(p: Props) {
       )}
 
       {/* ───────────────── Terminal-state foot ───────────────── */}
+      {notice && (
+        <div role="status" className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900 flex items-start gap-3 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+          <Check className="h-5 w-5 mt-0.5 flex-shrink-0" />
+          <p>{notice}</p>
+        </div>
+      )}
       {p.status === 'DECLINED' && (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 flex items-start gap-3 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
           <X className="h-5 w-5 mt-0.5 flex-shrink-0" />
-          <div>
-            <p className="font-bold">You declined this quote.</p>
-            <p className="text-xs mt-1">If you need this again, you can open a new sourcing request from <strong>Let Us Find It</strong>.</p>
-          </div>
+          {p.viewerRole === 'BUYER' ? (
+            <div>
+              <p className="font-bold">You declined this quote.</p>
+              <p className="text-xs mt-1">If you need this again, you can open a new sourcing request from <strong>Let Us Find It</strong>.</p>
+            </div>
+          ) : (
+            <p className="font-bold">The buyer declined this quote.</p>
+          )}
         </div>
       )}
       {p.status === 'CLOSED' && (
@@ -348,8 +392,27 @@ const SUPPLIER_PILLS: PillMap = {
   CLOSED:    { variant: 'secondary', label: 'Closed' },
 };
 
-function StatusPill({ status, viewerRole }: { status: Props['status']; viewerRole: Props['viewerRole'] }) {
-  const m = (viewerRole === 'BUYER' ? BUYER_PILLS : SUPPLIER_PILLS)[status];
+// RESPONDED only says the supplier answered at some point. When the buyer
+// wrote last, the next move is the supplier's.
+const BUYER_FOLLOWED_UP: Record<Props['viewerRole'], PillMap['RESPONDED']> = {
+  BUYER:  { variant: 'warning', label: 'Waiting for supplier' },
+  SELLER: { variant: 'warning', label: 'Buyer replied — your move' },
+  ADMIN:  { variant: 'warning', label: 'Buyer replied — your move' },
+};
+
+function StatusPill({
+  status,
+  viewerRole,
+  lastFromBuyer,
+}: {
+  status: Props['status'];
+  viewerRole: Props['viewerRole'];
+  lastFromBuyer: boolean;
+}) {
+  const m =
+    status === 'RESPONDED' && lastFromBuyer
+      ? BUYER_FOLLOWED_UP[viewerRole]
+      : (viewerRole === 'BUYER' ? BUYER_PILLS : SUPPLIER_PILLS)[status];
   return <Badge variant={m.variant}>{m.label}</Badge>;
 }
 
