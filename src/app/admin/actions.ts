@@ -8,7 +8,7 @@ import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib
 import { expireOnlyApi } from '@/lib/stripe/session-api';
 import { requireSession, requireCapability, hasCapability } from '@/lib/auth-server';
 import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
-import { UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
 import { sendEmail } from '@/lib/email';
@@ -17,6 +17,7 @@ import { getStripe } from '@/lib/stripe/client';
 import { aiConfig } from '@/lib/ai';
 import { ensureBucket } from '@/lib/storage/s3';
 import { audit, notifyUser, notifyAdmins } from '@/lib/observability';
+import { MAX_ADMIN_PRODUCT_IMAGES, MAX_PRICE_CENTS, MAX_PRICE_MESSAGE, zodFieldErrors, zodMessage } from '@/lib/products/validation';
 
 async function requireAdmin() {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
@@ -835,9 +836,9 @@ export async function quickUpdateProduct(
     }
   }
   if (patch.quantity !== undefined) {
-    const q = Math.round(Number(patch.quantity));
-    if (!Number.isFinite(q) || q < 0 || q > 100_000)
-      return { ok: false, message: 'Quantity must be between 0 and 100,000.' };
+    const q = Number(patch.quantity);
+    if (!Number.isInteger(q) || q < 0 || q > 100_000)
+      return { ok: false, message: 'Quantity must be a whole number between 0 and 100,000.' };
     data.quantity = q;
   }
   if (patch.status !== undefined) {
@@ -1876,20 +1877,23 @@ export async function deleteBrand(id: string): Promise<{ ok: boolean; message: s
 
 // ─── Admin product create / edit (admin own inventory, full edit) ──────────
 
+// Limits are wide enough for every row the shop / URL importers write (titles
+// up to 200 chars, all supplier photos, full descriptions), so an imported
+// product can always be re-saved from the edit page.
 const AdminProductInput = z.object({
-  title: z.string().min(6).max(180),
+  title: z.string().trim().min(2).max(200),
   summary: z.string().max(300).nullish(),
-  description: z.string().max(8000).nullish(),
+  description: z.string().max(100_000).nullish(),
   categoryId: z.string().min(1),
   brandId: z.string().nullish(),
   companyId: z.string().nullish(),               // null = lab2date own inventory
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']),
   mode: z.enum(['BUY_NOW', 'QUOTE_ONLY', 'HYBRID']),
-  priceCents: z.number().int().nonnegative().nullable(),
+  priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
   currency: z.string().default('EUR'),
   yearMade: z.number().int().min(1900).max(2100).nullable(),
   illustration: z.enum(['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector']),
-  images: z.array(z.string().url()).max(8).default([]),
+  images: z.array(z.string().url()).max(MAX_ADMIN_PRODUCT_IMAGES).default([]),
   specs: z.record(z.string()).default({}),
   status: z.enum(['DRAFT', 'PENDING_REVIEW', 'PUBLISHED', 'ARCHIVED']).default('PUBLISHED'),
   quantity: z.number().int().min(0).max(100000).default(1),
@@ -1897,15 +1901,46 @@ const AdminProductInput = z.object({
 
 export type AdminProductInputType = z.infer<typeof AdminProductInput>;
 
-export async function adminCreateProduct(input: AdminProductInputType): Promise<{ ok: true; slug: string } | { ok: false; message: string }> {
+const ADMIN_PRODUCT_LABELS: Record<string, string> = {
+  title: 'Title',
+  summary: 'Short summary',
+  description: 'Description',
+  categoryId: 'Category',
+  brandId: 'Brand',
+  companyId: 'Shop / supplier',
+  condition: 'Condition',
+  mode: 'Buying mode',
+  priceCents: 'Price',
+  currency: 'Currency',
+  yearMade: 'Year made',
+  illustration: 'Fallback illustration',
+  images: 'Photos',
+  specs: 'Technical specs',
+  status: 'Status',
+  quantity: 'Quantity in stock',
+};
+
+type AdminProductError = { ok: false; message: string; fieldErrors?: Record<string, string> };
+
+/** safeParse with readable per-field messages (never the raw zod JSON). */
+function parseAdminProduct(input: AdminProductInputType): { data: AdminProductInputType } | { error: AdminProductError } {
+  const r = AdminProductInput.safeParse(input);
+  if (r.success) return { data: r.data };
+  return {
+    error: {
+      ok: false,
+      message: zodMessage(r.error, ADMIN_PRODUCT_LABELS),
+      fieldErrors: zodFieldErrors(r.error, ADMIN_PRODUCT_LABELS),
+    },
+  };
+}
+
+export async function adminCreateProduct(input: AdminProductInputType): Promise<{ ok: true; slug: string } | AdminProductError> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: AdminProductInputType;
-  try {
-    parsed = AdminProductInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const result = parseAdminProduct(input);
+  if ('error' in result) return result.error;
+  const parsed = result.data;
   let slug = parsed.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
   if (slug.length < 3) slug = `product-${Date.now().toString(36)}`;
   slug = await uniqueSlug(slug, async (s) => !!(await prisma.product.findUnique({ where: { slug: s }, select: { id: true } })));
@@ -1939,15 +1974,12 @@ export async function adminCreateProduct(input: AdminProductInputType): Promise<
   return { ok: true, slug };
 }
 
-export async function adminUpdateProduct(slug: string, input: AdminProductInputType): Promise<{ ok: boolean; message: string }> {
+export async function adminUpdateProduct(slug: string, input: AdminProductInputType): Promise<{ ok: true; message: string } | AdminProductError> {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: AdminProductInputType;
-  try {
-    parsed = AdminProductInput.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Invalid input.' };
-  }
+  const result = parseAdminProduct(input);
+  if ('error' in result) return result.error;
+  const parsed = result.data;
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
   if (!existing) return { ok: false, message: 'Product not found.' };
   await prisma.product.update({
@@ -1966,7 +1998,9 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
       illustration: parsed.illustration,
       images: parsed.images,
       hasImages: parsed.images.length > 0,
-      specs: Object.keys(parsed.specs).length ? parsed.specs : undefined,
+      // DbNull, not undefined: undefined means "leave unchanged", so removing
+      // every spec row used to keep the old specs.
+      specs: Object.keys(parsed.specs).length ? parsed.specs : Prisma.DbNull,
       categoryId: parsed.categoryId,
       brandId: parsed.brandId || null,
       companyId: parsed.companyId || null,
@@ -1979,7 +2013,7 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
   return { ok: true, message: 'Saved.' };
 }
 
-export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; message: string }> {
+export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; message: string; outcome?: 'deleted' | 'archived' }> {
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
   const existing = await prisma.product.findUnique({ where: { slug }, select: { id: true } });
@@ -1993,10 +2027,10 @@ export async function adminDeleteProduct(slug: string): Promise<{ ok: boolean; m
   if (outcome === 'archived') {
     await audit('product.admin.archive', slug, 'had order history — archived instead of hard-deleted');
     revalidatePath(`/marketplace/${slug}`);
-    return { ok: true, message: 'Product has order history — archived instead of deleted.' };
+    return { ok: true, message: 'Product has order history — archived instead of deleted.', outcome: 'archived' };
   }
   await audit('product.admin.delete', slug);
-  return { ok: true, message: 'Deleted.' };
+  return { ok: true, message: 'Deleted.', outcome: 'deleted' };
 }
 
 // ─── Company pricing rules + Cloud-API import trigger ──────────────────────
@@ -2452,14 +2486,14 @@ export async function previewProductFromUrl(url: string): Promise<ImportRunResul
 
 const DraftFromExtraction = z.object({
   sourceUrl: z.string().url(),
-  title: z.string().min(6).max(200),
+  title: z.string().trim().min(2).max(200),
   summary: z.string().max(280).nullish(),
   description: z.string().max(8000).nullish(),
   brand: z.string().max(80).nullish(),                  // free-text, we map → Brand
   categorySlug: z.string().min(1).max(64),
   companySlug: z.string().max(64).nullish(),            // optional supplier
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']).default('REFURBISHED'),
-  priceCents: z.number().int().nonnegative().nullable(),
+  priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
   currency: z.string().min(2).max(8).default('EUR'),
   images: z.array(z.string().url()).max(8).default([]),
   specs: z.record(z.string()).default({}),
@@ -2471,12 +2505,14 @@ export type DraftFromExtractionInput = z.infer<typeof DraftFromExtraction>;
 export async function createDraftFromExtraction(input: DraftFromExtractionInput): Promise<{ ok: boolean; slug?: string; message: string; existing?: { slug: string; title: string } }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('products:edit');
-  let parsed: DraftFromExtractionInput;
-  try {
-    parsed = DraftFromExtraction.parse(input);
-  } catch (e) {
-    return { ok: false, message: e instanceof Error ? e.message.slice(0, 240) : 'Invalid input.' };
+  const r = DraftFromExtraction.safeParse(input);
+  if (!r.success) {
+    return {
+      ok: false,
+      message: zodMessage(r.error, { ...ADMIN_PRODUCT_LABELS, sourceUrl: 'Source URL', brand: 'Brand', categorySlug: 'Category', companySlug: 'Shop' }),
+    };
   }
+  const parsed = r.data;
 
   // Duplicate guard: same source URL already imported?
   const dup = await prisma.product.findUnique({

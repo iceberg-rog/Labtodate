@@ -600,11 +600,14 @@ function ProductCardPreview({
   }
 
   function del() {
-    if (!window.confirm(`Delete “${product.title}” permanently? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete “${product.title}” permanently? This cannot be undone. (A product with order history is archived instead.)`)) return;
     setError(null);
     start(async () => {
       const r = await adminDeleteProduct(product.slug);
       if (!r.ok) setError(r.message);
+      // Archived, not deleted: keep the card open so its new status and the
+      // server's explanation are visible.
+      else if (r.outcome === 'archived') { setError(r.message); await onMutated('updated'); }
       else await onMutated('deleted');
     });
   }

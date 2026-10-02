@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -61,10 +61,14 @@ export function ProductQuickEdit({
   open,
   product,
   onClose,
+  onSaved,
 }: {
   open: boolean;
   product: ProductRow | null;
   onClose: () => void;
+  /** Called with the saved values so the caller can refresh its row snapshot
+   *  (the header and the "unsaved" baseline are computed from `product`). */
+  onSaved?: (saved: Pick<ProductRow, 'id' | 'priceCents' | 'quantity' | 'status'>) => void;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -74,9 +78,16 @@ export function ProductQuickEdit({
   const [qty, setQty] = useState<string>('');
   const [status, setStatus] = useState<Status>('DRAFT');
 
+  // Keep the "Saved." result when the same product is re-synced after a save;
+  // clear it only when a different product is opened.
+  const shownId = useRef<string | null>(null);
   useEffect(() => {
-    if (!product) return;
-    setRes(null);
+    if (!product) {
+      shownId.current = null;
+      return;
+    }
+    if (shownId.current !== product.id) setRes(null);
+    shownId.current = product.id;
     setPrice(product.priceCents === null ? '' : (product.priceCents / 100).toFixed(2));
     setQty(String(product.quantity));
     setStatus(product.status);
@@ -118,8 +129,8 @@ export function ProductQuickEdit({
       patch.priceCents = Math.round(n * 100);
     }
     const q = Number(qty);
-    if (!Number.isFinite(q) || q < 0) {
-      setRes({ ok: false, message: 'Quantity must be 0 or higher.' });
+    if (!Number.isInteger(q) || q < 0) {
+      setRes({ ok: false, message: 'Quantity must be a whole number, 0 or higher.' });
       return;
     }
     patch.quantity = q;
@@ -127,7 +138,10 @@ export function ProductQuickEdit({
     start(async () => {
       const r = await quickUpdateProduct(product.slug, patch);
       setRes(r);
-      if (r.ok) router.refresh();
+      if (r.ok) {
+        onSaved?.({ id: product.id, priceCents: patch.priceCents ?? null, quantity: q, status });
+        router.refresh();
+      }
     });
   }
 
@@ -404,7 +418,12 @@ export function ProductBrowser({ rows }: { rows: ProductRow[] }) {
           </section>
         ))}
       </div>
-      <ProductQuickEdit open={!!active} product={active} onClose={() => setActive(null)} />
+      <ProductQuickEdit
+        open={!!active}
+        product={active}
+        onClose={() => setActive(null)}
+        onSaved={(saved) => setActive((cur) => (cur && cur.id === saved.id ? { ...cur, ...saved } : cur))}
+      />
     </>
   );
 }
