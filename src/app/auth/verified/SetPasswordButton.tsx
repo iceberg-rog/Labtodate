@@ -47,10 +47,16 @@ export default function SetPasswordButton({ email }: { email: string }) {
         onClick={send}
         disabled={state === 'sending'}
         size="lg"
-        className="w-full rounded-xl font-semibold"
+        // The label is long for a phone-width card (222px at 320px): let it
+        // wrap onto two lines instead of overflowing, and keep the icon visible.
+        className="w-full h-auto min-h-12 py-3 px-4 sm:px-6 whitespace-normal text-center leading-snug rounded-xl font-semibold"
       >
-        {state === 'sending' ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
-        Email me a link to set a password
+        {state === 'sending' ? (
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+        ) : (
+          <KeyRound className="h-4 w-4 shrink-0" />
+        )}
+        <span>Email me a link to set a password</span>
       </Button>
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-xs">
