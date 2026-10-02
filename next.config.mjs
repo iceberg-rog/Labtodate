@@ -10,6 +10,16 @@ const MINIO_INTERNAL = 'http://minio:9000';
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  experimental: {
+    serverActions: {
+      // Payment receipts (buyer upload + admin "mark as paid") are posted to
+      // Server Actions and the forms advertise "max 8 MB". The 1 MB default
+      // rejected every normal scan/phone photo with a 413 → full-page crash
+      // before the action's own size check could answer. 10 MB = 8 MB file +
+      // multipart overhead; nginx allows 25 MB, middleware buffers 10 MB.
+      bodySizeLimit: '10mb',
+    },
+  },
   images: {
     // optimizer fetches /media/* via the rewrite below (same origin).
     // For Product.images that point at external suppliers (lab2.nl,

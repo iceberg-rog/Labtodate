@@ -12,6 +12,7 @@ import { formatPrice } from '@/lib/utils';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { renderInvoiceHtml } from '@/lib/invoice';
 import { buyerSubmitPaymentProof } from './actions';
+import { ProofFileInput } from './ProofFileInput';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +20,7 @@ const ERR_MSG: Record<string, string> = {
   method: 'Please pick a payment method.',
   large: 'Receipt file must be under 8 MB.',
   type: 'Receipt must be a JPG / PNG / WEBP / GIF or PDF.',
-  proofreq: 'A receipt file is required for bank transfers.',
+  proofreq: 'Please attach the receipt file — it is required for bank transfers and "Other" payments.',
   closed: 'This order is no longer accepting payment proof.',
 };
 
@@ -102,7 +103,8 @@ export default async function PaymentWorkspacePage({
     !isProformaExpired &&
     order.status === 'PENDING_PAYMENT' &&
     verState !== 'AWAITING_VERIFICATION';
-  const ok = sp.ok === '1';
+  // ok=1: receipt file stored; ok=2: details sent without a file (invoice terms).
+  const ok = sp.ok === '1' || sp.ok === '2';
   const err = sp.err && ERR_MSG[sp.err];
 
   const bank = {
@@ -221,7 +223,10 @@ export default async function PaymentWorkspacePage({
 
       {ok && (
         <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-3 mb-6 text-sm text-emerald-900 dark:text-emerald-300 inline-flex items-center gap-2">
-          <CheckCircle2 className="h-4 w-4" /> Receipt uploaded — we'll verify within 1 business day.
+          <CheckCircle2 className="h-4 w-4" />{' '}
+          {sp.ok === '2'
+            ? "Payment details submitted — we'll check them within 1 business day."
+            : "Receipt uploaded — we'll verify within 1 business day."}
         </div>
       )}
       {err && (
@@ -339,14 +344,9 @@ export default async function PaymentWorkspacePage({
                 Receipt / proof <span className="text-muted-foreground font-normal">(JPG / PNG / WEBP / PDF, max 8 MB)</span>
               </span>
               <div className="rounded-lg border border-dashed border-border p-4 text-center">
-                <input
-                  type="file"
-                  name="proof"
-                  accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
-                  className="block mx-auto text-sm"
-                />
+                <ProofFileInput />
                 <p className="text-xs text-muted-foreground mt-2">
-                  <Upload className="h-3 w-3 inline" /> A bank transfer confirmation, PO, or invoice.
+                  <Upload className="h-3 w-3 inline" /> A bank transfer confirmation, PO, or invoice. Required for bank transfer and &ldquo;Other&rdquo;.
                 </p>
               </div>
             </label>

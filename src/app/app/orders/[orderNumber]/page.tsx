@@ -6,6 +6,8 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { confirmDelivery, requestReturn } from '@/lib/orders/actions';
+import { shippingAddressIsComplete } from '@/lib/orders/display';
+import { buyerSetShippingAddress } from './payment/actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,7 +47,7 @@ export default async function OrderDetailPage({
   searchParams,
 }: {
   params: Promise<{ orderNumber: string }>;
-  searchParams: Promise<{ returned?: string }>;
+  searchParams: Promise<{ returned?: string; addr?: string }>;
 }) {
   const { orderNumber } = await params;
   const sp = await searchParams;
@@ -69,6 +71,11 @@ export default async function OrderDetailPage({
   });
   const returnedRef = sp.returned ?? activeReturn?.ref;
   const alreadyRequested = !!activeReturn;
+  // Paid but no shippable address (e.g. a proforma order): the buyer can add it
+  // here until the order ships, so it never gets stuck.
+  const needsAddress =
+    (order.status === 'PAID' || order.status === 'PROCESSING') && !shippingAddressIsComplete(order.shippingAddress);
+  const ship = (order.shippingAddress ?? null) as { name?: string; phone?: string; address?: Record<string, string | null> } | null;
 
   return (
     <div className="space-y-6">
@@ -108,6 +115,13 @@ export default async function OrderDetailPage({
             >
               <FileText className="h-4 w-4" /> Proforma
             </a>
+          ) : order.status === 'PENDING_PAYMENT' ? (
+            <a
+              href={`/app/orders/${order.orderNumber}/invoice`}
+              className="inline-flex items-center gap-1.5 rounded-full border border-primary text-primary px-3.5 py-1.5 text-sm font-semibold hover:bg-primary/5"
+            >
+              <FileText className="h-4 w-4" /> Proforma invoice
+            </a>
           ) : null}
           <Badge variant={STATUS_VARIANT[order.status]}>{STATUS_LABEL[order.status]}</Badge>
         </div>
@@ -122,6 +136,47 @@ export default async function OrderDetailPage({
             <Link href="/app/support" className="underline font-semibold">Support</Link>.
           </p>
         </div>
+      )}
+
+      {sp.addr === 'saved' && (
+        <div className="rounded-2xl border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-4 text-sm text-emerald-900 dark:text-emerald-300 font-semibold">
+          Shipping address saved ✓ — we&apos;ll use it to dispatch your order.
+        </div>
+      )}
+      {(sp.addr === 'missing' || sp.addr === 'closed') && (
+        <div className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-4 text-sm text-red-900 dark:text-red-300">
+          {sp.addr === 'missing'
+            ? 'Please fill in recipient name, phone, address line 1, city, postal code and a 2-letter country code.'
+            : 'This order can no longer be re-addressed here — contact support if the address needs to change.'}
+        </div>
+      )}
+
+      {needsAddress && (
+        <form
+          action={buyerSetShippingAddress}
+          className="rounded-2xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 p-5 space-y-3"
+        >
+          <input type="hidden" name="orderNumber" value={order.orderNumber} />
+          <div>
+            <p className="font-bold text-amber-900 dark:text-amber-300">Where should we ship this?</p>
+            <p className="text-sm text-amber-900/90 dark:text-amber-300/90 mt-0.5">
+              Your payment is in — add the delivery address so we can dispatch the order.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <AddrInput label="Recipient name" name="addr_name" defaultValue={ship?.name ?? session.user.name ?? ''} />
+            <AddrInput label="Phone" name="addr_phone" defaultValue={ship?.phone ?? ''} />
+            <AddrInput label="Address line 1" name="addr_line1" defaultValue={String(ship?.address?.line1 ?? '')} />
+            <AddrInput label="Address line 2 (optional)" name="addr_line2" defaultValue={String(ship?.address?.line2 ?? '')} optional />
+            <AddrInput label="City" name="addr_city" defaultValue={String(ship?.address?.city ?? '')} />
+            <AddrInput label="Postal code" name="addr_postal" defaultValue={String(ship?.address?.postal_code ?? '')} />
+            <AddrInput label="State / region (optional)" name="addr_state" defaultValue={String(ship?.address?.state ?? '')} optional />
+            <AddrInput label="Country (2-letter code, e.g. NL)" name="addr_country" defaultValue={String(ship?.address?.country ?? '')} maxLength={2} />
+          </div>
+          <button type="submit" className="rounded-full bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold px-4 py-2">
+            Save shipping address
+          </button>
+        </form>
       )}
 
       {order.status === 'PENDING_PAYMENT' && (
@@ -158,6 +213,11 @@ export default async function OrderDetailPage({
               ? 'Resubmit receipt'
               : 'Pay now / upload receipt'}
           </Link>
+          {fmtAddr(order.shippingAddress) && (
+            <p className="mt-3 text-xs">
+              <span className="font-bold uppercase tracking-wider">Shipping to:</span> {fmtAddr(order.shippingAddress)}
+            </p>
+          )}
         </div>
       )}
 
@@ -289,6 +349,33 @@ export default async function OrderDetailPage({
         </div>
       </div>
     </div>
+  );
+}
+
+function AddrInput({
+  label,
+  name,
+  defaultValue,
+  optional,
+  maxLength,
+}: {
+  label: string;
+  name: string;
+  defaultValue: string;
+  optional?: boolean;
+  maxLength?: number;
+}) {
+  return (
+    <label className="block">
+      <span className="block text-xs font-semibold mb-1">{label}</span>
+      <input
+        name={name}
+        defaultValue={defaultValue}
+        required={!optional}
+        maxLength={maxLength}
+        className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm"
+      />
+    </label>
   );
 }
 
