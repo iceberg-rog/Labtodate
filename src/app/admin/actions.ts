@@ -75,6 +75,27 @@ export async function toggleTestimonial(id: string, published: boolean) {
   revalidatePath('/admin/testimonials');
   revalidatePath('/');
 }
+/** Edit in place. A blank required field keeps its old value instead of
+ *  failing (bare form action: a throw would be a 500 page). */
+export async function updateTestimonial(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const quote = String(formData.get('quote') ?? '').trim().slice(0, 400);
+  const author = String(formData.get('author') ?? '').trim().slice(0, 120);
+  await prisma.testimonial.updateMany({
+    where: { id },
+    data: {
+      ...(quote ? { quote } : {}),
+      ...(author ? { author } : {}),
+      role: (formData.get('role') as string)?.trim() || null,
+      company: (formData.get('company') as string)?.trim() || null,
+      rating: Math.min(5, Math.max(1, parseInt(String(formData.get('rating') ?? '5'), 10) || 5)),
+      sortOrder: parseInt(String(formData.get('sortOrder') ?? '0'), 10) || 0,
+    },
+  });
+  await audit('testimonial.update', id);
+  revalidatePath('/admin/testimonials');
+  revalidatePath('/');
+}
 
 // ---- Case studies CRUD ----
 export async function createCaseStudy(formData: FormData) {
@@ -115,8 +136,37 @@ export async function toggleCaseStudy(id: string, publish: boolean) {
   revalidatePath('/admin/case-studies');
   revalidatePath('/case-studies');
 }
+/** Edit in place; the slug is kept so published links keep working. */
+export async function updateCaseStudy(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const title = String(formData.get('title') ?? '').trim();
+  const cs = await prisma.caseStudy.findUnique({ where: { id }, select: { slug: true } });
+  if (!cs) return;
+  await prisma.caseStudy.update({
+    where: { id },
+    data: {
+      ...(title ? { title } : {}),
+      customer: String(formData.get('customer') ?? '').trim() || '—',
+      outcomeMetric: String(formData.get('outcomeMetric') ?? '').trim() || '—',
+      excerpt: String(formData.get('excerpt') ?? '').trim(),
+      body: String(formData.get('body') ?? '').trim(),
+    },
+  });
+  await audit('casestudy.update', cs.slug);
+  revalidatePath('/admin/case-studies');
+  revalidatePath('/case-studies');
+  revalidatePath(`/case-studies/${cs.slug}`);
+}
 
 // ---- Lab facilities CRUD ----
+/** Optional € rate field → cents (null when blank or out of range). */
+function rateCents(v: FormDataEntryValue | null): number | null {
+  const raw = String(v ?? '').trim();
+  if (!raw) return null;
+  const n = Math.round(Number(raw) * 100);
+  return Number.isFinite(n) && n >= 0 && n <= MAX_PRICE_CENTS ? n : null;
+}
+
 export async function createFacility(formData: FormData) {
   await requireCap('content:cms');
   const name = String(formData.get('name') ?? '').trim();
@@ -134,6 +184,8 @@ export async function createFacility(formData: FormData) {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
+      hourlyRateCents: rateCents(formData.get('hourlyRate')),
+      dailyRateCents: rateCents(formData.get('dailyRate')),
       isPublished: true,
     },
   });
@@ -153,6 +205,32 @@ export async function toggleFacility(id: string, isPublished: boolean) {
   await prisma.labFacility.update({ where: { id }, data: { isPublished } });
   revalidatePath('/admin/lab-rental');
   revalidatePath('/lab-rental');
+}
+/** Edit in place, including the hourly / daily rates shown on /lab-rental. */
+export async function updateFacility(id: string, formData: FormData) {
+  await requireCap('content:cms');
+  const name = String(formData.get('name') ?? '').trim();
+  const f = await prisma.labFacility.findUnique({ where: { id }, select: { slug: true } });
+  if (!f) return;
+  await prisma.labFacility.update({
+    where: { id },
+    data: {
+      ...(name ? { name } : {}),
+      city: String(formData.get('city') ?? '').trim() || '—',
+      country: String(formData.get('country') ?? '').trim() || '—',
+      description: String(formData.get('description') ?? '').trim(),
+      capabilities: String(formData.get('capabilities') ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      hourlyRateCents: rateCents(formData.get('hourlyRate')),
+      dailyRateCents: rateCents(formData.get('dailyRate')),
+    },
+  });
+  await audit('facility.update', f.slug);
+  revalidatePath('/admin/lab-rental');
+  revalidatePath('/lab-rental');
+  revalidatePath(`/lab-rental/${f.slug}`);
 }
 
 /* ── Webhook config CRUD + test-fire ─────────────────────────────────── */
