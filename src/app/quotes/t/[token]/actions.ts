@@ -64,6 +64,10 @@ export async function guestReplyByQuoteToken(formData: FormData): Promise<void> 
       // adds new context (status remains otherwise).
       lastReplyAt: now,
       lastReplyByStaff: false,
+      // BUG-018 parity with replyToQuote: a buyer reply resurfaces an archived
+      // quote in the admin queue.
+      archivedAt: null,
+      archivedById: null,
     },
   });
 

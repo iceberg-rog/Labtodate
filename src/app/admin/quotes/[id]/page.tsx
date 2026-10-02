@@ -9,6 +9,7 @@ import { prisma } from '@/lib/db';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { EmailText } from '@/components/util/EmailText';
 import { QuoteComposer } from '@/components/admin/QuoteComposer';
+import { QuoteHeaderControls } from '@/components/admin/QuoteHeaderControls';
 import { QuoteReissueMagicLink } from '@/components/admin/QuoteReissueMagicLink';
 import { computeDealState, toneClasses } from '@/lib/quotes/deal-state';
 import { DealStateBadge } from '@/components/quotes/DealStateBadge';
@@ -39,7 +40,9 @@ function priorityChip(priority: string) {
 }
 
 function fmtMoney(cents: number, ccy = 'EUR'): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 }).format(cents / 100);
+  // Whole amounts stay compact; amounts with cents show them (never round).
+  const digits = cents % 100 === 0 ? 0 : 2;
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(cents / 100);
 }
 
 export default async function AdminQuoteDetailPage(props: { params: Promise<{ id: string }> }) {
@@ -87,6 +90,10 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
   const ref = sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`;
   const title = sr.product?.title ?? sr.productCategory ?? 'General sourcing request';
   const canCompose = !sr.archivedAt && sr.status !== 'CLOSED' && sr.status !== 'ACCEPTED' && sr.status !== 'DECLINED';
+  // Closing is for deals that went nowhere; a paid order is managed on the order.
+  const canClose =
+    sr.status !== 'CLOSED' && sr.status !== 'DECLINED' &&
+    (!linkedOrder || linkedOrder.status === 'PENDING_PAYMENT' || linkedOrder.status === 'CANCELED');
 
   return (
     <div className="space-y-4">
@@ -183,6 +190,12 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               myUserId={session?.user.id ?? null}
               admins={admins}
               variant="block"
+            />
+            <QuoteHeaderControls
+              quoteId={sr.id}
+              priority={sr.priority}
+              archived={!!sr.archivedAt}
+              canClose={canClose}
             />
             {linkedOrder && (
               <Link

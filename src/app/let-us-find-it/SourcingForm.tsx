@@ -8,9 +8,11 @@ import { submitAndRedirect } from '@/lib/quotes/actions';
 
 export function SourcingForm({
   anchor,
+  facility = null,
   buyer,
 }: {
   anchor: { slug: string; title: string; brand: string | null } | null;
+  facility?: { slug: string; name: string; location: string } | null;
   buyer: { name: string; email: string };
 }) {
   const [pending, startTransition] = useTransition();
@@ -29,6 +31,7 @@ export function SourcingForm({
       timeframe: (fd.get('timeframe') as string) || null,
       description: String(fd.get('description') ?? ''),
       productSlug: anchor?.slug ?? null,
+      facilitySlug: facility?.slug ?? null,
       company_url: String(fd.get('hp_x7') ?? ''),
     };
 
@@ -67,31 +70,42 @@ export function SourcingForm({
           {anchor.brand && <Badge variant="secondary" className="mt-2">{anchor.brand}</Badge>}
         </div>
       )}
+      {facility && (
+        <div className="rounded-xl bg-foreground/[0.03] border border-border p-4">
+          <p className="text-[10px] uppercase tracking-[0.15em] font-bold text-muted-foreground mb-1">
+            Lab access request
+          </p>
+          <p className="font-semibold">{facility.name}</p>
+          <p className="text-xs text-muted-foreground mt-1">{facility.location}</p>
+        </div>
+      )}
 
       <div className="grid sm:grid-cols-2 gap-4">
         {/* Name and email come from the signed-in account; the server ignores
             these values. An account without a name may type one. */}
-        <Field label="Full name" name="buyerName" placeholder="Dr. Jane Doe" required
+        <Field label="Full name" name="buyerName" placeholder="Dr. Jane Doe" required maxLength={120}
           defaultValue={buyer.name} readOnly={!!buyer.name.trim()} />
         <Field label="Account email" name="buyerEmail" type="email" required defaultValue={buyer.email} readOnly />
       </div>
 
-      <Field label="Company / Institution" name="companyName" placeholder="Pivot Park" />
+      <Field label="Company / Institution" name="companyName" placeholder="Pivot Park" maxLength={180} />
 
-      {!anchor && (
-        <Field label="Equipment category / type" name="productCategory" placeholder="e.g. confocal microscope" />
+      {!anchor && !facility && (
+        <Field label="Equipment category / type" name="productCategory" placeholder="e.g. confocal microscope" maxLength={120} />
       )}
 
       <div className="grid sm:grid-cols-2 gap-4">
-        <Field label="Budget" name="budget" placeholder="€20k – €30k" />
-        <Field label="Timeframe" name="timeframe" placeholder="Within 4 weeks" />
+        <Field label="Budget" name="budget" placeholder="€20k – €30k" maxLength={120} />
+        <Field label="Timeframe" name="timeframe" placeholder={facility ? 'Dates or duration you need' : 'Within 4 weeks'} maxLength={120} />
       </div>
 
-      <Field label="What are you looking for?" required textarea minLength={20}
+      <Field label={facility ? 'What do you need the lab for?' : 'What are you looking for?'} required textarea minLength={20} maxLength={4000}
         name="description"
         placeholder={anchor
           ? `What specifically about ${anchor.title} do you want quoted? Quantity, condition preference, location, accessories…`
-          : 'Make / model / specs / condition / quantity / location — anything relevant.'} />
+          : facility
+            ? `Which instruments at ${facility.name}, how long, and what you plan to run…`
+            : 'Make / model / specs / condition / quantity / location — anything relevant.'} />
 
       {error && (
         <p className="rounded-md border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm">{error}</p>
@@ -115,6 +129,7 @@ function Field({
   required,
   textarea,
   minLength,
+  maxLength,
   defaultValue,
   readOnly,
 }: {
@@ -125,6 +140,7 @@ function Field({
   required?: boolean;
   textarea?: boolean;
   minLength?: number;
+  maxLength?: number;
   defaultValue?: string;
   readOnly?: boolean;
 }) {
@@ -135,10 +151,10 @@ function Field({
         {required && <span className="text-red-600 dark:text-red-400"> *</span>}
       </span>
       {textarea ? (
-        <textarea name={name} placeholder={placeholder} required={required} minLength={minLength} rows={6}
+        <textarea name={name} placeholder={placeholder} required={required} minLength={minLength} maxLength={maxLength} rows={6}
           className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-y" />
       ) : (
-        <input name={name} type={type} placeholder={placeholder} required={required}
+        <input name={name} type={type} placeholder={placeholder} required={required} maxLength={maxLength}
           defaultValue={defaultValue} readOnly={readOnly} aria-readonly={readOnly || undefined}
           className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary read-only:bg-muted read-only:text-muted-foreground read-only:cursor-not-allowed" />
       )}

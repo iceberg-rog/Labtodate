@@ -50,6 +50,11 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
   if (sr?.validUntilAt && sr.validUntilAt.getTime() < Date.now()) {
     redirect(`/app/orders/${orderNumber}/payment?err=closed`);
   }
+  // A declined/closed quote ended the deal (its order is canceled on decline;
+  // this also covers orders left over from before that).
+  if (sr && (sr.status === 'DECLINED' || sr.status === 'CLOSED')) {
+    redirect(`/app/orders/${orderNumber}/payment?err=closed`);
+  }
 
   const get = (k: string) => String(formData.get(k) ?? '').trim();
   const method = get('method').toUpperCase();

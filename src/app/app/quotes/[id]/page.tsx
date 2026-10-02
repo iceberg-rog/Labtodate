@@ -76,15 +76,22 @@ export default async function BuyerQuoteDetailPage(
         </a>
       </div>
     )}
-    {linkedOrder && (() => {
+    {linkedOrder && !(
+      // A declined/closed deal has no live order: no banner inviting payment.
+      (sr.status === 'DECLINED' || sr.status === 'CLOSED') &&
+      (linkedOrder.status === 'PENDING_PAYMENT' || linkedOrder.status === 'CANCELED')
+    ) && (() => {
       const s = linkedOrder.status;
       const isPending = s === 'PENDING_PAYMENT';
       const isPaid = s === 'PAID';
       const isShipping = s === 'PROCESSING' || s === 'SHIPPED';
       const isDelivered = s === 'DELIVERED';
       const isDead = s === 'CANCELED' || s === 'REFUNDED';
+      // The order exists from the moment the proforma is sent; "Accepted" only
+      // once the buyer actually accepted it.
       const headline =
-        isPending ? `Accepted — order ${linkedOrder.orderNumber} · awaiting your payment`
+        isPending && sr.status !== 'ACCEPTED' ? `Proforma ready — order ${linkedOrder.orderNumber} · complete your purchase`
+          : isPending ? `Accepted — order ${linkedOrder.orderNumber} · awaiting your payment`
           : isPaid ? `Paid — order ${linkedOrder.orderNumber} · we are preparing your shipment`
           : isShipping ? `Order ${linkedOrder.orderNumber} · ${s.toLowerCase()}`
           : isDelivered ? `Delivered — order ${linkedOrder.orderNumber}`
@@ -154,6 +161,8 @@ export default async function BuyerQuoteDetailPage(
               : 'lab2date Verified Supplier',
         authorEmail: role === 'ADMIN' ? (m.author?.email ?? null) : null,
         isMine: m.author?.id === session.user.id,
+        fromStaff: m.fromStaff,
+        attachments: m.attachments,
       }))}
       viewerRole="BUYER"
       createdAt={sr.createdAt.toISOString()}
