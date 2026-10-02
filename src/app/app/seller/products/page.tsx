@@ -67,30 +67,38 @@ export default async function SellerProductsPage(
       ) : (
         <ul className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
           {products.map((p) => (
-            <li key={p.id} className="p-4 flex items-center gap-4">
-              <div className="flex-shrink-0 h-16 w-20 rounded-lg overflow-hidden bg-gradient-to-br from-[hsl(82_55%_94%)] to-[hsl(168_30%_94%)] p-2">
-                <InstrumentIllustration name={(p.illustration ?? 'balance') as IllustrationName} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                  {p.brand?.name ?? '—'} · {p.category.name}
-                </p>
-                <Link href={`/marketplace/${p.slug}`} className="text-sm font-semibold hover:text-primary truncate block">
-                  {p.title}
-                </Link>
-                <div className="flex items-center gap-2 mt-1.5">
-                  <StatusBadge status={p.status} />
-                  <span className="text-xs text-muted-foreground">·</span>
-                  <span className="text-xs text-muted-foreground">{p.condition.toLowerCase()}</span>
-                  {p.priceCents !== null && (
-                    <>
+            // Phones: details on top, the action buttons on their own wrapping
+            // line below, so the title keeps its width and Delete stays
+            // reachable. From md up it is one row, as before.
+            <li key={p.id} className="p-4 flex flex-col gap-3 md:flex-row md:items-center md:gap-4">
+              <div className="min-w-0 md:flex-1 flex items-center gap-4">
+                <div className="flex-shrink-0 h-16 w-20 rounded-lg overflow-hidden bg-gradient-to-br from-[hsl(82_55%_94%)] to-[hsl(168_30%_94%)] p-2">
+                  <InstrumentIllustration name={(p.illustration ?? 'balance') as IllustrationName} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    {p.brand?.name ?? '—'} · {p.category.name}
+                  </p>
+                  <Link href={`/marketplace/${p.slug}`} className="text-sm font-semibold hover:text-primary truncate block">
+                    {p.title}
+                  </Link>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1.5">
+                    <StatusBadge status={p.status} />
+                    {/* Each "· value" pair wraps as a unit, so no line ends on a dot. */}
+                    <span className="inline-flex items-center gap-2">
                       <span className="text-xs text-muted-foreground">·</span>
-                      <span className="text-xs font-semibold tabular-nums">{formatPrice(p.priceCents, p.currency)}</span>
-                    </>
-                  )}
+                      <span className="text-xs text-muted-foreground">{p.condition.toLowerCase()}</span>
+                    </span>
+                    {p.priceCents !== null && (
+                      <span className="inline-flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">·</span>
+                        <span className="text-xs font-semibold tabular-nums">{formatPrice(p.priceCents, p.currency)}</span>
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5 flex-shrink-0">
+              <div className="flex flex-wrap items-center gap-1.5 md:flex-nowrap md:flex-shrink-0">
                 {/* Sellers can't publish directly (A3): a draft asks for review,
                     a queued listing just waits, a live one can be taken down. */}
                 {!isAdmin && p.status === 'PENDING_REVIEW' ? (
