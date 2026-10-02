@@ -60,6 +60,10 @@ export async function guestReplyByToken(formData: FormData): Promise<void> {
       status: 'WAITING_ON_SUPPORT',
       lastReplyAt: now,
       lastReplyByStaff: false,
+      // BUG-018 parity with customerReplyTicket: a customer reply must bring an
+      // archived ticket back to the working queue, or the message is lost.
+      archivedAt: null,
+      archivedById: null,
     },
   });
 

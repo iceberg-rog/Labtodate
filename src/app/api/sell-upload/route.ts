@@ -9,10 +9,12 @@ export const dynamic = 'force-dynamic';
 const MAX_BYTES = 8 * 1024 * 1024; // 8 MB
 
 // Public (no-account) image upload for the "Sell your equipment" form.
-// Rate-limited and strictly constrained because it is unauthenticated.
+// Rate-limited and strictly constrained because it is unauthenticated. The
+// form takes up to 8 photos, so the window allows a full set plus a few
+// retries/replacements (the old default of 5 cut the 8-photo form short).
 export async function POST(req: Request) {
   try {
-    await rateLimit('sell-upload');
+    await rateLimit('sell-upload', 24, 10 * 60_000);
   } catch {
     return NextResponse.json({ error: 'Too many uploads, slow down.' }, { status: 429 });
   }

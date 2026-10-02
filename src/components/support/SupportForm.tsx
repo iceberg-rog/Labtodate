@@ -33,10 +33,12 @@ export function SupportForm({
     };
     start(async () => {
       try {
-        await submitTicketAndRedirect(input);
+        const res = await submitTicketAndRedirect(input);
+        if (res?.error) setError(res.error);
       } catch (err) {
         if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
-        setError(err instanceof Error ? err.message : 'Could not submit');
+        // Network failure, or a page loaded before a site update.
+        setError('Your ticket was not sent. Reload the page and try again.');
       }
     });
   }
@@ -58,7 +60,7 @@ export function SupportForm({
         <div className="grid sm:grid-cols-2 gap-4">
           <label className="block">
             <span className="block text-sm font-semibold mb-1.5">Your name <span className="text-red-600 dark:text-red-400">*</span></span>
-            <input name="name" required minLength={2} placeholder="Dr. Jane Doe" className={`${f} h-10`} />
+            <input name="name" required minLength={2} maxLength={120} placeholder="Dr. Jane Doe" className={`${f} h-10`} />
           </label>
           <label className="block">
             <span className="block text-sm font-semibold mb-1.5">Email <span className="text-red-600 dark:text-red-400">*</span></span>
@@ -69,7 +71,7 @@ export function SupportForm({
       <div className="grid sm:grid-cols-[2fr_1fr] gap-4">
         <label className="block">
           <span className="block text-sm font-semibold mb-1.5">Subject <span className="text-red-600 dark:text-red-400">*</span></span>
-          <input name="subject" required minLength={3} placeholder="Question about my order L2D-…" className={`${f} h-10`} />
+          <input name="subject" required minLength={3} maxLength={160} placeholder="Question about my order L2D-…" className={`${f} h-10`} />
         </label>
         <label className="block">
           <span className="block text-sm font-semibold mb-1.5">Topic</span>
@@ -88,7 +90,7 @@ export function SupportForm({
       />
       <label className="block">
         <span className="block text-sm font-semibold mb-1.5">How can we help? <span className="text-red-600 dark:text-red-400">*</span></span>
-        <textarea name="body" required minLength={10} rows={6} placeholder="Describe your question or issue…" className={f} />
+        <textarea name="body" required minLength={10} maxLength={5000} rows={6} placeholder="Describe your question or issue…" className={f} />
       </label>
       {error && <p className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-3 py-2 text-sm">{error}</p>}
       <Button type="submit" size="lg" disabled={pending} className="rounded-2xl font-semibold w-full">

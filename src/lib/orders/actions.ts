@@ -15,6 +15,7 @@ import { generateOrderNumber, reserveAndCreateOrder } from '@/lib/orders/checkou
 import { stripeCheckoutHandoff, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
 import { safeExpire } from '@/lib/stripe/session-api';
 import { withUniqueTicketRef } from '@/lib/support/actions';
+import { ACTIVE_TICKET_STATUSES } from '@/lib/support/statuses';
 
 /**
  * Email the buyer (and BCC billing) a real invoice for a paid order.
@@ -121,7 +122,7 @@ export async function requestReturn(orderNumber: string, formData: FormData) {
     where: {
       submittedById: session.user.id,
       subject: `Return / refund — order ${orderNumber}`,
-      status: { in: ['OPEN', 'PENDING'] },
+      status: { in: ACTIVE_TICKET_STATUSES },
     },
     select: { ref: true },
   });

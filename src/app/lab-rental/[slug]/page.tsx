@@ -79,7 +79,7 @@ export default async function FacilityPage(props: { params: Promise<{ slug: stri
                 </div>
               </div>
               <Button asChild className="rounded-2xl font-semibold w-full mt-5">
-                <Link href={`/let-us-find-it?product=${facility.slug}`}>
+                <Link href={`/let-us-find-it?facility=${encodeURIComponent(facility.slug)}`}>
                   Request access <ArrowRight className="h-4 w-4" />
                 </Link>
               </Button>

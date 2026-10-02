@@ -23,7 +23,9 @@ export const dynamic = 'force-dynamic';
 
 function fmtMoney(cents: number | null, ccy = 'EUR'): string {
   if (cents == null) return '—';
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, maximumFractionDigits: 0 }).format(cents / 100);
+  // Whole amounts stay compact; amounts with cents show them (never round).
+  const digits = cents % 100 === 0 ? 0 : 2;
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: ccy, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(cents / 100);
 }
 function smartDate(d: Date | null | undefined): string {
   if (!d) return '';
@@ -314,7 +316,7 @@ function Bubble({ m, sellerName }: { m: { id: string; body: string; createdAt: D
         </div>
         <p className="text-2xl font-bold tabular-nums mb-2 inline-flex items-center gap-2">
           <Banknote className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
-          {m.priceCents != null ? new Intl.NumberFormat('en-US', { style: 'currency', currency: m.currency ?? 'EUR', maximumFractionDigits: 0 }).format(m.priceCents / 100) : '—'}
+          {fmtMoney(m.priceCents, m.currency ?? 'EUR')}
         </p>
         {m.body && <p className="text-sm leading-relaxed whitespace-pre-wrap">{m.body}</p>}
       </div>
@@ -366,8 +368,10 @@ function StageCard({
   latestProposalCents: number | null;
   latestProposalCurrency: string | null;
 }) {
-  // OPEN PRICE PROPOSAL — seller can click Accept (creates submission stage)
-  if (sub.status === 'RESPONDED' && latestProposalCents && !sub.acquisitionStage) {
+  // OPEN PRICE PROPOSAL — seller can click Accept (creates submission stage).
+  // ACCEPTED without a stage is an offer accepted before a price was required;
+  // a later price offer must still be acceptable or the deal is stuck.
+  if ((sub.status === 'RESPONDED' || sub.status === 'ACCEPTED') && latestProposalCents && !sub.acquisitionStage) {
     return (
       <section className="rounded-2xl border-2 border-accent/40 bg-accent/[0.06] p-6">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-accent mb-3">Decide on this price</p>
@@ -375,7 +379,7 @@ function StageCard({
           <div>
             <p className="text-3xl font-bold tabular-nums inline-flex items-center gap-2">
               <Banknote className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
-              {new Intl.NumberFormat('en-US', { style: 'currency', currency: latestProposalCurrency ?? 'EUR', maximumFractionDigits: 0 }).format(latestProposalCents / 100)}
+              {fmtMoney(latestProposalCents, latestProposalCurrency ?? 'EUR')}
             </p>
             <p className="text-sm text-muted-foreground mt-1">
               Accept to move forward, or counter via the reply box below.
@@ -400,7 +404,7 @@ function StageCard({
           <Banknote className="h-3.5 w-3.5" /> Bank details for your payout
         </p>
         <p className="text-sm text-muted-foreground mb-4">
-          Where should we wire the <strong className="text-foreground">{new Intl.NumberFormat('en-US', { style: 'currency', currency: sub.agreedCurrency ?? 'EUR', maximumFractionDigits: 0 }).format((sub.agreedPriceCents ?? 0) / 100)}</strong>? We don't store this on file unless you let us — but if it's saved, future offers auto-fill.
+          Where should we wire the <strong className="text-foreground">{fmtMoney(sub.agreedPriceCents ?? 0, sub.agreedCurrency ?? 'EUR')}</strong>? We don't store this on file unless you let us — but if it's saved, future offers auto-fill.
         </p>
         <form action={saveAcquisitionBankDetails} className="space-y-3">
           <input type="hidden" name="submissionId" value={sub.id} />
@@ -518,7 +522,7 @@ function StageCard({
           <div className="flex-1">
             <p className="font-bold text-emerald-900 dark:text-emerald-300">Payment wired · acquisition complete</p>
             <p className="text-sm text-emerald-900 dark:text-emerald-300 mt-1">
-              <strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency: sub.agreedCurrency ?? 'EUR', maximumFractionDigits: 0 }).format((sub.agreedPriceCents ?? 0) / 100)}</strong>{' '}
+              <strong>{fmtMoney(sub.agreedPriceCents ?? 0, sub.agreedCurrency ?? 'EUR')}</strong>{' '}
               transferred to your bank {smartDate(sub.completedAt)}. Receipt below.
             </p>
           </div>
@@ -539,6 +543,21 @@ function StageCard({
             </a>
           ) : null;
         })()}
+      </section>
+    );
+  }
+
+  // ACCEPTED before an agreed price existed — acquisitions sets the price next.
+  if (sub.status === 'ACCEPTED' && !sub.acquisitionStage) {
+    return (
+      <section className="rounded-2xl border border-border bg-card p-6 flex items-start gap-3">
+        <Clock className="h-6 w-6 text-muted-foreground mt-1" />
+        <div>
+          <p className="font-bold">Offer accepted — confirming your payout</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Our acquisitions team is confirming the payout amount. You&apos;ll get an email as soon as it&apos;s set, with the next step (your bank details).
+          </p>
+        </div>
       </section>
     );
   }

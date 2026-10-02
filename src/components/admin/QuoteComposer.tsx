@@ -8,6 +8,8 @@ import { replyToQuote, sendProforma } from '@/lib/quotes/actions';
 type Mode = 'reply' | 'internal' | 'proforma';
 type Att = { url: string; name: string; type: string };
 
+const MAX_PROFORMA_EUR = 1_000_000;
+
 export function QuoteComposer({
   quoteId,
   buyerEmail,
@@ -57,7 +59,7 @@ export function QuoteComposer({
         if (mode === 'proforma') {
           const cents = Math.round(parseFloat(price) * 100);
           if (!Number.isFinite(cents) || cents <= 0) { setErr('Enter a valid price.'); return; }
-          if (cents > 100_000_000) { setErr('Maximum proforma price is €1,000,000.'); return; }
+          if (cents > MAX_PROFORMA_EUR * 100) { setErr('Max proforma amount is €1,000,000.'); return; }
           const r = await sendProforma({
             sourcingRequestId: quoteId,
             priceCents: cents,
@@ -68,19 +70,20 @@ export function QuoteComposer({
           setPrice(''); setPnote('');
         } else {
           if (body.trim().length < 2) { setErr('Message too short.'); return; }
-          await replyToQuote({
+          const r = await replyToQuote({
             sourcingRequestId: quoteId,
             body: body.trim(),
             attachments: atts.map((a) => a.url),
             internal: mode === 'internal',
           });
+          if (r?.error) { setErr(r.error); return; }
           setBody(''); setAtts([]);
         }
         setOpen(false);
         router.refresh();
       } catch (e2) {
         if ((e2 as Error)?.message?.includes('NEXT_REDIRECT')) return;
-        setErr(e2 instanceof Error ? e2.message : 'Send failed.');
+        setErr('Not sent. Reload the page and try again.');
       }
     });
   }
@@ -182,7 +185,7 @@ export function QuoteComposer({
               <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Price (EUR)</span>
               <div className="flex items-end gap-3 flex-wrap">
                 <input
-                  type="number" min="0.01" max="1000000" step="0.01"
+                  type="number" min="0.01" max={MAX_PROFORMA_EUR} step="0.01"
                   value={price} onChange={(e) => setPrice(e.target.value)}
                   placeholder="18500.00"
                   required
@@ -194,13 +197,7 @@ export function QuoteComposer({
                     <div className="rounded-lg bg-accent/[0.10] border border-accent/30 px-3 py-1.5 text-xs">
                       <span className="text-muted-foreground">Buyer will see </span>
                       <strong className="tabular-nums">
-                        {/* Show the cents when there are any (€123.45, not €123). */}
-                        {new Intl.NumberFormat('en-US', {
-                          style: 'currency',
-                          currency: 'EUR',
-                          minimumFractionDigits: cents % 100 ? 2 : 0,
-                          maximumFractionDigits: 2,
-                        }).format(cents / 100)}
+                        {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', minimumFractionDigits: cents % 100 ? 2 : 0, maximumFractionDigits: 2 }).format(cents / 100)}
                       </strong>
                     </div>
                   ) : null;

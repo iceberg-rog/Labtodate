@@ -157,6 +157,14 @@ export async function withUniqueTicketRef<T>(
   throw new Error('Could not allocate a ticket reference');
 }
 
+const TICKET_FIELD_LIMITS: Record<string, string> = {
+  name: 'Your name must be 2–120 characters.',
+  email: 'Please enter a valid email address.',
+  subject: 'The subject must be 3–160 characters.',
+  category: 'Please pick a topic from the list.',
+  body: 'Your message must be 10–5,000 characters.',
+};
+
 export async function submitTicket(input: z.infer<typeof TicketInput>) {
   const p = TicketInput.parse(input);
   if (p.hp && p.hp.trim()) return { ref: 'TKT-OK' }; // honeypot: silently drop bots
@@ -278,8 +286,25 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
   return { ref: ticket.ref, accessToken };
 }
 
-export async function submitTicketAndRedirect(input: z.infer<typeof TicketInput>) {
-  const { ref: r } = await submitTicket(input);
+/**
+ * Form entry point. Validation and rate-limit failures come back as a readable
+ * `error`: production builds replace thrown messages with a generic "Server
+ * Components render" error, so the customer could not tell what to fix.
+ */
+export async function submitTicketAndRedirect(input: z.infer<typeof TicketInput>): Promise<{ error: string }> {
+  let r: string;
+  try {
+    ({ ref: r } = await submitTicket(input));
+  } catch (e) {
+    if (e instanceof z.ZodError) {
+      const field = String(e.issues[0]?.path[0] ?? '');
+      return { error: TICKET_FIELD_LIMITS[field] ?? 'Some details are invalid. Please check the form and try again.' };
+    }
+    const msg = e instanceof Error ? e.message : '';
+    if (msg.startsWith('Too many submissions')) return { error: msg };
+    console.error('[support] submit failed', e);
+    return { error: 'Something went wrong and your ticket was not sent. Please try again in a minute.' };
+  }
   redirect(`/support/thanks?ref=${r}`);
 }
 

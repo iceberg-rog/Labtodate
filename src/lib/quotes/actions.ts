@@ -43,6 +43,18 @@ function quoteRefOrProforma(sr: { id: string; proformaNumber: string | null }): 
   return sr.proformaNumber ?? QUOTE_REF(sr.id);
 }
 
+/** Turnaround promise for buyer copy. Comes from the admin QUOTE_TURNAROUND
+ *  setting (the same value /let-us-find-it shows); no setting, no time promise. */
+function quoteTurnaroundPhrase(): string {
+  const t = process.env.QUOTE_TURNAROUND?.trim();
+  return t ? `reply within ${t}` : 'reply as soon as we have something solid';
+}
+
+/** Readable result for quote actions. Production builds hide thrown messages
+ *  behind a generic "Server Components render" error, so known failures are
+ *  returned instead of thrown. */
+export type QuoteActionResult = { error?: string };
+
 const SourcingInput = z.object({
   buyerEmail: z.string().email(),
   buyerName: z.string().min(2).max(120),
@@ -52,6 +64,8 @@ const SourcingInput = z.object({
   timeframe: z.string().max(120).optional().nullable(),
   description: z.string().min(20).max(4000),
   productSlug: z.string().optional().nullable(),
+  // Lab-rental "Request access" — a LabFacility slug, not a product.
+  facilitySlug: z.string().max(200).optional().nullable(),
   // Honeypot — hidden in the UI; only bots fill it. Presence => silent drop.
   company_url: z.string().optional().nullable(),
 });
@@ -59,7 +73,6 @@ const SourcingInput = z.object({
 export type SourcingInputType = z.infer<typeof SourcingInput>;
 
 export async function submitSourcingRequest(input: SourcingInputType) {
-  await rateLimit('quote');
   await ensureSettingsLoaded();
   // Quote requests belong to an account: guests must sign in first, and the
   // buyer's name and email always come from the account. A typed address could
@@ -78,6 +91,9 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     await audit('quote.honeypot', 'blocked', parsed.buyerEmail || 'unknown').catch(() => {});
     return { id: '', accessToken: null };
   }
+  // Counted only after validation: a buyer fixing a too-long field must not
+  // burn through the limit and get locked out of the corrected submit.
+  await rateLimit('quote');
   const submittedById = session.user.id;
 
   // If anchored to a product, route to that product's seller.
@@ -91,6 +107,19 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     if (product) {
       productId = product.id;
       assignedToId = product.sellerId;
+    }
+  }
+  // A lab-rental access request has no product: record the facility as the
+  // category so the admin queue, title and emails say which lab is wanted.
+  let facilityLabel: string | null = null;
+  if (!productId && parsed.facilitySlug) {
+    const facility = await prisma.labFacility.findUnique({
+      where: { slug: parsed.facilitySlug },
+      select: { name: true, city: true, country: true, isPublished: true },
+    });
+    if (facility?.isPublished) {
+      facilityLabel = `Lab rental: ${facility.name} (${facility.city}, ${facility.country})`.slice(0, 120);
+      parsed.productCategory = facilityLabel;
     }
   }
 
@@ -128,7 +157,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     },
     include: {
       product: { select: { title: true, slug: true } },
-      assignedTo: { select: { email: true, name: true } },
+      assignedTo: { select: { email: true, name: true, role: true } },
     },
   });
 
@@ -146,7 +175,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:540px;">
         <h2 style="color:#0E4F40;">We&rsquo;ve got your request</h2>
-        <p>Hi ${parsed.buyerName}, our team and the supplier will review your request and reply within 24 business hours.</p>
+        <p>Hi ${parsed.buyerName}, our team and the supplier will review your request and ${quoteTurnaroundPhrase()}.</p>
         ${created.product ? `<p><strong>Product:</strong> ${created.product.title}</p>` : ''}
         <p><strong>What you wrote:</strong></p>
         <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${parsed.description.replace(/\n/g, '<br>')}</blockquote>
@@ -165,25 +194,34 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   // placeholder addresses, so those go to the intake inbox. The request is
   // already saved: a failed staff notification must not fail the buyer's submit
   // (they'd see an error and resubmit, creating duplicates).
+  // Sellers never learn who the buyer is (lab2date mediates), so a seller copy
+  // carries no buyer identity and links to the seller inbox; staff and intake
+  // copies link to the admin workspace, which labels internal notes.
   const sellerEmail = created.assignedTo?.email;
+  const toSeller = created.assignedTo?.role === 'SELLER' && isDeliverableEmail(sellerEmail);
   const assigneeEmail = isDeliverableEmail(sellerEmail)
     ? sellerEmail
     : process.env.QUOTE_INTAKE_EMAIL ?? 'sourcing@lab2date.com';
+  const assigneeLink = toSeller
+    ? `${process.env.BETTER_AUTH_URL ?? ''}/app/seller/inbox/${created.id}`
+    : `${process.env.BETTER_AUTH_URL ?? ''}/admin/quotes/${created.id}`;
   await sendEmail({
     to: assigneeEmail,
     subject: created.product
       ? `New quote request: ${created.product.title}`
-      : `New sourcing request from ${parsed.buyerName}`,
+      : facilityLabel ? `New access request — ${facilityLabel}`
+      : toSeller ? 'New sourcing request' : `New sourcing request from ${parsed.buyerName}`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:540px;">
         <h2 style="color:#0E4F40;">${created.product ? 'Quote request' : 'Sourcing request'}</h2>
-        <p>From <strong>${parsed.buyerName}</strong> &lt;${parsed.buyerEmail}&gt;${parsed.companyName ? ` · ${parsed.companyName}` : ''}</p>
+        ${toSeller ? '' : `<p>From <strong>${parsed.buyerName}</strong> &lt;${parsed.buyerEmail}&gt;${parsed.companyName ? ` · ${parsed.companyName}` : ''}</p>`}
         ${created.product ? `<p><strong>Product:</strong> ${created.product.title}</p>` : ''}
+        ${facilityLabel ? `<p><strong>Facility:</strong> ${facilityLabel}</p>` : ''}
         ${parsed.budget ? `<p><strong>Budget:</strong> ${parsed.budget}</p>` : ''}
         ${parsed.timeframe ? `<p><strong>Timeframe:</strong> ${parsed.timeframe}</p>` : ''}
         <p><strong>Description:</strong></p>
         <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${parsed.description.replace(/\n/g, '<br>')}</blockquote>
-        <p>Reply via lab2date dashboard: <a href="${process.env.BETTER_AUTH_URL}/app/seller/inbox/${created.id}">Open in seller inbox</a></p>
+        <p>Reply via lab2date dashboard: <a href="${assigneeLink}">${toSeller ? 'Open in seller inbox' : 'Open in admin'}</a></p>
       </div>
     `,
   }).catch((e) => console.error('[quotes] assignee notification failed', QUOTE_REF(created.id), e));
@@ -191,7 +229,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   await notifyAdmins(
     'New quote request',
     `${parsed.buyerName}: ${created.product?.title ?? parsed.productCategory ?? 'sourcing request'}`,
-    '/admin/quotes',
+    `/admin/quotes/${created.id}`,
     'QUOTE_NEW',
   );
 
@@ -220,9 +258,17 @@ const ReplyInput = z.object({
   internal: z.boolean().optional(),
 });
 
-export async function replyToQuote(input: z.infer<typeof ReplyInput>) {
-  const parsed = ReplyInput.parse(input);
+export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<QuoteActionResult> {
+  const result = ReplyInput.safeParse(input);
+  if (!result.success) {
+    const field = String(result.error.issues[0]?.path[0] ?? '');
+    if (field === 'body') return { error: 'Write a reply of 2–4,000 characters.' };
+    if (field === 'attachments') return { error: 'Some attachments could not be added. Remove them and attach the files again.' };
+    return { error: 'This reply could not be sent. Reload the page and try again.' };
+  }
+  const parsed = result.data;
   const session = await requireSession({ redirectTo: '/app' });
+  await ensureSettingsLoaded();
 
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id: parsed.sourcingRequestId },
@@ -230,16 +276,17 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>) {
       id: true, proformaNumber: true,
       assignedToId: true, submittedById: true, buyerEmail: true, status: true,
       accessToken: true, accessTokenExpiresAt: true,
+      assignedTo: { select: { email: true, role: true } },
     },
   });
-  if (!sr) throw new Error('Quote not found');
+  if (!sr) return { error: 'This quote no longer exists.' };
 
   const role = (session.user as { role?: string }).role;
   const isAdmin = role === 'ADMIN';
   const isAssignee = !!sr.assignedToId && sr.assignedToId === session.user.id;
   const isBuyer = !!sr.submittedById && sr.submittedById === session.user.id;
   const allowed = isAdmin || isAssignee || isBuyer;
-  if (!allowed) throw new Error('Forbidden');
+  if (!allowed) return { error: 'You can no longer reply on this quote.' };
 
   // Capability gate — admins MUST hold quotes:reply. Buyers and assigned
   // sellers are gated by ownership instead (no cap needed).
@@ -306,10 +353,21 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>) {
           sr.assignedToId,
           'Buyer replied on a quote',
           'The buyer responded. Open the quote to continue.',
-          `/app/seller/inbox/${sr.id}`,
+          sr.assignedTo?.role === 'SELLER' ? `/app/seller/inbox/${sr.id}` : `/admin/quotes/${sr.id}`,
         );
       }
-      await notifyAdmins('Buyer replied on a quote', 'A buyer responded on a sourcing request.', '/admin/quotes');
+      await notifyAdmins('Buyer replied on a quote', 'A buyer responded on a sourcing request.', `/admin/quotes/${sr.id}`);
+      // Email whoever handles the quote, as the thread promises: a seller with a
+      // real address, otherwise the intake inbox (imported sellers carry
+      // placeholder addresses). Best-effort — the reply is already saved.
+      const assigneeEmail = sr.assignedTo?.email;
+      const toSeller = sr.assignedTo?.role === 'SELLER' && isDeliverableEmail(assigneeEmail);
+      const base = process.env.BETTER_AUTH_URL ?? '';
+      await sendEmail({
+        to: isDeliverableEmail(assigneeEmail) ? assigneeEmail : process.env.QUOTE_INTAKE_EMAIL ?? 'sourcing@lab2date.com',
+        subject: `[${quoteRefOrProforma(sr)}] The buyer replied on a quote`,
+        html: `<p>The buyer replied on quote <strong>${quoteRefOrProforma(sr)}</strong>.</p><p><a href="${toSeller ? `${base}/app/seller/inbox/${sr.id}` : `${base}/admin/quotes/${sr.id}`}">Open the thread</a> to read it and respond.</p>`,
+      }).catch((e) => console.error('[quotes] buyer-reply notification failed', quoteRefOrProforma(sr), e));
     }
   }
 
@@ -323,6 +381,7 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>) {
   revalidatePath(`/app/seller/inbox/${parsed.sourcingRequestId}`);
   revalidatePath(`/admin/quotes/${parsed.sourcingRequestId}`);
   revalidatePath('/admin/quotes');
+  return {};
 }
 
 const ProformaInput = z.object({
@@ -332,24 +391,18 @@ const ProformaInput = z.object({
   note: z.string().max(2000).optional().nullable(),
 });
 
-/** Validation / guard failures come back as `{ error }` (shown by the composer)
- *  instead of being thrown — production builds redact thrown messages to a
- *  generic "Server Components render" error. Success resolves to undefined. */
-export async function sendProforma(input: z.infer<typeof ProformaInput>): Promise<{ error: string } | undefined> {
-  const check = ProformaInput.safeParse(input);
-  if (!check.success) {
-    const issue = check.error.issues[0];
-    const field = issue?.path[0];
-    return {
-      error:
-        field === 'priceCents'
-          ? 'Price must be between €0.01 and €1,000,000.'
-          : field === 'note'
-            ? 'The note is too long (max 2,000 characters).'
-            : 'Please check the proforma details and try again.',
-    };
+export async function sendProforma(input: z.infer<typeof ProformaInput>): Promise<QuoteActionResult> {
+  const result = ProformaInput.safeParse(input);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const field = String(issue?.path[0] ?? '');
+    if (field === 'priceCents') {
+      return { error: issue?.code === 'too_big' ? 'Max proforma amount is €1,000,000.' : 'Enter a price above zero.' };
+    }
+    if (field === 'note') return { error: 'The note is too long (max 2,000 characters).' };
+    return { error: 'This proforma could not be sent. Check the price and try again.' };
   }
-  const parsed = check.data;
+  const parsed = result.data;
   await ensureSettingsLoaded();
   const session = await requireSession({ redirectTo: '/app' });
 
@@ -357,13 +410,13 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
     where: { id: parsed.sourcingRequestId },
     include: { product: { select: { title: true } } },
   });
-  if (!sr) return { error: 'Quote not found — it may have been deleted.' };
+  if (!sr) return { error: 'This quote no longer exists.' };
 
   const role = (session.user as { role?: string }).role;
   const isAdmin = role === 'ADMIN';
   const isAssignee = !!sr.assignedToId && sr.assignedToId === session.user.id;
   const allowed = isAdmin || isAssignee;
-  if (!allowed) return { error: 'You are not allowed to send a proforma for this quote.' };
+  if (!allowed) return { error: 'You are not allowed to send a proforma on this quote.' };
   // Admin path needs explicit cap. Assignee seller is already gated by
   // ownership (they were the chosen supplier for this product/quote).
   if (isAdmin && !isAssignee) {
@@ -617,9 +670,15 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
   revalidatePath(`/app/quotes/${sr.id}/proforma`);
   revalidatePath(`/app/seller/inbox/${sr.id}`);
   revalidatePath(`/admin/quotes`);
+  return {};
 }
 
-export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED' | 'CLOSED') {
+class ProofInFlightError extends Error {}
+
+export async function setQuoteStatus(
+  id: string,
+  status: 'ACCEPTED' | 'DECLINED' | 'CLOSED',
+): Promise<QuoteActionResult> {
   const session = await requireSession({ redirectTo: '/app' });
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id },
@@ -636,7 +695,7 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
       product: { select: { title: true, brand: { select: { name: true } } } },
     },
   });
-  if (!sr) throw new Error('Quote not found');
+  if (!sr) return { error: 'This quote no longer exists.' };
 
   const role = (session.user as { role?: string }).role;
   const isAdmin = role === 'ADMIN';
@@ -645,9 +704,38 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
     isAdmin ||
     (sr.submittedById === session.user.id && status !== 'CLOSED') ||
     (sr.assignedToId === session.user.id && status === 'CLOSED');
-  if (!allowed) throw new Error('Forbidden');
+  if (!allowed) return { error: 'You are not allowed to change this quote.' };
   if (isAdmin && sr.submittedById !== session.user.id && sr.assignedToId !== session.user.id) {
     await requireCapability('quotes:status', { redirectTo: '/admin/quotes' });
+  }
+
+  // A declined/closed deal stays closed: its order was canceled, so accepting
+  // it again would send the buyer to a dead payment workspace.
+  if (status === 'ACCEPTED' && (sr.status === 'DECLINED' || sr.status === 'CLOSED')) {
+    return { error: 'This quote is closed. Open a new request if you still need the item.' };
+  }
+
+  // Declining or closing ends the deal, so the order auto-created at proforma
+  // time must stop being payable. A paid order is a real sale (managed on the
+  // order page), and a buyer's payment proof in flight wins over the close.
+  const terminal = status === 'DECLINED' || status === 'CLOSED';
+  if (terminal) {
+    const linked = await prisma.order.findUnique({
+      where: { sourcingRequestId: id },
+      select: { orderNumber: true, status: true, paymentSubmittedAt: true },
+    });
+    if (linked && linked.status !== 'PENDING_PAYMENT' && linked.status !== 'CANCELED') {
+      return {
+        error: `Order ${linked.orderNumber} is already ${linked.status.toLowerCase().replace(/_/g, ' ')} — manage it from the order page instead.`,
+      };
+    }
+    if (linked?.status === 'PENDING_PAYMENT' && linked.paymentSubmittedAt) {
+      return {
+        error: isAdmin
+          ? `The buyer already sent a payment proof for order ${linked.orderNumber}. Verify or reject it on the order before closing this quote.`
+          : `You already sent a payment proof for order ${linked.orderNumber}. Contact support if you want to cancel it.`,
+      };
+    }
   }
 
   // Auto-archive on CLOSED — mirrors the support-ticket auto-archive flow.
@@ -656,20 +744,65 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
   // BUG-041: atomic compare-and-set so a double-click / duplicate submit can't
   // re-stamp state, double-audit, or double-notify the buyer. Side effects are
   // gated on count === 1 (the request that actually won the transition).
-  const claim = await prisma.sourcingRequest.updateMany({
-    where: shouldAutoArchive
-      ? { id, OR: [{ status: { not: status } }, { archivedAt: null }] }
-      : { id, status: { not: status } },
-    data: shouldAutoArchive
-      ? { status, archivedAt: new Date(), archivedById: session.user.id }
-      : { status },
-  });
-  const changed = claim.count === 1;
+  // The linked-order cancel commits in the same transaction. It also runs when
+  // the quote is already in this state, so an older declined quote's leftover
+  // payable order gets cleaned up too.
+  let changed = false;
+  let canceledOrder: string | null = null;
+  try {
+    ({ changed, canceledOrder } = await prisma.$transaction(async (tx) => {
+      const claim = await tx.sourcingRequest.updateMany({
+        where: shouldAutoArchive
+          ? { id, OR: [{ status: { not: status } }, { archivedAt: null }] }
+          : { id, status: { not: status } },
+        data: shouldAutoArchive
+          ? { status, archivedAt: new Date(), archivedById: session.user.id }
+          : { status },
+      });
+      if (!terminal) return { changed: claim.count === 1, canceledOrder: null };
+      const pending = await tx.order.findFirst({
+        where: { sourcingRequestId: id, status: 'PENDING_PAYMENT', paymentSubmittedAt: null },
+        select: { orderNumber: true },
+      });
+      const cancel = await tx.order.updateMany({
+        where: { sourcingRequestId: id, status: 'PENDING_PAYMENT', paymentSubmittedAt: null },
+        data: { status: 'CANCELED' },
+      });
+      // A proof that landed after the check above wins: roll the close back.
+      const proofPending = await tx.order.count({
+        where: { sourcingRequestId: id, status: 'PENDING_PAYMENT', paymentSubmittedAt: { not: null } },
+      });
+      if (proofPending > 0) throw new ProofInFlightError();
+      return {
+        changed: claim.count === 1,
+        canceledOrder: cancel.count === 1 ? pending?.orderNumber ?? null : null,
+      };
+    }));
+  } catch (e) {
+    if (e instanceof ProofInFlightError) {
+      return { error: 'A payment proof was just submitted for this order, so the quote stays open. Review the order first.' };
+    }
+    throw e;
+  }
   if (changed && statusChanged) {
     await audit('quote.status', quoteRefOrProforma(sr), `${sr.status} → ${status} by ${session.user.email}`);
   }
   if (changed && shouldAutoArchive) {
     await audit('quote.archive', quoteRefOrProforma(sr), `auto on CLOSE by ${session.user.email}`);
+  }
+  if (canceledOrder) {
+    // Proforma orders reserve no stock, so there is nothing to restock.
+    await audit('order.cancel', canceledOrder, `quote ${quoteRefOrProforma(sr)} ${status.toLowerCase()} by ${session.user.email}`);
+    revalidatePath('/app/orders');
+    revalidatePath('/admin/orders');
+  }
+  if (changed && status === 'DECLINED') {
+    await notifyAdmins(
+      `Quote declined — ${quoteRefOrProforma(sr)}`,
+      canceledOrder ? `The buyer declined. Order ${canceledOrder} was canceled.` : 'The buyer declined the quote.',
+      `/admin/quotes/${id}`,
+      'SYSTEM',
+    );
   }
   revalidatePath(`/app/quotes/${id}`);
   revalidatePath(`/app/seller/inbox/${id}`);
@@ -717,6 +850,7 @@ export async function setQuoteStatus(id: string, status: 'ACCEPTED' | 'DECLINED'
       );
     }
   }
+  return {};
 }
 
 /**
@@ -833,7 +967,16 @@ export async function transferQuote(formData: FormData): Promise<{ ok: boolean; 
     return { ok: false, message: 'Target must be an admin or seller.' };
   }
   await prisma.sourcingRequest.update({ where: { id }, data: { assignedToId: toUserId } });
-  await notifyUser(toUserId, `Quote ${quoteRefOrProforma(sr)} transferred to you`, `${session.user.email} transferred a quote to you.`, `/admin/quotes/${id}`);
+  // Sellers can't open /admin pages; they work quotes from their seller inbox.
+  const href = target.role === 'SELLER' ? `/app/seller/inbox/${id}` : `/admin/quotes/${id}`;
+  await notifyUser(toUserId, `Quote ${quoteRefOrProforma(sr)} transferred to you`, `${session.user.email} transferred a quote to you.`, href);
+  if (isDeliverableEmail(target.email)) {
+    await sendEmail({
+      to: target.email,
+      subject: `[${quoteRefOrProforma(sr)}] A quote was transferred to you`,
+      html: `<p>Quote <strong>${quoteRefOrProforma(sr)}</strong> was transferred to you on lab2date.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open the quote</a> to reply to the buyer.</p>`,
+    }).catch((e) => console.error('[quotes] transfer notification failed', quoteRefOrProforma(sr), e));
+  }
   await audit('quote.transfer', quoteRefOrProforma(sr), `from=${session.user.email} to=${target.email}`);
   revalidatePath('/admin/quotes');
   revalidatePath(`/admin/quotes/${id}`);

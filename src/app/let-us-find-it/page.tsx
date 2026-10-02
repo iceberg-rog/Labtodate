@@ -11,16 +11,32 @@ import { getMarketing } from '@/lib/marketing';
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
 
-export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string }> }) {
+export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string; facility?: string }> }) {
   const mk = await getMarketing();
   const session = await getServerSession();
-  const slug = (await searchParams).product;
+  const sp = await searchParams;
+  const slug = sp.product;
   const anchor = slug
     ? await prisma.product.findUnique({
         where: { slug },
         select: { slug: true, title: true, brand: { select: { name: true } } },
       })
     : null;
+  // Lab rental "Request access" sends ?facility=<LabFacility slug>.
+  const facilityRow = !anchor && sp.facility
+    ? await prisma.labFacility.findUnique({
+        where: { slug: sp.facility },
+        select: { slug: true, name: true, city: true, country: true, isPublished: true },
+      })
+    : null;
+  const facility = facilityRow?.isPublished
+    ? { slug: facilityRow.slug, name: facilityRow.name, location: `${facilityRow.city}, ${facilityRow.country}` }
+    : null;
+  const back = anchor
+    ? `/let-us-find-it?product=${encodeURIComponent(anchor.slug)}`
+    : facility
+      ? `/let-us-find-it?facility=${encodeURIComponent(facility.slug)}`
+      : '/let-us-find-it';
 
   return (
     <div className="container-px py-12 md:py-20">
@@ -39,7 +55,13 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
           </p>
 
           <ul className="mt-8 space-y-4">
-            <Bullet icon={Clock} title="Quote turnaround" body="We come back as soon as we have something solid — typically a few business days." />
+            <Bullet
+              icon={Clock}
+              title="Quote turnaround"
+              body={mk.quoteTurnaround
+                ? `We come back as soon as we have something solid — within ${mk.quoteTurnaround}.`
+                : 'We come back as soon as we have something solid.'}
+            />
             <Bullet icon={ShieldCheck} title="Free for buyers" body="No commission until you accept a quote." />
           </ul>
         </div>
@@ -48,13 +70,15 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
           <Suspense>
             <SourcingForm
               anchor={anchor ? { slug: anchor.slug, title: anchor.title, brand: anchor.brand?.name ?? null } : null}
+              facility={facility}
               buyer={{ name: session.user.name ?? '', email: session.user.email }}
             />
           </Suspense>
         ) : (
           <SignInToRequest
             anchor={anchor ? { title: anchor.title, brand: anchor.brand?.name ?? null } : null}
-            back={anchor ? `/let-us-find-it?product=${encodeURIComponent(anchor.slug)}` : '/let-us-find-it'}
+            facility={facility}
+            back={back}
           />
         )}
       </div>
@@ -66,9 +90,11 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
 // buyer can follow it in their dashboard. `back` returns them to this form.
 function SignInToRequest({
   anchor,
+  facility,
   back,
 }: {
   anchor: { title: string; brand: string | null } | null;
+  facility: { name: string; location: string } | null;
   back: string;
 }) {
   const redirect = encodeURIComponent(back);
@@ -81,6 +107,15 @@ function SignInToRequest({
           </p>
           <p className="font-semibold">{anchor.title}</p>
           {anchor.brand && <Badge variant="secondary" className="mt-2">{anchor.brand}</Badge>}
+        </div>
+      )}
+      {facility && (
+        <div className="rounded-xl bg-foreground/[0.03] border border-border p-4">
+          <p className="text-[10px] uppercase tracking-[0.15em] font-bold text-muted-foreground mb-1">
+            Lab access request
+          </p>
+          <p className="font-semibold">{facility.name}</p>
+          <p className="text-xs text-muted-foreground mt-1">{facility.location}</p>
         </div>
       )}
       <div className="space-y-2">

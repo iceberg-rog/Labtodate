@@ -23,6 +23,7 @@ import {
 import { requireSession, getAdminCaps } from '@/lib/auth-server';
 import { capsAllow, capsAllowSection } from '@/lib/capabilities';
 import { prisma } from '@/lib/db';
+import { TICKETS_AWAITING_SUPPORT } from '@/lib/support/statuses';
 import { AdminNavLink, NavSection } from '@/components/admin/AdminNavLink';
 import { AdminTopBar } from '@/components/admin/AdminTopBar';
 import { NewOrderToast } from '@/components/admin/NewOrderToast';
@@ -48,7 +49,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       prisma.sourcingRequest.count({ where: { status: 'PENDING' } }).catch(() => 0),
       prisma.sellSubmission.count({ where: { status: 'PENDING' } }).catch(() => 0),
       prisma.supportTicket
-        .count({ where: { status: { in: ['OPEN', 'PENDING'] } } })
+        .count({ where: { status: { in: TICKETS_AWAITING_SUPPORT }, archivedAt: null } })
         .catch(() => 0),
       prisma.errorLog.count({ where: { createdAt: { gte: since24h } } }).catch(() => 0),
       prisma.notification.count({ where: { userId: session.user.id, readAt: null } }).catch(() => 0),

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { TICKETS_AWAITING_SUPPORT } from '@/lib/support/statuses';
 import { formatPrice } from '@/lib/utils';
 import { OrderStatus } from '@prisma/client';
 import { LineChart } from '@/components/admin/Charts';
@@ -113,7 +114,8 @@ export default async function AdminDashboardPage() {
     }),
     prisma.supportTicket.findMany({
       where: {
-        status: { in: ['OPEN', 'PENDING'] },
+        status: { in: TICKETS_AWAITING_SUPPORT },
+        archivedAt: null,
         updatedAt: { lt: ticketStale },
       },
       orderBy: { updatedAt: 'asc' },

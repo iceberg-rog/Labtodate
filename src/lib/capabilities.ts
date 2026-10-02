@@ -91,7 +91,7 @@ export const CAPABILITY_PRESETS: Record<string, { label: string; caps: string[] 
   },
   SUPPORT: {
     label: 'Support (tickets only)',
-    caps: ['tickets:view', 'tickets:reply', 'tickets:status', 'tickets:delete', 'users:view'],
+    caps: ['tickets:view', 'tickets:reply', 'tickets:status', 'tickets:assign', 'tickets:archive', 'tickets:delete', 'users:view'],
   },
   CONTENT: {
     label: 'Content (blog, wiki, CMS)',

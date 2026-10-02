@@ -65,9 +65,19 @@ export default async function SellerQuoteDetailPage(props: { params: Promise<{ i
         id: m.id,
         body: m.body,
         createdAt: m.createdAt.toISOString(),
-        authorName: m.author?.id === session.user.id ? 'You' : isAdmin ? (m.author?.name ?? null) : 'lab2date Buyer',
+        // Sellers see the other side as "lab2date Buyer", and staff messages
+        // as "lab2date team" — never a person's name.
+        authorName: m.author?.id === session.user.id
+          ? 'You'
+          : isAdmin ? (m.author?.name ?? null)
+          : m.fromStaff ? 'lab2date team' : 'lab2date Buyer',
         authorEmail: isAdmin ? (m.author?.email ?? null) : null,
         isMine: m.author?.id === session.user.id,
+        fromStaff: m.fromStaff,
+        // Only admins receive notes (see the query above); label them so a
+        // note is never mistaken for a reply the buyer saw.
+        isInternalNote: m.isInternalNote,
+        attachments: m.attachments,
       }))}
       viewerRole="SELLER"
       createdAt={sr.createdAt.toISOString()}

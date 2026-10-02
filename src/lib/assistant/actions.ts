@@ -14,6 +14,14 @@ import { notifyAndMaybeEmail } from '@/lib/notify-throttled';
 const GUEST_COOKIE = 'lab2_asst_g';
 const GUEST_COOKIE_TTL_DAYS = 90;
 
+/** Chat attachments are uploaded via /api/attachment-upload, which returns
+ *  auth-gated proxy URLs; only those are stored. */
+function keepProxyAttachments(urls: unknown[], max: number): string[] {
+  return urls
+    .filter((u): u is string => typeof u === 'string' && u.startsWith('/api/support-attachment/'))
+    .slice(0, max);
+}
+
 /**
  * Resolve the conversation actor:
  *   - If logged in → { userId }
@@ -104,7 +112,7 @@ export async function sendAssistantMessage(input: {
   const actor = await resolveActor();
   const conversationId = await findOrCreateConversation(actor);
   const body = (input.body || '').trim().slice(0, 4000);
-  const attachments = (input.attachments || []).slice(0, 4);
+  const attachments = keepProxyAttachments(input.attachments || [], 4);
   if (!body && attachments.length === 0) {
     return readConversation(conversationId);
   }
@@ -260,8 +268,15 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
   await ensureSettingsLoaded();
   const id = String(formData.get('conversationId') ?? '');
   const body = String(formData.get('body') ?? '').trim().slice(0, 4000);
-  const attachmentsRaw = String(formData.get('attachments') ?? '').trim();
-  const attachments = attachmentsRaw ? attachmentsRaw.split(',').filter((u) => u.startsWith('http')) : [];
+  // ReplyForm posts a JSON array of proxy URLs. The old comma-split +
+  // http-only filter dropped every attachment silently.
+  let attachments: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(String(formData.get('attachments') ?? '[]') || '[]');
+    if (Array.isArray(parsed)) attachments = keepProxyAttachments(parsed, 5);
+  } catch {
+    attachments = [];
+  }
   if (!id || (!body && attachments.length === 0)) return;
 
   const conv = await prisma.assistantConversation.findUnique({
