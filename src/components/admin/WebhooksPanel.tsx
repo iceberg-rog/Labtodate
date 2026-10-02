@@ -19,10 +19,13 @@ const ALL_EVENTS = [
 export function WebhooksPanel({ initial }: { initial: Hook[] }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [hooks] = useState<Hook[]>(initial);
+  // Read the prop directly: a useState copy never picked up router.refresh(),
+  // so a newly added hook (and fresh test results) didn't show until reload.
+  const hooks = initial;
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; ok: boolean; message: string } | null>(null);
   const [kind, setKind] = useState<'SLACK' | 'DISCORD' | 'TELEGRAM'>('SLACK');
+  const [addResult, setAddResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   function fireTest(id: string) {
     setTesting(id);
@@ -134,13 +137,24 @@ export function WebhooksPanel({ initial }: { initial: Hook[] }) {
 
       {/* Add new */}
       <form
-        action={async (fd: FormData) => {
-          try {
-            await createWebhook(fd);
-            router.refresh();
-          } catch (e) {
-            alert(e instanceof Error ? e.message : 'Failed to add webhook');
-          }
+        // onSubmit (not `action`) so a rejected add keeps what was typed.
+        onSubmit={(e) => {
+          e.preventDefault();
+          const form = e.currentTarget;
+          const fd = new FormData(form);
+          setAddResult(null);
+          start(async () => {
+            try {
+              const r = await createWebhook(fd);
+              setAddResult(r);
+              if (r.ok) {
+                form.reset();
+                router.refresh();
+              }
+            } catch {
+              setAddResult({ ok: false, message: 'Could not add the webhook — please try again.' });
+            }
+          });
         }}
         className="space-y-3 border-t border-border pt-4"
       >
@@ -195,6 +209,12 @@ export function WebhooksPanel({ initial }: { initial: Hook[] }) {
         >
           <Plus className="h-3.5 w-3.5" /> Add webhook
         </button>
+        {addResult && (
+          <p className={`text-[11px] inline-flex items-center gap-1 font-semibold ${addResult.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
+            {addResult.ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+            {addResult.message}
+          </p>
+        )}
       </form>
     </div>
   );

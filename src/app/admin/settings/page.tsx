@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireCapability } from '@/lib/auth-server';
-import { SETTING_DEFS, getEffectiveSettings } from '@/lib/settings';
+import { SETTING_DEFS, getEffectiveSettings, getEnvOnlySettingKeys } from '@/lib/settings';
 import { saveAdminSettings, uploadCompanyLogo, listWebhooks } from '../actions';
 import { ConnTest } from '@/components/admin/ConnTest';
 import { TestEmailButton } from '@/components/admin/TestEmailButton';
@@ -20,6 +20,7 @@ import { FieldVerify } from '@/components/admin/FieldVerify';
 import { SettingsTabs } from '@/components/admin/SettingsTabs';
 import { SettingsSaveForm } from '@/components/admin/SettingsSaveForm';
 import { WebhooksPanel } from '@/components/admin/WebhooksPanel';
+import { AdminActionForm } from '@/components/admin/AdminActionForm';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,6 +69,7 @@ export default async function AdminSettingsPage(
   const searchParams = await props.searchParams;
   await requireCapability('settings:view');
   const current = await getEffectiveSettings();
+  const envOnly = await getEnvOnlySettingKeys();
   const groups = Array.from(new Set(SETTING_DEFS.map((d) => d.group)));
   const requested = (searchParams?.tab ?? '').trim();
   const webhooks = await listWebhooks().catch(() => []);
@@ -80,6 +82,7 @@ export default async function AdminSettingsPage(
     const isSet = val.trim().length > 0;
     const verify = 'verify' in d ? (d as { verify?: string }).verify : undefined;
     const preview = 'preview' in d ? (d as { preview?: string }).preview : undefined;
+    const multiline = 'multiline' in d && d.multiline;
     return (
       <div key={d.key} className="space-y-1.5">
         <div className="flex items-center justify-between gap-3">
@@ -97,6 +100,19 @@ export default async function AdminSettingsPage(
             </span>
           )}
         </div>
+        {multiline ? (
+          // Addresses: a real textarea so line breaks survive and Enter adds a
+          // line instead of submitting the tab.
+          <textarea
+            id={d.key}
+            name={d.key}
+            rows={3}
+            autoComplete="off"
+            defaultValue={val}
+            placeholder={d.key}
+            className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+          />
+        ) : (
         <input
           id={d.key}
           name={d.key}
@@ -118,9 +134,17 @@ export default async function AdminSettingsPage(
           }
           className={field}
         />
+        )}
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">{d.hint}</p>
-          {isSet && (
+          <p className="text-xs text-muted-foreground">
+            {d.hint}
+            {envOnly.has(d.key) && (
+              <span className="block mt-0.5 text-amber-700 dark:text-amber-400">
+                Current value comes from the server .env — enter a new value to override it here; it can only be removed in the .env file.
+              </span>
+            )}
+          </p>
+          {isSet && !envOnly.has(d.key) && (
             <label className="text-xs text-muted-foreground inline-flex items-center gap-1.5 shrink-0">
               <input type="checkbox" name={`__clear_${d.key}`} className="accent-primary" />
               clear
@@ -158,7 +182,7 @@ export default async function AdminSettingsPage(
       <SettingsSaveForm
         action={saveAdminSettings}
         group={g}
-        saveNote="Saves this tab only. Empty secret field = keep current. Tick “clear” to wipe."
+        saveNote="Saves this tab only. Empty a field to remove its value — except secret fields, where empty = keep current (tick “clear” to wipe a secret)."
       >
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">{g}</h2>
@@ -187,8 +211,9 @@ export default async function AdminSettingsPage(
   // Logo upload — separate independent form, lives on its own tab so the
   // Brand/Company tabs aren't crowded with a file picker.
   panels['Logo'] = (
-    <form
+    <AdminActionForm
       action={uploadCompanyLogo}
+      resetOnSuccess
       className="rounded-2xl border border-border bg-card p-6 space-y-5"
     >
       <div className="flex items-center gap-2">
@@ -230,7 +255,7 @@ export default async function AdminSettingsPage(
           Upload logo
         </Button>
       </div>
-    </form>
+    </AdminActionForm>
   );
 
   // Webhooks tab — separate from regular settings, full panel

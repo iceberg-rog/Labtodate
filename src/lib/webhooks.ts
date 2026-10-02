@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { safeFetch } from '@/lib/import/safe-fetch';
 
 /**
  * Outbound notification kinds. Used both as Notification.kind in the DB and
@@ -102,6 +103,47 @@ function buildPayload(
   return null;
 }
 
+type HookRow = { id: string; kind: string; url: string; chatId: string | null; events: string[] };
+
+/**
+ * POST one event to ONE hook and record lastOkAt / lastError on its row.
+ * Goes through the SSRF-guarded safeFetch (no private / loopback / metadata
+ * addresses, no redirects) — a webhook URL is admin-typed and must not be a
+ * way to make the server call internal services. Never throws.
+ */
+async function deliverToHook(
+  h: HookRow,
+  kind: NotifyKind,
+  title: string,
+  body: string,
+  href: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const p = buildPayload(kind, title, body, href, h.kind, h.chatId);
+  if (!p) {
+    const error = h.kind === 'TELEGRAM' ? 'Telegram hook has no chat_id.' : `Unknown webhook kind ${h.kind}.`;
+    try { await prisma.webhookConfig.update({ where: { id: h.id }, data: { lastError: error } }); } catch {/* ignore */}
+    return { ok: false, error };
+  }
+  let error: string | null = null;
+  try {
+    const r = await safeFetch(h.url, {
+      post: { body: p.body, contentType: p.contentType },
+      timeoutMs: 8000,
+      maxBytes: 64 * 1024,
+    });
+    if (r.status < 200 || r.status >= 300) error = `HTTP ${r.status}: ${r.body.slice(0, 200)}`;
+  } catch (e) {
+    error = (e instanceof Error ? e.message : String(e)).slice(0, 200);
+  }
+  try {
+    await prisma.webhookConfig.update({
+      where: { id: h.id },
+      data: error ? { lastError: error } : { lastOkAt: new Date(), lastError: null },
+    });
+  } catch {/* nested swallow */}
+  return error ? { ok: false, error } : { ok: true };
+}
+
 /** Dispatch an event to every active matching webhook. Fail-safe. */
 export async function dispatchWebhook(
   kind: NotifyKind,
@@ -109,7 +151,7 @@ export async function dispatchWebhook(
   body: string,
   href: string,
 ): Promise<void> {
-  let hooks: { id: string; kind: string; url: string; chatId: string | null; events: string[] }[] = [];
+  let hooks: HookRow[] = [];
   try {
     hooks = await prisma.webhookConfig.findMany({
       where: { isActive: true },
@@ -122,37 +164,25 @@ export async function dispatchWebhook(
 
   // Fan-out in parallel; don't await failures.
   await Promise.allSettled(
-    hooks.map(async (h) => {
-      const subscribed = h.events.includes('*') || h.events.includes(kind);
-      if (!subscribed) return;
-      const p = buildPayload(kind, title, body, href, h.kind, h.chatId);
-      if (!p) return;
-      try {
-        const r = await fetch(h.url, {
-          method: 'POST',
-          headers: { 'Content-Type': p.contentType },
-          body: p.body,
-          signal: AbortSignal.timeout(8000),
-        });
-        if (!r.ok) {
-          await prisma.webhookConfig.update({
-            where: { id: h.id },
-            data: { lastError: `HTTP ${r.status}: ${(await r.text()).slice(0, 200)}` },
-          });
-          return;
-        }
-        await prisma.webhookConfig.update({
-          where: { id: h.id },
-          data: { lastOkAt: new Date(), lastError: null },
-        });
-      } catch (e) {
-        try {
-          await prisma.webhookConfig.update({
-            where: { id: h.id },
-            data: { lastError: (e instanceof Error ? e.message : String(e)).slice(0, 200) },
-          });
-        } catch {/* nested swallow */}
-      }
-    }),
+    hooks
+      .filter((h) => h.events.includes('*') || h.events.includes(kind))
+      .map((h) => deliverToHook(h, kind, title, body, href)),
+  );
+}
+
+/** Test-fire: send a synthetic ANNOUNCEMENT to exactly ONE hook (ignoring its
+ *  event filter) and report that hook's own response. */
+export async function sendTestWebhook(id: string): Promise<{ ok: boolean; error?: string } | null> {
+  const h = await prisma.webhookConfig.findUnique({
+    where: { id },
+    select: { id: true, kind: true, url: true, chatId: true, events: true },
+  });
+  if (!h) return null;
+  return deliverToHook(
+    h,
+    'ANNOUNCEMENT',
+    `Test fire from ${process.env.SITE_NAME || 'lab2date'} admin`,
+    `If you see this, the ${h.kind} integration works.`,
+    '/admin/settings',
   );
 }

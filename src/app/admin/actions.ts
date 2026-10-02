@@ -176,16 +176,18 @@ export async function listWebhooks(): Promise<{
   }));
 }
 
-export async function createWebhook(formData: FormData): Promise<void> {
+export async function createWebhook(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('settings:write');
   const name = String(formData.get('name') ?? '').trim().slice(0, 80);
   const kind = String(formData.get('kind') ?? '').trim().toUpperCase();
   const url = String(formData.get('url') ?? '').trim().slice(0, 600);
   const chatId = String(formData.get('chatId') ?? '').trim() || null;
   const eventsRaw = String(formData.get('events') ?? '*').trim();
-  if (!name || !url) throw new Error('Name and URL required');
-  if (!['SLACK', 'DISCORD', 'TELEGRAM'].includes(kind)) throw new Error('Unknown webhook kind');
-  if (!/^https?:\/\//i.test(url)) throw new Error('URL must start with http(s)://');
+  // Returned, not thrown: production redacts thrown messages to a generic one.
+  if (!name || !url) return { ok: false, message: 'Name and URL are required.' };
+  if (!['SLACK', 'DISCORD', 'TELEGRAM'].includes(kind)) return { ok: false, message: 'Unknown webhook kind — pick Slack, Discord or Telegram.' };
+  if (!/^https?:\/\//i.test(url)) return { ok: false, message: 'The URL must start with https:// (or http://).' };
+  if (kind === 'TELEGRAM' && !chatId) return { ok: false, message: 'Telegram needs a chat_id.' };
   const events = eventsRaw === '*'
     ? ['*']
     : eventsRaw.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
@@ -194,6 +196,7 @@ export async function createWebhook(formData: FormData): Promise<void> {
   });
   await audit('webhook.create', name, kind);
   revalidatePath('/admin/settings');
+  return { ok: true, message: `Webhook “${name}” added — use Test fire to check it.` };
 }
 
 export async function deleteWebhook(id: string): Promise<void> {
@@ -209,19 +212,19 @@ export async function toggleWebhook(id: string, isActive: boolean): Promise<void
   revalidatePath('/admin/settings');
 }
 
-/** Test-fire — sends a synthetic ANNOUNCEMENT event to one hook, returns
- *  whether the destination accepted it. */
+/** Test-fire — sends a synthetic ANNOUNCEMENT event to THIS hook only (it
+ *  used to fan out to every active hook) and reports this hook's response. */
 export async function testWebhook(id: string): Promise<{ ok: boolean; message: string }> {
   await requireCap('settings:write');
-  const { dispatchWebhook } = await import('@/lib/webhooks');
-  const hook = await prisma.webhookConfig.findUnique({ where: { id } });
+  const { sendTestWebhook } = await import('@/lib/webhooks');
+  const hook = await prisma.webhookConfig.findUnique({ where: { id }, select: { isActive: true } });
   if (!hook) return { ok: false, message: 'Webhook not found.' };
   if (!hook.isActive) return { ok: false, message: 'Webhook is disabled — enable it first.' };
-  // dispatchWebhook reads the active row; force one event through it.
-  await dispatchWebhook('ANNOUNCEMENT', 'Test fire from lab2date admin', `If you see this, the ${hook.kind} integration works.`, '/admin/settings');
-  const fresh = await prisma.webhookConfig.findUnique({ where: { id } });
-  if (fresh?.lastError) return { ok: false, message: `Last error: ${fresh.lastError}` };
-  return { ok: true, message: 'Test event sent. Check your channel.' };
+  const r = await sendTestWebhook(id);
+  if (!r) return { ok: false, message: 'Webhook not found.' };
+  return r.ok
+    ? { ok: true, message: 'Test event delivered to this hook (2xx). Check your channel.' }
+    : { ok: false, message: `Not delivered: ${r.error}` };
 }
 
 /** Recent notifications for the signed-in admin (bell dropdown). */
@@ -1003,10 +1006,22 @@ export async function verifySetting(
       } catch {
         return { ok: false, message: `“${val}” is not a valid URL (include https://).` };
       }
-      const r = await fetch(u, { method: 'GET', signal: AbortSignal.timeout(12000), redirect: 'follow' });
-      if (!r.ok) return { ok: false, message: `Unreachable — HTTP ${r.status} from ${u.host}.` };
+      // SSRF guard: same fetcher as the URL importer — refuses private,
+      // loopback, link-local / cloud-metadata addresses and re-checks every
+      // redirect hop, so Verify can't be used to probe internal services.
+      const { safeFetch, SafeFetchError } = await import('@/lib/import/safe-fetch');
+      let r: Awaited<ReturnType<typeof safeFetch>>;
+      try {
+        r = await safeFetch(u.toString(), { timeoutMs: 12000, maxBytes: 5 * 1024 * 1024 });
+      } catch (e) {
+        if (e instanceof SafeFetchError && (e.code === 'PRIVATE_IP' || e.code === 'BAD_SCHEME')) {
+          return { ok: false, message: 'Blocked — only public http(s) addresses can be checked from the server.' };
+        }
+        throw e;
+      }
+      if (r.status < 200 || r.status >= 300) return { ok: false, message: `Unreachable — HTTP ${r.status} from ${u.host}.` };
       if (verify === 'image') {
-        const ct = r.headers.get('content-type') || '';
+        const ct = r.contentType || '';
         return ct.startsWith('image/')
           ? { ok: true, message: `Reachable image (${ct}).` }
           : { ok: false, message: `Reachable but not an image (content-type: ${ct || 'unknown'}).` };
@@ -1037,28 +1052,36 @@ export async function saveAdminSettings(
   try {
     await persistSettings(input);
   } catch (e) {
-    return { ok: false, message: e instanceof Error ? `Save failed: ${e.message.slice(0, 140)}` : 'Save failed.' };
+    return { ok: false, message: e instanceof Error ? `Save failed: ${e.message.slice(0, 600)}` : 'Save failed.' };
   }
   await audit('settings.save', undefined, Object.keys(input).join(','));
   revalidatePath('/admin/settings');
   return { ok: true, message: 'Saved ✓' };
 }
 
-export async function uploadCompanyLogo(formData: FormData) {
+const LOGO_TYPES: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+};
+
+export async function uploadCompanyLogo(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('settings:write');
   const file = formData.get('logo');
-  if (!file || typeof file === 'string' || file.size === 0) return;
+  if (!file || typeof file === 'string' || file.size === 0) return { ok: false, message: 'Choose an image file first.' };
   const f = file as File;
-  if (f.size > 2_000_000) throw new Error('Logo too large (max 2MB)');
-  const ext = (f.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (f.size > 2_000_000) return { ok: false, message: 'Logo too large (max 2 MB).' };
+  // Only real image types — an .html file used to be accepted and stored as
+  // the logo. The extension comes from the MIME type, never the file name.
+  const ext = LOGO_TYPES[f.type];
+  if (!ext) return { ok: false, message: 'Logo must be a PNG, JPG, WEBP or SVG image.' };
   const buf = Buffer.from(await f.arrayBuffer());
-  const { url } = await uploadObject(
-    `branding/logo-${Date.now()}.${ext}`,
-    buf,
-    f.type || 'image/png',
-  );
+  const { url } = await uploadObject(`branding/logo-${Date.now()}.${ext}`, buf, f.type);
   await persistSettings({ COMPANY_LOGO_URL: url });
+  await audit('settings.logo', undefined, url);
   revalidatePath('/admin/settings');
+  return { ok: true, message: 'Logo uploaded — it now appears on invoices and proformas.' };
 }
 
 const HOME_KEYS = [
