@@ -56,6 +56,9 @@ export function QuoteThread(p: Props) {
   const [pending, startTransition] = useTransition();
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Outcome of a successful status change (e.g. "Order … was canceled") — the
+  // reply form that shows `error` is gone once the request is closed.
+  const [notice, setNotice] = useState<string | null>(null);
 
   function send(e: React.FormEvent) {
     e.preventDefault();
@@ -115,6 +118,7 @@ export function QuoteThread(p: Props) {
 
   function decide(status: 'ACCEPTED' | 'DECLINED' | 'CLOSED') {
     setError(null);
+    setNotice(null);
     startTransition(async () => {
       try {
         const r = await setQuoteStatus(p.sourcingRequestId, status);
@@ -122,6 +126,7 @@ export function QuoteThread(p: Props) {
           setError(r.error);
           return;
         }
+        if (r?.notice) setNotice(r.notice);
         router.refresh();
       } catch (err) {
         // Accepting converts the quote into an order and redirects there —
@@ -130,6 +135,20 @@ export function QuoteThread(p: Props) {
         setError('That did not work. Reload the page and try again.');
       }
     });
+  }
+
+  // Closing ends the deal for good (a closed quote cannot be accepted again)
+  // and cancels the buyer's unpaid proforma order — same confirm as the admin
+  // "Close (no deal)".
+  function closeRequest() {
+    if (
+      !window.confirm(
+        "Close this request without a deal? The buyer's unpaid order (if any) is canceled, the buyer and the lab2date team are notified, and the request cannot be reopened.",
+      )
+    ) {
+      return;
+    }
+    decide('CLOSED');
   }
 
   return (
@@ -288,9 +307,9 @@ export function QuoteThread(p: Props) {
                 </span>
               )
             )}
-            {/* Seller can close anytime */}
+            {/* Seller can close anytime — behind a confirm (see closeRequest). */}
             {p.viewerRole === 'SELLER' && (
-              <Button type="button" variant="ghost" onClick={() => decide('CLOSED')} className="rounded-full font-medium" disabled={pending}>
+              <Button type="button" variant="ghost" onClick={closeRequest} className="rounded-full font-medium" disabled={pending}>
                 Close request
               </Button>
             )}
@@ -299,13 +318,23 @@ export function QuoteThread(p: Props) {
       )}
 
       {/* ───────────────── Terminal-state foot ───────────────── */}
+      {notice && (
+        <div role="status" className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900 flex items-start gap-3 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+          <Check className="h-5 w-5 mt-0.5 flex-shrink-0" />
+          <p>{notice}</p>
+        </div>
+      )}
       {p.status === 'DECLINED' && (
         <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 flex items-start gap-3 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
           <X className="h-5 w-5 mt-0.5 flex-shrink-0" />
-          <div>
-            <p className="font-bold">You declined this quote.</p>
-            <p className="text-xs mt-1">If you need this again, you can open a new sourcing request from <strong>Let Us Find It</strong>.</p>
-          </div>
+          {p.viewerRole === 'BUYER' ? (
+            <div>
+              <p className="font-bold">You declined this quote.</p>
+              <p className="text-xs mt-1">If you need this again, you can open a new sourcing request from <strong>Let Us Find It</strong>.</p>
+            </div>
+          ) : (
+            <p className="font-bold">The buyer declined this quote.</p>
+          )}
         </div>
       )}
       {p.status === 'CLOSED' && (

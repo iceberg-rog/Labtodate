@@ -53,8 +53,9 @@ function quoteTurnaroundPhrase(): string {
 
 /** Readable result for quote actions. Production builds hide thrown messages
  *  behind a generic "Server Components render" error, so known failures are
- *  returned instead of thrown. */
-export type QuoteActionResult = { error?: string };
+ *  returned instead of thrown. `notice` tells the actor what a successful
+ *  action did besides the obvious (e.g. which order a close canceled). */
+export type QuoteActionResult = { error?: string; notice?: string };
 
 const SourcingInput = z.object({
   buyerEmail: z.string().email(),
@@ -693,6 +694,11 @@ export async function setQuoteStatus(
       quotedCurrency: true,
       description: true,
       productId: true,
+      productCategory: true,
+      buyerName: true,
+      buyerEmail: true,
+      accessToken: true,
+      assignedTo: { select: { role: true } },
       product: { select: { title: true, brand: { select: { name: true } } } },
     },
   });
@@ -805,6 +811,65 @@ export async function setQuoteStatus(
       'SYSTEM',
     );
   }
+  // Closing (seller "Close request" or admin "Close (no deal)") ends the deal
+  // for the buyer: their last message is still "Proforma ready — complete your
+  // purchase", so tell them it is over and that the order is no longer payable.
+  // Fires once — for the close that actually happened, or for a leftover order
+  // a repeat close just canceled.
+  let buyerNotified = false;
+  if (status === 'CLOSED' && ((changed && statusChanged) || canceledOrder)) {
+    const ref = quoteRefOrProforma(sr);
+    const itemTitle = sr.product?.title ?? sr.productCategory ?? null;
+    const orderLine = canceledOrder
+      ? ` Order ${canceledOrder} was canceled, so no payment is due.`
+      : '';
+    await notifyUser(
+      sr.submittedById,
+      `Quote ${ref} was closed`,
+      `Your request was closed without a deal.${orderLine} If you still need the item, open a new request.`,
+      `/app/quotes/${id}`,
+    );
+    buyerNotified = !!sr.submittedById;
+    const base = process.env.BETTER_AUTH_URL ?? '';
+    const buyerLink = sr.accessToken ? `${base}/quotes/t/${sr.accessToken}` : `${base}/app/quotes/${id}`;
+    await sendEmail({
+      to: sr.buyerEmail,
+      subject: `[${ref}] Your quote request was closed`,
+      html: `
+        <div style="font-family:system-ui,sans-serif;max-width:540px;">
+          <h2 style="color:#0E4F40;">Your quote request was closed</h2>
+          <p>Hi ${escapeHtml(sr.buyerName)},</p>
+          <p>Your request <strong>${ref}</strong>${itemTitle ? ` for <strong>${escapeHtml(itemTitle)}</strong>` : ''} was closed without a deal.</p>
+          ${canceledOrder ? `<p>Order <strong>${canceledOrder}</strong> was canceled, so <strong>no payment is due</strong>. Please don&rsquo;t send a transfer for it. If you already paid, contact our support team and we&rsquo;ll sort it out.</p>` : ''}
+          <p>If you still need the item, you can open a new request on lab2date at any time.</p>
+          <p style="margin:18px 0;">
+            <a href="${buyerLink}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">View the quote</a>
+          </p>
+        </div>
+      `,
+    })
+      .then(() => { buyerNotified = true; })
+      .catch((e) => console.error('[quotes] close notification failed', ref, e));
+    if (!isAdmin) {
+      // The seller closed it: ops must know a deal (and maybe an order) ended.
+      await notifyAdmins(
+        `Quote closed by the supplier — ${ref}`,
+        canceledOrder
+          ? `The supplier closed the request without a deal. Order ${canceledOrder} was canceled and the buyer was notified.`
+          : 'The supplier closed the request without a deal. The buyer was notified.',
+        `/admin/quotes/${id}`,
+        'SYSTEM',
+      );
+    } else if (sr.assignedToId && sr.assignedToId !== session.user.id) {
+      // Staff closed a quote a seller was working on: tell the seller too.
+      await notifyUser(
+        sr.assignedToId,
+        `Quote ${ref} was closed`,
+        'lab2date closed this request without a deal.',
+        sr.assignedTo?.role === 'SELLER' ? `/app/seller/inbox/${id}` : `/admin/quotes/${id}`,
+      );
+    }
+  }
   revalidatePath(`/app/quotes/${id}`);
   revalidatePath(`/app/seller/inbox/${id}`);
   revalidatePath(`/admin/quotes/${id}`);
@@ -850,6 +915,13 @@ export async function setQuoteStatus(
         'SYSTEM',
       );
     }
+  }
+  if (status === 'CLOSED') {
+    // Tell whoever closed it what happened besides the status change.
+    const parts = [changed && statusChanged ? 'Request closed.' : 'This request is closed.'];
+    if (canceledOrder) parts.push(`Order ${canceledOrder} was canceled.`);
+    if (buyerNotified) parts.push('The buyer was notified.');
+    return { notice: parts.join(' ') };
   }
   return {};
 }
