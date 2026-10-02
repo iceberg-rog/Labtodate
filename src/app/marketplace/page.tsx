@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import Link from 'next/link';
 import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
 import { listProducts, getCategories, getTopBrands } from '@/lib/marketplace/queries';
@@ -27,6 +28,8 @@ interface SearchParams {
   minPrice?: string;
   maxPrice?: string;
   page?: string;
+  /** Set by checkout / add-to-cart when the item is no longer listed. */
+  gone?: string;
 }
 
 export default async function MarketplacePage({ searchParams }: { searchParams: Promise<SearchParams> }) {
@@ -58,7 +61,7 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
 
   const baseParams = new URLSearchParams();
   for (const [k, v] of Object.entries(sp)) {
-    if (v && k !== 'page') baseParams.set(k, String(v));
+    if (v && k !== 'page' && k !== 'gone') baseParams.set(k, String(v));
   }
 
   const activeCategoryName = sp.category
@@ -67,6 +70,12 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
 
   return (
     <div className="container-px py-10 md:py-14">
+      {sp.gone && (
+        <div role="status" className="mb-6 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          That item is no longer available, so no order was created and nothing is due. Browse similar listings below,
+          or ask us to source one via <Link href="/let-us-find-it" className="underline font-semibold">Let us find it</Link>.
+        </div>
+      )}
       {/* Hero strip */}
       <div className="mb-10">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">Marketplace</p>

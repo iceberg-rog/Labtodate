@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { ChevronLeft, ShoppingBag, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
@@ -7,35 +7,9 @@ import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { Prisma } from '@prisma/client';
 import { startCheckoutWithAddress } from '@/lib/orders/actions';
+import { CHECKOUT_COUNTRIES as COUNTRIES } from '@/lib/orders/countries';
 
 export const dynamic = 'force-dynamic';
-
-const COUNTRIES: { code: string; name: string }[] = [
-  { code: 'NL', name: 'Netherlands' },
-  { code: 'DE', name: 'Germany' },
-  { code: 'FR', name: 'France' },
-  { code: 'BE', name: 'Belgium' },
-  { code: 'GB', name: 'United Kingdom' },
-  { code: 'IE', name: 'Ireland' },
-  { code: 'ES', name: 'Spain' },
-  { code: 'IT', name: 'Italy' },
-  { code: 'PT', name: 'Portugal' },
-  { code: 'AT', name: 'Austria' },
-  { code: 'CH', name: 'Switzerland' },
-  { code: 'SE', name: 'Sweden' },
-  { code: 'NO', name: 'Norway' },
-  { code: 'DK', name: 'Denmark' },
-  { code: 'FI', name: 'Finland' },
-  { code: 'PL', name: 'Poland' },
-  { code: 'CZ', name: 'Czechia' },
-  { code: 'US', name: 'United States' },
-  { code: 'CA', name: 'Canada' },
-  { code: 'AU', name: 'Australia' },
-  { code: 'AE', name: 'United Arab Emirates' },
-  { code: 'IR', name: 'Iran' },
-  { code: 'TR', name: 'Türkiye' },
-  { code: '__OTHER', name: 'Other — request a shipping quote' },
-];
 
 const FIELD_LABEL: Record<string, string> = {
   name: 'Full name',
@@ -59,9 +33,12 @@ export default async function CheckoutAddressPage(
     where: { slug: params.slug },
     include: { brand: { select: { name: true } } },
   });
-  if (!product || product.status !== 'PUBLISHED') notFound();
-  if (product.mode === 'QUOTE_ONLY' || !product.priceCents) notFound();
-  if (product.quantity < 1) notFound();
+  // Not buyable any more: explain on the product page instead of a bare 404
+  // (the PDP renders a banner for ?sold / ?quoteonly; unknown → marketplace).
+  if (!product) notFound();
+  if (product.status !== 'PUBLISHED') redirect('/marketplace?gone=1');
+  if (product.mode === 'QUOTE_ONLY' || !product.priceCents) redirect(`/marketplace/${product.slug}?quoteonly=1`);
+  if (product.quantity < 1) redirect(`/marketplace/${product.slug}?sold=1`);
 
   // Prefill from the buyer's most recent order that actually has a
   // shipping address. Prisma's `{ not: undefined }` is a no-op, so we use
@@ -96,7 +73,7 @@ export default async function CheckoutAddressPage(
         {/* Form */}
         <form
           action={startCheckoutWithAddress.bind(null, product.slug)}
-          className="space-y-5"
+          className="space-y-5 min-w-0"
         >
           <div>
             <h1 className="text-3xl font-bold tracking-tight">Shipping details</h1>
@@ -114,7 +91,7 @@ export default async function CheckoutAddressPage(
 
           {/* BUG-045: the order create failed and the reserved unit was released
               back to stock (which is also why this page still renders instead of
-              404-ing on `quantity < 1`). Say so explicitly -- a buyer bounced back
+              redirecting on `quantity < 1`). Say so explicitly -- a buyer bounced back
               to an empty form otherwise has no idea whether they now owe money. */}
           {searchParams.err === 'order' && (
             <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-800 dark:text-red-300">
@@ -177,8 +154,8 @@ export default async function CheckoutAddressPage(
           </section>
 
           <div className="flex items-center gap-3 flex-wrap">
-            <Button type="submit" size="lg" className="rounded-2xl font-semibold">
-              <Lock className="h-4 w-4" /> Submit order — bank-transfer details to follow
+            <Button type="submit" size="lg" className="rounded-2xl font-semibold whitespace-normal h-auto min-h-12 py-3 text-center w-full sm:w-auto">
+              <Lock className="h-4 w-4 shrink-0" /> Submit order — bank-transfer details to follow
             </Button>
             <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
               <Lock className="h-3 w-3" /> Payment by bank transfer · manually verified by our team · no charge taken at this step.
@@ -187,7 +164,7 @@ export default async function CheckoutAddressPage(
         </form>
 
         {/* Order summary */}
-        <aside className="lg:sticky lg:top-20 rounded-2xl border border-border bg-card overflow-hidden">
+        <aside className="min-w-0 lg:sticky lg:top-20 rounded-2xl border border-border bg-card overflow-hidden">
           <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
             <ShoppingBag className="h-4 w-4 text-primary" />
             <h2 className="text-sm font-bold">Order summary</h2>

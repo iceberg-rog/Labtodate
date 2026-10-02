@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { CheckCircle2, ArrowRight, Package } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 
@@ -15,12 +16,18 @@ export default async function CheckoutSuccessPage(
 ) {
   const searchParams = await props.searchParams;
   if (!searchParams.order) notFound();
+  // Order numbers are not secrets (bank-transfer reference, emails), so the
+  // summary is shown only to the buyer who placed the order — same rule as
+  // /app/orders/<n>, /invoice and /payment.
+  const session = await requireSession({
+    redirectTo: `/checkout/success?order=${encodeURIComponent(searchParams.order)}`,
+  });
 
   const order = await prisma.order.findUnique({
     where: { orderNumber: searchParams.order },
     include: { items: true },
   });
-  if (!order) notFound();
+  if (!order || order.buyerId !== session.user.id) notFound();
 
   const isPaid = order.status === 'PAID';
 
@@ -76,7 +83,7 @@ export default async function CheckoutSuccessPage(
         </Button>
         <Button asChild size="lg" variant="outline" className="rounded-2xl font-semibold">
           <Link href={`/app/orders/${order.orderNumber}/invoice`}>
-            {isPaid ? 'Download invoice / receipt' : 'Download proforma'}
+            {isPaid ? 'Download invoice / receipt' : 'Download proforma invoice'}
           </Link>
         </Button>
       </div>
