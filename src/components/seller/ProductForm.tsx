@@ -256,7 +256,7 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
             </div>
           ))}
           <label className="aspect-[4/3] rounded-xl border-2 border-dashed border-border flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-primary hover:bg-foreground/[0.02] transition-colors">
-            <input type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml" onChange={handleFile} disabled={uploading} className="sr-only" />
+            <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={handleFile} disabled={uploading} className="sr-only" />
             {uploading ? <Loader2 className="h-5 w-5 animate-spin text-primary" /> : <Upload className="h-5 w-5 text-muted-foreground" />}
             <span className="text-xs font-medium text-muted-foreground">{uploading ? 'Uploading…' : 'Add image'}</span>
           </label>

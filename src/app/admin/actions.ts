@@ -11,6 +11,7 @@ import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
 import { UserRole } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS } from '@/lib/settings';
 import { uploadObject } from '@/lib/storage/s3';
+import { readVerifiedUpload } from '@/lib/storage/file-type';
 import { sendEmail } from '@/lib/email';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getStripe } from '@/lib/stripe/client';
@@ -1043,21 +1044,32 @@ export async function saveAdminSettings(
   return { ok: true, message: 'Saved ✓' };
 }
 
-export async function uploadCompanyLogo(formData: FormData) {
-  await requireCap('settings:write');
+export async function uploadCompanyLogo(
+  _prev: { ok: boolean; message: string } | null,
+  formData: FormData,
+): Promise<{ ok: boolean; message: string }> {
+  // Same gate as saveAdminSettings: a missing cap is a message, not a redirect.
+  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  if (!(await hasCapability('settings:write'))) {
+    return { ok: false, message: 'Your admin account lacks the “settings:write” permission — ask a super-admin to grant it.' };
+  }
   const file = formData.get('logo');
-  if (!file || typeof file === 'string' || file.size === 0) return;
-  const f = file as File;
-  if (f.size > 2_000_000) throw new Error('Logo too large (max 2MB)');
-  const ext = (f.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '');
-  const buf = Buffer.from(await f.arrayBuffer());
-  const { url } = await uploadObject(
-    `branding/logo-${Date.now()}.${ext}`,
-    buf,
-    f.type || 'image/png',
-  );
-  await persistSettings({ COMPANY_LOGO_URL: url });
+  if (!(file instanceof File) || file.size === 0) return { ok: false, message: 'Choose a logo file first.' };
+  // Raster images only, checked by the file's bytes: an SVG logo could carry
+  // script, and a non-image would show as a broken logo on every invoice.
+  const checked = await readVerifiedUpload(file, { allow: ['png', 'jpeg', 'webp'], maxBytes: 2 * 1024 * 1024, label: 'Logo' });
+  if (!checked.ok) return { ok: false, message: checked.error };
+  const { buf, mime, ext } = checked.upload;
+  try {
+    // Under products/ because that is the prefix the bucket policy makes
+    // public; invoices and emails load the logo anonymously.
+    const { url } = await uploadObject(`products/branding/logo-${Date.now()}.${ext}`, buf, mime);
+    await persistSettings({ COMPANY_LOGO_URL: url });
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? `Upload failed: ${e.message.slice(0, 140)}` : 'Upload failed.' };
+  }
   revalidatePath('/admin/settings');
+  return { ok: true, message: 'Logo updated ✓' };
 }
 
 const HOME_KEYS = [

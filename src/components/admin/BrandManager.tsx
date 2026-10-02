@@ -104,7 +104,7 @@ export function BrandManager({ brands }: { brands: BrandRow[] }) {
           <label className="inline-flex items-center gap-2 px-3 h-10 rounded-lg border border-input bg-background text-sm cursor-pointer hover:bg-foreground/[0.03]">
             <input
               type="file"
-              accept="image/png,image/jpeg,image/webp,image/svg+xml"
+              accept="image/png,image/jpeg,image/webp"
               onChange={(e) => handleLogo(e, 'new')}
               className="sr-only"
             />
@@ -164,7 +164,7 @@ export function BrandManager({ brands }: { brands: BrandRow[] }) {
                   <label className="inline-flex items-center gap-2 px-3 h-9 rounded-lg border border-input bg-background text-xs cursor-pointer hover:bg-foreground/[0.03]">
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                      accept="image/png,image/jpeg,image/webp"
                       onChange={(e) => handleLogo(e, b.id)}
                       className="sr-only"
                     />
