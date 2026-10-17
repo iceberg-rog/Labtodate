@@ -7,7 +7,6 @@ import { ShieldCheck, ExternalLink, LogOut, Loader2 } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { AdminNotificationBell } from './AdminNotificationBell';
 import { EmailText } from '@/components/util/EmailText';
-import { ThemeToggle } from '@/components/site/ThemeToggle';
 
 export function AdminTopBar({ email, unreadCount }: { email: string; unreadCount: number }) {
   const router = useRouter();
@@ -46,7 +45,6 @@ export function AdminTopBar({ email, unreadCount }: { email: string; unreadCount
           View site <ExternalLink className="h-3 w-3" />
         </Link>
 
-        <ThemeToggle className="h-8 w-8" />
 
         <AdminNotificationBell initialCount={unreadCount} />
 

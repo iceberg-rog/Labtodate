@@ -113,6 +113,19 @@ export async function run() {
   // integrated GPU at 256, during which nothing else is drawn: 128 there, a quarter of the work; every bake of a session
   // uses the same size, so a swap of light never changes a program)
   const ENV_SIZE = LITE ? 128 : 256;
+  // (on integrated GPUs every mip after the first is made by the spherical Gaussian blur chain three's PMREM used before
+  // r170 (20 samples a texel) instead of the 256-sample GGX importance filter: ~1 s of GPU per bake down to a tenth.
+  // At the chrome's low roughness the two read the same)
+  if (LITE && typeof pmrem._blur === 'function' && Array.isArray(pmrem._sizeLods || [])) {
+    const EXTRA = [0.125, 0.215, 0.35, 0.446, 0.526, 0.582];
+    pmrem._applyPMREM = function (rt) {
+      const r = this._renderer, ac = r.autoClear; r.autoClear = false;
+      const n = this._lodMeshes.length, top = this._lodMax - 4;
+      const sig = (i) => (i === 0 ? 0 : i > top ? EXTRA[Math.min(EXTRA.length - 1, i - top - 1)] : 1 / this._sizeLods[i]);
+      for (let i = 1; i < n; i++) this._blur(rt, i - 1, i, Math.sqrt(Math.max(0, sig(i) * sig(i) - sig(i - 1) * sig(i - 1))));
+      r.autoClear = ac;
+    };
+  }
   // brand practicals (soft violet/cyan/pink panels) that give the flat shield face its colour sweep
   const PANEL_K = tune('panels', 0.3);
   const SWEEP_K = tune('sweep', 0.5); // strip peak x envMapIntensity 1.7 stays under the bloom threshold (1.0)
@@ -235,7 +248,7 @@ export async function run() {
     await preCompile(quad._mesh, new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1));
     if (!live()) return;
     const prev = renderer.getRenderTarget();
-    renderer.setRenderTarget(rt); quad.render(renderer); renderer.setRenderTarget(prev);
+    markB("bake:pre-quad"); renderer.setRenderTarget(rt); quad.render(renderer); renderer.setRenderTarget(prev); if (DEBUG && params.has('gpusync')) { renderer.getContext().finish(); } markB("bake:quad");
     quad.material.dispose(); quad.dispose(); src.dispose();
     const env = new THREE.Scene();
     const sky = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 32), new THREE.MeshBasicMaterial({ map: rt.texture, side: THREE.BackSide }));
@@ -263,10 +276,10 @@ export async function run() {
       }));
       sweep.position.set(0, SWEEP_Y, 9); sweep.lookAt(0, 0, 0); env.add(sweep);
     }
-    await preCompile(env, new THREE.PerspectiveCamera(90, 1, 0.1, 100)); tmp.dispose();
+    markB("bake:env-built"); await preCompile(env, new THREE.PerspectiveCamera(90, 1, 0.1, 100)); tmp.dispose(); markB("bake:env-compiled");
     if (!live()) return;
     const old = envDark;
-    envDark = pmrem.fromScene(env, 0.02, 0.1, 100, { size: ENV_SIZE }).texture; envOn = true; setEnv();
+    envDark = pmrem.fromScene(env, 0.02, 0.1, 100, { size: ENV_SIZE }).texture; if (DEBUG && params.has('gpusync')) { renderer.getContext().finish(); } markB("bake:pmrem"); envOn = true; setEnv();
     if (old) old.dispose();
     disposeScene(env); rt.dispose();
   }
@@ -1062,13 +1075,13 @@ export async function run() {
           void main(){
             vec2 uv = vUv; float act = smoothstep(0., 1., uActive);
             // away from focus the title smears into pixel streaks (the reference's back cards); in focus it resolves
-            float g = uGlitch + (1. - act) * .45 * (1. - uLt);   // (daylight: the back cards rest, no smear)
+            float g = uGlitch + (1. - act) * .07 * (1. - uLt);   // (the back cards: a faint smear, still legible; the card in focus: none at rest)
             float t = floor(uTime * 10.);
             float band = floor(uv.y * 34.);
             float smear = step(.6, rnd(vec2(band, t * .3 + uSeed))) * g;
             float off = (rnd(vec2(band, t + uSeed)) - .5) * smear * .3;
             vec2 guv = uv; guv.x += off; guv.x = mix(guv.x, floor(guv.x * 9.) / 9. + .05, smear * (1. - act) * .5);
-            float ca = .002 * (1. - uLt) + g * .018;   // (daylight: no resting colour fringe on the art)
+            float ca = g * .014;   // (a colour fringe only while glitching: the photo stays clean in focus)
             vec3 img = vec3(texture2D(uTex, guv + vec2(ca, 0.)).r, texture2D(uTex, guv).g, texture2D(uTex, guv - vec2(ca, 0.)).b);
             vec3 art = img;
             img *= mix(.62, 1., act);
@@ -1107,7 +1120,7 @@ export async function run() {
             img += tf * uLt * .7 * (1. - smoothstep(-.035, -.004, d)) * smoothstep(-.065, -.035, d) * (1. - uPlay * .5);
             img = mix(img, vec3(.04, .2, .15), uLt * .42 * smoothstep(-.024, -.012, d));   // (and a deep ink edge: the glass's outline on paper)
             float gr = rnd(floor(vUv * vec2(520., 330.)) + fract(uTime * .5));
-            img *= mix(mix(.9 + .2 * gr, .975 + .05 * gr, uLt), .97 + .06 * gr, uPlay);   // heavy grain on the glass (a breath in daylight: the art stays clean), lighter over video
+            img *= .985 + .03 * gr;   // (a breath of grain on the glass; the photo stays clean)
             gl_FragColor = vec4(img, mask * mix(mix(mix(.7, .95, uLt), mix(.92, 1., uLt), act), 1., uPlay) * uVis);
           }`,
       });
@@ -1208,7 +1221,7 @@ export async function run() {
   };
   hooks.cardGlitch = (i) => {
     const c = cards[i]; if (!c || reduced) return;
-    tween(c.material.uniforms.uGlitch, 1.2, 0, 0.8, EASE.power3Out);
+    tween(c.material.uniforms.uGlitch, 0.7, 0, 0.45, EASE.power3Out);
   };
 
   /* landscape card face: official wide art seen through frosted glass, grain, crisp mono title with colour fringe.
@@ -1218,82 +1231,71 @@ export async function run() {
   const CANVAS_FILTER = 'filter' in CanvasRenderingContext2D.prototype;
   // (daylight, light = true: no mottling and no vignette, the art stays clean: the card's shader keeps the frost to the
   // glass's edges. clear = img is the build's clear daylight cut (game.artLt); a raw image is cover-cropped unfiltered)
-  function cardTexture(game, i, img, light = false, clear = false) {
-    const W = LITE ? 768 : 1024, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
+  /* the card's art: the category's photo whole and sharp in a rounded frame on the right (product photos come in every
+     shape and size: cropping them to the card zoomed portraits until they broke up), over an ambient fill of the same
+     photo blurred and dark; the left side shaded for the title. No photo: a structural formula in the category's colour */
+  const FACE_W = mobile ? 768 : 1024;
+  const texAniso = () => Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  function cardTexture(game, i, img) {
+    const W = FACE_W, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
     const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
     g.fillStyle = game.c[1]; g.fillRect(0, 0, W, H);
-    if (!img) {   // no photo: a structural formula sketched in the category's colour
-      g.save(); g.strokeStyle = game.c[0]; g.globalAlpha = light ? 0.35 : 0.28; g.lineWidth = 3 * u; g.lineJoin = 'round';
-      const hex = (cx, cy, r) => { g.beginPath(); for (let k = 0; k <= 6; k++) { const a = Math.PI / 6 + (k * Math.PI) / 3; g[k ? 'lineTo' : 'moveTo'](cx + Math.cos(a) * r, cy + Math.sin(a) * r); } g.stroke(); };
-      const r = H * 0.16, x0 = W * (0.22 + 0.06 * (i % 3)), y0 = H * 0.5;
-      for (let k = 0; k < 4; k++) { const cx = x0 + k * r * Math.sqrt(3), cy = y0 + (k % 2 ? r * 0.5 : -r * 0.5); hex(cx, cy, r); g.beginPath(); g.arc(cx, cy, r * 0.55, 0, Math.PI * 2); g.stroke(); }
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    if (img && img.naturalWidth) {
+      const iw = img.naturalWidth, ih = img.naturalHeight;
+      // the ambient fill: the photo cover-cropped, heavily blurred and dark
+      const sc = Math.max(W / iw, H / ih) * 1.15, cw = iw * sc, ch = ih * sc;
+      if (CANVAS_FILTER) { g.filter = `blur(${Math.round(26 * u)}px) saturate(1.15) brightness(.42)`; g.drawImage(img, (W - cw) / 2, (H - ch) / 2, cw, ch); g.filter = 'none'; }
+      else { g.globalAlpha = 0.35; g.drawImage(img, (W - cw) / 2, (H - ch) / 2, cw, ch); g.globalAlpha = 1; }
+      // the title's side shaded
+      const sh = g.createLinearGradient(0, 0, W, 0);
+      sh.addColorStop(0, 'rgba(3,14,12,.94)'); sh.addColorStop(0.42, 'rgba(3,14,12,.72)'); sh.addColorStop(0.62, 'rgba(3,14,12,.18)'); sh.addColorStop(1, 'rgba(3,14,12,.05)');
+      g.fillStyle = sh; g.fillRect(0, 0, W, H);
+      // the photo itself, contained (never upscaled past 1.6x), in a rounded frame
+      const bx = W * 0.45, by = H * 0.08, bw = W * 0.5, bh = H * 0.84;
+      const k = Math.min(bw / iw, bh / ih, 1.6), dw = iw * k, dh = ih * k, dx = bx + (bw - dw) / 2, dy = by + (bh - dh) / 2, rr = 16 * u;
+      g.save(); g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = 30 * u; g.shadowOffsetY = 10 * u;
+      g.beginPath(); g.roundRect(dx, dy, dw, dh, rr); g.fillStyle = '#0a1513'; g.fill(); g.restore();
+      g.save(); g.beginPath(); g.roundRect(dx, dy, dw, dh, rr); g.clip(); g.drawImage(img, dx, dy, dw, dh); g.restore();
+      g.strokeStyle = 'rgba(255,255,255,.1)'; g.lineWidth = 1.5 * u; g.beginPath(); g.roundRect(dx, dy, dw, dh, rr); g.stroke();
+    } else {
+      g.save(); g.strokeStyle = game.c[0]; g.globalAlpha = 0.28; g.lineWidth = 3 * u; g.lineJoin = 'round';
+      const hex = (cx, cy, r) => { g.beginPath(); for (let k = 0; k <= 6; k++) { const an = Math.PI / 6 + (k * Math.PI) / 3; g[k ? 'lineTo' : 'moveTo'](cx + Math.cos(an) * r, cy + Math.sin(an) * r); } g.stroke(); };
+      const r = H * 0.16, x0 = W * (0.52 + 0.04 * (i % 3)), y0 = H * 0.5;
+      for (let k = 0; k < 3; k++) { const cx = x0 + k * r * Math.sqrt(3), cy = y0 + (k % 2 ? r * 0.5 : -r * 0.5); hex(cx, cy, r); g.beginPath(); g.arc(cx, cy, r * 0.55, 0, Math.PI * 2); g.stroke(); }
       g.restore();
     }
-    if (img && (game.art || clear)) {
-      g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(img, 0, 0, W, H);
-    } else if (img && light) {
-      const s = Math.max(W / img.naturalWidth, H / img.naturalHeight) * 1.04; const dw = img.naturalWidth * s, dh = img.naturalHeight * s;
-      g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    } else if (img) {
-      const s = Math.max(W / img.naturalWidth, H / img.naturalHeight) * 1.04; const dw = img.naturalWidth * s, dh = img.naturalHeight * s;
-      if (CANVAS_FILTER) {
-        g.filter = `blur(${Math.round(5 * u)}px) saturate(1.2) contrast(.82) brightness(.78)`;
-        g.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-        g.filter = 'none';
-      } else {
-        const sw = Math.round(W / 5), shh = Math.round(H / 5), sc = document.createElement('canvas'); sc.width = sw; sc.height = shh;
-        const sg = sc.getContext('2d'); sg.imageSmoothingQuality = 'high'; sg.drawImage(img, (sw - dw / 5) / 2, (shh - dh / 5) / 2, dw / 5, dh / 5);
-        const id = sg.getImageData(0, 0, sw, shh), d = id.data;
-        for (let k = 0; k < d.length; k += 4) {
-          const r = d[k], gg = d[k + 1], b = d[k + 2];
-          const R = 1.1574 * r - 0.1430 * gg - 0.0144 * b, G = -0.0426 * r + 1.0570 * gg - 0.0144 * b, B = -0.0426 * r - 0.1430 * gg + 1.1856 * b;
-          d[k] = (R * 0.82 + 22.95) * 0.78; d[k + 1] = (G * 0.82 + 22.95) * 0.78; d[k + 2] = (B * 0.82 + 22.95) * 0.78;
-        }
-        sg.putImageData(id, 0, 0);
-        g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high'; g.drawImage(sc, 0, 0, W, H);
-      }
-    }
-    if (!light) {
-      // frosted-glass mottling
-      const n = document.createElement('canvas'); n.width = 128; n.height = 80; const ng = n.getContext('2d'); const id = ng.createImageData(128, 80);
-      for (let k = 0; k < id.data.length; k += 4) { const v = Math.random() * 255; id.data[k] = id.data[k + 1] = id.data[k + 2] = v; id.data[k + 3] = 38; }
-      ng.putImageData(id, 0, 0); g.imageSmoothingEnabled = true; g.globalCompositeOperation = 'soft-light'; g.drawImage(n, 0, 0, W, H); g.globalCompositeOperation = 'source-over';
-      const vg = g.createRadialGradient(W / 2, H / 2, H * 0.15, W / 2, H / 2, W * 0.7);
-      vg.addColorStop(0, 'rgba(6,10,14,.28)'); vg.addColorStop(1, 'rgba(6,10,14,.05)'); g.fillStyle = vg; g.fillRect(0, 0, W, H);
-    }
-    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = Math.min(STRONG ? 8 : 2, renderer.capabilities.getMaxAnisotropy()); t.generateMipmaps = true;
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = texAniso(); t.generateMipmaps = true;
     return t;
   }
 
-  /* title layer (transparent): thin mono, letter-spaced, red/cyan fringe like the reference's lens split. Daylight: one
-     pass in the page's ink (a colour fringe reads as misregistration on paper; the shader turns it paper-white over video) */
-  function titleTexture(game, light = false) {
-    const W = LITE ? 768 : 1024, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
+  /* the title layer (transparent), in the card's lower left (the upper left meets the page's station rail): the leading brands in mono, the category's name large in the mono
+     face, its live count under it. Clean type with a soft shadow (the card's shader adds its glitch on a change) */
+  function titleTexture(game) {
+    const W = FACE_W, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
     const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
+    const x0 = W * 0.09, maxW = W * 0.33;
     const words = game.name.split(' '); const lines = []; let line = '';
-    g.letterSpacing = `${Math.round(4 * u)}px`; g.font = `500 ${Math.round(88 * u)}px ${MONO}`;
-    for (const w of words) { const t = line ? `${line} ${w}` : w; if (g.measureText(t).width > W * 0.76 && line) { lines.push(line); line = w; } else line = t; }
+    g.letterSpacing = `${Math.round(2 * u)}px`; g.font = `600 ${Math.round(64 * u)}px ${MONO}`;
+    for (const w of words) { const tl = line ? `${line} ${w}` : w; if (g.measureText(tl).width > maxW && line) { lines.push(line); line = w; } else line = tl; }
     lines.push(line);
-    const fs = Math.min(88 * u, Math.floor(88 * u * (W * 0.76) / Math.max(...lines.map((l) => g.measureText(l).width))));
-    g.font = `500 ${fs}px ${MONO}`; g.textAlign = 'center'; g.textBaseline = 'middle';
-    const lh = fs * 1.04, y0 = H / 2 - ((lines.length - 1) * lh) / 2 + 10 * u;
-    const draw = (dx, color, op) => { g.globalCompositeOperation = op; g.fillStyle = color; lines.forEach((l, k) => g.fillText(l, W / 2 + dx, y0 + k * lh)); };
-    // (daylight: ink on a soft paper bloom, so it reads over any photo; the card's shader drops the bloom over video)
-    if (light) {
-      g.shadowColor = 'rgba(250,248,242,.92)'; g.shadowBlur = 18 * u; draw(0, 'rgba(250,248,242,.5)', 'source-over'); draw(0, 'rgba(250,248,242,.5)', 'source-over');
-      g.shadowBlur = 0; draw(0, '#0f2a22', 'source-over');
-    } else {
-      g.shadowColor = 'rgba(2,12,10,.6)'; g.shadowBlur = 14 * u;
-      draw(0, 'rgba(2,12,10,.01)', 'source-over'); g.shadowBlur = 0;
-      draw(-2.5 * u, 'rgba(164,227,53,.7)', 'source-over'); draw(2.5 * u, 'rgba(47,214,195,.75)', 'lighter'); draw(0, '#f2fff8', 'source-over');
+    const fs = Math.max(30 * u, Math.min(64 * u, Math.floor(64 * u * maxW / Math.max(...lines.map((l) => g.measureText(l).width)))));
+    g.font = `600 ${fs}px ${MONO}`; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    const lh = fs * 1.08, last = H * 0.86 - (game.fa ? 44 * u : 0), top = last - (lines.length - 1) * lh;
+    g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 16 * u; g.fillStyle = '#f2fff8';
+    lines.forEach((l, k) => g.fillText(l, x0, top + k * lh));
+    g.shadowBlur = 8 * u;
+    if (game.plat && game.plat.length) {
+      g.letterSpacing = `${Math.round(3 * u)}px`; g.font = `500 ${Math.round(17 * u)}px ${MONO}`; g.fillStyle = 'rgba(164,227,53,.92)';
+      g.fillText(game.plat.join(' · ').toUpperCase(), x0, top - fs - 22 * u, maxW + W * 0.04);
     }
-    g.globalCompositeOperation = 'source-over';
-    const halo = (fn) => { if (!light) { fn(); return; } const f = g.fillStyle; g.shadowColor = 'rgba(250,248,242,.95)'; g.shadowBlur = 8 * u; g.fillStyle = 'rgba(250,248,242,.5)'; fn(); fn(); g.shadowBlur = 0; g.fillStyle = f; fn(); };
-    g.letterSpacing = `${Math.round(3 * u)}px`; g.font = `400 ${Math.round(22 * u)}px ${MONO}`; g.fillStyle = light ? 'rgba(15,42,34,.86)' : 'rgba(225,250,240,.86)';
-    if (game.plat && game.plat.length) halo(() => g.fillText(`[ ${game.plat.join(' · ').toUpperCase()} ]`, W / 2, y0 - lh * 0.5 - 34 * u));
-    g.letterSpacing = `${Math.round(2 * u)}px`; g.font = `600 ${Math.round(26 * u)}px ${SANS}`; g.fillStyle = light ? 'rgba(15,42,34,.92)' : 'rgba(225,250,240,.9)';
-    if (game.fa) halo(() => g.fillText(game.fa, W / 2, y0 + (lines.length - 0.5) * lh + 36 * u));
-    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = Math.min(STRONG ? 8 : 2, renderer.capabilities.getMaxAnisotropy()); t.generateMipmaps = true;
+    if (game.fa) {
+      g.letterSpacing = '0px'; g.font = `600 ${Math.round(24 * u)}px ${SANS}`; g.fillStyle = 'rgba(225,250,240,.82)';
+      g.fillText(game.fa, x0, top + (lines.length - 1) * lh + 44 * u);
+    }
+    // a hairline under the brands, the HUD's accent
+    g.shadowBlur = 0; g.fillStyle = 'rgba(164,227,53,.55)'; g.fillRect(x0, top - fs - 12 * u, 36 * u, 2 * u);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = texAniso(); t.generateMipmaps = true;
     return t;
   }
 
