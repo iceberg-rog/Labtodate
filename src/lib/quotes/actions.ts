@@ -1198,7 +1198,7 @@ export async function reissueQuoteMagicLink(
     },
   });
 
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
   const href = `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${newToken}`;
   await sendEmail({
     to: sr.buyerEmail,

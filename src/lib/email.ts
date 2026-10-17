@@ -101,7 +101,7 @@ export async function sendEmail({ to, subject: rawSubject, html, text: rawText }
   const subject = headerText(rawSubject, 250);
   const text = rawText === undefined ? undefined : plainTextBody(rawText);
   const addr = process.env.EMAIL_FROM || 'no-reply@lab2date.local';
-  const name = headerText(process.env.SITE_NAME || 'lab2date', 80).replace(/"/g, '') || 'lab2date';
+  const name = headerText(process.env.SITE_NAME || 'Labtodate', 80).replace(/"/g, '') || 'Labtodate';
   const from = addr.includes('<') ? addr : `"${name}" <${addr}>`;
   let result: { messageId?: string } | undefined;
   let sendError: Error | null = null;

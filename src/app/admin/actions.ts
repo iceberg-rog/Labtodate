@@ -1041,7 +1041,7 @@ export async function sendTestEmail(): Promise<{ ok: boolean; message: string }>
       ? `SMTP (${process.env.SMTP_HOST || 'localhost'}:${process.env.SMTP_PORT || '465'})`
       : 'the dev mailbox (Mailpit) — no Resend key or SMTP credentials set';
 
-  const site = process.env.SITE_NAME?.trim() || 'lab2date';
+  const site = process.env.SITE_NAME?.trim() || 'Labtodate';
   try {
     await sendEmail({
       to,

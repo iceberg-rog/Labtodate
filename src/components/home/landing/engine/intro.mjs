@@ -12,7 +12,7 @@ export const FOV = 42;                   // the scene camera (vertical, degrees)
 // the word's height / width depends on the font: set by setWord() before the first sample (0.28 is Inter 800's)
 export let WORD_AR = 0.28;
 export const MARK_AR = 46 / 64;          // the molecule mark's viewBox (0 0 64 46)
-let WORD = 'lab2date', FONT = 'Inter, system-ui, sans-serif';
+let WORD = 'Labtodate', FONT = 'Inter, system-ui, sans-serif';
 /** the particle word and the page's font family (call before introShapes / the poster) */
 export function setWord(word, family) {
   WORD = word || WORD; FONT = family || FONT;

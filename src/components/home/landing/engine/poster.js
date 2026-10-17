@@ -18,7 +18,7 @@ export function initPoster() {
   let lt = themeLight();
   const ltClass = () => html.classList.toggle('poster-lt', lt);
   ltClass();
-  const word = (box.dataset.word || 'lab2date').trim();
+  const word = (box.dataset.word || 'Labtodate').trim();
   const family = getComputedStyle(document.body).fontFamily;
   setWord(word, family);
   const P = window.__l2dPoster = {

@@ -1,11 +1,11 @@
 import { cn } from '@/lib/utils';
 
 /**
- * lab2date identity — molecular scatter mark.
+ * Labtodate identity — molecular scatter mark.
  *
  *  A cluster of nodes of varying size rising to a peak then trailing
  *  off, set above a baseline — reads as a chromatogram peak / molecular
- *  scatter over an axis. Wordmark "lab2date" with a small
+ *  scatter over an axis. Wordmark (the site name, "Labtodate") with a small
  *  "MOLECULAR ANALYSIS" tagline lock-up.
  *
  *  Dark theme: the mark glows lime → teal (the redesign's accent gradient)
@@ -17,11 +17,13 @@ export function Logo({
   withWordmark = true,
   withTagline = true,
   size = 'md',
+  name = 'Labtodate',
 }: {
   className?: string;
   withWordmark?: boolean;
   withTagline?: boolean;
   size?: 'sm' | 'md' | 'lg';
+  name?: string;
 }) {
   const mark = size === 'lg' ? 'h-10 w-14' : size === 'sm' ? 'h-7 w-10' : 'h-9 w-12';
   const word = size === 'lg' ? 'text-3xl' : size === 'sm' ? 'text-lg' : 'text-2xl';
@@ -34,7 +36,7 @@ export function Logo({
         className={cn(mark, 'text-primary dark:drop-shadow-[0_0_10px_hsl(82_76%_55%/0.35)]')}
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
-        aria-label="lab2date"
+        aria-label={name}
         role="img"
       >
         <defs>
@@ -64,7 +66,7 @@ export function Logo({
             className={cn(word, 'font-bold text-primary dark:text-foreground')}
             style={{ letterSpacing: '-0.03em' }}
           >
-            lab2date
+            {name}
           </span>
           {withTagline && (
             <span

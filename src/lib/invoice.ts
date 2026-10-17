@@ -38,7 +38,7 @@ export function getCompany() {
   const addr = (process.env.COMPANY_ADDRESS || '').trim();
   const addrLines = addr ? addr.split(/\r?\n+/).map((s) => s.trim()).filter(Boolean) : [];
   return {
-    name: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'lab2date',
+    name: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'Labtodate',
     addrLines,
     country: (process.env.COMPANY_COUNTRY || '').trim(),
     city: (process.env.COMPANY_CITY || '').trim(),

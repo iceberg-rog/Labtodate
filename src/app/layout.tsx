@@ -101,7 +101,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <PublicChrome
           header={<Header searchPlaceholder={`Search ${mk.listings} instruments…`} />}
           footer={<Footer />}
-          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'lab2date'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'lab2date'} /></>}
+          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'Labtodate'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'Labtodate'} /></>}
         >
           {children}
         </PublicChrome>

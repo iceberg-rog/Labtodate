@@ -60,7 +60,7 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
   // the instruments' cards (scene.js: the card helix round the formula column): the category's photo seen through frosted
   // glass, its leading brands above the title and its live count under it
   const CARD_C: [string, string][] = [['#a4e335', '#0b2a1c'], ['#2fd6c3', '#062a28'], ['#7fd11f', '#0f2a14'], ['#14b8a6', '#05242a'], ['#d4f56a', '#1a2a0c']];
-  const img = (src: string | null, w: number) => (src ? `/_next/image?url=${encodeURIComponent(src)}&w=${w}&q=70` : null);
+  const img = (src: string | null, w: number) => (src ? `/_next/image?url=${encodeURIComponent(src)}&w=${w}&q=75` : null);
   const config: LandingConfig = {
     links: {},
     games: categories.map((k, i) => ({
@@ -106,15 +106,15 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
           <p className="lead rv" style={{ ['--d' as string]: 2 }}>{c.heroSubtitle}</p>
           <div className="hero-search glass-panel rv" style={{ ['--d' as string]: 3 }}>
             <SearchTypeahead size="lg" className="min-w-0 flex-1" placeholder={searchPlaceholderFor(c.popular)} />
-            <Link href="/marketplace" className="btn btn-p">Browse <ArrowRight className="h-4 w-4" /></Link>
+            <Link prefetch={false} href="/marketplace" className="btn btn-p">Browse <ArrowRight className="h-4 w-4" /></Link>
           </div>
           <div className="cta-row rv" style={{ ['--d' as string]: 4 }}>
-            <Link href="/let-us-find-it" className="btn btn-g">Can&apos;t find it? Let us source it <ArrowRight className="h-4 w-4" /></Link>
-            <Link href="/sell" className="btn-link">Sell your equipment →</Link>
+            <Link prefetch={false} href="/let-us-find-it" className="btn btn-g">Can&apos;t find it? Let us source it <ArrowRight className="h-4 w-4" /></Link>
+            <Link prefetch={false} href="/sell" className="btn-link">Sell your equipment →</Link>
           </div>
           {c.popular.length > 0 && (
             <div className="chips rv" style={{ ['--d' as string]: 5 }}>
-              {c.popular.map((t) => <Link key={t} href={`/marketplace?q=${encodeURIComponent(t)}`} className="chip">{t}</Link>)}
+              {c.popular.map((t) => <Link prefetch={false} key={t} href={`/marketplace?q=${encodeURIComponent(t)}`} className="chip">{t}</Link>)}
             </div>
           )}
         </div>
@@ -155,16 +155,16 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
               </li>
             ))}
           </ol>
-          <Link id="wk-open" href={first ? `/marketplace?category=${first.slug}` : '/marketplace'} className="wk-open rv" style={{ ['--d' as string]: 2 }}>
+          <Link prefetch={false} id="wk-open" href={first ? `/marketplace?category=${first.slug}` : '/marketplace'} className="wk-open rv" style={{ ['--d' as string]: 2 }}>
             Browse <b id="wk-open-name">{first?.name ?? 'the marketplace'}</b> <ArrowRight className="h-3.5 w-3.5" />
           </Link>
           <div className="wk-links rv" style={{ ['--d' as string]: 3 }}>
-            <Link className="wk-tile" href="/marketplace">
+            <Link prefetch={false} className="wk-tile" href="/marketplace">
               <LayoutGrid aria-hidden />
               <span><b>{c.catAllTitle}</b><small>{c.catAllSub.replaceAll('{N}', listings.toLocaleString('en-US'))}</small></span>
               <ArrowUpRight className="go" aria-hidden />
             </Link>
-            <Link className="wk-tile alt" href="/let-us-find-it">
+            <Link prefetch={false} className="wk-tile alt" href="/let-us-find-it">
               <Plus aria-hidden />
               <span><b>{c.catAskTitle}</b><small>{c.catAskSub}</small></span>
               <ArrowUpRight className="go" aria-hidden />
@@ -173,14 +173,14 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
         </div>
         {/* crawlable category links (the list above is a jump list) */}
         <ul className="sr-only">
-          {categories.map((k) => <li key={k.slug}><Link href={`/marketplace?category=${k.slug}`}>{k.name} ({k.count})</Link></li>)}
+          {categories.map((k) => <li key={k.slug}><Link prefetch={false} href={`/marketplace?category=${k.slug}`}>{k.name} ({k.count})</Link></li>)}
         </ul>
         <div className="wk-fallback" aria-hidden>
           {categories.slice(0, 3).map((k) => (
             <div key={k.slug} className="wk-fcard">
               {k.image && (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={`/_next/image?url=${encodeURIComponent(k.image)}&w=640&q=70`} alt="" loading="lazy" />
+                <img src={`/_next/image?url=${encodeURIComponent(k.image)}&w=640&q=75`} alt="" loading="lazy" />
               )}
               <b>{k.name}</b>
             </div>
@@ -223,7 +223,7 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
             ))}
           </ul>
           <div className="cta-row rv" style={{ ['--d' as string]: 3 + bullets.length }}>
-            <Link href={demoHref} className="btn btn-p">{demoLabel} <ArrowRight className="h-4 w-4" /></Link>
+            <Link prefetch={false} href={demoHref} className="btn btn-p">{demoLabel} <ArrowRight className="h-4 w-4" /></Link>
           </div>
         </div>
         <BuyDemo product={demo} note={c.demoNote} />
@@ -254,7 +254,7 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
               <h3>{w.title}</h3>
               <p>{w.text}</p>
               <ul>{w.bullets.map((b) => <li key={b}><Check aria-hidden />{b}</li>)}</ul>
-              <Link href={w.href} className="btn btn-p">{w.cta} <ArrowRight className="h-4 w-4" /></Link>
+              <Link prefetch={false} href={w.href} className="btn btn-p">{w.cta} <ArrowRight className="h-4 w-4" /></Link>
             </div>
           ))}
         </div>
@@ -275,8 +275,8 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
           </h2>
           <p className="lead rv" style={{ ['--d' as string]: 2 }}>{c.ctaSubtitle}</p>
           <div className="cta-row rv" style={{ ['--d' as string]: 3 }}>
-            <Link href="/let-us-find-it" className="btn btn-p">Submit a sourcing request <ArrowRight className="h-4 w-4" /></Link>
-            <Link href="/contact" className="btn btn-g">Talk to sales</Link>
+            <Link prefetch={false} href="/let-us-find-it" className="btn btn-p">Submit a sourcing request <ArrowRight className="h-4 w-4" /></Link>
+            <Link prefetch={false} href="/contact" className="btn btn-g">Talk to sales</Link>
           </div>
           {sourcingNote && <p className="play-note rv" style={{ ['--d' as string]: 4 }}>{sourcingNote}</p>}
         </div>
@@ -319,19 +319,22 @@ function WayEmblem({ count, active }: { count: number; active: number }) {
   });
   return (
     <div className="ways-rank" aria-hidden>
-      <svg className="we-frame" viewBox="0 0 240 240">
-        <defs>
-          <linearGradient id="we-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#a4e335" /><stop offset="1" stopColor="#2fd6c3" /></linearGradient>
-          <radialGradient id="we-core"><stop offset="0" stopColor="#a4e335" stopOpacity=".38" /><stop offset="1" stopColor="#2fd6c3" stopOpacity="0" /></radialGradient>
-        </defs>
-        <circle className="we-glow" cx="120" cy="120" r="78" fill="url(#we-core)" />
-        <g className="we-ring"><circle cx="120" cy="120" r="110" fill="none" stroke="url(#we-g)" strokeWidth="1.2" strokeDasharray="2 7" /><circle cx="230" cy="120" r="3.5" fill="#a4e335" /></g>
-        <g className="we-hex">
+      {/* three stacked layers: the spins run on the compositor (a whole layer turned), never as an SVG repaint */}
+      <div className="we-frame">
+        <div className="we-glow" />
+        <svg className="we-l we-ring" viewBox="0 0 240 240">
+          <defs>
+            <linearGradient id="we-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#a4e335" /><stop offset="1" stopColor="#2fd6c3" /></linearGradient>
+          </defs>
+          <circle cx="120" cy="120" r="110" fill="none" stroke="url(#we-g)" strokeWidth="1.2" strokeDasharray="2 7" />
+          <circle cx="230" cy="120" r="3.5" fill="#a4e335" />
+        </svg>
+        <svg className="we-l we-hex" viewBox="0 0 240 240">
           <polygon points={hex.map((p) => p.join(',')).join(' ')} fill="none" stroke="url(#we-g)" strokeWidth="2.4" strokeLinejoin="round" />
           <circle cx="120" cy="120" r="54" fill="none" stroke="url(#we-g)" strokeWidth="1.4" strokeOpacity=".7" />
           {hex.map(([x, y], k) => <circle key={k} cx={x} cy={y} r={k % 2 ? 4.5 : 6} fill="url(#we-g)" />)}
-        </g>
-      </svg>
+        </svg>
+      </div>
       {WAY_ICONS.slice(0, Math.max(1, count)).map((Icon, i) => (
         <span key={i} className={i === active ? 'we-ico on' : 'we-ico'} data-way-emb={i}><Icon /></span>
       ))}
@@ -368,7 +371,7 @@ function BuyDemo({ product, note }: { product: DemoProduct | null; note: string 
           <div className="ad-photo">
             {product?.image && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={`/_next/image?url=${encodeURIComponent(product.image)}&w=384&q=70`} alt="" loading="lazy" />
+              <img src={`/_next/image?url=${encodeURIComponent(product.image)}&w=384&q=75`} alt="" loading="lazy" />
             )}
           </div>
           <ol className="ad-timeline" id="ad-timeline">

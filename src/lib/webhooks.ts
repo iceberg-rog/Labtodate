@@ -181,7 +181,7 @@ export async function sendTestWebhook(id: string): Promise<{ ok: boolean; error?
   return deliverToHook(
     h,
     'ANNOUNCEMENT',
-    `Test fire from ${process.env.SITE_NAME || 'lab2date'} admin`,
+    `Test fire from ${process.env.SITE_NAME || 'Labtodate'} admin`,
     `If you see this, the ${h.kind} integration works.`,
     '/admin/settings',
   );
