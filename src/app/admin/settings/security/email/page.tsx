@@ -176,8 +176,8 @@ export default async function EmailProtectionPage() {
           <div className="space-y-1">
             <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-muted-foreground">Bounce reports in the sending mailbox</h2>
             <p className="text-xs text-muted-foreground max-w-3xl">
-              Mail servers like TransIP’s accept every address and e-mail a bounce report (“Undelivered Mail Returned to Sender”) to the
-              sending mailbox minutes later. When this is on, the security sweep reads new bounce reports every 5 minutes and stops e-mail
+              Mail servers like TransIP’s accept every address and e-mail a bounce report (“Undelivered Mail Returned to Sender”, “Mail delivery
+              failed” …) to the sending mailbox later. When this is on, the security sweep reads new bounce reports every 5 minutes and stops e-mail
               to addresses that don’t exist. Only reports about an e-mail the site sent count; the mailbox’s other e-mails are left as they are.
             </p>
           </div>

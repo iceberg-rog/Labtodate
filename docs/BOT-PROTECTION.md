@@ -70,11 +70,12 @@ bounce mailbox (last run, its reports) and the suppressed addresses
 ## Bounce reports in the sending mailbox (IMAP)
 
 TransIP (`smtp.transip.email`, production's SMTP) accepts every recipient at
-RCPT time and e-mails a bounce report — a DSN, “Undelivered Mail Returned to
-Sender” from `MAILER-DAEMON` — to the sending mailbox (parts@labparts.nl)
-minutes later. So the synchronous check above almost never fires in
-production. The bounce reader (`src/lib/email-guard/bounce-mailbox.ts`,
-parser `dsn.ts`) closes that gap:
+RCPT time and e-mails a bounce report — a delivery status notification (DSN,
+RFC 3464) from the mail system — to the sending mailbox (parts@labparts.nl)
+later. So the synchronous check above almost never fires in production. The
+bounce reader (`src/lib/email-guard/bounce-mailbox.ts`, parser `dsn.ts`)
+closes that gap. It reads any standard DSN (Postfix-, Exim-, Exchange-style …);
+bounces without a delivery-status part (plain text only) are left alone.
 
 - The security sweep (every 5 minutes) logs in over IMAP, looks at the **new
   unread** e-mails of one folder since its last run (UID after the previous
@@ -94,8 +95,9 @@ parser `dsn.ts`) closes that gap:
   Reports about mail people sent by hand, or forged ones, stay **unread** for
   the people using the mailbox. Reports about staff copies never suppress.
 - A report that was about the site's e-mail is marked read, or moved to
-  `MAIL_BOUNCE_IMAP_DONE_FOLDER` (created when missing; TransIP's IMAP has no
-  MOVE, so the client copies and expunges — tested that way).
+  `MAIL_BOUNCE_IMAP_DONE_FOLDER` (created when missing). The IMAP client uses
+  MOVE when the server offers it, else copy + expunge; `imap.transip.email`
+  lists no MOVE before login, so the fallback was tested.
 - Each run is a `bounce_scan_run` row (counts, errors, one line per report
   recipient; kept 30 days) shown on E-mail protection, with **Check now**
   (`security:manage`). When the last 3 runs (15 minutes) failed, super-admins

@@ -13,10 +13,13 @@ const parse = async (name: string) => {
   return d;
 };
 
-test('TransIP (Postfix) report about a verification code Gmail refused: address, 5.1.1, and the Message-ID of our e-mail', async () => {
-  const d = await parse('transip-postfix-gmail-5.1.1.eml');
-  assert.equal(d.reportFrom, 'mailer-daemon@smtp.transip.email');
-  assert.equal(d.reportingMta, 'smtp.transip.email');
+// The synthetic-* reports are about e-mails from parts@labparts.nl composed by
+// nodemailer, in the shapes common relays use. Which software writes TransIP's
+// bounce reports is not known yet: replace them with a real report when one is exported.
+test('synthetic Postfix-style report about a verification code Gmail refused: address, 5.1.1, and the Message-ID of our e-mail', async () => {
+  const d = await parse('synthetic-postfix-style-gmail-5.1.1.eml');
+  assert.equal(d.reportFrom, 'mailer-daemon@relay.mail-provider.example');
+  assert.equal(d.reportingMta, 'relay.mail-provider.example');
   assert.equal(d.originalMessageId, '8c2f7d1e-5b40-4f0e-9a6c-3e1d2b7a9f04@labparts.nl');
   assert.equal(d.originalSubject, '48213 is your lab2date verification code');
   assert.equal(d.recipients.length, 1);
@@ -27,6 +30,22 @@ test('TransIP (Postfix) report about a verification code Gmail refused: address,
   assert.equal(r.remoteMta, 'gmail-smtp-in.l.google.com');
   assert.match(r.diagnostic!, /^550-5\.1\.1 The email account that you tried to reach does not exist\. Please try 550-5\.1\.1 double-checking/);
   assert.equal(r.verdict, 'permanent');
+});
+
+test('synthetic Exim-style report: generic 5.0.0 wrapping the remote 5.1.1, returned headers only', async () => {
+  const d = await parse('synthetic-exim-style-5.1.1.eml');
+  assert.equal(d.reportFrom, 'mailer-daemon@out.mail-provider.example');
+  assert.equal(d.reportingMta, 'out.mail-provider.example');
+  assert.equal(d.originalMessageId, 'd41c7a52-0b9e-4f13-8e2a-6b5f0c9d3e71@labparts.nl', 'from the text/rfc822-headers part');
+  assert.equal(d.originalSubject, 'Your quote Q-1042 — offer ready');
+  assert.deepEqual(
+    d.recipients.map((r) => [r.finalRecipient, r.status, r.remoteMta, r.verdict]),
+    [['m.jansen@lab-uu-research.nl', '5.0.0', 'mx1.lab-uu-research.nl', 'permanent']],
+  );
+});
+
+test('a bounce with only a text/plain part (no delivery-status) is not read as a report — left for people', async () => {
+  assert.equal(await parseDsn(fixture('synthetic-plain-text-bounce.eml')), null);
 });
 
 test('real reports that mean "this address does not exist" count', async () => {

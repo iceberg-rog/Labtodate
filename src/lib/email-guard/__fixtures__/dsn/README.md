@@ -9,13 +9,23 @@ domain without mail server, full mailbox, DMARC / spam refusals, sender-side
 refusals, rate limits, delays, and an old plain-text bounce without a
 delivery-status part.
 
-`transip-postfix-gmail-5.1.1.eml` follows what TransIP sends to the sending
-mailbox: Postfix's bounce ("Undelivered Mail Returned to Sender", from
-MAILER-DAEMON, `X-Postfix-Sender: rfc822; parts@labparts.nl`) for a
-verification-code e-mail composed by nodemailer, refused by Gmail with its
-real 5.1.1 wording. It was rebuilt from Postfix's template and the headers
-smtp.transip.email presents (EHLO checked 2026-10-17), not captured from the
-production mailbox: replace it with a real one (anonymised) when one is at hand.
+`synthetic-*.eml` are **synthetic**: written for these tests, not captured.
+No real bounce report from the production mailbox (parts@labparts.nl, TransIP)
+was available, and which software writes TransIP's bounce reports is not
+known. They cover the common shapes, each about an e-mail the site composed
+(nodemailer headers, From parts@labparts.nl) so the Message-ID match is exercised:
+
+- `synthetic-postfix-style-gmail-5.1.1.eml`: Postfix-style report ("Undelivered
+  Mail Returned to Sender", full message returned) for a verification code that
+  Gmail refused with its real 5.1.1 wording;
+- `synthetic-exim-style-5.1.1.eml`: Exim-style report ("Mail delivery failed",
+  generic `Status: 5.0.0` wrapping the remote 550 5.1.1, headers returned as
+  text/rfc822-headers);
+- `synthetic-plain-text-bounce.eml`: a bounce with only a text/plain part (no
+  delivery-status), which the reader must leave alone.
+
+**To do:** export one real bounce report from the parts@labparts.nl mailbox
+(anonymise the recipient), add it here and assert on it like the synthetic ones.
 
 The Sisimai corpus is distributed under this licence:
 

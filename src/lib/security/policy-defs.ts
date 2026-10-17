@@ -291,7 +291,7 @@ export const POLICY_DEFS: readonly PolicyDef[] = [
   {
     key: 'MAIL_BOUNCE_IMAP_ENABLED', group: 'mailguard', type: 'bool', default: false,
     label: 'Read bounce reports from the sending mailbox',
-    hint: 'Many mail servers — TransIP’s included — accept every address first and e-mail a bounce report (“Undelivered Mail Returned to Sender”) to the sending mailbox minutes later, so the rejection never reaches the site. On: the security sweep (every 5 minutes) reads new bounce reports over IMAP and counts each address that does not exist towards the rule above. Needs the IMAP server below and the mailbox password (Settings → Email → Bounce mailbox password; empty = the SMTP password). The last run is shown on Admin → Security → E-mail protection.',
+    hint: 'Many mail servers — TransIP’s included — accept every address first and e-mail a bounce report (“Undelivered Mail Returned to Sender”, “Mail delivery failed” …) to the sending mailbox later, so the rejection never reaches the site. On: the security sweep (every 5 minutes) reads new bounce reports over IMAP and counts each address that does not exist towards the rule above. Needs the IMAP server below and the mailbox password (Settings → Email → Bounce mailbox password; empty = the SMTP password). The last run is shown on Admin → Security → E-mail protection.',
   },
   {
     key: 'MAIL_BOUNCE_IMAP_HOST', group: 'mailguard', type: 'text', default: '',
