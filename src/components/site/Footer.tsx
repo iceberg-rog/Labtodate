@@ -4,6 +4,7 @@ import { Linkedin, Twitter, Github, Mail } from 'lucide-react';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getMarketing } from '@/lib/marketing';
 import { getCompany } from '@/lib/invoice';
+import { FooterWord } from '@/components/site/FooterWord';
 
 const COLUMNS = [
   {
@@ -61,56 +62,54 @@ export async function Footer() {
     co.vat ? `VAT ${co.vat}` : '',
   ].filter(Boolean);
   return (
-    <footer className="border-t bg-muted/40 mt-24">
-      <div className="container-px py-12 grid grid-cols-2 md:grid-cols-6 gap-8">
-        <div className="col-span-2 space-y-4">
-          <div className="text-primary">
-            <Logo />
-          </div>
-          <p className="text-sm text-muted-foreground max-w-xs">
-            {mk.footerTagline}
-          </p>
-          <div className="flex gap-3 text-muted-foreground">
-            {mk.social.linkedin && (
-              <Link href={mk.social.linkedin} aria-label="LinkedIn" className="hover:text-foreground" target="_blank" rel="noopener noreferrer">
-                <Linkedin className="h-5 w-5" />
-              </Link>
-            )}
-            {mk.social.twitter && (
-              <Link href={mk.social.twitter} aria-label="Twitter" className="hover:text-foreground" target="_blank" rel="noopener noreferrer">
-                <Twitter className="h-5 w-5" />
-              </Link>
-            )}
-            {mk.social.github && (
-              <Link href={mk.social.github} aria-label="GitHub" className="hover:text-foreground" target="_blank" rel="noopener noreferrer">
-                <Github className="h-5 w-5" />
-              </Link>
-            )}
-            {supportEmail && (
-            <Link href={`mailto:${supportEmail}`} aria-label="Email" className="hover:text-foreground">
-              <Mail className="h-5 w-5" />
+    <footer className="sfoot">
+      <div className="sfoot-glow" aria-hidden />
+      <div className="container-px relative">
+        <div className="sfoot-grid">
+          <div className="space-y-4">
+            <Link href="/" aria-label={`${siteName} home`} className="inline-block">
+              <Logo />
             </Link>
-            )}
+            <p className="text-sm text-muted-foreground max-w-xs">{mk.footerTagline}</p>
+            <div className="sfoot-social">
+              {mk.social.linkedin && (
+                <Link href={mk.social.linkedin} aria-label="LinkedIn" target="_blank" rel="noopener noreferrer">
+                  <Linkedin className="h-4 w-4" />
+                </Link>
+              )}
+              {mk.social.twitter && (
+                <Link href={mk.social.twitter} aria-label="Twitter" target="_blank" rel="noopener noreferrer">
+                  <Twitter className="h-4 w-4" />
+                </Link>
+              )}
+              {mk.social.github && (
+                <Link href={mk.social.github} aria-label="GitHub" target="_blank" rel="noopener noreferrer">
+                  <Github className="h-4 w-4" />
+                </Link>
+              )}
+              {supportEmail && (
+                <Link href={`mailto:${supportEmail}`} aria-label="Email">
+                  <Mail className="h-4 w-4" />
+                </Link>
+              )}
+            </div>
           </div>
-        </div>
 
-        {COLUMNS.map((col) => (
-          <div key={col.title} className="space-y-3">
-            <h4 className="text-sm font-semibold">{col.title}</h4>
-            <ul className="space-y-2 text-sm text-muted-foreground">
-              {col.links.map((link) => (
-                <li key={link.href}>
-                  <Link href={link.href} className="hover:text-foreground transition-colors">
-                    {link.label}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
-      <div className="border-t">
-        <div className="container-px py-6 flex flex-col sm:flex-row justify-between gap-4 text-xs text-muted-foreground">
+          {COLUMNS.map((col) => (
+            <div key={col.title}>
+              <h4>{col.title}</h4>
+              <ul>
+                {col.links.map((link) => (
+                  <li key={link.href}>
+                    <Link href={link.href}>{link.label}</Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <FooterWord word={siteName} />
+        <div className="sfoot-bar">
           <div className="space-y-1">
             <p>© {new Date().getFullYear()} {siteName}. All rights reserved.</p>
             {legalParts.length > 0 && <p>{legalParts.join(' · ')}</p>}

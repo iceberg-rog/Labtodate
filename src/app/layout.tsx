@@ -84,16 +84,17 @@ export const viewport: Viewport = {
   initialScale: 1,
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#FAF8F2' },
-    { media: '(prefers-color-scheme: dark)', color: '#171E22' },
+    { media: '(prefers-color-scheme: dark)', color: '#031110' },
   ],
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // getMarketing() loads Settings, so THEME_DEFAULT below is the admin's value.
   const mk = await getMarketing();
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
-        <ThemeScript />
+        <ThemeScript fallback={process.env.THEME_DEFAULT} />
       </head>
       <body className="min-h-screen bg-background font-sans antialiased flex flex-col">
         <PublicChrome

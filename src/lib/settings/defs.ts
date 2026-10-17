@@ -647,6 +647,13 @@ const DEFS: DefInput[] = [
     hint: 'Display name used in emails and page metadata.' },
   { key: 'SUPPORT_EMAIL', label: 'Public support email', group: 'Brand', type: 'email', verify: 'email',
     hint: 'Shown in the footer “contact us” link.' },
+  { key: 'THEME_DEFAULT', label: 'Default colour theme', group: 'Brand', type: 'enum', default: 'dark', preview: '/',
+    options: [
+      { value: 'dark', label: 'Dark — “molecular space” (the redesign)' },
+      { value: 'light', label: 'Light' },
+      { value: 'system', label: 'Follow the visitor’s device setting' },
+    ],
+    hint: 'What a first-time visitor sees. Anyone can still switch with the sun/moon button; their choice is remembered on their device.' },
 
   // ── Acquisitions ──
   { key: 'COMPANY_RECEIVING_ADDRESS', label: 'Receiving warehouse address', group: 'Acquisitions', type: 'text', multiline: true,
