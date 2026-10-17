@@ -17,7 +17,7 @@ export default async function EmailPreferencesPage() {
     orderBy: { createdAt: 'desc' },
     take: 10,
   });
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
 
   return (
     <div className="space-y-6 max-w-2xl">

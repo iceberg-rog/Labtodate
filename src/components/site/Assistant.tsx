@@ -33,8 +33,8 @@ type Identity = { kind: 'user' | 'guest'; name: string | null; email: string | n
  * a couple of seconds without WS infrastructure.
  */
 export function Assistant({
-  name = 'lab2date Assistant',
-  siteName = 'lab2date',
+  name = 'Labtodate Assistant',
+  siteName = 'Labtodate',
 }: {
   /** ASSISTANT_NAME from Admin → Settings → AI assistant. */
   name?: string;
@@ -84,7 +84,7 @@ export function Assistant({
         if (snap.messages.length === 0 && snap.status === 'AI') {
           // Brand-new conversation — show the greeting locally without
           // persisting; the first real user message starts AI history.
-          setMsgs([{ id: 'greet', role: 'assistant', body: 'Hi! I can help with buying, quotes, selling, orders and shipping on lab2date. What do you need?', attachments: [], createdAt: new Date().toISOString() }]);
+          setMsgs([{ id: 'greet', role: 'assistant', body: `Hi! I can help with buying, quotes, selling, orders and shipping on ${siteName}. What do you need?`, attachments: [], createdAt: new Date().toISOString() }]);
         }
       } catch (e) {
         console.error('chat init failed', e);

@@ -1,13 +1,11 @@
 /**
- * Blocking, no-flash theme bootstrap. Rendered in <head> so it runs before the
- * body paints: it resolves the saved preference (localStorage 'theme') or the
- * OS setting and toggles the `.dark` class on <html> up-front. Without this the
- * page would paint light first, then flip to dark on hydration (FOUC).
+ * Blocking theme bootstrap, rendered in <head> so it runs before the body paints. The site is dark only (the owner
+ * removed the light mode): it sets the `.dark` class up front and clears a light choice saved by an older visit.
  *
- * Kept dependency-free and inline; the matching runtime toggle lives in
- * ThemeToggle.tsx.
+ * It also marks <html class="js">: the homepage stations are pinned scroll scenes only with scripts on (without them
+ * they stack as plain sections).
  */
 export function ThemeScript() {
-  const js = `(function(){try{var t=localStorage.getItem('theme');var m=window.matchMedia('(prefers-color-scheme: dark)').matches;var d=t==='dark'||(t!=='light'&&m);var e=document.documentElement;e.classList.toggle('dark',d);e.style.colorScheme=d?'dark':'light';}catch(e){}})();`;
+  const js = `(function(){var e=document.documentElement;e.classList.add('js');e.classList.add('dark');e.style.colorScheme='dark';try{localStorage.removeItem('theme');}catch(x){}})();`;
   return <script dangerouslySetInnerHTML={{ __html: js }} />;
 }

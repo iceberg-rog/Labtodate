@@ -15,7 +15,7 @@ function mask(email: string): string {
 export default async function UnsubscribePage({ searchParams }: { searchParams: Promise<{ t?: string; done?: string; error?: string }> }) {
   const sp = await searchParams;
   const target = verifyUnsubscribeToken(sp.t);
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
   const suppressed = target
     ? !!(await prisma.emailSuppression.findUnique({ where: { email_scope: { email: target.email, scope: target.scope } } }))
     : false;

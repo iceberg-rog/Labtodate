@@ -71,7 +71,7 @@ export function catalogPolicyFrom(get: (key: string) => string): CatalogPolicy {
   };
   const pick = <T extends string>(k: string, allowed: readonly T[], d: T): T =>
     (allowed as readonly string[]).includes(read(k)) ? (read(k) as T) : d;
-  const site = read('SITE_NAME') || 'lab2date';
+  const site = read('SITE_NAME') || 'Labtodate';
   const returnWindowDays = int('RETURN_WINDOW_DAYS', 7, 1, 365);
   const T = CATALOG_TEXT_DEFAULTS;
   return {

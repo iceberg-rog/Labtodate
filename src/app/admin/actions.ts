@@ -43,7 +43,7 @@ import { audit, notifyUser, notifyAdmins } from '@/lib/observability';
 import { formatPrice } from '@/lib/utils';
 import { fmtDocMoney } from '@/lib/documents/render';
 import { MAX_ADMIN_PRODUCT_IMAGES, MAX_PRICE_CENTS, MAX_PRICE_MESSAGE, zodFieldErrors, zodMessage } from '@/lib/products/validation';
-import { HOME_DEFAULTS, parseHeroStats } from '@/lib/home-sections';
+import { HOME_DEFAULTS, HOME_EXTRAS, HOME_ORDER_VERSION, HOME_TEXT_FIELDS, parseHeroStats } from '@/lib/home-sections';
 import { isSafeImageUrl } from '@/lib/products/image-urls';
 import { assertPublicHost, fetchPublic, localizeImageList } from '@/lib/media/localize';
 import { firstPublicImage, ownMediaPath, publicProductImages } from '@/lib/media/public-src';
@@ -1208,7 +1208,7 @@ export async function sendTestEmail(): Promise<{ ok: boolean; message: string }>
   }
   const via = transport.label;
 
-  const site = process.env.SITE_NAME?.trim() || 'lab2date';
+  const site = process.env.SITE_NAME?.trim() || 'Labtodate';
   try {
     await sendEmail({
       to,
@@ -1436,18 +1436,11 @@ export async function uploadCompanyLogo(
   return { ok: true, message: 'Logo updated ✓' };
 }
 
-const HOME_KEYS = [
-  'hero', 'trustbar', 'categories', 'featured', 'suppliers', 'blog', 'testimonials', 'cta',
-];
-
 export async function saveHomepage(formData: FormData): Promise<{ ok: boolean; message: string }> {
   await requireCap('content:cms');
-  const enabled = HOME_KEYS.filter((k) => formData.get(`enabled_${k}`) === 'on');
-  // An empty list used to delete the row, which the site reads as "show
-  // everything" — the opposite of what was asked. Refuse it explicitly.
-  if (enabled.length === 0) {
-    return { ok: false, message: 'Keep at least one module visible — with every module hidden the homepage would be blank. Nothing was saved.' };
-  }
+  // The seven stations are always shown in their fixed order (the 3D story is built on it); only the extra modules
+  // below the story are switched on and ordered here. None switched on is a valid choice.
+  const enabled: string[] = HOME_EXTRAS.filter((k) => formData.get(`enabled_${k}`) === 'on');
   enabled.sort((a, b) => {
     const oa = parseInt(String(formData.get(`order_${a}`) ?? '99'), 10) || 99;
     const ob = parseInt(String(formData.get(`order_${b}`) ?? '99'), 10) || 99;
@@ -1482,6 +1475,7 @@ export async function saveHomepage(formData: FormData): Promise<{ ok: boolean; m
 
   for (const [key, value] of [
     ['HOMEPAGE_SECTIONS', sections],
+    ['HOMEPAGE_SECTIONS_V', sections ? HOME_ORDER_VERSION : ''],
     ['HOMEPAGE_POPULAR', popular === d.popular.join(',') ? '' : popular],
     ['HERO_BADGE', custom('heroBadge', d.heroBadge)],
     ['HERO_TITLE', custom('heroTitle', d.heroTitle)],
@@ -1492,7 +1486,9 @@ export async function saveHomepage(formData: FormData): Promise<{ ok: boolean; m
     ['TEST_META', custom('testMeta', d.testMeta)],
     ['CTA_HEADING', custom('ctaHeading', d.ctaHeading)],
     ['CTA_SUBTITLE', custom('ctaSubtitle', d.ctaSubtitle)],
-  ] as const) {
+    // the stations' texts (one field each)
+    ...HOME_TEXT_FIELDS.map((f) => [f.key, custom(f.field, String(d[f.field] ?? ''))] as const),
+  ]) {
     if (value) {
       await prisma.setting.upsert({
         where: { key },
@@ -1510,7 +1506,7 @@ export async function saveHomepage(formData: FormData): Promise<{ ok: boolean; m
   revalidatePath('/admin/homepage');
   return {
     ok: true,
-    message: `Homepage saved — ${enabled.length} module${enabled.length === 1 ? '' : 's'} shown${stats ? '' : ', stats show live counts'}. Click ↻ Refresh in the preview to see it.`,
+    message: `Homepage saved — the seven stations${enabled.length ? ` + ${enabled.length} extra module${enabled.length === 1 ? '' : 's'}` : ''}${stats ? '' : ', stats show live counts'}. Click ↻ Refresh in the preview to see it.`,
   };
 }
 

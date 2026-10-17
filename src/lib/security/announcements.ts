@@ -172,7 +172,7 @@ async function runJob(jobId: string): Promise<void> {
   });
   const job = await prisma.announcementJob.findUnique({ where: { id: jobId } });
   if (!job) return;
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
   const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
   const link = job.href ? (job.href.startsWith('http') ? job.href : `${base}${job.href.startsWith('/') ? '' : '/'}${job.href}`) : `${base}/app/notifications`;
   const category = job.category === 'SERVICE' ? 'SERVICE' : 'MARKETING';

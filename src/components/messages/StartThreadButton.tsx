@@ -20,7 +20,7 @@ export function StartThreadButton({
   initialMessage,
   channel = 'SELLER',
   kind = 'QUESTION',
-  teamName = 'lab2date',
+  teamName = 'Labtodate',
   minChars = 2,
 }: {
   productSlug: string;

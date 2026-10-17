@@ -1,58 +1,70 @@
-import { Hero } from '@/components/home/Hero';
 import { TrustBar } from '@/components/home/TrustBar';
-import { CategoryGrid } from '@/components/home/CategoryGrid';
 import { FeaturedProducts } from '@/components/home/FeaturedProducts';
-import { FeaturedSuppliers } from '@/components/home/FeaturedSuppliers';
 import { BlogTeasers } from '@/components/home/BlogTeasers';
 import { Testimonials } from '@/components/home/Testimonials';
-import { CTASection } from '@/components/home/CTASection';
 import { Reveal } from '@/components/motion/Reveal';
+import { Landing } from '@/components/home/landing/Landing';
 import { JsonLd } from '@/components/seo/JsonLd';
 import { countSearchMatches } from '@/lib/marketplace/queries';
 import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { type HomeSection, getHomeContent, getHomeSectionOrder, parseHeroStats } from '@/lib/home-sections';
+import { type HomeExtra, type HomeStation, getHomeContent, getHomeSectionOrder, isStation, parseHeroStats } from '@/lib/home-sections';
 import { getLiveHeroStats } from '@/lib/home-stats';
 import { getSiteTexts } from '@/lib/catalog/site-texts';
+import { type DemoProduct, type StationCategory, getDemoProduct, getLiveListingCount, getStationCategories } from '@/lib/home-landing-data';
+import { staleWhileRevalidate } from '@/lib/stale-cache';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * The homepage: the seven pinned stations of the Shelter-style landing
+ * (components/home/landing), then any extra modules switched on in
+ * Admin → Homepage as ordinary sections below the story.
+ */
 export default async function HomePage() {
   await ensureSettingsLoaded();
   const content = getHomeContent();
   const texts = await getSiteTexts();
+  const build = isBuildPhase();
 
-  // Unless admin typed explicit (parseable) HERO_STATS, show REAL counts so the
-  // headline never lies — an unparseable value falls back to live counts too,
-  // never to the zero placeholders.
-  if (!isBuildPhase() && !parseHeroStats(process.env.HERO_STATS)) {
-    content.stats = await getLiveHeroStats();
+  // The live data below is public and the same for every visitor: computed at
+  // most once a minute, in parallel, and served from memory meanwhile (refreshed
+  // in the background), so the page doesn't wait on these queries.
+  let categories: StationCategory[] = [];
+  let listings = 0;
+  let demo: DemoProduct | null = null;
+  if (!build) {
+    const ttl = 60_000;
+    const [stats, hits, c, l, d] = await Promise.all([
+      // Unless admin typed explicit (parseable) HERO_STATS, show REAL counts so the
+      // headline never lies — an unparseable value falls back to live counts too,
+      // never to the zero placeholders.
+      parseHeroStats(process.env.HERO_STATS) ? null : staleWhileRevalidate('home:stats', ttl, getLiveHeroStats),
+      // "Popular" chips (defaults or admin's HOMEPAGE_POPULAR) must lead somewhere:
+      // drop any term the marketplace search would return nothing for.
+      staleWhileRevalidate(`home:popular:${content.popular.join('|')}`, ttl, () => Promise.all(content.popular.map((t) => countSearchMatches(t)))),
+      staleWhileRevalidate('home:categories', ttl, () => getStationCategories(9)),
+      staleWhileRevalidate('home:listings', ttl, getLiveListingCount),
+      staleWhileRevalidate('home:demo', ttl, getDemoProduct),
+    ]);
+    if (stats) content.stats = stats;
+    content.popular = content.popular.filter((_, i) => hits[i] > 0);
+    categories = c;
+    listings = l;
+    demo = d;
   }
 
-  // "Popular" chips (defaults or admin's HOMEPAGE_POPULAR) must lead somewhere:
-  // drop any term the marketplace search would return nothing for.
-  if (!isBuildPhase()) {
-    const counts = await Promise.all(content.popular.map((t) => countSearchMatches(t)));
-    content.popular = content.popular.filter((_, i) => counts[i] > 0);
-  }
-
-  const order: HomeSection[] = getHomeSectionOrder();
-
-  const render: Record<HomeSection, React.ReactNode> = {
-    hero: <Hero key="hero" content={content} />,
+  const order = getHomeSectionOrder();
+  const stations = order.filter(isStation) as HomeStation[];
+  const extras = order.filter((k) => !isStation(k)) as HomeExtra[];
+  const siteName = process.env.SITE_NAME?.trim() || 'Labtodate';
+  const extra: Record<HomeExtra, React.ReactNode> = {
     trustbar: <TrustBar key="trustbar" />,
-    categories: <Reveal key="categories"><CategoryGrid /></Reveal>,
     featured: <Reveal key="featured"><FeaturedProducts /></Reveal>,
-    suppliers: <Reveal key="suppliers"><FeaturedSuppliers /></Reveal>,
     blog: <BlogTeasers key="blog" />,
     testimonials: (
       <Reveal key="testimonials">
         <Testimonials heading={content.testHeading} meta={content.testMeta} />
-      </Reveal>
-    ),
-    cta: (
-      <Reveal key="cta">
-        <CTASection heading={content.ctaHeading} subtitle={content.ctaSubtitle} note={texts.sourcingNoObligation} />
       </Reveal>
     ),
   };
@@ -61,7 +73,7 @@ export default async function HomePage() {
   const orgLd = {
     '@context': 'https://schema.org',
     '@type': 'Organization',
-    name: process.env.SITE_NAME || 'lab2date',
+    name: process.env.SITE_NAME || 'Labtodate',
     url: base,
     logo: process.env.COMPANY_LOGO_URL || undefined,
     description: texts.metaDescription,
@@ -77,7 +89,7 @@ export default async function HomePage() {
   const siteLd = {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
-    name: process.env.SITE_NAME || 'lab2date',
+    name: process.env.SITE_NAME || 'Labtodate',
     url: base,
     potentialAction: {
       '@type': 'SearchAction',
@@ -89,7 +101,17 @@ export default async function HomePage() {
   return (
     <>
       <JsonLd data={[orgLd, siteLd]} />
-      {order.map((k) => render[k])}
+      <Landing
+        stations={stations}
+        content={content}
+        siteName={siteName}
+        categories={categories}
+        listings={listings}
+        demo={demo}
+        sourcingNote={texts.sourcingNoObligation}
+      >
+        {extras.length > 0 && <div className="lnd-extras">{extras.map((k) => extra[k])}</div>}
+      </Landing>
     </>
   );
 }

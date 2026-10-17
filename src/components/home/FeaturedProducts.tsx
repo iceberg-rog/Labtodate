@@ -10,10 +10,10 @@ export async function FeaturedProducts() {
   const mk = await getMarketing();
 
   return (
-    <section className="container-px py-24">
+    <section data-hud="LATEST" className="container-px py-24">
       <div className="flex items-end justify-between mb-12 gap-6 flex-wrap">
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">Latest listings</p>
+          <span className="kicker mb-4">Latest listings</span>
           <h2
             className="text-3xl md:text-5xl font-bold text-foreground max-w-2xl"
             style={{ letterSpacing: '-0.035em' }}
@@ -23,7 +23,7 @@ export async function FeaturedProducts() {
         </div>
         <Link
           href="/marketplace"
-          className="inline-flex items-center gap-2 px-5 py-3 rounded-full border-2 border-foreground/10 text-sm font-semibold text-foreground hover:bg-foreground hover:text-background transition-colors group"
+          className="inline-flex items-center gap-2 px-5 py-3 rounded-full border border-[hsl(var(--teal)/0.24)] bg-[hsl(var(--teal)/0.05)] text-sm font-semibold text-foreground hover:border-primary/60 transition-colors group"
         >
           Browse all {mk.listings}
           <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />

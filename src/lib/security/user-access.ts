@@ -56,7 +56,7 @@ async function refuse(actor: Actor, action: string, target: { id: string; email:
 }
 
 async function tellUser(email: string, subject: string, lines: string[]) {
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
   await trySendEmail(
     {
       to: email,

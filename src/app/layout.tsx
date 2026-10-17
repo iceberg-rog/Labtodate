@@ -84,11 +84,12 @@ export const viewport: Viewport = {
   initialScale: 1,
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#FAF8F2' },
-    { media: '(prefers-color-scheme: dark)', color: '#171E22' },
+    { media: '(prefers-color-scheme: dark)', color: '#031110' },
   ],
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // getMarketing() loads Settings (the admin's values) for the chrome below.
   const mk = await getMarketing();
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`} suppressHydrationWarning>
@@ -99,7 +100,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <PublicChrome
           header={<Header searchPlaceholder={`Search ${mk.listings} instruments…`} />}
           footer={<Footer />}
-          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'lab2date'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'lab2date'} /></>}
+          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'Labtodate'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'Labtodate'} /></>}
         >
           {children}
         </PublicChrome>

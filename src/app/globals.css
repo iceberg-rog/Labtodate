@@ -26,38 +26,39 @@
     --input: 40 12% 84%;
     --ring: 168 70% 18%;
     --ink: 200 30% 6%;
+    --teal: 172 72% 30%;               /* teal companion of the lime */
 
     --radius: 0.75rem;
   }
 
-  /* ── Dark theme ─────────────────────────────────────────────────────────
-     Same forest/lime identity, inverted onto a deep cool ink. Primary is
-     brightened to an emerald so it stays legible both as a surface (buttons)
-     and as text (links, logo) on the dark ground. All UI that uses the
-     semantic tokens below flips automatically. */
+  /* ── Dark theme: "molecular space" (2026-10 redesign) ────────────────────
+     Near-black teal space, lime as the action colour and teal as its
+     companion — the palette of the approved Shelter-style redesign. Every UI
+     that uses the semantic tokens below picks it up automatically. */
   .dark {
     color-scheme: dark;
 
-    /* Surfaces — a softer slate dark (not near-black) */
-    --background: 200 20% 11%;         /* cool slate ink */
-    --foreground: 40 30% 93%;          /* warm off-white */
-    --card: 200 17% 15%;               /* elevated surface */
-    --card-foreground: 40 30% 93%;
-    --muted: 200 14% 20%;
-    --muted-foreground: 200 12% 66%;
+    /* Surfaces */
+    --background: 173 60% 3%;          /* #031110 space */
+    --foreground: 150 33% 94%;         /* #E9F6F0 */
+    --card: 170 38% 6.5%;              /* glass-dark panel */
+    --card-foreground: 150 33% 94%;
+    --muted: 170 30% 10%;
+    --muted-foreground: 163 16% 64%;   /* #94B6AC */
 
     /* Brand */
-    --primary: 158 64% 52%;            /* bright emerald */
-    --primary-foreground: 165 65% 7%;  /* near-black green on emerald */
-    --accent: 82 72% 58%;              /* lime, a touch brighter */
-    --accent-foreground: 82 60% 10%;
-    --accent-deep: 82 68% 66%;         /* lighter lime for text on dark */
+    --primary: 82 76% 55%;             /* #A4E335 lime — actions, links */
+    --primary-foreground: 100 70% 6%;  /* near-black green on lime */
+    --accent: 82 76% 55%;
+    --accent-foreground: 100 70% 6%;
+    --accent-deep: 82 85% 68%;         /* lime for text on dark */
+    --teal: 173 66% 51%;               /* #2FD6C3 */
 
     /* Lines */
-    --border: 200 13% 26%;
-    --input: 200 13% 27%;
-    --ring: 158 64% 52%;
-    --ink: 40 30% 93%;
+    --border: 168 30% 15%;
+    --input: 168 28% 17%;
+    --ring: 82 76% 55%;
+    --ink: 150 33% 94%;
   }
 }
 
@@ -81,6 +82,122 @@
 @layer utilities {
   .container-px {
     @apply container px-4 sm:px-6 lg:px-8;
+  }
+
+  /* ── 2026-10 redesign language (Shelter-style HUD, lab2date palette) ── */
+
+  /* lime → teal gradient text (accent words in headings) */
+  .text-grad {
+    background-image: linear-gradient(95deg, hsl(82 100% 74%) 0%, hsl(82 76% 55%) 38%, hsl(var(--teal)) 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  :root:not(.dark) .text-grad {
+    background-image: linear-gradient(95deg, hsl(82 76% 34%) 0%, hsl(var(--teal)) 100%);
+  }
+
+  /* frosted glass panel */
+  .glass-panel {
+    background: linear-gradient(160deg, hsl(var(--teal) / 0.075), hsl(var(--teal) / 0.02) 60%), hsl(var(--card) / 0.55);
+    border: 1px solid hsl(var(--teal) / 0.14);
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.06), 0 30px 80px -30px rgb(0 0 0 / 0.45);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    backdrop-filter: blur(14px) saturate(140%);
+  }
+  :root:not(.dark) .glass-panel {
+    background: hsl(0 0% 100% / 0.72);
+    border-color: hsl(var(--border));
+    box-shadow: 0 20px 50px -28px hsl(168 70% 18% / 0.35);
+  }
+
+  /* mono HUD label with a lime lead-in line */
+  .kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: hsl(var(--accent-deep));
+  }
+  .kicker::before {
+    content: '';
+    width: 26px;
+    height: 1px;
+    background: hsl(var(--accent));
+    box-shadow: 0 0 8px hsl(var(--accent));
+  }
+  .hud-label {
+    font-family: var(--font-mono), ui-monospace, monospace;
+    font-size: 10px;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground) / 0.75);
+  }
+
+  /* lime action surface (primary CTAs) */
+  .btn-lime {
+    color: hsl(100 70% 6%);
+    background: linear-gradient(100deg, hsl(82 100% 73%), hsl(82 76% 55%) 52%, hsl(145 55% 58%));
+    box-shadow: 0 12px 34px -10px hsl(82 76% 55% / 0.45), inset 0 1px 0 hsl(0 0% 100% / 0.45);
+  }
+  .btn-lime:hover { filter: brightness(1.06); }
+
+  /* round glass icon button (header: search, theme, cart, menu) */
+  /* display comes from the markup (inline-grid / hidden sm:inline-grid …) */
+  .hud-round {
+    place-items: center;
+    height: 2.75rem;
+    width: 2.75rem;
+    border-radius: 9999px;
+    color: hsl(var(--foreground) / 0.82);
+    background: hsl(var(--teal) / 0.05);
+    border: 1px solid hsl(var(--teal) / 0.16);
+    transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .hud-round:hover { color: hsl(var(--foreground)); background: hsl(var(--teal) / 0.1); border-color: hsl(var(--teal) / 0.3); }
+  :root:not(.dark) .hud-round { background: hsl(0 0% 100% / 0.7); border-color: hsl(var(--border)); }
+
+  /* glass pill navigation */
+  .nav-pill {
+    gap: 2px;
+    padding: 5px;
+    border-radius: 9999px;
+    background: linear-gradient(180deg, hsl(var(--teal) / 0.07), hsl(var(--teal) / 0.025));
+    border: 1px solid hsl(var(--teal) / 0.14);
+    box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.06);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+  :root:not(.dark) .nav-pill { background: hsl(0 0% 100% / 0.75); border-color: hsl(var(--border)); }
+  .nav-pill > a {
+    white-space: nowrap;
+    font-size: 13.5px;
+    font-weight: 500;
+    padding: 0.55rem 1rem;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    color: hsl(var(--foreground) / 0.72);
+    transition: color 0.15s, background-color 0.15s;
+  }
+  .nav-pill > a:hover { color: hsl(var(--foreground)); background: hsl(var(--teal) / 0.07); }
+  .nav-pill > a[aria-current='page'] {
+    color: hsl(var(--foreground));
+    background: hsl(var(--accent) / 0.1);
+    border-color: hsl(var(--accent) / 0.45);
+    box-shadow: inset 0 0 18px hsl(var(--accent) / 0.16);
+  }
+
+  /* HUD corner brackets (homepage frame) */
+  .hud-corner {
+    position: fixed;
+    width: 18px;
+    height: 18px;
+    border: 0 solid hsl(var(--teal) / 0.35);
+    pointer-events: none;
+    z-index: 30;
   }
 
   /* Premium gradient mesh background. Mounted on Hero. */
@@ -411,6 +528,77 @@
   color: hsl(var(--accent-deep));
   font-weight: 800;
 }
+
+/* Fixed "molecular space" behind every public page in the dark theme: a soft
+   teal/lime nebula and a sparse star field. CSS only (no WebGL) and painted
+   once — the homepage adds its own live 3D stage on top. */
+.dark body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: hsl(var(--background));
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, hsl(160 60% 90% / 0.7) 50%, transparent 51%),
+    radial-gradient(1px 1px at 72% 12%, hsl(160 60% 90% / 0.55) 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 38% 64%, hsl(82 80% 80% / 0.55) 50%, transparent 51%),
+    radial-gradient(1px 1px at 86% 58%, hsl(173 70% 80% / 0.6) 50%, transparent 51%),
+    radial-gradient(1px 1px at 22% 86%, hsl(160 60% 90% / 0.5) 50%, transparent 51%),
+    radial-gradient(1px 1px at 58% 34%, hsl(160 60% 90% / 0.45) 50%, transparent 51%),
+    radial-gradient(ellipse 55% 45% at 82% 12%, hsl(173 66% 35% / 0.16), transparent 70%),
+    radial-gradient(ellipse 50% 40% at 8% 78%, hsl(82 70% 40% / 0.08), transparent 70%),
+    radial-gradient(ellipse 70% 60% at 50% 120%, hsl(173 60% 20% / 0.25), transparent 70%);
+  background-size: 420px 420px, 380px 380px, 520px 520px, 460px 460px, 340px 340px, 300px 300px, 100% 100%, 100% 100%, 100% 100%;
+}
+
+/* ── Site footer (the Shelter landing's .sfoot): a glow and a hairline at its top, the columns, the site's word in
+   outline lighting up under the pointer (FooterWord), the legal bar. Above the homepage's fixed 3D canvas. ── */
+.sfoot { position: relative; z-index: 12; margin-top: 6rem; overflow: hidden; background: hsl(var(--background)); }
+.sfoot::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: linear-gradient(90deg, transparent, hsl(82 76% 55% / 0.55), hsl(var(--teal) / 0.55), transparent); }
+.sfoot-glow { position: absolute; left: 50%; top: -180px; width: min(1100px, 120vw); height: 360px; transform: translateX(-50%); pointer-events: none;
+  background: radial-gradient(closest-side, hsl(82 76% 55% / 0.11), hsl(var(--teal) / 0.06) 55%, transparent); }
+.sfoot-grid { display: grid; grid-template-columns: 1.35fr repeat(4, minmax(0, 0.8fr)); gap: 42px; padding: 64px 0 36px; }
+.sfoot h4 { margin: 0 0 14px; font-family: var(--font-mono), ui-monospace, monospace; font-size: 11px; font-weight: 500; letter-spacing: 0.24em; text-transform: uppercase; color: hsl(var(--primary)); }
+.sfoot ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+.sfoot ul a { display: inline-block; font-size: 14px; color: hsl(var(--muted-foreground)); transition: color 0.2s, transform 0.2s; }
+.sfoot ul a:hover { color: hsl(var(--foreground)); transform: translateX(3px); }
+.sfoot-social { display: flex; gap: 8px; }
+.sfoot-social a { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 12px; border: 1px solid hsl(var(--teal) / 0.25); color: hsl(var(--muted-foreground)); transition: color 0.2s, border-color 0.2s, box-shadow 0.2s; }
+.sfoot-social a:hover { color: hsl(var(--foreground)); border-color: hsl(82 76% 55% / 0.6); box-shadow: 0 0 18px -6px hsl(82 76% 55% / 0.6); }
+.sfoot-word { font-weight: 800; font-size: clamp(3.4rem, 15vw, 13rem); line-height: 0.82; letter-spacing: -0.05em; text-align: center; white-space: nowrap; overflow: hidden; padding: 6px 0 26px; user-select: none;
+  color: transparent; -webkit-text-stroke: 1px hsl(var(--teal) / 0.32);
+  background: radial-gradient(circle 240px at var(--mx, 50%) var(--my, 60%), hsl(82 76% 55% / 0.85), hsl(var(--teal) / 0.45) 42%, transparent 72%);
+  -webkit-background-clip: text; background-clip: text; }
+.sfoot-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; border-top: 1px solid hsl(var(--border)); padding: 20px 0 30px; font-size: 12px; color: hsl(var(--muted-foreground)); }
+@media (max-width: 860px) {
+  .sfoot-grid { grid-template-columns: 1fr 1fr; gap: 28px; padding-top: 48px; }
+  .sfoot-grid > :first-child { grid-column: 1 / -1; }
+  .sfoot-bar { padding-bottom: 96px; }
+}
+
+/* ── Header menu panel: a compact card under the menu button (full width on phones), the main actions with a line
+   each, then the resources as tiles. Opaque: it sits over the live 3D canvas, where a backdrop blur costs a pass a frame ── */
+.site-menu { width: 100%; margin-top: 4px; padding: 10px; border-radius: 22px; background: linear-gradient(180deg, hsl(170 40% 8%), hsl(170 45% 5%));
+  border: 1px solid hsl(var(--teal) / 0.18); box-shadow: 0 30px 70px -24px rgb(0 0 0 / 0.85), inset 0 1px 0 hsl(0 0% 100% / 0.05); animation: site-menu-in 0.18s cubic-bezier(0.2, 0.7, 0.2, 1); }
+@media (min-width: 768px) { .site-menu { width: 400px; } }
+@keyframes site-menu-in { from { opacity: 0; transform: translateY(-6px) scale(0.985); } to { opacity: 1; transform: none; } }
+.site-menu-k { margin: 10px 8px 6px; font-family: var(--font-mono), ui-monospace, monospace; font-size: 10px; letter-spacing: 0.24em; text-transform: uppercase; color: hsl(var(--muted-foreground) / 0.8); }
+.site-menu-row { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 14px; transition: background-color 0.15s; }
+.site-menu-row:hover, .site-menu-row:focus-visible { background: hsl(var(--teal) / 0.07); }
+.site-menu-row b { display: block; font-size: 14px; font-weight: 600; color: hsl(var(--foreground)); }
+.site-menu-row small { display: block; margin-top: 1px; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.site-menu-ico { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 11px; color: hsl(var(--teal)); background: hsl(var(--teal) / 0.08); border: 1px solid hsl(var(--teal) / 0.16); }
+.site-menu-ico svg { width: 17px; height: 17px; }
+.site-menu-go { flex: none; width: 15px; height: 15px; color: hsl(var(--muted-foreground) / 0.6); transition: color 0.15s, transform 0.15s; }
+.site-menu-row:hover .site-menu-go { color: hsl(82 76% 55%); transform: translate(1px, -1px); }
+.site-menu-row[aria-current='page'] { background: linear-gradient(100deg, hsl(82 76% 55% / 0.13), hsl(var(--teal) / 0.07)); }
+.site-menu-row[aria-current='page'] .site-menu-ico { color: hsl(82 76% 55%); border-color: hsl(82 76% 55% / 0.4); background: hsl(82 76% 55% / 0.1); }
+.site-menu-tile { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 12px; font-size: 13.5px; font-weight: 500; color: hsl(var(--foreground) / 0.88); border: 1px solid hsl(var(--teal) / 0.1); transition: background-color 0.15s, border-color 0.15s; }
+.site-menu-tile svg { width: 16px; height: 16px; color: hsl(var(--teal)); flex: none; }
+.site-menu-tile:hover, .site-menu-tile:focus-visible { background: hsl(var(--teal) / 0.07); border-color: hsl(var(--teal) / 0.24); }
+.site-menu-tile[aria-current='page'] { border-color: hsl(82 76% 55% / 0.45); color: hsl(var(--foreground)); }
+.site-menu-foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid hsl(var(--teal) / 0.1); display: grid; }
 
 /* Bot check (ALTCHA widget, src/components/security/Captcha.tsx) in the site's
    colours; its own stylesheet follows color-scheme, the site uses .dark. */

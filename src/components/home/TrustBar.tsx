@@ -27,17 +27,14 @@ export async function TrustBar() {
   if (top.length === 0) return null;
 
   return (
-    <section className="border-y border-foreground/5 bg-card/40">
+    <section data-hud="BRANDS" className="border-y border-[hsl(var(--teal)/0.1)] bg-[hsl(var(--teal)/0.025)]">
       <div className="container-px py-10">
-        <p className="text-center text-[10px] font-bold uppercase tracking-[0.32em] text-muted-foreground/70 mb-6">
-          Brands in our catalogue
-        </p>
+        <p className="hud-label mb-6 text-center">Brands in our catalogue</p>
         <ul className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3 max-w-5xl mx-auto">
           {top.map((b, i) => (
             <li key={b.name} className="inline-flex items-center gap-3">
               <span
-                className="text-[15px] font-semibold tracking-tight text-foreground/80"
-                style={{ letterSpacing: '-0.015em' }}
+                className="font-mono text-[12.5px] uppercase tracking-[0.26em] text-foreground/70"
               >
                 {b.name}
               </span>

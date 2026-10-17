@@ -754,7 +754,7 @@ export const auth = betterAuth({
     // TOTP authenticator app + 10 one-time recovery codes. Required for the
     // roles in Settings → Security (admins by default) — see requireSession.
     twoFactor({
-      issuer: process.env.SITE_NAME || 'lab2date',
+      issuer: process.env.SITE_NAME || 'Labtodate',
       backupCodeOptions: { amount: 10, length: 10 },
       // The "enter your code" step after the password stays open 10 minutes.
       twoFactorCookieMaxAge: 600,
