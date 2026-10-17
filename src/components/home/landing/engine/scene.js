@@ -1274,11 +1274,17 @@ export async function run() {
   function titleTexture(game) {
     const W = FACE_W, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
     const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
-    const x0 = W * 0.09, maxW = W * 0.33;
-    const words = game.name.split(' '); const lines = []; let line = '';
+    // (x0: a clear gap from the station rail's ticks, which sit over the card's left edge)
+    const x0 = W * 0.135, maxW = W * 0.3;
     g.letterSpacing = `${Math.round(2 * u)}px`; g.font = `600 ${Math.round(64 * u)}px ${MONO}`;
-    for (const w of words) { const tl = line ? `${line} ${w}` : w; if (g.measureText(tl).width > maxW && line) { lines.push(line); line = w; } else line = tl; }
-    lines.push(line);
+    // one line when the name still fits at a large size ("HPLC / LC"), else wrapped between words
+    const lines = [];
+    if (g.measureText(game.name).width * 44 / 64 <= maxW) lines.push(game.name);
+    else {
+      let line = '';
+      for (const w of game.name.split(' ')) { const tl = line ? `${line} ${w}` : w; if (g.measureText(tl).width > maxW && line) { lines.push(line); line = w; } else line = tl; }
+      lines.push(line);
+    }
     const fs = Math.max(30 * u, Math.min(64 * u, Math.floor(64 * u * maxW / Math.max(...lines.map((l) => g.measureText(l).width)))));
     g.font = `600 ${fs}px ${MONO}`; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
     const lh = fs * 1.08, last = H * 0.86 - (game.fa ? 44 * u : 0), top = last - (lines.length - 1) * lh;
