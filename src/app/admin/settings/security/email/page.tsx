@@ -4,8 +4,10 @@ import { requireCapability, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { getSecurityPolicy } from '@/lib/security/policy';
 import { ANONYMOUS_TRIGGERS, EMAIL_TRIGGERS, SUPPRESS_ALL_SCOPE, disposableDomainCount, type EmailTrigger } from '@/lib/email-guard';
-import { ReleaseButton, SuppressForm } from '@/components/admin/SuppressionControls';
-import { changeSuppression } from './actions';
+import type { BounceItem } from '@/lib/email-guard/bounce-mailbox';
+import { ensureSettingsLoaded, settingRaw } from '@/lib/settings';
+import { BounceCheckButton, ReleaseButton, SuppressForm } from '@/components/admin/SuppressionControls';
+import { changeSuppression, checkBounceMailbox } from './actions';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'E-mail protection' };
@@ -20,6 +22,25 @@ const STATUS_LABEL: Record<string, string> = {
   throttled: 'held back (limit)',
 };
 const triggerLabel = (t: string | null) => (t && t in EMAIL_TRIGGERS ? EMAIL_TRIGGERS[t as EmailTrigger].label : t ?? '(before the guards)');
+const RUN_STATUS: Record<string, { label: string; cls: string }> = {
+  OK: { label: 'OK', cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' },
+  FAILED: { label: 'Failed', cls: 'bg-red-500/15 text-red-700 dark:text-red-300' },
+  NOT_CONFIGURED: { label: 'Not set up', cls: 'bg-amber-500/15 text-amber-800 dark:text-amber-300' },
+};
+const VERDICT_LABEL: Record<string, string> = {
+  permanent: 'address does not exist',
+  temporary: 'temporary',
+  policy: 'policy / spam filter',
+  other: 'other failure',
+  delivered: 'delivered',
+};
+const OUTCOME_LABEL: Record<string, string> = {
+  suppressed: 'suppressed',
+  'already-suppressed': 'already suppressed',
+  counted: 'counted',
+  ignored: 'not counted',
+  unmatched: 'left unread',
+};
 
 /**
  * Admin → Security → E-mail protection: what visitors made the site send,
@@ -34,7 +55,8 @@ export default async function EmailProtectionPage() {
   const week = new Date(Date.now() - 7 * 24 * 3600_000);
   const anon = { in: ANONYMOUS_TRIGGERS as string[] };
 
-  const [byTrigger, topDomains, refused, suppressed] = await Promise.all([
+  await ensureSettingsLoaded();
+  const [byTrigger, topDomains, refused, suppressed, runs, lastGoodRun, reportRuns] = await Promise.all([
     prisma.emailLog.groupBy({ by: ['trigger', 'status'], where: { createdAt: { gte: day }, trigger: anon }, _count: { _all: true } }),
     prisma.emailLog.groupBy({
       by: ['toDomain'],
@@ -50,7 +72,15 @@ export default async function EmailProtectionPage() {
       select: { id: true, toAddr: true, subject: true, status: true, error: true, trigger: true, ip: true, createdAt: true },
     }),
     prisma.emailSuppression.findMany({ where: { scope: SUPPRESS_ALL_SCOPE }, orderBy: { createdAt: 'desc' }, take: 300 }),
+    prisma.bounceScanRun.findMany({ orderBy: { startedAt: 'desc' }, take: 8 }),
+    prisma.bounceScanRun.findFirst({ where: { status: 'OK' }, orderBy: { startedAt: 'desc' }, select: { startedAt: true } }),
+    prisma.bounceScanRun.findMany({ where: { reports: { gt: 0 } }, orderBy: { startedAt: 'desc' }, take: 20, select: { startedAt: true, items: true } }),
   ]);
+  const lastRun = runs[0] ?? null;
+  const bounceItems = reportRuns
+    .flatMap((r) => ((r.items ?? []) as BounceItem[]).map((i) => ({ ...i, at: i.at ?? r.startedAt.toISOString() })))
+    .slice(0, 50);
+  const imapLogin = policy.MAIL_BOUNCE_IMAP_USER || settingRaw('SMTP_USER') || '(SMTP username not set)';
   const reasons = suppressed.length
     ? await prisma.auditLog.findMany({
         where: { action: 'email.suppressed', target: { in: suppressed.map((s) => s.email) } },
@@ -141,11 +171,117 @@ export default async function EmailProtectionPage() {
         </section>
       )}
 
+      <section className="rounded-2xl border border-border bg-card p-4 space-y-3" id="bounce-mailbox" data-testid="bounce-mailbox">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-muted-foreground">Bounce reports in the sending mailbox</h2>
+            <p className="text-xs text-muted-foreground max-w-3xl">
+              Mail servers like TransIP’s accept every address and e-mail a bounce report (“Undelivered Mail Returned to Sender”) to the
+              sending mailbox minutes later. When this is on, the security sweep reads new bounce reports every 5 minutes and stops e-mail
+              to addresses that don’t exist. Only reports about an e-mail the site sent count; the mailbox’s other e-mails are left as they are.
+            </p>
+          </div>
+          <BounceCheckButton action={checkBounceMailbox} disabled={!canEdit || !policy.MAIL_BOUNCE_IMAP_ENABLED} />
+        </div>
+        <p className="text-sm">
+          {policy.MAIL_BOUNCE_IMAP_ENABLED ? (
+            <>
+              <span className="font-semibold text-emerald-700 dark:text-emerald-300">On</span> —{' '}
+              <span className="font-mono text-xs break-all">
+                {imapLogin} @ {policy.MAIL_BOUNCE_IMAP_HOST || '(no server)'}:{policy.MAIL_BOUNCE_IMAP_PORT}, folder {policy.MAIL_BOUNCE_IMAP_FOLDER}
+              </span>
+              {' · '}handled reports {policy.MAIL_BOUNCE_IMAP_DONE_FOLDER ? <>move to <span className="font-mono text-xs">{policy.MAIL_BOUNCE_IMAP_DONE_FOLDER}</span></> : 'are marked as read'}
+              {policy.MAIL_BOUNCE_IMAP_MATCH_REQUIRED ? '' : ' · reports about any e-mail count (not only the site’s)'}
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">Off</span> — bounce reports are only noticed when the mail server refuses an address while sending.
+            </>
+          )}{' '}
+          <Link href="/admin/settings/security#mailguard" className="underline text-xs">Settings</Link>
+        </p>
+
+        {lastRun ? (
+          <div className="rounded-xl border border-border p-3 space-y-2" data-testid="bounce-last-run">
+            <p className="text-sm flex flex-wrap items-center gap-2">
+              <span className="font-semibold">Last run</span>
+              <span className="text-muted-foreground">{fmt(lastRun.startedAt)} · {lastRun.trigger === 'admin' ? 'checked by an admin' : 'security sweep'}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${RUN_STATUS[lastRun.status]?.cls ?? ''}`}>{RUN_STATUS[lastRun.status]?.label ?? lastRun.status}</span>
+            </p>
+            {lastRun.error && <p className="text-sm text-red-700 dark:text-red-300 break-words">{lastRun.error}</p>}
+            {lastRun.status !== 'OK' && (
+              <p className="text-xs text-muted-foreground">Last successful run: {lastGoodRun ? fmt(lastGoodRun.startedAt) : 'never'}.</p>
+            )}
+            <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-center">
+              <RunCount label="New e-mails" value={lastRun.checked} />
+              <RunCount label="Bounce reports" value={lastRun.reports} />
+              <RunCount label="Undeliverable" value={lastRun.permanent} />
+              <RunCount label="Newly suppressed" value={lastRun.suppressed} />
+              <RunCount label="Not counted" value={lastRun.ignored} />
+              <RunCount label="Not the site’s e-mail" value={lastRun.unmatched} />
+            </dl>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">No run yet.</p>
+        )}
+
+        {runs.length > 1 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground">Earlier runs</summary>
+            <ul className="mt-2 divide-y divide-border">
+              {runs.slice(1).map((r) => (
+                <li key={r.id} className="py-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
+                  <span className="text-muted-foreground whitespace-nowrap">{fmt(r.startedAt)}</span>
+                  <span className="font-semibold">{RUN_STATUS[r.status]?.label ?? r.status}</span>
+                  <span>
+                    {r.checked} new · {r.reports} reports · {r.suppressed} suppressed
+                  </span>
+                  {r.error && <span className="text-red-700 dark:text-red-300 break-words">{r.error}</span>}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
+        {bounceItems.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[46rem] text-xs" data-testid="bounce-reports">
+              <thead>
+                <tr className="text-left text-muted-foreground uppercase tracking-wider">
+                  <th className="py-2 pr-3">Arrived</th>
+                  <th className="py-2 pr-3">Address</th>
+                  <th className="py-2 pr-3">Status</th>
+                  <th className="py-2 pr-3">Means</th>
+                  <th className="py-2">Done</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {bounceItems.map((i, n) => (
+                  <tr key={`${i.at}-${i.address}-${n}`} className="align-top">
+                    <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">{i.at ? fmt(new Date(i.at)) : '—'}</td>
+                    <td className="py-2 pr-3 font-mono break-all">{i.address}</td>
+                    <td className="py-2 pr-3 font-mono">{i.status ?? '—'}</td>
+                    <td className="py-2 pr-3">
+                      {VERDICT_LABEL[i.verdict] ?? i.verdict}
+                      {i.diagnostic && <span className="block text-[11px] text-muted-foreground break-all">{i.diagnostic}</span>}
+                    </td>
+                    <td className="py-2">
+                      <span className="font-semibold">{OUTCOME_LABEL[i.outcome] ?? i.outcome}</span>
+                      {i.note && <span className="block text-[11px] text-muted-foreground">{i.note}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       <section className="rounded-2xl border border-border bg-card p-4 space-y-3" id="suppressed">
         <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-muted-foreground">Addresses that get no e-mail</h2>
         <p className="text-xs text-muted-foreground">
-          Added automatically when the mail server rejects an address permanently, or by hand (e.g. from a bounce report in the sending
-          mailbox). Staff copies still go out. Releasing an address also resets its per-address limits.
+          Added automatically when an address is rejected permanently — by the mail server while sending, or in a bounce report read from
+          the sending mailbox (above) — or by hand. Staff copies still go out. Releasing an address also resets its per-address limits.
         </p>
         <SuppressForm action={changeSuppression} disabled={!canEdit} />
         {suppressed.length === 0 ? (
@@ -200,6 +336,15 @@ export default async function EmailProtectionPage() {
         )}
       </section>
       <p className="text-[11px] text-muted-foreground">Times in Europe/Amsterdam. Every e-mail is also in the e-mail log with its kind and the requester’s IP.</p>
+    </div>
+  );
+}
+
+function RunCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg bg-muted/50 px-2 py-1.5">
+      <dt className="text-[11px] text-muted-foreground">{label}</dt>
+      <dd className="text-lg font-bold tabular-nums">{value}</dd>
     </div>
   );
 }

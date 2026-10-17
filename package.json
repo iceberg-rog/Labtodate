@@ -48,7 +48,9 @@
     "better-auth": "^1.1.10",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "imapflow": "2.2.1",
     "lucide-react": "^0.460.0",
+    "mailparser": "3.9.33",
     "next": "^16.2.7",
     "nodemailer": "^8.0.10",
     "puppeteer-core": "^25.12.0",
@@ -61,6 +63,7 @@
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@types/mailparser": "3.9.0",
     "@types/node": "^22.9.0",
     "@types/nodemailer": "^8.0.0",
     "@types/qrcode": "^1.5.6",

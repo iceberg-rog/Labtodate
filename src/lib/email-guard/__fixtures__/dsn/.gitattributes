@@ -1,0 +1,2 @@
+# Byte-exact test e-mails (no CRLF conversion).
+*.eml -text

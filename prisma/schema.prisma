@@ -446,6 +446,8 @@ model EmailLog {
   @@index([createdAt])
   @@index([trigger, createdAt])
   @@index([toDomain, createdAt])
+  /// Bounce reports name the e-mail that bounced by its Message-ID (9b).
+  @@index([messageId])
 }
 
 // -------- Better-Auth managed tables --------
@@ -2087,6 +2089,39 @@ model BackupRun {
 
   @@index([startedAt])
   @@map("backup_run")
+}
+
+/// One read of the sending mailbox for bounce reports (DSNs) by the security
+/// sweep or an admin (src/lib/email-guard/bounce-mailbox.ts). Shown on Admin →
+/// Security → E-mail protection; rows older than 30 days are deleted.
+model BounceScanRun {
+  id          String    @id @default(cuid())
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  /// OK | FAILED | NOT_CONFIGURED
+  status      String
+  /// sweep | admin
+  trigger     String
+  /// login@host:port/folder that was read (the next run continues after lastUid of the same mailbox)
+  mailbox     String?
+  /// New e-mails looked at / of which bounce reports
+  checked     Int       @default(0)
+  reports     Int       @default(0)
+  /// Recipients reported as permanently undeliverable (counted towards suppression) / suppressed by this run
+  permanent   Int       @default(0)
+  suppressed  Int       @default(0)
+  /// Recipients that don't count (temporary, policy, full mailbox …) / reports not about an e-mail the site sent
+  ignored     Int       @default(0)
+  unmatched   Int       @default(0)
+  /// IMAP UIDVALIDITY of the folder and the highest UID looked at
+  uidValidity BigInt?
+  lastUid     BigInt?
+  error       String?
+  /// One entry per report recipient: address, status, verdict, outcome, diagnostic (at most 100)
+  items       Json?
+
+  @@index([startedAt])
+  @@map("bounce_scan_run")
 }
 
 /// 7b_quotes_payment — every automatic reminder / notice is sent at most once

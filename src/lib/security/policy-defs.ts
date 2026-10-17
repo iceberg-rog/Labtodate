@@ -75,6 +75,11 @@ const DOMAIN_LIST = /^\s*$|^\s*[a-z0-9.-]+\.[a-z]{2,}(\s*,\s*[a-z0-9.-]+\.[a-z]{
 /** One domain entry of a 'list' field, e.g. txt.att.net. */
 export const DOMAIN_ITEM = /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
 const EMAIL_LIST = /^\s*$|^\s*[^@\s,]+@[^@\s,]+\.[^@\s,]+(\s*,\s*[^@\s,]+@[^@\s,]+\.[^@\s,]+)*\s*$/;
+const IMAP_HOST = /^$|^(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i;
+const IMAP_LOGIN = /^$|^[^\s"\\]{1,254}$/;
+// IMAP folder names may hold spaces and "/" or "." (hierarchy), but no quotes, wildcards or control characters.
+const IMAP_FOLDER = /^(?=.{1,200}$)[^"\\*%\p{Cc}]+$/u;
+const IMAP_FOLDER_OR_EMPTY = /^$|^(?=.{1,200}$)[^"\\*%\p{Cc}]+$/u;
 // rclone:<remote>:<path>  or  scp:<user>@<host>:<absolute path>
 const BACKUP_TARGET = /^\s*$|^rclone:[A-Za-z0-9_.-]+:[^\s]*$|^scp:[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:\/[^\s]*$/;
 
@@ -274,12 +279,62 @@ export const POLICY_DEFS: readonly PolicyDef[] = [
   {
     key: 'MAIL_BOUNCE_SUPPRESS_AFTER', group: 'mailguard', type: 'int', default: 1, min: 0, max: 20, unit: 'rejections',
     label: 'Stop e-mailing an address after the mail server rejected it',
-    hint: 'A permanent rejection (5xx: no such mailbox, mailbox disabled) of the address itself. Suppressed addresses are listed under Admin → Security → E-mail protection, where you can release them. Staff copies are never suppressed. 0 = off.',
+    hint: 'A permanent rejection of the address itself (no such mailbox, mailbox disabled, the domain has no mail server) — while sending, or in a bounce report read from the sending mailbox (below). Full mailboxes, oversized messages and spam-filter refusals don’t count. Suppressed addresses are listed under Admin → Security → E-mail protection, where you can release them. Staff copies are never suppressed. 0 = off.',
   },
   {
     key: 'MAIL_GUARD_ALERTS', group: 'mailguard', type: 'bool', default: true,
     label: 'Alert super-admins when the hourly total is reached',
-    hint: 'At most one alert per hour.',
+    hint: 'At most one alert per hour. Also when the bounce mailbox below could not be read for 15 minutes (at most one alert a day).',
+  },
+  // Bounce reports in the sending mailbox (src/lib/email-guard/bounce-mailbox.ts);
+  // the password is the 'secret' setting MAIL_BOUNCE_IMAP_PASS (Settings → Email).
+  {
+    key: 'MAIL_BOUNCE_IMAP_ENABLED', group: 'mailguard', type: 'bool', default: false,
+    label: 'Read bounce reports from the sending mailbox',
+    hint: 'Many mail servers — TransIP’s included — accept every address first and e-mail a bounce report (“Undelivered Mail Returned to Sender”) to the sending mailbox minutes later, so the rejection never reaches the site. On: the security sweep (every 5 minutes) reads new bounce reports over IMAP and counts each address that does not exist towards the rule above. Needs the IMAP server below and the mailbox password (Settings → Email → Bounce mailbox password; empty = the SMTP password). The last run is shown on Admin → Security → E-mail protection.',
+  },
+  {
+    key: 'MAIL_BOUNCE_IMAP_HOST', group: 'mailguard', type: 'text', default: '',
+    pattern: IMAP_HOST, patternHint: 'a server name such as imap.transip.email',
+    placeholder: 'imap.transip.email',
+    label: 'Bounce mailbox: IMAP server',
+    hint: 'TransIP: imap.transip.email. The connection is always encrypted: port 993 uses TLS, any other port must offer STARTTLS (only a server on this machine may answer without).',
+  },
+  {
+    key: 'MAIL_BOUNCE_IMAP_PORT', group: 'mailguard', type: 'int', default: 993, min: 1, max: 65535,
+    label: 'Bounce mailbox: IMAP port',
+    hint: '993 = IMAP over TLS (TransIP and most providers). 143 = IMAP with STARTTLS.',
+  },
+  {
+    key: 'MAIL_BOUNCE_IMAP_USER', group: 'mailguard', type: 'text', default: '',
+    pattern: IMAP_LOGIN, patternHint: 'the mailbox login, usually its e-mail address',
+    placeholder: 'parts@labparts.nl',
+    label: 'Bounce mailbox: login',
+    hint: 'Empty = the SMTP username (Settings → Email): the mailbox the site sends from, which is where bounce reports arrive.',
+  },
+  {
+    key: 'MAIL_BOUNCE_IMAP_FOLDER', group: 'mailguard', type: 'text', default: 'INBOX',
+    pattern: IMAP_FOLDER, patternHint: 'a folder name such as INBOX',
+    placeholder: 'INBOX',
+    label: 'Bounce mailbox: folder to read',
+    hint: 'Only new, unread bounce reports in this folder are opened. People’s mail in the same mailbox is never touched or marked as read.',
+  },
+  {
+    key: 'MAIL_BOUNCE_IMAP_DONE_FOLDER', group: 'mailguard', type: 'text', default: '',
+    pattern: IMAP_FOLDER_OR_EMPTY, patternHint: 'a folder name such as Bounces, or empty',
+    placeholder: 'Bounces',
+    label: 'Bounce mailbox: move handled reports to',
+    hint: 'Empty = mark handled reports as read and leave them where they are. A folder name (created when missing) keeps the inbox clean. Reports about e-mail the site did not send are left unread for the people using the mailbox.',
+  },
+  {
+    key: 'MAIL_BOUNCE_IMAP_MATCH_REQUIRED', group: 'mailguard', type: 'bool', default: true,
+    label: 'Only act on bounce reports about an e-mail this site sent',
+    hint: 'The report must quote the Message-ID of an e-mail in the site’s e-mail log that went to the same address. Anyone can e-mail a fake bounce report to the mailbox to stop mail to a customer; this check ignores those. Off: bounce reports about mail people sent from the mailbox by hand count too.',
+  },
+  {
+    key: 'MAIL_BOUNCE_IMAP_MAX_PER_RUN', group: 'mailguard', type: 'int', default: 200, min: 10, max: 5000, unit: 'e-mails',
+    label: 'Bounce mailbox: look at most at this many new e-mails per run',
+    hint: 'New e-mails since the last run, oldest first. The rest wait for the next run (5 minutes later), so a large backlog never slows the sweep down.',
   },
   // ── Unverified accounts ──────────────────────────────────────────────────
   {
