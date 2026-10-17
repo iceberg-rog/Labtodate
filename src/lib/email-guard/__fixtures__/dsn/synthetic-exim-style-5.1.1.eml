@@ -1,0 +1,60 @@
+Return-path: <>
+Envelope-to: parts@labparts.nl
+Delivery-date: Sat, 17 Oct 2026 15:21:07 +0200
+Received: from mailnull by out.mail-provider.example with local (Exim 4.98)
+	id 1v9qZr-00072k-0D
+	for parts@labparts.nl; Sat, 17 Oct 2026 15:21:07 +0200
+X-Failed-Recipients: m.jansen@lab-uu-research.nl
+Auto-Submitted: auto-replied
+From: Mail Delivery System <Mailer-Daemon@out.mail-provider.example>
+To: parts@labparts.nl
+Content-Type: multipart/report; report-type=delivery-status; boundary=1792243267-eximdsn-1804289383
+MIME-Version: 1.0
+Subject: Mail delivery failed: returning message to sender
+Message-Id: <E1v9qZr-00072k-0D@out.mail-provider.example>
+Date: Sat, 17 Oct 2026 15:21:07 +0200
+
+--1792243267-eximdsn-1804289383
+Content-type: text/plain; charset=us-ascii
+
+This message was created automatically by mail delivery software.
+
+A message that you sent could not be delivered to one or more of its
+recipients. This is a permanent error. The following address(es) failed:
+
+  m.jansen@lab-uu-research.nl
+    host mx1.lab-uu-research.nl [192.0.2.61]
+    SMTP error from remote mail server after RCPT TO:<m.jansen@lab-uu-research.nl>:
+    550 5.1.1 <m.jansen@lab-uu-research.nl>: Recipient address rejected: User unknown in virtual mailbox table
+
+--1792243267-eximdsn-1804289383
+Content-type: message/delivery-status
+
+Reporting-MTA: dns; out.mail-provider.example
+
+Action: failed
+Final-Recipient: rfc822;m.jansen@lab-uu-research.nl
+Status: 5.0.0
+Remote-MTA: dns; mx1.lab-uu-research.nl
+Diagnostic-Code: smtp; 550 5.1.1 <m.jansen@lab-uu-research.nl>: Recipient address rejected: User unknown in virtual mailbox table
+
+--1792243267-eximdsn-1804289383
+Content-type: text/rfc822-headers
+
+Return-path: <parts@labparts.nl>
+Received: from labtodate.com ([192.0.2.76])
+	by out.mail-provider.example with esmtpsa (TLS1.3) tls TLS_AES_256_GCM_SHA384
+	(Exim 4.98)
+	(envelope-from <parts@labparts.nl>)
+	id 1v9qZq-00072b-2F
+	for m.jansen@lab-uu-research.nl; Sat, 17 Oct 2026 15:21:06 +0200
+Content-Type: multipart/alternative;
+ boundary="--_NmP-1f0e5a9c3b7d2e48-Part_1"
+From: lab2date <parts@labparts.nl>
+To: m.jansen@lab-uu-research.nl
+Subject: =?UTF-8?Q?Your_quote_Q-1042_=E2=80=94_offer_ready?=
+Message-ID: <d41c7a52-0b9e-4f13-8e2a-6b5f0c9d3e71@labparts.nl>
+Date: Sat, 17 Oct 2026 13:21:06 +0000
+MIME-Version: 1.0
+
+--1792243267-eximdsn-1804289383--

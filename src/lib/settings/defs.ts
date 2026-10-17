@@ -642,6 +642,8 @@ const DEFS: DefInput[] = [
     hint: 'true = implicit SSL/TLS (port 465). false = STARTTLS or none (587 / 25). Leave blank to auto-detect from the port.' },
   { key: 'SMTP_NO_AUTH', label: 'SMTP server needs no login', group: 'Email', type: 'bool', default: 'false', options: yesNo,
     hint: 'true only for a relay that accepts mail without a username/password (e.g. a mail server on your own network). Without a Resend key, an SMTP login or this switch, production sends NO email and the admin shows a red warning.' },
+  { key: 'MAIL_BOUNCE_IMAP_PASS', label: 'Bounce mailbox (IMAP) password', group: 'Email', type: 'secret',
+    hint: 'Password the bounce reader uses to log in to the sending mailbox over IMAP (switched on and set up in Settings → Security → “Read bounce reports from the sending mailbox”). Empty = the SMTP password above, which is right when both are the same mailbox (TransIP).' },
   { key: 'SELL_INTAKE_EMAIL', label: 'Sell submissions go to', group: 'Email', type: 'email', verify: 'email',
     hint: 'Inbox that receives “sell your equipment” submissions.' },
   { key: 'QUOTE_INTAKE_EMAIL', label: 'Quote requests go to', group: 'Email', type: 'email', verify: 'email',

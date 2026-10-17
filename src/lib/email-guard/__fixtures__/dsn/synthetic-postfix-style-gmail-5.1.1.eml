@@ -1,0 +1,94 @@
+Return-Path: <>
+Delivered-To: parts@labparts.nl
+Received: by relay.mail-provider.example (Postfix)
+	id 4cP9vR1xKzz1y4Q; Sat, 17 Oct 2026 14:02:51 +0200 (CEST)
+Date: Sat, 17 Oct 2026 14:02:51 +0200 (CEST)
+From: MAILER-DAEMON@relay.mail-provider.example (Mail Delivery System)
+Subject: Undelivered Mail Returned to Sender
+To: parts@labparts.nl
+Auto-Submitted: auto-replied
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status;
+	boundary="4cP9vR1xKzz1y4Q.1792238571/relay.mail-provider.example"
+Content-Transfer-Encoding: 8bit
+Message-Id: <4cP9vR1xKzz1y4R@relay.mail-provider.example>
+
+This is a MIME-encapsulated message.
+
+--4cP9vR1xKzz1y4Q.1792238571/relay.mail-provider.example
+Content-Description: Notification
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+This is the mail system at host relay.mail-provider.example.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can
+delete your own text from the attached returned message.
+
+                   The mail system
+
+<lab.manager.typo4471@gmail.com>: host gmail-smtp-in.l.google.com[192.0.2.27]
+    said: 550-5.1.1 The email account that you tried to reach does not exist.
+    Please try 550-5.1.1 double-checking the recipient's email address for
+    typos or 550-5.1.1 unnecessary spaces. For more information, go to 550
+    5.1.1  https://support.google.com/mail/?p=NoSuchUser
+    5b1f17b1804b1-46e2a9b1c4esi118812345e9.42 - gsmtp (in reply to RCPT TO
+    command)
+
+--4cP9vR1xKzz1y4Q.1792238571/relay.mail-provider.example
+Content-Description: Delivery report
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; relay.mail-provider.example
+X-Postfix-Queue-ID: 4cP9vR1xKzz1y4Q
+X-Postfix-Sender: rfc822; parts@labparts.nl
+Arrival-Date: Sat, 17 Oct 2026 14:02:49 +0200 (CEST)
+
+Final-Recipient: rfc822; lab.manager.typo4471@gmail.com
+Original-Recipient: rfc822;lab.manager.typo4471@gmail.com
+Action: failed
+Status: 5.1.1
+Remote-MTA: dns; gmail-smtp-in.l.google.com
+Diagnostic-Code: smtp; 550-5.1.1 The email account that you tried to reach does
+    not exist. Please try 550-5.1.1 double-checking the recipient's email
+    address for typos or 550-5.1.1 unnecessary spaces. For more information,
+    go to 550 5.1.1  https://support.google.com/mail/?p=NoSuchUser
+    5b1f17b1804b1-46e2a9b1c4esi118812345e9.42 - gsmtp
+
+--4cP9vR1xKzz1y4Q.1792238571/relay.mail-provider.example
+Content-Description: Undelivered Message
+Content-Type: message/rfc822
+Content-Transfer-Encoding: 8bit
+
+Return-Path: <parts@labparts.nl>
+Received: from labtodate.com (unknown [192.0.2.76])
+	(Authenticated sender: parts@labparts.nl)
+	by relay.mail-provider.example (Postfix) with ESMTPSA id 4cP9vR1xKzz1y4Q
+	for <lab.manager.typo4471@gmail.com>; Sat, 17 Oct 2026 14:02:49 +0200 (CEST)
+Content-Type: multipart/alternative;
+ boundary="--_NmP-6a1d0e2b9c7f4a11-Part_1"
+From: lab2date <parts@labparts.nl>
+To: lab.manager.typo4471@gmail.com
+Subject: 48213 is your lab2date verification code
+Message-ID: <8c2f7d1e-5b40-4f0e-9a6c-3e1d2b7a9f04@labparts.nl>
+Date: Sat, 17 Oct 2026 12:02:49 +0000
+MIME-Version: 1.0
+
+----_NmP-6a1d0e2b9c7f4a11-Part_1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Your lab2date verification code is 48213. It expires in 10 minutes.
+----_NmP-6a1d0e2b9c7f4a11-Part_1
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<p>Your lab2date verification code is <b>48213</b>. It expires in 10 minutes.</p>
+----_NmP-6a1d0e2b9c7f4a11-Part_1--
+
+--4cP9vR1xKzz1y4Q.1792238571/relay.mail-provider.example--

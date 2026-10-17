@@ -59,6 +59,14 @@ export type SecurityPolicy = {
   MAIL_IP_REQUESTS_PER_15MIN: number;
   MAIL_BOUNCE_SUPPRESS_AFTER: number;
   MAIL_GUARD_ALERTS: boolean;
+  MAIL_BOUNCE_IMAP_ENABLED: boolean;
+  MAIL_BOUNCE_IMAP_HOST: string;
+  MAIL_BOUNCE_IMAP_PORT: number;
+  MAIL_BOUNCE_IMAP_USER: string;
+  MAIL_BOUNCE_IMAP_FOLDER: string;
+  MAIL_BOUNCE_IMAP_DONE_FOLDER: string;
+  MAIL_BOUNCE_IMAP_MATCH_REQUIRED: boolean;
+  MAIL_BOUNCE_IMAP_MAX_PER_RUN: number;
   UNVERIFIED_PURGE_DAYS: number;
   UNVERIFIED_AUTO_PURGE: boolean;
   MARKETING_SOFT_OPT_IN: boolean;
@@ -239,6 +247,13 @@ export function planPolicySave(
   }
   if (get('LOGIN_MAX_FAILS_PER_ACCOUNT') < get('LOGIN_MAX_FAILS_PER_ACCOUNT_IP')) {
     problems.push('The all-networks limit must be at least the per-network limit.');
+  }
+  if (get('MAIL_BOUNCE_IMAP_ENABLED') && !get('MAIL_BOUNCE_IMAP_HOST')) {
+    problems.push('Reading bounce reports needs the IMAP server of the sending mailbox (e.g. imap.transip.email).');
+  }
+  const doneFolder = get('MAIL_BOUNCE_IMAP_DONE_FOLDER');
+  if (doneFolder && doneFolder.toLowerCase() === get('MAIL_BOUNCE_IMAP_FOLDER').toLowerCase()) {
+    problems.push('Handled bounce reports must move to another folder than the one that is read (or leave the field empty).');
   }
   return { problems, changes: problems.length ? [] : changes, writes: problems.length ? [] : writes };
 }

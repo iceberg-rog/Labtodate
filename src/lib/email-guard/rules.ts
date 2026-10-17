@@ -171,21 +171,60 @@ export const SUPPRESSED_MESSAGE =
 
 // ── Bounces ─────────────────────────────────────────────────────────────────
 
+/** How mail servers word "this mailbox does not exist" when they give no address status code. */
+export const RECIPIENT_REJECTED_TEXT =
+  /user unknown|no such (user|mailbox|recipient|address)|mailbox (unavailable|not found|disabled)|(user|recipient|account) not found|does not exist|(doesn'?t|does not) have an? [\w.-]+ account|recipient (address )?rejected|invalid recipient|unknown (recipient|user|address)|undeliverable/i;
+
+/** Wording that puts a 5xx on the message, the moment or the sender — never the recipient's address. */
+const NOT_THE_ADDRESS_TEXT =
+  /quota|mailbox (is )?full|too (large|big|many|fast)|message size|exceeds|receiving mail at a rate|rate limit|try again later|\bsender\b|mail from|\bspf\b|dmarc|dkim|spam|black ?list|block ?list|blocked|not allowed to send/i;
+
+/** Enhanced status codes (RFC 3463, e.g. 5.1.1) in a server reply, in order. Pure. */
+export function statusCodes(text: string): string[] {
+  return Array.from(text.matchAll(/\b[245]\.\d{1,3}\.\d{1,3}\b/g), (m) => m[0]);
+}
+
+/**
+ * Enhanced status codes that say the RECIPIENT's address is bad: 5.1.x bad /
+ * moved mailbox, bad domain, null MX (5.1.10), Exchange's 5.1.351 …; 5.2.1
+ * mailbox disabled; 5.4.4 the domain has no mail server. Not 5.1.0 ("other
+ * address status", which servers use for SPF and sender-blocklist refusals)
+ * or 5.1.7 / 5.1.8 (the SENDER's address). Pure.
+ */
+export function isAddressStatus(code: string): boolean {
+  const m = /^5\.(\d{1,3})\.(\d{1,3})$/.exec(code);
+  if (!m) return false;
+  const [subject, detail] = [Number(m[1]), Number(m[2])];
+  if (subject === 1) return detail !== 0 && detail !== 7 && detail !== 8;
+  return (subject === 2 && detail === 1) || (subject === 4 && detail === 4);
+}
+
+/**
+ * Does this permanent (5xx) reply say the recipient's address is bad? 5.7.x
+ * anywhere = a policy refusal about us (relay denied, not authenticated,
+ * spam filter, SPF / DMARC), which says nothing about the address and would
+ * suppress every recipient — never. Otherwise an address status code, or
+ * (`byWording`, when the reply is known to be about the recipient: RCPT TO,
+ * a bounce report) the usual "user unknown" wording — unless the reply is
+ * about size, quota, rate or the sender. Pure.
+ */
+export function replySaysAddressInvalid(text: string, byWording: boolean): boolean {
+  const codes = statusCodes(text);
+  if (codes.some((c) => c.startsWith('5.7.'))) return false;
+  if (NOT_THE_ADDRESS_TEXT.test(text)) return false;
+  if (codes.some(isAddressStatus)) return true;
+  return byWording && RECIPIENT_REJECTED_TEXT.test(text);
+}
+
 /**
  * A permanent rejection of the RECIPIENT (not of our login, sender or
- * content): a 5xx reply to RCPT TO, or a 5xx carrying the "bad destination
- * mailbox" enhanced status 5.1.x / 5.2.1. Policy rejections (5.7.x — relay
- * denied, not authenticated) say nothing about the address and would
- * suppress every recipient, so they never count. Pure.
+ * content) while sending: a 5xx with an address status code, or a 5xx reply
+ * to RCPT TO worded "user unknown" (see replySaysAddressInvalid). Pure.
  */
 export function isPermanentRecipientFailure(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const e = err as { responseCode?: unknown; command?: unknown; response?: unknown; message?: unknown };
   const code = typeof e.responseCode === 'number' ? e.responseCode : Number(/^\s*(5\d\d)\b/.exec(String(e.response ?? ''))?.[1]);
   if (!(code >= 500 && code < 600)) return false;
-  const text = `${String(e.response ?? '')} ${String(e.message ?? '')}`;
-  if (/\b5\.7\.\d{1,3}\b/.test(text)) return false;
-  if (/\b5\.1\.\d{1,3}\b|\b5\.2\.1\b/.test(text)) return true;
-  if (e.command !== 'RCPT TO') return false;
-  return /user unknown|no such (user|mailbox|recipient)|mailbox (unavailable|not found|disabled)|does not exist|recipient (address )?rejected|invalid recipient|unknown (recipient|user)|undeliverable/i.test(text);
+  return replySaysAddressInvalid(`${String(e.response ?? '')} ${String(e.message ?? '')}`, e.command === 'RCPT TO');
 }

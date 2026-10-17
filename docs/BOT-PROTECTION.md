@@ -51,16 +51,72 @@ recipient domain and the requester's IP.
   A refusal about one address is answered like a sent e-mail (no account
   enumeration); a new verification code is not even made then, so the one
   already sent keeps working.
-- A permanent rejection of the address (5xx at RCPT TO / 5.1.x) suppresses it
-  (`MAIL_BOUNCE_SUPPRESS_AFTER`; table `email_suppression`, scope `ALL`).
-  Bounces that arrive later as DSN mails in the sending mailbox are not read
-  automatically: paste the address under E-mail protection → “Stop e-mailing”.
+- A permanent rejection of the address suppresses it (`MAIL_BOUNCE_SUPPRESS_AFTER`;
+  table `email_suppression`, scope `ALL`): while sending (5xx at RCPT TO), or
+  in a bounce report read from the sending mailbox (next section). One rule
+  for both (`replySaysAddressInvalid` in `rules.ts`): 5.1.x (not 5.1.0, which
+  servers use for SPF / blocklist refusals, nor 5.1.7 / 5.1.8, the *sender*),
+  5.2.1 (mailbox disabled), 5.4.4 (the domain has no mail server), or plain
+  “user unknown” wording. Never 5.7.x (policy, spam filter, DMARC — about us,
+  not the address), nor full mailboxes, size, rate limits or sender problems.
 - Per-network limits for sign-up and code/link/reset requests are settings too
   (`MAIL_IP_*`).
 
 Admin → Security → **E-mail protection** shows what was sent and held back in
-the last 24 h, recipient domains, held-back e-mails with reason and IP, and
-the suppressed addresses (release / add).
+the last 24 h, recipient domains, held-back e-mails with reason and IP, the
+bounce mailbox (last run, its reports) and the suppressed addresses
+(release / add).
+
+## Bounce reports in the sending mailbox (IMAP)
+
+TransIP (`smtp.transip.email`, production's SMTP) accepts every recipient at
+RCPT time and e-mails a bounce report — a delivery status notification (DSN,
+RFC 3464) from the mail system — to the sending mailbox (parts@labparts.nl)
+later. So the synchronous check above almost never fires in production. The
+bounce reader (`src/lib/email-guard/bounce-mailbox.ts`, parser `dsn.ts`)
+closes that gap. It reads any standard DSN (Postfix-, Exim-, Exchange-style …);
+bounces without a delivery-status part (plain text only) are left alone.
+
+- The security sweep (every 5 minutes) logs in over IMAP, looks at the **new
+  unread** e-mails of one folder since its last run (UID after the previous
+  run's highest, per mailbox and UIDVALIDITY; at most
+  `MAIL_BOUNCE_IMAP_MAX_PER_RUN` per run, oldest first), and opens only
+  delivery reports (`multipart/report; report-type=delivery-status`). Read
+  receipts, auto-replies and people's mail are never opened in a way that
+  marks them read (`BODY.PEEK`), moved or changed.
+- Each report recipient (`Final-Recipient` / `Original-Recipient`, `Status`,
+  `Diagnostic-Code`) is judged with the rule above and fed to
+  `recordPermanentFailure` — the same counting and suppression as a
+  synchronous rejection. 4.x.x and “delayed” reports are ignored.
+- **Forged reports**: anyone can e-mail a fake bounce report to the mailbox to
+  stop mail to a customer. With `MAIL_BOUNCE_IMAP_MATCH_REQUIRED` (default on)
+  a report counts only when it quotes the Message-ID of an e-mail in
+  `EmailLog` that went to that same address (index added in migration 9b).
+  Reports about mail people sent by hand, or forged ones, stay **unread** for
+  the people using the mailbox. Reports about staff copies never suppress.
+- A report that was about the site's e-mail is marked read, or moved to
+  `MAIL_BOUNCE_IMAP_DONE_FOLDER` (created when missing). The IMAP client uses
+  MOVE when the server offers it, else copy + expunge; `imap.transip.email`
+  lists no MOVE before login, so the fallback was tested.
+- Each run is a `bounce_scan_run` row (counts, errors, one line per report
+  recipient; kept 30 days) shown on E-mail protection, with **Check now**
+  (`security:manage`). When the last 3 runs (15 minutes) failed, super-admins
+  get one alert a day (`MAIL_GUARD_ALERTS`).
+
+Settings (Admin → Settings → Security, “E-mails a visitor can trigger”):
+`MAIL_BOUNCE_IMAP_ENABLED` (off by default), `_HOST`, `_PORT` (993 = TLS; any
+other port must offer STARTTLS unless the server is on localhost), `_USER`
+(empty = `SMTP_USER`), `_FOLDER` (INBOX), `_DONE_FOLDER` (empty = mark read),
+`_MATCH_REQUIRED`, `_MAX_PER_RUN`. The password is the secret setting
+`MAIL_BOUNCE_IMAP_PASS` on Admin → Settings → **Email** (or `.env`); empty =
+`SMTP_PASS`, which is right for TransIP, where IMAP and SMTP are the same
+mailbox.
+
+To switch it on in production: Settings → Security → tick “Read bounce
+reports from the sending mailbox”, IMAP server `imap.transip.email`, port 993,
+save; then E-mail protection → **Check now** and read the result. A first run
+also reads the unread reports already in the inbox (e.g. the October 2026
+ones); the addresses on blocked SMS-gateway domains are refused anyway.
 
 ## Unverified accounts
 
@@ -78,7 +134,10 @@ tmomail.net / vtext.com), then delete.
 ## Deploying
 
 - Migration `9a_bot_abuse_guards` only adds nullable columns and indexes to
-  `EmailLog`.
+  `EmailLog`. Migration `9b_bounce_scan_runs` adds the `bounce_scan_run` table
+  and an index on `EmailLog.messageId` (additive).
+- The bounce reader is off until switched on (see above). The server must
+  reach `imap.transip.email:993` (outgoing TLS, like SMTP on 465).
 - `npm run build` copies the widget's worker to `public/altcha/pbkdf2.js`
   (`prebuild`); it is served from the site itself, which the nginx CSP
   (`script-src 'self'`, no `blob:`) allows.

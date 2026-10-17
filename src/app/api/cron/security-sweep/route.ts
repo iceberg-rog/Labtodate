@@ -8,6 +8,7 @@ import { backupHealth } from '@/lib/security/backup';
 import { getSecurityPolicy } from '@/lib/security/policy';
 import { alertSuperAdmins } from '@/lib/security/alerts';
 import { purgeAbandoned } from '@/lib/security/unverified';
+import { scanBounceMailbox } from '@/lib/email-guard/bounce-mailbox';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,8 @@ export const dynamic = 'force-dynamic';
  *  - resume announcement e-mail jobs left over by a restart;
  *  - purge expired rate-limit / lockout rows;
  *  - delete abandoned unverified accounts when UNVERIFIED_AUTO_PURGE is on;
+ *  - read new bounce reports from the sending mailbox when
+ *    MAIL_BOUNCE_IMAP_ENABLED is on (alert once a day after 3 failed runs);
  *  - alert (at most once a day) when the last good backup is too old or the
  *    latest backup failed.
  * Auth: header X-Cron-Secret = CRON_SECRET.
@@ -36,6 +39,27 @@ export async function POST(req: Request) {
     unverifiedDeleted = r?.deleted ?? 0;
   }
 
+  const bounces = await scanBounceMailbox({ trigger: 'sweep', policy });
+  let bounceAlert = false;
+  if ((bounces.status === 'FAILED' || bounces.status === 'NOT_CONFIGURED') && policy.MAIL_GUARD_ALERTS) {
+    // Only when it keeps failing (15 minutes), and once a day: one network blip is not news.
+    const last = await prisma.bounceScanRun.findMany({ orderBy: { startedAt: 'desc' }, take: 3, select: { status: true } });
+    if (last.length === 3 && last.every((r) => r.status !== 'OK')) {
+      const { allowed } = await allowHit('alert:bounce-scan', 1, 24 * 3600_000);
+      if (allowed) {
+        await alertSuperAdmins(
+          'Bounce reports can’t be read',
+          [
+            `The site could not read bounce reports from the sending mailbox for the last 15 minutes: ${bounces.error ?? bounces.message}`,
+            'Until this is fixed, addresses that don’t exist are only noticed when the mail server refuses them while sending. Check Settings → Security (bounce mailbox) and Settings → Email (bounce mailbox password).',
+          ],
+          '/admin/settings/security/email#bounce-mailbox',
+        );
+        bounceAlert = true;
+      }
+    }
+  }
+
   const health = await backupHealth();
   let backupAlert = false;
   if (health.state !== 'ok') {
@@ -49,5 +73,6 @@ export async function POST(req: Request) {
       backupAlert = true;
     }
   }
-  return NextResponse.json({ ok: true, pendingJobs, purgedBuckets: purged, unverifiedDeleted, backup: health.state, backupAlert });
+  const bounceScan = { status: bounces.status, checked: bounces.checked, reports: bounces.reports, permanent: bounces.permanent, suppressed: bounces.suppressed };
+  return NextResponse.json({ ok: true, pendingJobs, purgedBuckets: purged, unverifiedDeleted, bounceScan, bounceAlert, backup: health.state, backupAlert });
 }
