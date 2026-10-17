@@ -40,15 +40,42 @@ export function parseImageSize(b: Uint8Array): Size | null {
   return null;
 }
 
-// Where the server can read a photo: "/media/<bucket>/<key>" straight from the object store (what the /media/ proxy
-// serves), then through the site's own origin; an absolute https URL as it is.
+const hostOf = (v: string | undefined): string | null => {
+  try {
+    return v ? new URL(v).host.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The "/media/<bucket>/<key>" path of a photo in our own media store, or null. Only those are ever read: a
+ * host-relative /media/ path, or the same path on the site's own origin (BETTER_AUTH_URL, S3_PUBLIC_URL). A supplier
+ * URL is never fetched by the server (it is also never picked: the card keeps the caller's fallback for it).
+ */
+export function ownMediaPathOf(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url, 'http://relative.invalid');
+  } catch {
+    return null;
+  }
+  const relative = u.host === 'relative.invalid' && url.startsWith('/');
+  const own = [process.env.BETTER_AUTH_URL, process.env.NEXT_PUBLIC_BETTER_AUTH_URL, process.env.S3_PUBLIC_URL].map(hostOf);
+  if (!relative && !(u.protocol === 'https:' && own.includes(u.host.toLowerCase()))) return null;
+  // (the URL parser has resolved any ".."; what is left must still be inside /media/)
+  return u.pathname.startsWith('/media/') && u.pathname.length > '/media/'.length ? u.pathname : null;
+}
+
+// Where the server reads one of our photos: straight from the object store (what the /media/ proxy serves), then
+// through the site's own origin.
 const sources = (url: string): string[] => {
-  if (/^https:\/\//.test(url)) return [url];
-  if (!url.startsWith('/')) return [];
+  const path = ownMediaPathOf(url);
+  if (!path) return [];
   const out: string[] = [];
   const store = process.env.S3_ENDPOINT, site = process.env.BETTER_AUTH_URL;
-  if (url.startsWith('/media/') && store) out.push(`${store.replace(/\/+$/, '')}/${url.slice('/media/'.length)}`);
-  if (site) out.push(`${site.replace(/\/+$/, '')}${url}`);
+  if (store) out.push(`${store.replace(/\/+$/, '')}/${path.slice('/media/'.length)}`);
+  if (site) out.push(`${site.replace(/\/+$/, '')}${path}`);
   return out;
 };
 
@@ -87,6 +114,7 @@ export function pickCardImage(candidates: string[], fallback: string | null): st
   let best: string | null = null;
   let bestScore = 0;
   for (const [rank, url] of candidates.entries()) {
+    if (!ownMediaPathOf(url)) continue;   // (never a supplier's photo: those keep the caller's fallback)
     if (!sizes.has(url)) {
       if (!queued.has(url)) { queued.add(url); queue.push(url); }
       continue;
