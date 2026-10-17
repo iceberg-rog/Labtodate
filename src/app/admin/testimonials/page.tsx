@@ -6,12 +6,15 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { createTestimonial, deleteTestimonial, toggleTestimonial, updateTestimonial } from '@/app/admin/actions';
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
+import { AdminActionForm } from '@/components/admin/AdminActionForm';
+import { getCatalogPolicy } from '@/lib/catalog/policy';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Testimonials' };
 
 export default async function AdminTestimonialsPage() {
   await requireCapability('content:cms');
+  const { requireConsentToPublish } = await getCatalogPolicy();
   const list = await prisma.testimonial.findMany({
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
   });
@@ -35,6 +38,9 @@ export default async function AdminTestimonialsPage() {
             Each published testimonial appears as a rotating quote card on the homepage. Quotes should be short
             (≤2 sentences) and credited with a real person + organisation who agreed to be quoted. With none
             published, the homepage simply leaves the section out.
+            {requireConsentToPublish
+              ? ' A testimonial goes live only once you record who approved it and when (Settings → Catalog & claims).'
+              : ' Consent recording is switched OFF in Settings → Catalog & claims.'}
           </p>
           <Link
             href="/#testimonials"
@@ -48,8 +54,9 @@ export default async function AdminTestimonialsPage() {
 
       <div className="grid lg:grid-cols-[1fr_360px] gap-6 items-start">
         <div className="space-y-6 min-w-0">
-          <form
+          <AdminActionForm
             action={createTestimonial}
+            resetOnSuccess
             className="rounded-2xl border border-border bg-card p-5 space-y-4"
           >
             <h2 className="font-semibold">Add testimonial</h2>
@@ -88,10 +95,18 @@ export default async function AdminTestimonialsPage() {
                 </div>
               </div>
             </div>
+            <fieldset className="rounded-xl border border-border p-3 space-y-2">
+              <legend className="px-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">Consent to be quoted</legend>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <input name="consentBy" defaultValue={''} aria-label="Approved by" placeholder="Approved by (name)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentAt" type="date" defaultValue={''} aria-label="Approved on" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentNote" defaultValue={''} aria-label="How" placeholder="How (e.g. email of 2 Oct, filed in …)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+              </div>
+            </fieldset>
             <Button type="submit" className="rounded-full font-semibold">
               <Plus className="h-4 w-4" /> Add testimonial
             </Button>
-          </form>
+          </AdminActionForm>
 
           <ul className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
             {list.length === 0 && (
@@ -106,6 +121,11 @@ export default async function AdminTestimonialsPage() {
                     {[t.role, t.company].filter(Boolean).length > 0 && ' · '}
                     {[t.role, t.company].filter(Boolean).join(', ')} · order {t.sortOrder}
                   </p>
+                  <p className={`text-[11px] mt-1 ${t.consentAt && t.consentBy ? 'text-muted-foreground' : 'text-amber-700 dark:text-amber-400 font-semibold'}`}>
+                    {t.consentAt && t.consentBy
+                      ? `Consent: ${t.consentBy}, ${t.consentAt.toLocaleDateString('en-GB')}${t.consentNote ? ` (${t.consentNote})` : ''}`
+                      : 'No consent recorded'}
+                  </p>
                   <div className="flex items-center gap-0.5 mt-1">
                     {Array.from({ length: t.rating }).map((_, i) => (
                       <Star key={i} className="h-3 w-3 fill-[hsl(82_76%_45%)] text-[hsl(82_76%_45%)]" />
@@ -115,12 +135,12 @@ export default async function AdminTestimonialsPage() {
                 <Badge variant={t.published ? 'success' : 'secondary'}>
                   {t.published ? 'published' : 'hidden'}
                 </Badge>
-                <form action={toggleTestimonial.bind(null, t.id, !t.published)}>
+                <AdminActionForm action={toggleTestimonial.bind(null, t.id, !t.published)}>
                   <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium">
                     {t.published ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     {t.published ? 'Hide' : 'Publish'}
                   </Button>
-                </form>
+                </AdminActionForm>
                 <form action={deleteTestimonial.bind(null, t.id)}>
                   <ConfirmSubmitButton
                     message={`Delete the testimonial from ${t.author}? This cannot be undone.`}
@@ -133,7 +153,7 @@ export default async function AdminTestimonialsPage() {
                 </form>
                 <details className="basis-full">
                   <summary className="cursor-pointer select-none w-fit text-xs font-semibold text-primary hover:underline">Edit</summary>
-                  <form action={updateTestimonial.bind(null, t.id)} className="mt-3 space-y-3">
+                  <AdminActionForm action={updateTestimonial.bind(null, t.id)} className="mt-3 space-y-3">
                     <textarea name="quote" required rows={3} maxLength={400} defaultValue={t.quote} aria-label="Quote" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
                     <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
                       <input name="author" required defaultValue={t.author} aria-label="Author" placeholder="Author" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
@@ -142,10 +162,18 @@ export default async function AdminTestimonialsPage() {
                       <input name="rating" type="number" min={1} max={5} defaultValue={t.rating} aria-label="Rating (1–5)" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
                       <input name="sortOrder" type="number" defaultValue={t.sortOrder} aria-label="Sort order" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
                     </div>
+                    <fieldset className="rounded-xl border border-border p-3 space-y-2">
+              <legend className="px-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">Consent to be quoted</legend>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <input name="consentBy" defaultValue={t.consentBy ?? ''} aria-label="Approved by" placeholder="Approved by (name)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentAt" type="date" defaultValue={t.consentAt ? t.consentAt.toISOString().slice(0, 10) : ''} aria-label="Approved on" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentNote" defaultValue={t.consentNote ?? ''} aria-label="How" placeholder="How (e.g. email of 2 Oct, filed in …)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+              </div>
+            </fieldset>
                     <Button type="submit" size="sm" className="rounded-full font-semibold">
                       <Save className="h-3.5 w-3.5" /> Save changes
                     </Button>
-                  </form>
+                  </AdminActionForm>
                 </details>
               </li>
             ))}

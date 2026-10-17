@@ -146,9 +146,11 @@ export function TicketComposer({
             const form = e.currentTarget;
             start(async () => {
               try {
-                await replyTicket(fd);
+                const r = await replyTicket(fd);
                 form.reset();
                 setAtts([]);
+                // Saved — but the customer email may have bounced: say so.
+                if (r?.warning) setErr(r.warning);
               } catch (er) {
                 if ((er as Error)?.message?.includes('NEXT_REDIRECT')) {
                   form.reset();

@@ -7,8 +7,10 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { replyToQuote, setQuoteStatus, sendProforma } from '@/lib/quotes/actions';
-import { ProformaStepper } from '@/components/quotes/ProformaStepper';
+import { replyToQuote, setQuoteStatus } from '@/lib/quotes/actions';
+import { DealStepper } from '@/components/quotes/DealStepper';
+import { DealStateBadge as DealPill } from '@/components/quotes/DealStateBadge';
+import { OfferForm, type OfferFormProps } from '@/components/quotes/OfferForm';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
 import type { DealStateBadge } from '@/lib/quotes/deal-state';
 
@@ -41,31 +43,34 @@ interface Props {
   /** Role of the viewer in this thread. */
   viewerRole: 'BUYER' | 'SELLER' | 'ADMIN';
   createdAt: string;
-  /** True when a formal proforma has been issued (quotedPriceCents != null).
-   *  Gates the Accept/Decline buttons — a buyer must NEVER be able to
-   *  "accept" a text reply that has no formal price. */
-  hasProforma?: boolean;
-  /** Direct link to the materialised purchase workspace if Order exists. */
-  orderPaymentHref?: string | null;
-  /** Pre-computed deal state for the funnel stepper at the top. */
+  /** Pre-computed deal state (same mapping on every surface) — drives the
+   *  status pill and the funnel stepper. */
   dealBadge?: DealStateBadge;
+  /** Seller (assigned supplier) offer composer; null/undefined = hidden.
+   *  Accept/decline live in the OfferCard above the thread, not here. */
+  offerForm?: Omit<OfferFormProps, 'quoteId' | 'onResult'> | null;
+  /** Supplier may close the request (only while no offer is accepted). */
+  canClose?: boolean;
 }
 
 const MAX_REPLY_LEN = 4000;
-const MAX_PROFORMA_EUR = 1_000_000;
 
 export function QuoteThread(p: Props) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Saved, but something secondary failed (e.g. the email bounced).
+  const [warning, setWarning] = useState<string | null>(null);
   // Outcome of a successful status change (e.g. "Order … was canceled") — the
   // reply form that shows `error` is gone once the request is closed.
   const [notice, setNotice] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
 
   function send(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setWarning(null);
     const text = body.trim();
     if (text.length < 2) return;
     startTransition(async () => {
@@ -75,83 +80,37 @@ export function QuoteThread(p: Props) {
           setError(r.error);
           return;
         }
+        if (r?.warning) setWarning(r.warning);
         setBody('');
         router.refresh();
       } catch {
-        setError('Your reply was not sent. Reload the page and try again.');
+        setError('Your reply could not be sent: the request failed. Reload the page to check, then try again.');
       }
     });
   }
 
-  const [price, setPrice] = useState('');
-  const [qnote, setQnote] = useState('');
-
-  function quote(e: React.FormEvent) {
-    e.preventDefault();
+  // Closing ends the deal for good (a closed quote's offer can no longer be
+  // accepted) and cancels an unpaid order if one exists — same confirm as the
+  // admin "Close (no deal)".
+  function closeRequest() {
+    setConfirmClose(false);
     setError(null);
-    const cents = Math.round(parseFloat(price) * 100);
-    if (!Number.isFinite(cents) || cents <= 0) {
-      setError('Enter a valid price');
-      return;
-    }
-    if (cents > MAX_PROFORMA_EUR * 100) {
-      setError('Max proforma amount is €1,000,000.');
-      return;
-    }
-    startTransition(async () => {
-      try {
-        const r = await sendProforma({
-          sourcingRequestId: p.sourcingRequestId,
-          priceCents: cents,
-          currency: 'EUR',
-          note: qnote.trim() || null,
-        });
-        if (r?.error) {
-          setError(r.error);
-          return;
-        }
-        setPrice('');
-        setQnote('');
-        router.refresh();
-      } catch {
-        setError('The proforma was not sent. Reload the page and try again.');
-      }
-    });
-  }
-
-  function decide(status: 'ACCEPTED' | 'DECLINED' | 'CLOSED') {
-    setError(null);
+    setWarning(null);
     setNotice(null);
     startTransition(async () => {
       try {
-        const r = await setQuoteStatus(p.sourcingRequestId, status);
+        const r = await setQuoteStatus(p.sourcingRequestId, 'CLOSED');
         if (r?.error) {
           setError(r.error);
           return;
         }
+        if (r?.warning) setWarning(r.warning);
         if (r?.notice) setNotice(r.notice);
         router.refresh();
-      } catch (err) {
-        // Accepting converts the quote into an order and redirects there —
-        // don't surface the framework's redirect signal as an error.
-        if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
+      } catch {
         setError('That did not work. Reload the page and try again.');
       }
     });
-  }
-
-  // Closing ends the deal for good (a closed quote cannot be accepted again)
-  // and cancels the buyer's unpaid proforma order — same confirm as the admin
-  // "Close (no deal)".
-  function closeRequest() {
-    if (
-      !window.confirm(
-        "Close this request without a deal? The buyer's unpaid order (if any) is canceled, the buyer and the lab2date team are notified, and the request cannot be reopened.",
-      )
-    ) {
-      return;
-    }
-    decide('CLOSED');
   }
 
   // Whose move it is follows who wrote last: a buyer follow-up after a reply or
@@ -176,17 +135,21 @@ export function QuoteThread(p: Props) {
               <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
                 {p.product ? 'Quote about' : 'Sourcing request'}
               </p>
-              <h1 className="text-xl font-bold mt-1 line-clamp-2 [overflow-wrap:anywhere]" title={threadTitle}>
+              <h1 dir="auto" className="text-xl font-bold mt-1 line-clamp-2 [overflow-wrap:anywhere]" title={threadTitle}>
                 {threadTitle}
               </h1>
             </div>
-            <StatusPill status={p.status} viewerRole={p.viewerRole} lastFromBuyer={lastFromBuyer} />
+            {p.dealBadge ? (
+              <DealPill badge={p.dealBadge} />
+            ) : (
+              <StatusPill status={p.status} viewerRole={p.viewerRole} lastFromBuyer={lastFromBuyer} />
+            )}
           </div>
 
           {/* Stepper — gives the buyer instant orientation in the funnel */}
           {p.dealBadge && (
             <div className="mt-5">
-              <ProformaStepper badge={p.dealBadge} />
+              <DealStepper badge={p.dealBadge} />
             </div>
           )}
 
@@ -200,7 +163,7 @@ export function QuoteThread(p: Props) {
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground mb-2 inline-flex items-center gap-1">
               <FileText className="h-3 w-3" /> Original request
             </p>
-            <p className="text-sm leading-relaxed whitespace-pre-wrap">{p.description}</p>
+            <p dir="auto" className="text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">{p.description}</p>
           </div>
         </div>
       </div>
@@ -223,58 +186,33 @@ export function QuoteThread(p: Props) {
         </div>
       </div>
 
-      {/* ───────────────── Seller/Admin proforma composer (unchanged) ───────────────── */}
-      {(p.viewerRole === 'SELLER' || p.viewerRole === 'ADMIN') &&
-        p.status !== 'CLOSED' &&
-        p.status !== 'ACCEPTED' &&
-        p.status !== 'DECLINED' && (
-          <form onSubmit={quote} className="rounded-2xl border-2 border-accent/40 bg-accent/[0.04] p-4 space-y-3">
-            <div>
-              <p className="text-sm font-bold inline-flex items-center gap-1.5">
-                <Sparkles className="h-4 w-4 text-accent" /> Send a price quote (proforma)
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Emails the buyer a proforma invoice with your company details and these terms.
-              </p>
-            </div>
-            <div className="flex gap-3 flex-wrap items-end">
-              <label className="block">
-                <span className="block text-xs font-semibold mb-1">Price (EUR)</span>
-                <input
-                  type="number"
-                  min="1"
-                  max={MAX_PROFORMA_EUR}
-                  step="0.01"
-                  value={price}
-                  onChange={(e) => setPrice(e.target.value)}
-                  placeholder="18500"
-                  className="h-10 w-44 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  required
-                />
-              </label>
-              <Button type="submit" disabled={pending} className="rounded-full font-semibold">
-                {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Send proforma
-              </Button>
-            </div>
-            <textarea
-              value={qnote}
-              onChange={(e) => setQnote(e.target.value)}
-              rows={2}
-              placeholder="Optional: lead time, condition, what's included, payment terms…"
-              className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 resize-y"
-            />
-          </form>
-        )}
+      {/* ───────────────── Seller offer composer ───────────────── */}
+      {(p.viewerRole === 'SELLER' || p.viewerRole === 'ADMIN') && p.offerForm && (
+        <section className="rounded-2xl border-2 border-accent/40 bg-accent/[0.04] p-4 space-y-3" aria-label="Send offer">
+          <div>
+            <p className="text-sm font-bold inline-flex items-center gap-1.5">
+              <Sparkles className="h-4 w-4 text-accent" />
+              {p.offerForm.mode === 'SELLER' ? (p.offerForm.current ? 'Update your price' : 'Propose a price') : p.offerForm.current ? 'Update the offer' : 'Send an offer'}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {p.offerForm.mode === 'SELLER'
+                ? 'lab2date turns your price into the offer the buyer sees. The order is created only when the buyer accepts it.'
+                : 'The buyer reviews the offer and accepts or declines it. The order and the proforma invoice are created only when they accept.'}
+            </p>
+          </div>
+          <OfferForm quoteId={p.sourcingRequestId} {...p.offerForm} />
+        </section>
+      )}
 
       {/* ───────────────── Reply box ───────────────── */}
-      {p.status !== 'CLOSED' && p.status !== 'ACCEPTED' && p.status !== 'DECLINED' && (
+      {p.status !== 'CLOSED' && p.status !== 'DECLINED' && (
         <form onSubmit={send} className="rounded-2xl border border-border bg-card p-4 space-y-3 focus-within:border-primary/50 focus-within:shadow-sm transition">
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value.slice(0, MAX_REPLY_LEN))}
             rows={4}
-            placeholder={p.viewerRole === 'SELLER' ? 'Reply with your quote details, lead time, and any clarifying questions…' : 'Reply to the supplier…'}
+            placeholder={p.viewerRole === 'SELLER' ? 'Ask the buyer a question or explain your offer…' : 'Ask the supplier a question…'}
+            dir="auto"
             className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-y"
             required
             minLength={2}
@@ -286,53 +224,39 @@ export function QuoteThread(p: Props) {
               {body.length} / {MAX_REPLY_LEN}
             </span>
           </div>
-          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800">{error}</p>}
+          {error && <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800">{error}</p>}
+          {warning && <p role="status" className="text-sm text-amber-900 bg-amber-50 border border-amber-300 rounded-md px-3 py-2 dark:text-amber-300 dark:bg-amber-950/40 dark:border-amber-800">{warning}</p>}
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <Button type="submit" disabled={pending || body.trim().length < 2} className="rounded-full font-semibold">
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               Send reply
             </Button>
-            {/* Buyer-side actions on a RESPONDED quote — gated by formal proforma.
-                Without quotedPriceCents (i.e. admin only sent a text reply),
-                buyer cannot accept. Instead they see a hint that they're
-                awaiting a formal proforma. */}
-            {p.viewerRole === 'BUYER' && p.status === 'RESPONDED' && (
-              p.hasProforma ? (
-                <div className="flex gap-2 items-center">
-                  {p.orderPaymentHref ? (
-                    <a
-                      href={p.orderPaymentHref}
-                      className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:bg-primary/90 shadow-sm"
-                    >
-                      <Check className="h-4 w-4" /> Complete your purchase
-                    </a>
-                  ) : (
-                    <Button type="button" onClick={() => decide('ACCEPTED')} disabled={pending} className="rounded-full font-semibold shadow-sm">
-                      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Accept proforma &amp; pay
-                    </Button>
-                  )}
-                  <Button type="button" variant="outline" onClick={() => decide('DECLINED')} className="rounded-full font-semibold" disabled={pending}>
-                    <X className="h-4 w-4" /> Decline
-                  </Button>
-                </div>
-              ) : (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-900 px-3 py-1.5 text-[11px] font-semibold dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300">
-                  <Clock className="h-3 w-3" />
-                  Awaiting formal proforma before you can accept
-                </span>
-              )
-            )}
-            {/* Seller can close anytime — behind a confirm (see closeRequest). */}
-            {p.viewerRole === 'SELLER' && (
-              <Button type="button" variant="ghost" onClick={closeRequest} className="rounded-full font-medium" disabled={pending}>
+            {/* The supplier can close a request that is not accepted yet — behind an in-page confirm. */}
+            {p.viewerRole === 'SELLER' && p.canClose !== false && !confirmClose && (
+              <Button type="button" variant="ghost" onClick={() => setConfirmClose(true)} className="rounded-full font-medium" disabled={pending}>
                 Close request
               </Button>
             )}
           </div>
+          {confirmClose && (
+            <div role="alertdialog" aria-label="Close the request" className="rounded-xl border-2 border-red-300 dark:border-red-800 p-3 space-y-2">
+              <p className="text-sm font-bold">Close this request without a deal?</p>
+              <p className="text-xs text-muted-foreground">The open offer is withdrawn, the buyer and the lab2date team are notified, and the request can not be reopened.</p>
+              <div className="flex gap-2 flex-wrap">
+                <Button type="button" size="sm" onClick={closeRequest} disabled={pending} className="rounded-full bg-red-700 hover:bg-red-800 text-white">Close the request</Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => setConfirmClose(false)} disabled={pending} className="rounded-full">Keep it open</Button>
+              </div>
+            </div>
+          )}
         </form>
       )}
 
       {/* ───────────────── Terminal-state foot ───────────────── */}
+      {warning && (p.status === 'CLOSED' || p.status === 'DECLINED') && (
+        <div role="status" className="rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+          {warning}
+        </div>
+      )}
       {notice && (
         <div role="status" className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900 flex items-start gap-3 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
           <Check className="h-5 w-5 mt-0.5 flex-shrink-0" />
@@ -344,11 +268,11 @@ export function QuoteThread(p: Props) {
           <X className="h-5 w-5 mt-0.5 flex-shrink-0" />
           {p.viewerRole === 'BUYER' ? (
             <div>
-              <p className="font-bold">You declined this quote.</p>
+              <p className="font-bold">You declined this offer.</p>
               <p className="text-xs mt-1">If you need this again, you can open a new sourcing request from <strong>Let Us Find It</strong>.</p>
             </div>
           ) : (
-            <p className="font-bold">The buyer declined this quote.</p>
+            <p className="font-bold">The buyer declined this offer.</p>
           )}
         </div>
       )}
@@ -368,7 +292,7 @@ function Meta({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <p className="text-[10px] uppercase tracking-[0.15em] font-bold text-muted-foreground">{label}</p>
-      <p className="font-medium mt-0.5 truncate">{value}</p>
+      <p className="font-medium mt-0.5 truncate"><bdi>{value}</bdi></p>
     </div>
   );
 }
@@ -453,7 +377,7 @@ function MessageBubble({ m, buyerName }: { m: Message; buyerName: string }) {
           Internal note · {m.isMine ? 'You' : (m.authorName ?? 'staff')} · never shown to the buyer ·{' '}
           {ts.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
         </p>
-        <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
+        <p dir="auto" className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">{m.body}</p>
         <MessageAttachments urls={m.attachments ?? []} />
       </div>
     );
@@ -469,7 +393,8 @@ function MessageBubble({ m, buyerName }: { m: Message; buyerName: string }) {
           </span>
         </div>
         <div
-          className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${
+          dir="auto"
+          className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] shadow-sm ${
             m.isMine
               ? 'bg-primary text-primary-foreground rounded-tr-sm'
               : isSupplier
@@ -503,8 +428,8 @@ function EmptyConversation({ status, viewerRole }: { status: Props['status']; vi
         {status !== 'PENDING'
           ? 'Once either side sends a message it\'ll show up here in real time.'
           : forBuyer
-            ? 'You\'ll get an email + notification the moment a supplier responds.'
-            : 'Reply with questions or send a proforma below. The buyer is emailed as soon as you respond.'}
+            ? 'You\'ll get an email + notification as soon as the supplier replies or sends you an offer.'
+            : 'Reply with questions or send an offer below. The buyer is emailed as soon as you respond.'}
       </p>
     </div>
   );

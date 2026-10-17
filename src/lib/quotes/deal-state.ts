@@ -1,28 +1,37 @@
 /**
  * Unified deal state — the SINGLE operational truth for a SourcingRequest.
  *
- * The DB has 3 axes (status enum, lastReplyByStaff bool, proformaNumber)
- * + the linked Order's payment status. Surfacing all of these as separate
- * pills makes the queue feel flat ("PENDING + AWAITING REPLY + SUPPLIER REPLIED"
- * showing simultaneously). A procurement operator only cares about ONE
- * question: whose move is it, and where is this deal in the funnel?
+ * The DB has several axes (status enum, the offer price + validity,
+ * lastReplyByStaff, proformaNumber) + the linked Order's payment status.
+ * Surfacing all of these as separate pills makes the queue feel flat. Both
+ * sides only care about ONE question: whose move is it, and where is this
+ * deal in the funnel?
  *
- * This module is the canonical mapping. Both queue rows and the detail page
- * read from here so the language stays consistent everywhere.
+ * This module is the canonical mapping. Queue rows, detail pages, the seller
+ * inbox and the buyer's lists all read from here so the language stays the
+ * same everywhere. Labels differ per viewer (the buyer reads "your payment",
+ * staff read "awaiting payment") but the state is identical.
+ *
+ * Funnel: Submitted → Engaged → Offer → Accepted → Paid. "Accepted" only ever
+ * appears once the BUYER accepted an offer — never because an offer was sent.
  */
+import { offerPhase } from './offer';
 
 export type DealState =
-  | 'awaiting_supplier'      // PENDING and no staff reply yet
-  | 'awaiting_buyer'         // staff has replied, waiting on buyer
-  | 'proforma_sent'          // proforma issued, deal in buyer's court
-  | 'won_payment_pending'    // accepted, order created, awaiting payment
-  | 'won_paid'               // accepted + order paid
+  | 'awaiting_supplier'      // no staff reply yet (or the buyer wrote last)
+  | 'awaiting_buyer'         // staff replied in text, no offer yet
+  | 'offer_sent'             // offer open, waiting for the buyer to accept/decline
+  | 'offer_expired'          // offer lapsed before the buyer accepted
+  | 'won_payment_pending'    // accepted → order created, awaiting payment
+  | 'won_payment_review'     // accepted, buyer sent a payment proof to verify
+  | 'won_paid'               // order paid (or further along)
   | 'won_no_order'           // accepted but no order row (legacy / edge)
   | 'lost_declined'          // buyer DECLINED
-  | 'lost_closed'            // seller / admin CLOSED without an accept
+  | 'lost_closed'            // closed without a deal / order canceled
   | 'unknown';
 
 export type DealTone = 'amber' | 'sky' | 'emerald' | 'purple' | 'red' | 'slate';
+export type DealViewer = 'buyer' | 'staff';
 
 export interface DealStateBadge {
   state: DealState;
@@ -31,72 +40,119 @@ export interface DealStateBadge {
   tone: DealTone;
   /** Lower = more operationally urgent (used as a sort tiebreaker). */
   weight: number;
-  /** Funnel stage 1..5: submitted → qualified → quoted → paying → done. */
+  /** Funnel stage 1..5: submitted → engaged → offer → accepted → paid. */
   funnelStep: 1 | 2 | 3 | 4 | 5;
 }
 
-export function computeDealState(sr: {
-  status: string;
-  lastReplyByStaff: boolean;
-  proformaNumber: string | null;
-  linkedOrder?: { status: string } | null;
-  /**
-   * BUG-019 (buyer-facing closure): pass the SR's archivedAt from BUYER
-   * surfaces only. When ops archives a still-"waiting" RFQ, the buyer must
-   * not read "Waiting for supplier" forever — we surface it as closed.
-   * A buyer reply auto-unarchives (BUG-018) and the state comes back to
-   * life. Admin surfaces deliberately do NOT pass this (they have their own
-   * ARCHIVED badge and need the true operational state).
-   */
-  archivedAt?: Date | string | null;
-}): DealStateBadge {
-  const lo = sr.linkedOrder;
+const LABELS: Record<Exclude<DealState, 'unknown'>, { buyer: string; staff: string }> = {
+  awaiting_supplier:   { buyer: 'Waiting for supplier',              staff: 'New — awaiting our reply' },
+  awaiting_buyer:      { buyer: 'Supplier replied — your move',      staff: 'Replied — awaiting buyer' },
+  offer_sent:          { buyer: 'Offer received — accept or decline', staff: 'Offer sent — awaiting buyer' },
+  offer_expired:       { buyer: 'Offer expired — ask for a new one',  staff: 'Offer expired — send a new offer' },
+  won_payment_pending: { buyer: 'Accepted — awaiting your payment',  staff: 'Accepted — awaiting payment' },
+  won_payment_review:  { buyer: 'Accepted — payment being verified', staff: 'Accepted — payment proof to verify' },
+  won_paid:            { buyer: 'Paid',                              staff: 'Won · paid' },
+  won_no_order:        { buyer: 'Accepted',                          staff: 'Accepted · no order' },
+  lost_declined:       { buyer: 'You declined',                      staff: 'Declined by buyer' },
+  lost_closed:         { buyer: 'Closed',                            staff: 'Closed · no deal' },
+};
 
-  // Closed / lost branches first — terminal states.
-  if (sr.status === 'DECLINED') {
-    return { state: 'lost_declined', label: 'Lost · declined by buyer', tone: 'red', weight: 9, funnelStep: 3 };
-  }
-  if (sr.status === 'CLOSED') {
-    return { state: 'lost_closed', label: 'Closed', tone: 'slate', weight: 9, funnelStep: 3 };
-  }
+function badge(
+  state: Exclude<DealState, 'unknown'>,
+  viewer: DealViewer,
+  tone: DealTone,
+  weight: number,
+  funnelStep: DealStateBadge['funnelStep'],
+  label?: string,
+): DealStateBadge {
+  return { state, label: label ?? LABELS[state][viewer], tone, weight, funnelStep };
+}
 
-  // Order-state takes precedence over SR.status. If the linked Order is past
-  // PENDING_PAYMENT the deal is effectively won — even if the SR row was
-  // never bumped to ACCEPTED (legacy data / old admin verifyPayment that
-  // didn't propagate). Without this the buyer's "My quotes" kept showing
-  // "Proforma sent · awaiting decision" months after the order shipped.
+export function computeDealState(
+  sr: {
+    status: string;
+    lastReplyByStaff: boolean;
+    proformaNumber: string | null;
+    /** The open/accepted offer price (null = no offer sent yet). */
+    quotedPriceCents?: number | null;
+    /** Offer validity while RESPONDED; proforma due date once ACCEPTED. */
+    validUntilAt?: Date | string | null;
+    linkedOrder?: { status: string; paymentSubmittedAt?: Date | string | null; financialStatus?: string | null; paymentVerificationStatus?: string | null } | null;
+    /**
+     * BUG-019 (buyer-facing closure): pass the SR's archivedAt from BUYER
+     * surfaces only. When ops archives a still-"waiting" RFQ, the buyer must
+     * not read "Waiting for supplier" forever — we surface it as closed.
+     * A buyer reply auto-unarchives (BUG-018) and the state comes back to
+     * life. Admin surfaces deliberately do NOT pass this (they have their own
+     * ARCHIVED badge and need the true operational state).
+     */
+    archivedAt?: Date | string | null;
+  },
+  viewer: DealViewer = 'staff',
+): DealStateBadge {
+  const lo = sr.linkedOrder ?? null;
+
+  // Terminal states first.
+  if (sr.status === 'DECLINED') return badge('lost_declined', viewer, 'red', 9, 3);
+  if (sr.status === 'CLOSED') return badge('lost_closed', viewer, 'slate', 9, 3);
+
+  // Money moved: the order's state wins over a stale quote status (legacy
+  // quotes paid before the quote row was bumped to ACCEPTED).
   if (lo) {
-    const paidLike = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
-    if (paidLike.includes(lo.status)) {
-      return { state: 'won_paid', label: 'Won · paid', tone: 'emerald', weight: 0, funnelStep: 5 };
+    if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(lo.status)) {
+      // Approved on invoice terms is a won deal, but NOT paid.
+      if (lo.financialStatus === 'INVOICED_ON_TERMS' || lo.financialStatus === 'OVERDUE' || lo.financialStatus === 'PARTIALLY_PAID') {
+        return badge('won_paid', viewer, 'sky', 1, 5, viewer === 'buyer' ? 'Approved · pay on invoice' : 'Won · on invoice terms (unpaid)');
+      }
+      return badge('won_paid', viewer, 'emerald', 0, 5);
     }
-    if (lo.status === 'CANCELED' || lo.status === 'REFUNDED') {
-      return { state: 'lost_closed', label: 'Lost · order canceled', tone: 'slate', weight: 9, funnelStep: 3 };
+    if (lo.status === 'PENDING_PAYMENT' && lo.paymentVerificationStatus === 'TERMS_REQUESTED') {
+      return badge('won_payment_review', viewer, 'purple', 1, 4, viewer === 'buyer' ? 'Accepted — invoice terms requested' : 'Accepted — invoice terms to approve');
     }
-    if (lo.status === 'PENDING_PAYMENT') {
-      return { state: 'won_payment_pending', label: 'Awaiting your payment', tone: 'purple', weight: 1, funnelStep: 4 };
+    if (lo.status === 'REFUNDED') {
+      return badge('lost_closed', viewer, 'slate', 9, 5, viewer === 'buyer' ? 'Refunded' : 'Order refunded');
+    }
+    if (lo.status === 'PENDING_PAYMENT' && lo.paymentSubmittedAt) {
+      return badge('won_payment_review', viewer, 'purple', 1, 4);
+    }
+    if (lo.status === 'PENDING_PAYMENT' && sr.status === 'ACCEPTED') {
+      return badge('won_payment_pending', viewer, 'purple', 1, 4);
+    }
+    if (lo.status === 'CANCELED' && sr.status === 'ACCEPTED') {
+      return badge('lost_closed', viewer, 'slate', 9, 4, viewer === 'buyer' ? 'Order canceled' : 'Accepted · order canceled');
     }
   }
 
-  if (sr.status === 'ACCEPTED') {
-    return { state: 'won_no_order', label: 'Accepted · no order', tone: 'emerald', weight: 2, funnelStep: 4 };
-  }
+  if (sr.status === 'ACCEPTED') return badge('won_no_order', viewer, 'emerald', 2, 4);
 
-  // Active negotiation.
-  if (sr.proformaNumber && sr.status === 'RESPONDED') {
-    return { state: 'proforma_sent', label: 'Proforma sent · awaiting decision', tone: 'sky', weight: 3, funnelStep: 3 };
+  // An offer is on the table (or was) — the buyer decides.
+  const phase = offerPhase(
+    { status: sr.status, quotedPriceCents: sr.quotedPriceCents ?? null, validUntilAt: sr.validUntilAt ?? null },
+    lo,
+  );
+  if (phase === 'void') {
+    // RESPONDED with a canceled legacy order: dead until staff sends a new offer.
+    return badge('lost_closed', viewer, 'slate', 9, 3, viewer === 'buyer' ? 'Order canceled' : 'Offer void · order canceled');
   }
-  // BUG-019: archived while still in a "waiting" state (no proforma, no
-  // order) → buyer-facing closure instead of an eternal "waiting" promise.
-  // Proforma/order stages above are intentionally NOT overridden — those
-  // still carry a real buyer action (decide / pay).
+  if (phase === 'open') {
+    // A buyer question on an open offer puts the ball back with staff.
+    if (!sr.lastReplyByStaff && viewer === 'staff') {
+      return badge('offer_sent', viewer, 'amber', 3, 3, 'Offer sent — buyer replied, your move');
+    }
+    return badge('offer_sent', viewer, 'sky', 3, 3);
+  }
+  if (phase === 'expired') return badge('offer_expired', viewer, 'amber', 3, 3);
+
+  // BUG-019: archived while still in a "waiting" state → buyer-facing closure.
   if (sr.archivedAt) {
-    return { state: 'lost_closed', label: 'Closed by our team', tone: 'slate', weight: 9, funnelStep: 2 };
+    return badge('lost_closed', viewer, 'slate', 9, 2, viewer === 'buyer' ? 'Closed by our team' : 'Archived');
   }
-  if (sr.lastReplyByStaff) {
-    return { state: 'awaiting_buyer', label: 'Waiting for buyer', tone: 'sky', weight: 4, funnelStep: 2 };
+  if (sr.lastReplyByStaff) return badge('awaiting_buyer', viewer, 'sky', 4, 2);
+  if (sr.status === 'RESPONDED') {
+    // Staff replied before, the buyer wrote last → our move again.
+    return badge('awaiting_supplier', viewer, 'amber', 5, 2, viewer === 'buyer' ? 'Waiting for supplier' : 'Buyer replied — your move');
   }
-  return { state: 'awaiting_supplier', label: 'Waiting for supplier', tone: 'amber', weight: 5, funnelStep: 1 };
+  return badge('awaiting_supplier', viewer, 'amber', 5, 1);
 }
 
 export function toneClasses(tone: DealTone): { pill: string; dot: string; ring: string } {

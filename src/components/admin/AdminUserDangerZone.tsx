@@ -17,6 +17,7 @@ import {
   deleteUser,
   adminSendPasswordReset,
 } from '@/app/admin/actions';
+import { useStepUp } from '@/components/security/useStepUp';
 
 export function AdminUserDangerZone({
   userId,
@@ -24,17 +25,22 @@ export function AdminUserDangerZone({
   suspended,
   isAdmin,
   onDone,
+  blockedReason,
 }: {
   userId: string;
   email: string;
   suspended: boolean;
   isAdmin: boolean;
+  /** Why suspend / delete are not offered (own account, admin out of your reach). */
+  blockedReason?: string | null;
   /** Called after a successful suspend/delete. When provided (e.g. from the
    *  quick-view modal) it replaces the default in-page navigation so the
    *  caller can close the modal and refresh instead. */
   onDone?: () => void;
 }) {
   const router = useRouter();
+  // Suspend / delete may ask for a fresh authenticator code first.
+  const { run: withStepUp, dialog: stepUpDialog } = useStepUp();
   const [pending, start] = useTransition();
   const [resetRes, setResetRes] = useState<{ ok: boolean; message: string } | null>(null);
   const [confirmEmail, setConfirmEmail] = useState('');
@@ -57,6 +63,7 @@ export function AdminUserDangerZone({
 
   return (
     <div className="rounded-2xl border border-red-200 dark:border-red-800 bg-red-50/40 dark:bg-red-950/30 p-5 space-y-4">
+      {stepUpDialog}
       <div className="flex items-center gap-2">
         <AlertOctagon className="h-4 w-4 text-red-700 dark:text-red-300" />
         <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-red-700 dark:text-red-300">
@@ -92,6 +99,13 @@ export function AdminUserDangerZone({
           )}
         </div>
 
+        {blockedReason ? (
+          <div className="sm:col-span-2 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 p-4 text-xs text-amber-900 dark:text-amber-300">
+            <p className="font-bold mb-1">Suspend / delete not available</p>
+            {blockedReason}
+          </div>
+        ) : (
+        <>
         {/* Suspend */}
         <div className="rounded-xl border border-border bg-card p-4">
           <p className="text-sm font-bold inline-flex items-center gap-1.5">
@@ -119,7 +133,7 @@ export function AdminUserDangerZone({
                     start(async () => {
                       fd.set('userId', userId);
                       fd.set('reason', reason);
-                      const r = await suspendUser(fd).catch(() => ({ ok: false, message: 'Suspend failed — please try again.' }));
+                      const r = await withStepUp(() => suspendUser(fd)).catch(() => ({ ok: false, message: 'Suspend failed — please try again.' }));
                       if (!r.ok) {
                         setActionErr(r.message);
                         return;
@@ -167,7 +181,7 @@ export function AdminUserDangerZone({
             <Trash2 className="h-4 w-4 text-red-700 dark:text-red-300" /> Delete forever
           </p>
           <p className="text-xs text-muted-foreground mt-1 mb-3">
-            Permanent. Removes sessions, wishlist, cart, notifications, reviews. Accounts with orders can’t be deleted — suspend those instead.
+            Permanent. An account without orders is removed. An account with orders is anonymised (GDPR erasure): name, e-mail, sign-in, billing details and other personal data are removed; its invoices, credit notes and orders stay for the legal retention period.
           </p>
           {!openDelete ? (
             <Button
@@ -186,7 +200,7 @@ export function AdminUserDangerZone({
                 start(async () => {
                   fd.set('userId', userId);
                   fd.set('confirmEmail', confirmEmail);
-                  const r = await deleteUser(fd).catch(() => ({ ok: false, message: 'Delete failed — please try again.' }));
+                  const r = await withStepUp(() => deleteUser(fd)).catch(() => ({ ok: false, message: 'Delete failed — please try again.' }));
                   if (!r.ok) {
                     setActionErr(r.message);
                     return;
@@ -229,12 +243,14 @@ export function AdminUserDangerZone({
               </div>
               {isAdmin && (
                 <p className="text-[11px] text-amber-700 dark:text-amber-300">
-                  This is an admin account. Deletion will be refused if they&apos;re the last active admin.
+                  This is an admin account. Deletion is refused if they&apos;re the last active admin or have access you don&apos;t hold.
                 </p>
               )}
             </form>
           )}
         </div>
+        </>
+        )}
       </div>
       {actionErr && (
         <p role="alert" className="text-xs font-semibold text-red-700 dark:text-red-300 inline-flex items-center gap-1.5">

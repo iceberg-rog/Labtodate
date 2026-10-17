@@ -6,7 +6,8 @@ import { Trash2, ShieldOff, X, Loader2 } from 'lucide-react';
 import type { UserRole } from '@prisma/client';
 import { Badge } from '@/components/ui/badge';
 import { UserQuickTrigger } from '@/components/admin/UserQuickView';
-import { RoleSelect } from '@/app/admin/users/RoleSelect';
+import { RoleSelect, type PresetOption } from '@/app/admin/users/RoleSelect';
+import { useStepUp, type MaybeStepUp } from '@/components/security/useStepUp';
 
 const ROLE_LABEL: Record<string, string> = {
   ADMIN: 'admin',
@@ -24,7 +25,7 @@ export type UserRow = {
   suspended?: boolean;
 };
 
-type BulkResult = { ok: boolean; count: number; message: string };
+type BulkResult = { ok: boolean; count: number; message: string; stepUp?: true; method?: 'totp' | 'password' };
 
 /**
  * Users table with row selection + bulk suspend/delete straight from the list.
@@ -39,14 +40,21 @@ export function UsersBulkList({
   roleAction,
   bulkDelete,
   bulkSuspend,
+  presets,
+  canPromote,
+  viewerId,
 }: {
   users: UserRow[];
   canManage: boolean;
-  roleAction: (fd: FormData) => Promise<{ ok: boolean; message: string } | void>;
+  roleAction: (fd: FormData) => Promise<MaybeStepUp>;
   bulkDelete: (fd: FormData) => Promise<BulkResult>;
   bulkSuspend: (fd: FormData) => Promise<BulkResult>;
+  presets: PresetOption[];
+  canPromote: boolean;
+  viewerId: string;
 }) {
   const router = useRouter();
+  const { run: withStepUp, dialog: stepUpDialog } = useStepUp();
   const [pending, start] = useTransition();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -70,7 +78,7 @@ export function UsersBulkList({
       const fd = new FormData();
       fd.set('ids', ids.join(','));
       try {
-        const r = await action(fd);
+        const r = await withStepUp(() => action(fd));
         setMsg({ ok: r.ok, text: r.message });
         if (r.ok) clear();
         router.refresh();
@@ -82,6 +90,7 @@ export function UsersBulkList({
 
   return (
     <div className="space-y-3">
+      {stepUpDialog}
       {canManage && selected.size > 0 && (
         <div className="sticky top-16 z-30 flex items-center gap-2 flex-wrap rounded-2xl border-2 border-primary/40 bg-primary/[0.06] backdrop-blur px-4 py-2.5 shadow-sm">
           <span className="text-xs font-bold">{selected.size} selected</span>
@@ -148,7 +157,7 @@ export function UsersBulkList({
                 <th className="px-5 py-3 font-bold">Role</th>
                 <th className="px-5 py-3 font-bold">Joined</th>
                 <th className="px-5 py-3 font-bold text-right">Quick view</th>
-                <th className="px-5 py-3 font-bold">Set role</th>
+                {canManage && <th className="px-5 py-3 font-bold">Set role</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -189,9 +198,15 @@ export function UsersBulkList({
                       Open card
                     </UserQuickTrigger>
                   </td>
-                  <td className="px-5 py-3">
-                    <RoleSelect userId={u.id} current={u.role} action={roleAction} />
-                  </td>
+                  {canManage && (
+                    <td className="px-5 py-3">
+                      {u.id === viewerId ? (
+                        <span className="text-[11px] text-muted-foreground">you</span>
+                      ) : (
+                        <RoleSelect userId={u.id} current={u.role} action={roleAction} presets={presets} canPromote={canPromote} />
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

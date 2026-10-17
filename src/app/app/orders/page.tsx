@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { firstPublicImage } from '@/lib/media/public-src';
+import { documentHref } from '@/lib/documents';
 import {
   Package, ArrowRight, Truck, CheckCheck, Clock, CreditCard,
   XCircle, RefreshCcw, FileText, MapPin, Search, ShoppingBag,
@@ -99,6 +101,8 @@ export default async function OrdersPage(props: { searchParams: Promise<{ filter
           product: { select: { illustration: true, images: true } },
         },
       },
+      // Issued invoice (stored document) — the list links it only when it exists.
+      documents: { where: { kind: 'INVOICE' }, select: { number: true } },
     },
   });
 
@@ -198,7 +202,7 @@ export default async function OrdersPage(props: { searchParams: Promise<{ filter
             const vis = STATUS[o.status] ?? STATUS.PENDING_PAYMENT;
             const Icon = vis.Icon;
             const first = o.items[0];
-            const imgUrl = first?.product?.images?.[0] ?? null;
+            const imgUrl = firstPublicImage(first?.product?.images);
             const illust = resolveIllustration(first?.product?.illustration);
 
             // Status-line under the title — a single sentence the human cares
@@ -275,21 +279,21 @@ export default async function OrdersPage(props: { searchParams: Promise<{ filter
                         {vis.nextLabel} <ArrowRight className="h-3.5 w-3.5" />
                       </Link>
                     )}
-                    {['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(o.status) && (
-                      <Link
-                        href={`/app/orders/${o.orderNumber}/invoice`}
+                    {o.documents.length > 0 && (
+                      <a
+                        href={documentHref('invoice', o.orderNumber, 'pdf')}
                         className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-border text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted"
                       >
-                        <FileText className="h-3.5 w-3.5" /> Invoice
-                      </Link>
+                        <FileText className="h-3.5 w-3.5" /> Invoice PDF
+                      </a>
                     )}
                     {o.status === 'PENDING_PAYMENT' && (
-                      <Link
-                        href={o.sourcingRequestId ? `/app/quotes/${o.sourcingRequestId}/proforma` : `/app/orders/${o.orderNumber}/invoice`}
+                      <a
+                        href={documentHref('proforma', o.orderNumber, 'pdf')}
                         className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-border text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted"
                       >
-                        <FileText className="h-3.5 w-3.5" /> Proforma invoice
-                      </Link>
+                        <FileText className="h-3.5 w-3.5" /> Proforma PDF
+                      </a>
                     )}
                     {o.status === 'SHIPPED' && (
                       <Link

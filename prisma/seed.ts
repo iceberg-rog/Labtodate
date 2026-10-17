@@ -13,6 +13,8 @@
 
 import { PrismaClient, ProductCondition, ProductMode, ProductStatus, UserRole } from '@prisma/client';
 
+import { assertDemoSeedAllowed } from './_seed-guard';
+
 const prisma = new PrismaClient();
 
 // ─── Categories ──────────────────────────────────────────────────────────────
@@ -220,6 +222,7 @@ function slugify(s: string): string {
 // ─── Run ─────────────────────────────────────────────────────────────────────
 
 async function main() {
+  await assertDemoSeedAllowed(prisma, 'seed.ts');
   console.log('🌱 Seeding lab2date...');
 
   // Categories

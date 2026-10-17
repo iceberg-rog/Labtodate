@@ -61,10 +61,10 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
           </div>
           <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground leading-[1.05]" style={{ letterSpacing: '-0.04em' }}>
             Tell us what you need.<br />
-            <span className="text-primary">We&apos;ll find it.</span>
+            <span className="text-primary">We&apos;ll look for it.</span>
           </h1>
           <p className="mt-6 text-lg text-muted-foreground leading-relaxed">
-            Tell us the make, model or use-case and we&apos;ll come back with a quote{mk.quoteTurnaround ? <>{' '}within <strong className="text-foreground">{mk.quoteTurnaround}</strong></> : null}.
+            Tell us the make, model or use-case. We search our supply network and reply with a written offer when we find a match{mk.quoteTurnaround ? <>{' '}— usually within <strong className="text-foreground">{mk.quoteTurnaround}</strong></> : null}.
           </p>
 
           <ul className="mt-8 space-y-4">
@@ -75,7 +75,7 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
                 ? `We come back as soon as we have something solid — within ${mk.quoteTurnaround}.`
                 : 'We come back as soon as we have something solid.'}
             />
-            <Bullet icon={ShieldCheck} title="Free for buyers" body="No commission until you accept a quote." />
+            <Bullet icon={ShieldCheck} title="No obligation" body={mk.noObligation} />
           </ul>
         </div>
 
@@ -85,6 +85,7 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
               anchor={anchor ? { slug: anchor.slug, title: anchor.title, brand: anchor.brand?.name ?? null } : null}
               facility={facility}
               buyer={{ name: session.user.name ?? '', email: session.user.email }}
+              note={mk.noObligation}
             />
           </Suspense>
         ) : (
@@ -134,7 +135,7 @@ function SignInToRequest({
       <div className="space-y-2">
         <p className="text-lg font-bold">Sign in to request a quote</p>
         <p className="text-sm text-muted-foreground">
-          Quotes are linked to your account, so you can follow replies and proformas in your dashboard.
+          Quotes are linked to your account: you follow replies there and accept or decline our offer before anything is ordered.
           It takes a minute to create one.
         </p>
       </div>

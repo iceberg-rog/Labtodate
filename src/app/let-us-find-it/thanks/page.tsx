@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { CheckCircle2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getMarketing } from '@/lib/marketing';
+import { QUOTE_REF } from '@/lib/quotes/offer';
 
 export const metadata = { title: 'Request received' };
 export const dynamic = 'force-dynamic';
@@ -10,7 +11,7 @@ export default async function ThanksPage(props: { searchParams: Promise<{ id?: s
   const searchParams = await props.searchParams;
   const turnaround = (await getMarketing()).quoteTurnaround;
   // Same reference the confirmation email and dashboard use (RFQ-XXXXXX).
-  const ref = searchParams.id ? `RFQ-${searchParams.id.slice(-6).toUpperCase()}` : null;
+  const ref = searchParams.id ? QUOTE_REF(searchParams.id) : null;
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
       <div className="mx-auto h-16 w-16 rounded-full bg-accent/15 flex items-center justify-center mb-6">

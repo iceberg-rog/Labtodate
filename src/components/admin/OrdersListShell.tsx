@@ -1,5 +1,6 @@
 'use client';
 
+import { useStepUp } from '@/components/security/useStepUp';
 import { useEffect, useMemo, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { XCircle, Loader2, CheckSquare, Square, Truck, Download, Archive, ArchiveRestore, Trash2 } from 'lucide-react';
@@ -8,11 +9,13 @@ import { ManualPaidPanel, openManualPaid } from './ManualPaidPanel';
 import { announceAdminResult } from './AdminResultToast';
 import {
   bulkCancelOrders,
-  bulkMarkSelectedShipped,
   bulkArchiveOrders,
   bulkUnarchiveOrders,
   bulkDeleteOrders,
 } from '@/app/admin/actions';
+import { bulkShipAction } from '@/app/admin/fulfilment-actions';
+
+export type CarrierOption = { name: string; needsTracking: boolean };
 
 type Row = Omit<OrderRowProps, 'selected' | 'onToggleSelect' | 'onOpenManualPaid'>;
 
@@ -47,13 +50,19 @@ function report(
   }
 }
 
-export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived' | 'awaiting_verify' | '' }) {
+export function OrdersListShell({ rows, view, carriers = [], cancelReasons = [] }: { rows: Row[]; view?: 'archived' | 'awaiting_verify' | 'invoice_hold' | 'refunds_open' | ''; carriers?: CarrierOption[]; cancelReasons?: string[] }) {
   const router = useRouter();
+  // Permanent delete asks for a fresh authenticator code (Settings → Security).
+  const { run: withStepUp, dialog: stepUpDialog } = useStepUp();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [pending, start] = useTransition();
   const [confirm, setConfirm] = useState<'cancel' | 'ship' | 'archive' | 'unarchive' | 'delete' | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const isArchivedView = view === 'archived';
+  // Bulk ship: one carrier + tracking number per order (the server checks
+  // address, billing details, holds and the tracking rule for each).
+  const [shipRows, setShipRows] = useState<Record<string, { carrier: string; tracking: string }>>({});
+  const [cancelReason, setCancelReason] = useState('');
 
   // Reset selection when the row list changes (router.refresh).
   useEffect(() => {
@@ -90,6 +99,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
     start(async () => {
       const fd = new FormData();
       fd.set('ids', cancelable.map((r) => r.id).join(','));
+      fd.set('reason', cancelReason);
       try {
         const r = await bulkCancelOrders(fd);
         report(setResult, !!r?.ok, resultText(r, 'Cancelled.'));
@@ -103,13 +113,15 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
   function runShip() {
     setResult(null);
     start(async () => {
-      // Only the selected PAID/PROCESSING rows — never every paid order.
+      // Only the selected PAID/PROCESSING rows, each with its own carrier + tracking.
       const fd = new FormData();
-      fd.set('ids', shippable.map((r) => r.id).join(','));
+      fd.set('rows', JSON.stringify(shippable.map((r) => ({ orderId: r.id, carrier: shipRows[r.id]?.carrier ?? '', tracking: shipRows[r.id]?.tracking ?? '' }))));
       try {
-        const r = await bulkMarkSelectedShipped(fd);
-        report(setResult, !!r?.ok, resultText(r, `Marked ${r?.count ?? 0} order${r?.count === 1 ? '' : 's'} as shipped.`));
-        if (r?.ok) { setSelected(new Set()); router.refresh(); }
+        const r = await bulkShipAction(fd);
+        // Partial outcomes stay inline (every refused order says why).
+        if (r?.ok && r.shipped === shippable.length) report(setResult, true, resultText(r, 'Shipped.'));
+        else setResult({ ok: !!r?.ok, text: resultText(r, 'Nothing shipped.') });
+        if (r?.ok) { setSelected(new Set()); setShipRows({}); router.refresh(); }
       } catch {
         setResult({ ok: false, text: FAILED });
       }
@@ -152,7 +164,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
       const fd = new FormData();
       fd.set('ids', Array.from(selected).join(','));
       try {
-        const r = await bulkDeleteOrders(fd);
+        const r = await withStepUp(() => bulkDeleteOrders(fd));
         report(setResult, !!r?.ok, resultText(r, 'Deleted.'));
         if (r?.ok) { setSelected(new Set()); router.refresh(); }
       } catch {
@@ -164,6 +176,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
 
   return (
     <>
+      {stepUpDialog}
       {/* Sticky select-all + bulk bar */}
       <div className="sticky top-14 z-20 -mx-px">
         <div className={`rounded-2xl border border-border bg-card/95 backdrop-blur p-3 transition-colors ${selected.size > 0 ? 'ring-2 ring-primary/30' : ''}`}>
@@ -197,7 +210,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                       disabled={pending}
                       className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-bold hover:bg-primary/90"
                     >
-                      <Truck className="h-3.5 w-3.5" /> Mark {shippable.length} selected as shipped
+                      <Truck className="h-3.5 w-3.5" /> Ship {shippable.length} selected…
                     </button>
                   )}
                   {!isArchivedView && cancelable.length > 0 && (
@@ -291,7 +304,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
               {confirm === 'cancel'
                 ? `Cancel ${cancelable.length} pending order${cancelable.length === 1 ? '' : 's'}?`
                 : confirm === 'ship'
-                ? `Mark ${shippable.length} selected order${shippable.length === 1 ? '' : 's'} as shipped?`
+                ? `Ship ${shippable.length} selected order${shippable.length === 1 ? '' : 's'}`
                 : confirm === 'archive'
                 ? `Archive ${selected.size} order${selected.size === 1 ? '' : 's'}?`
                 : confirm === 'unarchive'
@@ -300,15 +313,55 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
             </h2>
             <p className="text-sm text-muted-foreground mt-2">
               {confirm === 'cancel'
-                ? 'Reserved stock will be returned. Buyers will be notified. No refunds (these orders were not paid).'
+                ? 'The proformas become void, reserved stock is released and each buyer is emailed with the reason. Only unpaid orders without a receipt in review are canceled (nothing was paid, so nothing is refunded).'
                 : confirm === 'ship'
-                ? `Only the selected paid/processing order${shippable.length === 1 ? '' : 's'} with a complete shipping address will move to shipped; buyers get a "shipped" notification. Carrier + tracking can be added per-order afterwards.`
+                ? 'One shipment per order with everything not shipped yet. Orders without complete delivery and billing details, or on hold, are refused and listed. Each buyer is emailed the carrier and tracking link.'
                 : confirm === 'archive'
                 ? "Archived orders are hidden from the default queues but kept forever — nothing is deleted. You can restore them from the Archived tab."
                 : confirm === 'unarchive'
                 ? 'Restored orders return to the default operator queues and will reappear in the relevant status tabs.'
                 : 'This is irreversible. The orders and their items are wiped (in-app notifications that mention them are kept); unpaid orders release their reserved stock first. An audit log entry preserves the order number, buyer, total, and item snapshot for forensic recovery, but the order itself cannot be recovered.'}
             </p>
+            {confirm === 'ship' && (
+              <div className="mt-3 space-y-2 max-h-[50vh] overflow-y-auto" data-testid="bulk-ship-rows">
+                {shippable.map((r) => {
+                  const row = shipRows[r.id] ?? { carrier: '', tracking: '' };
+                  const needs = carriers.find((c) => c.name === row.carrier)?.needsTracking ?? false;
+                  return (
+                    <div key={r.id} className="rounded-lg border border-border p-2 space-y-1.5">
+                      <p className="text-xs font-semibold"><span className="font-mono">{r.orderNumber}</span>{r.hasShippingAddress === false && <span className="ml-2 text-red-700 dark:text-red-300">no complete address — will be refused</span>}</p>
+                      <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)] gap-2">
+                        <select
+                          aria-label={`Carrier for ${r.orderNumber}`}
+                          value={row.carrier}
+                          onChange={(e) => setShipRows((m) => ({ ...m, [r.id]: { ...row, carrier: e.target.value } }))}
+                          className="h-9 px-2 rounded-md border border-input bg-background text-xs w-full"
+                        >
+                          <option value="">Carrier…</option>
+                          {carriers.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+                        </select>
+                        <input
+                          aria-label={`Tracking number for ${r.orderNumber}`}
+                          value={row.tracking}
+                          onChange={(e) => setShipRows((m) => ({ ...m, [r.id]: { ...row, tracking: e.target.value } }))}
+                          placeholder={needs ? 'Tracking number (required)' : 'Tracking number'}
+                          className="h-9 px-2 rounded-md border border-input bg-background text-xs font-mono w-full"
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {confirm === 'cancel' && cancelReasons.length > 0 && (
+              <label className="block mt-3">
+                <span className="block text-xs font-semibold mb-1">Reason (sent to every buyer)</span>
+                <select value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} className="h-9 w-full px-2 rounded-md border border-input bg-background text-sm">
+                  <option value="">Choose…</option>
+                  {cancelReasons.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+            )}
             {confirm === 'delete' && (
               <p className="text-[11px] text-red-700 dark:text-red-300 font-semibold mt-2">
                 Buyers will no longer see this order in their history. Make sure that’s intended before proceeding.
@@ -320,7 +373,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
               </button>
               <button
                 type="button"
-                disabled={pending}
+                disabled={pending || (confirm === 'ship' && shippable.some((r) => !shipRows[r.id]?.carrier)) || (confirm === 'cancel' && cancelReasons.length > 0 && !cancelReason)}
                 onClick={
                   confirm === 'cancel' ? runCancel
                   : confirm === 'ship' ? runShip
@@ -337,7 +390,7 @@ export function OrdersListShell({ rows, view }: { rows: Row[]; view?: 'archived'
                 }`}
               >
                 {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                {confirm === 'delete' ? 'Yes, delete forever' : 'Yes, do it'}
+                {confirm === 'delete' ? 'Yes, delete forever' : confirm === 'ship' ? `Ship ${shippable.length} and email the buyer${shippable.length === 1 ? '' : 's'}` : confirm === 'cancel' ? 'Cancel and email the buyers' : 'Yes, do it'}
               </button>
             </div>
           </div>

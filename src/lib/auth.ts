@@ -1,6 +1,6 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
-import { magicLink, emailOTP } from 'better-auth/plugins';
+import { magicLink, emailOTP, twoFactor } from 'better-auth/plugins';
 import { nextCookies } from 'better-auth/next-js';
 import { createAuthMiddleware, APIError } from 'better-auth/api';
 import { hashPassword } from 'better-auth/crypto';
@@ -10,6 +10,8 @@ import { escapeHtml } from './email-html';
 import { cleanName, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_RULE } from './auth-rules';
 import { isOwnMediaUrl } from './products/image-urls';
 import { safeRedirect, signInErrorURL } from './safe-redirect';
+import { getSecurityPolicy } from './security/policy';
+import { clearAccountSignInLocks } from './security/throttle';
 
 // Startup sanity check (non-fatal): surface a misconfigured production secret
 // in the logs without taking the site down. A placeholder/short secret means
@@ -30,6 +32,18 @@ const SITE_URL = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
 // or a sign-in email — blocked up front for suspended accounts.
 const SUSPENSION_GATED = ['/sign-up/email', '/email-otp/send-verification-otp', '/email-otp/verify-email'];
 
+// Endpoints that only CONFIRM an address (e-mailed code / verification link).
+// They never sign anyone in: a session always needs the password (+ the
+// authenticator code where 2FA is on) or, for non-staff accounts without 2FA,
+// a magic link. Enforced twice — autoSignInAfterVerification is off, and the
+// session-create hook refuses a session minted on these paths.
+export const VERIFY_ONLY_PATHS = ['/email-otp/verify-email', '/verify-email'];
+
+/** Same answer as a wrong code, so the endpoint tells nobody which addresses exist. */
+function invalidCodeError() {
+  return new APIError('BAD_REQUEST', { message: 'Invalid OTP', code: 'INVALID_OTP' });
+}
+
 // better-auth endpoints that change the account on the strength of a session
 // found via `sessionMiddleware`, which trusts the cookie cache (the sensitive
 // ones — change-password, revoke-sessions, … — already bypass it).
@@ -37,6 +51,43 @@ const SESSION_WRITES = ['/update-user', '/update-session', '/link-social', '/unl
 
 function suspendedError(reason: string | null) {
   return new APIError('FORBIDDEN', { message: `Account suspended: ${reason || 'contact support'}` });
+}
+
+/**
+ * Accounts that must not sign in with an e-mailed link: anyone with two-factor
+ * sign-in on (the link would skip the second factor), and admins unless the
+ * security policy allows it — otherwise whoever gets into an admin's mailbox
+ * owns the console.
+ */
+async function magicLinkRefused(user: { role?: string | null; twoFactorEnabled?: boolean | null }): Promise<boolean> {
+  if (user.twoFactorEnabled) return true;
+  if (user.role === 'ADMIN') return !(await getSecurityPolicy()).ADMIN_MAGIC_LINK_ALLOWED;
+  return false;
+}
+
+async function auditAuth(action: string, email: string, meta?: string) {
+  try {
+    await prisma.auditLog.create({ data: { actorEmail: email, action, target: email, meta: meta ?? null } });
+  } catch {
+    /* best effort */
+  }
+}
+
+async function sendTwoFactorNotice(email: string, on: boolean) {
+  const subject = on ? 'Two-factor sign-in is on for your lab2date account' : 'Two-factor sign-in was turned off on your lab2date account';
+  const line = on
+    ? 'From now on, signing in needs your password and a code from your authenticator app. Other devices were signed out. Keep your recovery codes somewhere safe.'
+    : 'Your account no longer asks for an authenticator code at sign-in.';
+  await sendEmail({
+    to: email,
+    subject,
+    html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
+      <h2 style="color:#0E4F40;">${escapeHtml(subject)}</h2>
+      <p>${escapeHtml(line)}</p>
+      <p style="color:#6b7280;font-size:13px;">Not you? Reset your password at <a href="${SITE_URL}/auth/forgot-password">${SITE_URL}/auth/forgot-password</a> and contact support.</p>
+    </div>`,
+    text: `${subject}\n\n${line}\n\nNot you? Reset your password at ${SITE_URL}/auth/forgot-password and contact support.`,
+  }).catch((e) => console.error('[auth] two-factor notice failed:', e));
 }
 
 const AVATAR_RULE = 'Profile photos can only be changed by uploading one on your Profile page.';
@@ -142,7 +193,8 @@ export const auth = betterAuth({
     // EMAIL_NOT_VERIFIED); the sign-in form then mails a code instead.
     requireEmailVerification: true,
     // No session is issued on sign-up — the sign-up form emails a 5-digit
-    // code and verifying it (autoSignInAfterVerification) signs the user in.
+    // code; the code only confirms the address, then the form signs in with
+    // the password just typed (normal password path: throttle, 2FA).
     autoSignIn: false,
     minPasswordLength: MIN_PASSWORD_LENGTH,
     maxPasswordLength: MAX_PASSWORD_LENGTH,
@@ -154,6 +206,9 @@ export const auth = betterAuth({
       if (!user.emailVerified) {
         await prisma.user.update({ where: { id: user.id }, data: { emailVerified: true } });
       }
+      // …and so is the owner: lift any brute-force pause on the account.
+      await clearAccountSignInLocks(user.email);
+      await auditAuth('auth.password.reset', user.email);
       await sendEmail({
         to: user.email,
         subject: 'Your lab2date password was changed',
@@ -192,7 +247,10 @@ export const auth = betterAuth({
 
   emailVerification: {
     sendOnSignUp: false,
-    autoSignInAfterVerification: true,
+    // Confirming the address never signs in (security finding: an e-mail code
+    // minted a full session for verified admins, skipping password AND 2FA).
+    // The code screen signs in with the password afterwards (VerifyEmailStep).
+    autoSignInAfterVerification: false,
     expiresIn: 60 * 60, // 1 hour
     // Runs once the code / link has checked out, before the account is
     // marked verified and the verifier's session is created.
@@ -272,7 +330,14 @@ export const auth = betterAuth({
         // The one choke point every session passes through (password, code,
         // magic link, verification link): suspended or unverified accounts
         // never get one, whichever route they come in by.
-        before: async (session) => {
+        before: async (session, ctx) => {
+          // Confirming an e-mail address is not a sign-in, whatever the
+          // account (password + 2FA always apply) — see VERIFY_ONLY_PATHS.
+          const path = (ctx as { path?: string } | null | undefined)?.path ?? '';
+          if (VERIFY_ONLY_PATHS.includes(path)) {
+            await auditAuth('auth.session.refused', session.userId, `session requested on ${path}`);
+            throw new APIError('FORBIDDEN', { message: 'Your email address is confirmed. Sign in with your password to continue.' });
+          }
           const user = await prisma.user.findUnique({
             where: { id: session.userId },
             select: { emailVerified: true, suspendedAt: true, suspendedReason: true },
@@ -299,6 +364,18 @@ export const auth = betterAuth({
     },
   },
 
+  // better-auth's own limiter (per IP, in memory) is off for password
+  // sign-in: its rule (3 requests, counter only resets after 10 quiet
+  // seconds) blocks a whole university behind one address once its people
+  // sign in steadily. The real brute-force policy — wrong passwords per
+  // account + network and per IP, persistent, admin-configurable — is in
+  // src/app/api/auth/[...all]/route.ts.
+  rateLimit: {
+    customRules: {
+      '/sign-in/email': false,
+    },
+  },
+
   advanced: {
     // Key better-auth's built-in rate limiter (and session IPs) on the address
     // nginx sets from the TCP peer. The default, the left-most X-Forwarded-For
@@ -316,6 +393,12 @@ export const auth = betterAuth({
     '/email-otp/request-password-reset',
     '/forget-password/email-otp',
     '/email-otp/reset-password',
+    // Unused by the UI; it answered USER_NOT_FOUND vs INVALID_OTP, which told
+    // anyone whether an address has an account (enumeration).
+    '/email-otp/check-verification-otp',
+    // E-mail change by code is not offered (changeEmail is off) — closed too.
+    '/email-otp/request-email-change',
+    '/email-otp/change-email',
   ],
 
   hooks: {
@@ -336,10 +419,17 @@ export const auth = betterAuth({
           const user = email
             ? await prisma.user.findUnique({
                 where: { email },
-                select: { id: true, emailVerified: true, suspendedAt: true },
+                select: { id: true, emailVerified: true, suspendedAt: true, role: true, twoFactorEnabled: true },
               })
             : null;
           if (user?.suspendedAt) throw ctx.redirect('/auth/sign-in?error=ACCOUNT_SUSPENDED');
+          // A link mailed before the account got 2FA / admin rights (or before
+          // this rule existed) must not sign it in either.
+          if (user && (await magicLinkRefused(user))) {
+            await ctx.context.internalAdapter.deleteVerificationByIdentifier(query.token!).catch(() => {});
+            await auditAuth('auth.magiclink.refused', email, 'link opened for an admin / 2FA account');
+            throw ctx.redirect('/auth/sign-in?error=MAGIC_LINK_DISABLED');
+          }
           if (user && !user.emailVerified) {
             const { passwordRemoved } = await claimUnverifiedAccount(user.id);
             // The password they chose at sign-up is gone: say so and offer
@@ -362,6 +452,14 @@ export const auth = betterAuth({
         return { context: { query: { ...(ctx.query ?? {}), disableCookieCache: true } } };
       }
 
+      // "Trust this device for 30 days" would skip the second factor on the
+      // next sign-ins; not offered (admins must enter a code every sign-in).
+      if (ctx.path.startsWith('/two-factor/verify-')) {
+        const body = (ctx.body ?? {}) as Record<string, unknown>;
+        if (body.trustDevice) return { context: { body: { ...body, trustDevice: false } } };
+        return;
+      }
+
       if (!ctx.path.startsWith('/sign-in/') && !SUSPENSION_GATED.includes(ctx.path)) return;
       const body = (ctx.body ?? {}) as { email?: unknown; password?: unknown; name?: unknown; type?: unknown };
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
@@ -378,8 +476,48 @@ export const auth = betterAuth({
       if (ctx.path === '/email-otp/send-verification-otp' && body.type !== 'email-verification') {
         throw new APIError('BAD_REQUEST', { message: 'Invalid code type.' });
       }
-      if (ctx.path === '/email-otp/verify-email' && ctx.request) {
-        chosenAtVerification.set(ctx.request, { password: body.password, name: body.name });
+      if (ctx.path === '/email-otp/verify-email') {
+        // An already confirmed address has nothing to confirm: no code was
+        // ever e-mailed for it (sendVerificationOTP below), so a "correct" code
+        // can only be guessed or leaked. Same answer as a wrong code.
+        if (email) {
+          const owner = await prisma.user.findUnique({ where: { email }, select: { emailVerified: true } });
+          if (owner?.emailVerified) {
+            await prisma.verification.deleteMany({ where: { identifier: `email-verification-otp-${email}` } }).catch(() => {});
+            await auditAuth('auth.otp.refused', email, 'verification code submitted for an already verified account');
+            throw invalidCodeError();
+          }
+        }
+        if (ctx.request) chosenAtVerification.set(ctx.request, { password: body.password, name: body.name });
+      }
+    }),
+    after: createAuthMiddleware(async (ctx) => {
+      // Two-factor switched on or off: audit it, tell the owner, and when it
+      // was just switched on sign out every other session (opened without it).
+      if (ctx.path !== '/two-factor/verify-totp' && ctx.path !== '/two-factor/disable') return;
+      const returned = ctx.context.returned;
+      if (!returned || returned instanceof APIError) return;
+      const user = ctx.context.session?.user as { id: string; email: string; twoFactorEnabled?: boolean | null } | undefined;
+      if (!user) return; // a sign-in code check, not a settings change
+      if (ctx.path === '/two-factor/verify-totp') {
+        if (user.twoFactorEnabled) return; // already on: a step-up check
+        // better-auth replaced this browser's session while switching 2FA on;
+        // the new one is in the Set-Cookie of this response (the JSON body
+        // still carries the old, already deleted token). Keep that one.
+        const setCookie = ctx.context.responseHeaders?.get('set-cookie') ?? '';
+        const keep = /better-auth\.session_token=([^;]+)/.exec(setCookie)?.[1];
+        const keepToken = keep ? decodeURIComponent(keep).split('.')[0] : null;
+        const dropped = await prisma.session.deleteMany({
+          where: keepToken
+            ? { userId: user.id, NOT: { token: keepToken } }
+            : // Fallback: keep sessions created during this request.
+              { userId: user.id, createdAt: { lt: new Date(Date.now() - 15_000) } },
+        });
+        await auditAuth('auth.2fa.enabled', user.email, `other sessions signed out: ${dropped.count}`);
+        await sendTwoFactorNotice(user.email, true);
+      } else {
+        await auditAuth('auth.2fa.disabled', user.email);
+        await sendTwoFactorNotice(user.email, false);
       }
     }),
   } satisfies BetterAuthOptions['hooks'],
@@ -393,7 +531,7 @@ export const auth = betterAuth({
       sendMagicLink: async ({ email, url }) => {
         const exists = await prisma.user.findUnique({
           where: { email: email.toLowerCase() },
-          select: { id: true, emailVerified: true },
+          select: { id: true, emailVerified: true, role: true, twoFactorEnabled: true },
         });
         if (!exists) {
           await sendEmail({
@@ -408,6 +546,26 @@ export const auth = betterAuth({
               </div>
             `,
             text: `There's no lab2date account for this address. Create one at ${SITE_URL}/auth/sign-up\n\nIf you didn't request this, ignore the email.`,
+          });
+          return;
+        }
+        if (await magicLinkRefused(exists)) {
+          // Same answer to the requester as a real link ("check your email"),
+          // so this can't be used to find admin addresses; the owner is told
+          // how to sign in instead.
+          await auditAuth('auth.magiclink.refused', email, 'requested for an admin / 2FA account');
+          await sendEmail({
+            to: email,
+            subject: 'Sign-in links are switched off for your lab2date account',
+            html: `
+              <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
+                <h2 style="color:#0E4F40;">Use your password and authenticator app</h2>
+                <p>Someone asked for an e-mailed sign-in link for this address. For your security, this account can only sign in with its password and a code from your authenticator app, so no link was sent.</p>
+                <p><a href="${SITE_URL}/auth/sign-in">Sign in</a> · <a href="${SITE_URL}/auth/forgot-password">Forgot password</a></p>
+                <p style="color:#6b7280;font-size:13px;">If you didn't ask for this, you can ignore this e-mail — nothing has changed.</p>
+              </div>
+            `,
+            text: `For your security this account signs in with its password and an authenticator code only, so no sign-in link was sent. Sign in: ${SITE_URL}/auth/sign-in — Forgot password: ${SITE_URL}/auth/forgot-password\n\nIf you didn't ask for this, ignore this e-mail.`,
           });
           return;
         }
@@ -440,10 +598,15 @@ export const auth = betterAuth({
       expiresIn: 60 * 10, // 10 minutes
       allowedAttempts: 5,
       disableSignUp: true,
+      // Only a hash of the code is kept: a database / log leak gives no code.
+      storeOTP: 'hashed',
       sendVerificationOTP: async ({ email, otp, type }) => {
         if (type === 'email-verification') {
           const existing = await prisma.user.findUnique({ where: { email }, select: { emailVerified: true } });
           if (existing?.emailVerified) {
+            // better-auth stored a code before calling us; it is never
+            // e-mailed, so remove it (nothing redeemable is left behind).
+            await prisma.verification.deleteMany({ where: { identifier: `email-verification-otp-${email.toLowerCase()}` } }).catch(() => {});
             // Sign-up with an address that already has an account (sign-up
             // answers as if it were new, so it can't be used to probe which
             // addresses are registered). A code would only sign the person in
@@ -478,6 +641,14 @@ export const auth = betterAuth({
           text: `Your lab2date verification code is ${otp}. It expires in 10 minutes.`,
         });
       },
+    }),
+    // TOTP authenticator app + 10 one-time recovery codes. Required for the
+    // roles in Settings → Security (admins by default) — see requireSession.
+    twoFactor({
+      issuer: process.env.SITE_NAME || 'lab2date',
+      backupCodeOptions: { amount: 10, length: 10 },
+      // The "enter your code" step after the password stays open 10 minutes.
+      twoFactorCookieMaxAge: 600,
     }),
     nextCookies(), // must be last
   ],

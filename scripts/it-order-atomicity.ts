@@ -14,7 +14,8 @@
  *   stripeCheckoutHandoff    — no-Stripe, create failure, cleanup failure, missing URL,
  *                              persist failure, expire failure; proves no active session
  *                              points at canceled stock and no confirmed failure strands stock
- *   expireProformaTransition — expired / proof-in-flight / no-order / overlapping / interleave
+ * (The quote-order lapse — formerly expireProformaTransition — is covered by
+ *  scripts/test-quotes-payment.db.ts: cancelQuoteOrder + the due-date sweep.)
  *
  * Requires env SCRATCH_DATABASE_URL (a migrated, empty DB).
  * Run: SCRATCH_DATABASE_URL=... npx tsx scripts/it-order-atomicity.ts
@@ -23,7 +24,6 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import { reserveAndCreateOrder, cancelAndRestockOrder, generateOrderNumber, type Reservation } from '../src/lib/orders/checkout-tx';
 import { stripeCheckoutHandoff, cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '../src/lib/orders/stripe-handoff';
 import { safeExpire } from '../src/lib/stripe/session-api';
-import { expireProformaTransition } from '../src/lib/quotes/proforma-expiry';
 
 const URL = process.env.SCRATCH_DATABASE_URL;
 if (!URL) { console.error('SCRATCH_DATABASE_URL required'); process.exit(2); }
@@ -415,37 +415,6 @@ async function main() {
       (await qtyOf(win)) === 1 && (await qtyOf(proofP)) === 0 && (await qtyOf(paidP)) === 0 && (await qtyOf(exP)) === 0 &&
       (await statusOf(oProof)) === 'PENDING_PAYMENT' && (await statusOf(oPaid)) === 'PAID' && (await statusOf(oExpFail)) === 'PENDING_PAYMENT');
   }
-
-  // ── proforma expiry transition ──
-  async function seedQuoteWithOrder(withProof: boolean, linkOrder = true) {
-    const srId = uid();
-    await db.sourcingRequest.create({ data: { id: srId, buyerEmail: 'b@it.local', buyerName: 'b', description: 'd', proformaNumber: uid(), status: 'RESPONDED', validUntilAt: new Date(0) } });
-    let oid = '';
-    if (linkOrder) { const o = await db.order.create({ data: { ...orderData(buyer, { sourcingRequestId: srId }), orderNumber: uid(), ...(withProof ? { paymentSubmittedAt: new Date() } : {}) } }); oid = o.id; }
-    return { srId, oid };
-  }
-  { const { srId, oid } = await seedQuoteWithOrder(false); const out = await expireProformaTransition(db, srId);
-    chk('proforma · expired closes quote + cancels order', out === 'expired' && (await db.sourcingRequest.findUnique({ where: { id: srId }, select: { status: true } }))!.status === 'CLOSED' && (await statusOf(oid)) === 'CANCELED'); }
-  { const { srId, oid } = await seedQuoteWithOrder(true); const out = await expireProformaTransition(db, srId);
-    chk('proforma · proof-in-flight leaves both unexpired', out === 'proof-in-flight' && (await db.sourcingRequest.findUnique({ where: { id: srId }, select: { status: true } }))!.status === 'RESPONDED' && (await statusOf(oid)) === 'PENDING_PAYMENT'); }
-  { const { srId } = await seedQuoteWithOrder(false, false); const out = await expireProformaTransition(db, srId);
-    chk('proforma · no-linked-order still closes', out === 'expired' && (await db.sourcingRequest.findUnique({ where: { id: srId }, select: { status: true } }))!.status === 'CLOSED'); }
-  { const { srId } = await seedQuoteWithOrder(false); const [x, y] = await Promise.all([expireProformaTransition(db, srId), expireProformaTransition(db, srId)]);
-    chk('proforma · overlapping sweeps fire exactly once', [x, y].filter((o) => o === 'expired').length === 1, `${x},${y}`); }
-  { const { srId, oid } = await seedQuoteWithOrder(false);
-    // inject: first tx order.updateMany triggers a concurrent proof-submission (committed on a separate connection)
-    let injected = false;
-    const raced = new Proxy(db, { get(t, prop, recv) {
-      if (prop === '$transaction') return (arg: unknown, opts?: unknown) => (db.$transaction as (f: (tx: unknown) => unknown, o?: unknown) => unknown)(async (tx) => {
-        const txp = new Proxy(tx as object, { get(tt, model) { const m = Reflect.get(tt, model);
-          if (String(model) === 'order') return new Proxy(m as object, { get(mm, op) { const fn = Reflect.get(mm, op);
-            if (String(op) === 'updateMany' && typeof fn === 'function') return async (...a: unknown[]) => { if (!injected) { injected = true; await db.order.update({ where: { id: oid }, data: { paymentSubmittedAt: new Date() } }); } return (fn as (...x: unknown[]) => unknown).apply(mm, a); };
-            return fn; } });
-          return m; } });
-        return (arg as (t: unknown) => unknown)(txp); }, opts);
-      return Reflect.get(t, prop, recv); } }) as PrismaClient;
-    const out = await expireProformaTransition(raced, srId);
-    chk('proforma · forced proof interleaving → proof-in-flight', out === 'proof-in-flight' && (await db.sourcingRequest.findUnique({ where: { id: srId }, select: { status: true } }))!.status === 'RESPONDED' && (await statusOf(oid)) === 'PENDING_PAYMENT'); }
 
   console.log('order/checkout atomicity — integration (real helpers, real DB)');
   console.log('----------------------------------------------------------------');

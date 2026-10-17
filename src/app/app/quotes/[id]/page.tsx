@@ -1,10 +1,16 @@
 import type { Metadata } from 'next';
 import { notFound, redirect } from 'next/navigation';
-import { getServerSession, requireSession } from '@/lib/auth-server';
+import { getServerSession, requireSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { QuoteThread } from '@/components/quotes/QuoteThread';
+import { OfferCard } from '@/components/quotes/OfferCard';
 import { computeDealState } from '@/lib/quotes/deal-state';
+import { offerCardProps } from '@/lib/quotes/offer-view';
+import { acceptContextFor, cancelContext, declineContext } from '@/lib/quotes/page-data';
+import { buyerCanCancelUnpaid } from '@/lib/quotes/policy';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { QUOTE_REF } from '@/lib/quotes/offer';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,9 +27,11 @@ export async function generateMetadata(props: { params: Promise<{ id: string }> 
   });
   if (!sr) return {};
   const role = (session.user as { role?: string }).role;
+  // Staff see other people's quotes / offers only with the permission for them (A31).
+  const staffView = role === 'ADMIN' && (await hasCapability('quotes:view'));
   const isBuyer = sr.submittedById === session.user.id || sr.buyerEmail === session.user.email;
-  if (!isBuyer && role !== 'ADMIN') return {};
-  return { title: `Quote ${sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`}` };
+  if (!isBuyer && !staffView) return {};
+  return { title: `Quote ${sr.proformaNumber ?? QUOTE_REF(sr.id)}` };
 }
 
 export default async function BuyerQuoteDetailPage(
@@ -35,11 +43,12 @@ export default async function BuyerQuoteDetailPage(
   const searchParams = await props.searchParams;
   const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/quotes/${params.id}` });
+  await ensureSettingsLoaded();
 
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id: params.id },
     include: {
-      product: { select: { title: true, slug: true } },
+      product: { select: { title: true, slug: true, vatScheme: true } },
       messages: {
         where: { isInternalNote: false }, // hard-filter — buyer never sees admin/seller chatter
         orderBy: { createdAt: 'asc' },
@@ -50,14 +59,22 @@ export default async function BuyerQuoteDetailPage(
   if (!sr) notFound();
 
   const role = (session.user as { role?: string }).role;
+  // Staff see other people's quotes / offers only with the permission for them (A31).
+  const staffView = role === 'ADMIN' && (await hasCapability('quotes:view'));
   const isBuyer = sr.submittedById === session.user.id || sr.buyerEmail === session.user.email;
-  if (!isBuyer && role !== 'ADMIN') notFound();
+  if (!isBuyer && !staffView) notFound();
 
-  // If this quote was accepted it became a real order — link straight to it
-  // so the buyer can pay and provide delivery details (not a dead end).
+  // Once the buyer accepts the offer it becomes a real order (created by
+  // acceptOffer, never earlier) — the offer card links to its payment page.
   const linkedOrder = await prisma.order.findUnique({
     where: { sourcingRequestId: sr.id },
-    select: { orderNumber: true, status: true },
+    select: {
+      id: true, orderNumber: true, status: true, paymentSubmittedAt: true, paymentVerificationStatus: true,
+      subtotalCents: true, shippingCents: true, taxCents: true, totalCents: true, currency: true,
+      vatTreatment: true, vatRateBp: true, dueAt: true, financialStatus: true,
+      items: { select: { quantity: true, priceCentsSnapshot: true }, take: 1 },
+      documents: { where: { kind: 'INVOICE' }, select: { number: true }, take: 1 },
+    },
   });
 
   // Once admin verifies payment, the quote thread has done its job — every
@@ -73,7 +90,7 @@ export default async function BuyerQuoteDetailPage(
   const endedWithoutDeal =
     (sr.status === 'DECLINED' || sr.status === 'CLOSED') && linkedOrder?.status === 'CANCELED';
   const orderTakesOver =
-    isBuyer && role !== 'ADMIN' && !!linkedOrder && POST_QUOTE_STATES.includes(linkedOrder.status) && !endedWithoutDeal;
+    isBuyer && !staffView && !!linkedOrder && POST_QUOTE_STATES.includes(linkedOrder.status) && !endedWithoutDeal;
   if (orderTakesOver && linkedOrder && searchParams.history !== '1') {
     redirect(`/app/orders/${linkedOrder.orderNumber}`);
   }
@@ -105,86 +122,15 @@ export default async function BuyerQuoteDetailPage(
         </a>
       </p>
     )}
-    {linkedOrder && !(
-      // A declined/closed deal has no live order: no banner inviting payment.
-      (sr.status === 'DECLINED' || sr.status === 'CLOSED') &&
-      (linkedOrder.status === 'PENDING_PAYMENT' || linkedOrder.status === 'CANCELED')
-    ) && (() => {
-      const s = linkedOrder.status;
-      const isPending = s === 'PENDING_PAYMENT';
-      const isPaid = s === 'PAID';
-      const isShipping = s === 'PROCESSING' || s === 'SHIPPED';
-      const isDelivered = s === 'DELIVERED';
-      const isDead = s === 'CANCELED' || s === 'REFUNDED';
-      // The order exists from the moment the proforma is sent; "Accepted" only
-      // once the buyer actually accepted it.
-      const headline =
-        isPending && sr.status !== 'ACCEPTED' ? `Proforma ready — order ${linkedOrder.orderNumber} · complete your purchase`
-          : isPending ? `Accepted — order ${linkedOrder.orderNumber} · awaiting your payment`
-          : isPaid ? `Paid — order ${linkedOrder.orderNumber} · we are preparing your shipment`
-          : isShipping ? `Order ${linkedOrder.orderNumber} · ${s.toLowerCase()}`
-          : isDelivered ? `Delivered — order ${linkedOrder.orderNumber}`
-          : isDead ? `Order ${linkedOrder.orderNumber} · ${s.toLowerCase()}`
-          : `Accepted — order ${linkedOrder.orderNumber}`;
-      const sub =
-        isPending ? 'Provide delivery details, upload your transfer receipt, and we\'ll verify within 1 business day.'
-          : isPaid ? 'No action needed — you\'ll get an email when the shipment is on its way.'
-          : isShipping ? 'Track your shipment + invoice from the order page.'
-          : isDelivered ? 'Need help? Request a return from the order page.'
-          : isDead ? 'This order is closed. Open a fresh request if you still need the item.'
-          : '';
-      const tone = isPending ? 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40'
-        : isDead ? 'border-border bg-muted'
-        : isDelivered || isShipping || isPaid ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40'
-        : 'border-primary/40 bg-primary/[0.06]';
-      const cta = isPending
-        ? { label: 'Complete your purchase', href: `/app/orders/${linkedOrder.orderNumber}/payment` }
-        : { label: 'Open order', href: `/app/orders/${linkedOrder.orderNumber}` };
-      return (
-        <div className={`mb-5 rounded-2xl border-2 p-5 flex items-center justify-between gap-4 flex-wrap ${tone}`}>
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">{headline}</p>
-            {sub && <p className="text-sm mt-1">{sub}</p>}
-          </div>
-          <a
-            href={cta.href}
-            className="rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90"
-          >
-            {cta.label} →
-          </a>
-        </div>
-      );
-    })()}
-    {sr.quotedPriceCents != null && (() => {
-      // The deal ended (declined / closed / its order canceled): the price card
-      // stays for reference but must not read as a live, payable offer.
-      const quoteVoid = sr.status === 'DECLINED' || sr.status === 'CLOSED' || linkedOrder?.status === 'CANCELED';
-      return (
-        <div
-          className={`mb-5 rounded-2xl border-2 p-5 flex items-center justify-between gap-4 flex-wrap ${
-            quoteVoid ? 'border-border bg-muted' : 'border-accent/40 bg-accent/[0.05]'
-          }`}
-        >
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
-              {quoteVoid ? 'Quoted price · void, no payment due' : 'Quoted price'}
-            </p>
-            <p className={`text-2xl font-bold data mt-1 ${quoteVoid ? 'line-through text-muted-foreground' : ''}`}>
-              {((sr.quotedPriceCents) / 100).toLocaleString()} {sr.quotedCurrency || 'EUR'}
-            </p>
-          </div>
-          <a
-            href={`/app/quotes/${sr.id}/proforma`}
-            className={
-              quoteVoid
-                ? 'rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-muted-foreground hover:text-foreground'
-                : 'rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90'
-            }
-          >
-            {quoteVoid ? 'View void proforma' : 'View / download proforma'}
-          </a>
-        </div>
-      );
+    {await (async () => {
+      const isOpenOffer = isBuyer && sr.status === 'RESPONDED' && sr.quotedPriceCents != null;
+      const offer = offerCardProps(sr, linkedOrder, isBuyer ? 'BUYER' : 'STAFF', {
+        accept: isOpenOffer ? await acceptContextFor(sr, session.user.id) : null,
+        decline: isOpenOffer ? declineContext() : null,
+        cancel: isBuyer && linkedOrder && buyerCanCancelUnpaid() ? cancelContext(linkedOrder.orderNumber) : null,
+        invoiceNumber: linkedOrder?.documents[0]?.number ?? null,
+      });
+      return offer ? <OfferCard {...offer} /> : null;
     })()}
     <QuoteThread
       sourcingRequestId={sr.id}
@@ -201,32 +147,25 @@ export default async function BuyerQuoteDetailPage(
         authorName:
           m.author?.id === session.user.id
             ? 'You'
-            : role === 'ADMIN'
+            : staffView
               ? (m.author?.name ?? null)
-              : 'lab2date Verified Supplier',
-        authorEmail: role === 'ADMIN' ? (m.author?.email ?? null) : null,
+              : 'lab2date Supplier',
+        authorEmail: staffView ? (m.author?.email ?? null) : null,
         isMine: m.author?.id === session.user.id,
         fromStaff: m.fromStaff,
         attachments: m.attachments,
       }))}
       viewerRole="BUYER"
       createdAt={sr.createdAt.toISOString()}
-      hasProforma={sr.quotedPriceCents != null && !!sr.proformaNumber}
-      // Only surface "Complete your purchase" while the order is actually
-      // accepting payment. Once it advances to PAID/PROCESSING/SHIPPED/
-      // DELIVERED the buyer must NOT be invited to "pay again".
-      orderPaymentHref={
-        linkedOrder && linkedOrder.status === 'PENDING_PAYMENT'
-          ? `/app/orders/${linkedOrder.orderNumber}/payment`
-          : null
-      }
       dealBadge={computeDealState({
         status: sr.status,
         lastReplyByStaff: sr.lastReplyByStaff,
         proformaNumber: sr.proformaNumber,
-        linkedOrder: linkedOrder ? { status: linkedOrder.status } : null,
+        quotedPriceCents: sr.quotedPriceCents,
+        validUntilAt: sr.validUntilAt,
+        linkedOrder,
         archivedAt: sr.archivedAt, // BUG-019: buyer-facing closure for archived RFQs
-      })}
+      }, 'buyer')}
     />
     </>
   );

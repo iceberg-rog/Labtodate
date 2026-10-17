@@ -72,22 +72,19 @@ export function QuoteHeaderControls({
           type="button"
           disabled={pending}
           onClick={() => {
-            // Same wording as the supplier's "Close request" — plus the archive.
             if (
               !window.confirm(
-                "Close this request without a deal? The buyer's unpaid order (if any) is canceled, the buyer (and the assigned supplier) are notified, and the request is archived and cannot be reopened.",
+                'Close this request without a deal? The open offer is withdrawn, the buyer (and the assigned supplier) are notified, and the request moves to Lost. It can not be reopened.',
               )
             ) {
               return;
             }
             call(async () => {
               const r = await setQuoteStatus(quoteId, 'CLOSED');
-              // The action's notice names the canceled order and the buyer
-              // notice ("Request closed. Order … was canceled. The buyer was
-              // notified."); closing also archives a quote that wasn't yet.
+              // The action's message says what happened (order canceled, unit
+              // released, buyer notified, archived when the setting says so).
               if (r?.error) return { ok: false, message: r.error };
-              const archivedNote = archived ? '' : ' The request was archived.';
-              return { ok: true, message: `${r?.notice ?? 'Request closed.'}${archivedNote}` };
+              return { ok: true, message: r?.warning ?? r?.notice ?? 'Request closed.' };
             });
           }}
           className="inline-flex items-center gap-1 h-9 px-3 rounded-md border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300 bg-background text-xs font-semibold hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"

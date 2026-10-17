@@ -10,10 +10,13 @@ export function SourcingForm({
   anchor,
   facility = null,
   buyer,
+  note = '',
 }: {
   anchor: { slug: string; title: string; brand: string | null } | null;
   facility?: { slug: string; name: string; location: string } | null;
   buyer: { name: string; email: string };
+  /** Settings → Site texts & pages → SOURCING_NO_OBLIGATION_TEXT. */
+  note?: string;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +91,7 @@ export function SourcingForm({
         <Field label="Account email" name="buyerEmail" type="email" required defaultValue={buyer.email} readOnly />
       </div>
 
-      <Field label="Company / Institution" name="companyName" placeholder="Pivot Park" maxLength={180} />
+      <Field label="Company / Institution" name="companyName" placeholder="Your organisation" maxLength={180} />
 
       {!anchor && !facility && (
         <Field label="Equipment category / type" name="productCategory" placeholder="e.g. confocal microscope" maxLength={120} />
@@ -114,9 +117,7 @@ export function SourcingForm({
       <Button type="submit" size="lg" disabled={pending} className="rounded-2xl font-semibold w-full">
         {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Submit request <ArrowRight className="h-4 w-4" /></>}
       </Button>
-      <p className="text-xs text-muted-foreground text-center">
-        Free for buyers · No commission until you accept a quote
-      </p>
+      {note && <p className="text-xs text-muted-foreground text-center">{note}</p>}
     </form>
   );
 }

@@ -153,6 +153,17 @@ export async function uploadObject(
 }
 
 /**
+ * Read a (private) object fully into memory — issued documents are served
+ * from these stored bytes after an integrity check (lib/documents/issue.ts).
+ */
+export async function getObjectBytes(key: string): Promise<{ bytes: Buffer; contentType: string }> {
+  await ensureBucket();
+  const out = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+  const bytes = out.Body ? Buffer.from(await out.Body.transformToByteArray()) : Buffer.alloc(0);
+  return { bytes, contentType: out.ContentType ?? 'application/octet-stream' };
+}
+
+/**
  * Public key for an upload. `ext` must come from the verified file type
  * (readVerifiedUpload), never from the client's filename.
  */

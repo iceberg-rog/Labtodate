@@ -1,7 +1,9 @@
 import { prisma } from '@/lib/db';
 import type { Prisma, ProductCondition, ProductMode } from '@prisma/client';
-import { applyShopPricing, type ShopPricingMode } from '@/lib/shop-pricing';
+import { sellPriceOf } from '@/lib/pricing/server';
+import { shownToNetCents, type PriceDisplaySettings } from '@/lib/pricing/display';
 import { productTextWhere } from '@/lib/search/where';
+import { firstPublicImage } from '@/lib/media/public-src';
 
 export interface MarketplaceFilters {
   q?: string;
@@ -9,8 +11,11 @@ export interface MarketplaceFilters {
   brand?: string;          // slug
   condition?: ProductCondition;
   mode?: ProductMode;
+  /** Bounds as the buyer typed them (shown basis — see PRICE_DISPLAY_MODE). */
   minPriceCents?: number;
   maxPriceCents?: number;
+  /** Needed to read the bounds in the shown basis (incl. VAT → net). */
+  display?: Pick<PriceDisplaySettings, 'mode' | 'standardRateBp'>;
   sort?: 'newest' | 'price_asc' | 'price_desc' | 'relevance';
   page?: number;
   pageSize?: number;
@@ -24,11 +29,13 @@ export interface MarketplaceResult {
     images: string[];
     condition: ProductCondition;
     mode: ProductMode;
+    /** The SELL price (shop rule applied) — never the supplier price; null = quote only / hidden. */
     priceCents: number | null;
     currency: string;
     yearMade: number | null;
     summary: string | null;
     priceHidden: boolean;
+    vatScheme: 'STANDARD' | 'MARGIN';
     brand: { name: string; slug: string } | null;
     category: { name: string; slug: string };
     company: { name: string; slug: string } | null;
@@ -48,24 +55,19 @@ export const LIVE_PRODUCT_WHERE = {
 } satisfies Prisma.ProductWhereInput;
 
 /**
- * Listings that show a Buy now button: a buyable mode with a price that the
- * shop's pricing rule doesn't hide (see applyShopPricing + the product page).
+ * Listings that show a Buy now button: a buyable mode with a public sell price.
+ * Product.displayPriceCents is the resolver's sell price (null when the shop
+ * forces quotes or hides prices) — kept in sync by a DB trigger (migration 7a).
  * Imports are HYBRID, so matching `mode = BUY_NOW` alone returned nothing.
  */
 const PURCHASABLE_WHERE: Prisma.ProductWhereInput = {
   mode: { in: ['BUY_NOW', 'HYBRID'] },
-  priceCents: { gt: 0 },
-  OR: [{ companyId: null }, { company: { pricingMode: { in: ['PASS_THROUGH', 'MARKUP_PERCENT'] } } }],
+  displayPriceCents: { gt: 0 },
 };
 
 /** Everything a buyer has to request a quote for (the complement of the above). */
 const QUOTE_ONLY_WHERE: Prisma.ProductWhereInput = {
-  OR: [
-    { mode: 'QUOTE_ONLY' },
-    { priceCents: null },
-    { priceCents: { lte: 0 } },
-    { company: { pricingMode: { in: ['FORCE_QUOTE', 'HIDE_PRICE'] } } },
-  ],
+  OR: [{ mode: 'QUOTE_ONLY' }, { displayPriceCents: null }],
 };
 
 /** Product.priceCents is a Postgres INT4; larger bounds made Prisma throw (500). */
@@ -86,11 +88,16 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
   if (filters.mode === 'BUY_NOW') and.push(PURCHASABLE_WHERE);
   else if (filters.mode === 'HYBRID') and.push(PURCHASABLE_WHERE, { mode: 'HYBRID' });
   else if (filters.mode === 'QUOTE_ONLY') and.push(QUOTE_ONLY_WHERE);
+  // A08: price filters run on the PUBLIC sell price only. A hidden / quote-only
+  // listing has no public price (NULL) and never matches a price range — its
+  // supplier price can't be found by narrowing the range.
   if (filters.minPriceCents !== undefined || filters.maxPriceCents !== undefined) {
+    const d = filters.display ?? { mode: 'EXCL' as const, standardRateBp: 0 };
     and.push({
-      priceCents: {
-        ...(filters.minPriceCents !== undefined ? { gte: clampCents(filters.minPriceCents) } : {}),
-        ...(filters.maxPriceCents !== undefined ? { lte: clampCents(filters.maxPriceCents) } : {}),
+      displayPriceCents: {
+        not: null,
+        ...(filters.minPriceCents !== undefined ? { gte: clampCents(shownToNetCents(filters.minPriceCents, d, 'floor')) } : {}),
+        ...(filters.maxPriceCents !== undefined ? { lte: clampCents(shownToNetCents(filters.maxPriceCents, d, 'ceil')) } : {}),
       },
     });
   }
@@ -101,9 +108,9 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
   // (Postgres puts NULLs first on DESC, which filled "high → low" with them).
   const orderBy: Prisma.ProductOrderByWithRelationInput[] =
     filters.sort === 'price_asc'
-      ? [{ hasImages: 'desc' }, { priceCents: { sort: 'asc', nulls: 'last' } }]
+      ? [{ hasImages: 'desc' }, { displayPriceCents: { sort: 'asc', nulls: 'last' } }]
       : filters.sort === 'price_desc'
-        ? [{ hasImages: 'desc' }, { priceCents: { sort: 'desc', nulls: 'last' } }]
+        ? [{ hasImages: 'desc' }, { displayPriceCents: { sort: 'desc', nulls: 'last' } }]
         : [{ hasImages: 'desc' }, { createdAt: 'desc' }];
 
   const [items, total] = await Promise.all([
@@ -121,8 +128,10 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
         mode: true,
         priceCents: true,
         currency: true,
+        priceOnHold: true,
         yearMade: true,
         summary: true,
+        vatScheme: true,
         brand: { select: { name: true, slug: true } },
         category: { select: { name: true, slug: true } },
         company: { select: { name: true, slug: true, pricingMode: true, pricingMarkupBp: true } },
@@ -132,22 +141,20 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
   ]);
 
   const adjusted = items.map((p) => {
-    const dp = applyShopPricing(
-      { priceCents: p.priceCents, currency: p.currency, mode: p.mode },
-      p.company ? { pricingMode: p.company.pricingMode as ShopPricingMode, pricingMarkupBp: p.company.pricingMarkupBp } : null,
-    );
+    const r = sellPriceOf(p);
     return {
       slug: p.slug,
       title: p.title,
       illustration: p.illustration,
       images: p.images,
       condition: p.condition,
-      mode: dp.mode,
-      priceCents: dp.priceCents,
-      currency: dp.currency,
+      mode: r.mode as ProductMode,
+      priceCents: r.sellPriceCents,
+      currency: p.currency,
       yearMade: p.yearMade,
       summary: p.summary,
-      priceHidden: dp.priceHidden,
+      priceHidden: !r.priceVisible,
+      vatScheme: p.vatScheme,
       brand: p.brand,
       category: p.category,
       company: p.company ? { name: p.company.name, slug: p.company.slug } : null,
@@ -180,17 +187,16 @@ export async function getProductBySlug(slug: string) {
     },
   });
   if (!product) return null;
-  const dp = applyShopPricing(
-    { priceCents: product.priceCents, currency: product.currency, mode: product.mode },
-    product.company ? { pricingMode: product.company.pricingMode as ShopPricingMode, pricingMarkupBp: product.company.pricingMarkupBp } : null,
-  );
-  // Override visible price/mode but leave the raw fields intact for admin views.
+  const r = sellPriceOf(product);
+  // Public view: the SELL price and the effective mode (FORCE_QUOTE / HIDE_PRICE
+  // → quote only). The supplier price stays only in basePriceCents for the
+  // server (never rendered to buyers).
   return {
     ...product,
-    priceCents: dp.priceCents,
-    mode: dp.mode,
-    priceHidden: dp.priceHidden,
-    // Preserve the unadjusted base in case the consumer needs it.
+    priceCents: r.sellPriceCents,
+    mode: r.mode as ProductMode,
+    priceHidden: !r.priceVisible,
+    buyable: r.buyable,
     basePriceCents: product.priceCents,
     baseMode: product.mode,
   };
@@ -208,11 +214,11 @@ export async function getSimilarProducts(categoryId: string, excludeSlug: string
     take,
     select: {
       slug: true, title: true, illustration: true, images: true,
-      condition: true, mode: true, priceCents: true, currency: true, yearMade: true,
+      condition: true, mode: true, displayPriceCents: true, currency: true, yearMade: true, vatScheme: true,
       brand: { select: { name: true } },
       company: { select: { name: true } },
     },
-  });
+  }).then((rows) => rows.map(({ displayPriceCents, ...r }) => ({ ...r, priceCents: displayPriceCents })));
 }
 
 export async function getTopCategories(limit = 10) {
@@ -259,9 +265,11 @@ export async function getTopCategoriesWithImage(limit = 10) {
         select: { title: true, images: true },
       });
 
-      let best = pool[0] ?? null;
+      // Only our own photos qualify (never a hotlinked supplier image).
+      const owned = pool.filter((p) => firstPublicImage(p.images));
+      let best = owned[0] ?? null;
       let bestScore = -Infinity;
-      for (const p of pool) {
+      for (const p of owned) {
         let score = Math.min(p.images.length, 4); // more photos ≈ a feature listing
         if (GOOD.test(p.title)) score += 6;
         if (BAD.test(p.title)) score -= 6;
@@ -279,7 +287,7 @@ export async function getTopCategoriesWithImage(limit = 10) {
         slug: c.slug,
         name: c.name,
         count: c._count.products,
-        image: best?.images?.[0] ?? null,
+        image: best ? firstPublicImage(best.images) : null,
       };
     }),
   );

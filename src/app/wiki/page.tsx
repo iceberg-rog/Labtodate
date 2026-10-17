@@ -1,11 +1,13 @@
 import Link from 'next/link';
 import { BookOpen, ArrowRight } from 'lucide-react';
 import { prisma } from '@/lib/db';
+import { getSiteTexts } from '@/lib/catalog/site-texts';
 
 export const metadata = { title: 'Equipment Wiki' };
 export const dynamic = 'force-dynamic';
 
 export default async function WikiIndexPage() {
+  const texts = await getSiteTexts();
   const articles = await prisma.wikiArticle.findMany({
     where: { status: 'PUBLISHED' },
     orderBy: [{ category: 'asc' }, { title: 'asc' }],
@@ -27,9 +29,7 @@ export default async function WikiIndexPage() {
         <h1 className="text-4xl md:text-6xl font-bold tracking-tight" style={{ letterSpacing: '-0.04em' }}>
           The handbook for lab equipment.
         </h1>
-        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
-          Glossary, comparison guides, and how-tos curated by lab2date&apos;s sourcing team.
-        </p>
+        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">{texts.wikiIntro}</p>
       </header>
 
       {articles.length === 0 ? (

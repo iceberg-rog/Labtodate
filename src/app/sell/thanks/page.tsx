@@ -1,11 +1,14 @@
 import Link from 'next/link';
 import { CheckCircle2, ArrowRight, Mail, Search, Handshake } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { getCatalogPolicy } from '@/lib/catalog/policy';
 
 export const metadata = { title: 'Submission received' };
 
 export default async function SellThanksPage({ searchParams }: { searchParams: Promise<{ id?: string }> }) {
   const sp = await searchParams;
+  const policy = await getCatalogPolicy();
+  const what = policy.sellAcquisitionModel === 'OUTRIGHT_PURCHASE' ? 'an offer' : 'a free valuation';
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
       <div className="mx-auto h-16 w-16 rounded-full bg-accent/15 flex items-center justify-center mb-6">
@@ -16,7 +19,13 @@ export default async function SellThanksPage({ searchParams }: { searchParams: P
       </h1>
       <p className="mt-4 text-muted-foreground text-lg">
         We&apos;ve emailed you a confirmation. Our acquisitions team will review your equipment and
-        reply with a free valuation within <strong className="text-foreground">2 business days</strong>.
+        reply with {what}
+        {policy.sellValuationTurnaround ? (
+          <>
+            {' '}within <strong className="text-foreground">{policy.sellValuationTurnaround}</strong>
+          </>
+        ) : null}
+        .
       </p>
       {sp.id && (
         <p className="mt-3 text-xs text-muted-foreground font-mono">Ref: {sp.id}</p>
@@ -26,7 +35,7 @@ export default async function SellThanksPage({ searchParams }: { searchParams: P
         <p className="text-sm font-bold">What happens next</p>
         <NextStep icon={Mail} text="You receive a confirmation email with your reference number." />
         <NextStep icon={Search} text="We benchmark your item against the refurbished market and prepare a valuation." />
-        <NextStep icon={Handshake} text="We come back with a valuation and the next step." />
+        <NextStep icon={Handshake} text={`We come back with ${what} and the next step.`} />
       </div>
 
       <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center">

@@ -24,8 +24,10 @@ const CUSTOMER_STATUS: Record<string, { label: string; variant: 'success' | 'war
   SPAM:                  { label: 'Closed',                variant: 'secondary' },
 };
 
-export default async function CustomerSupportPage() {
+export default async function CustomerSupportPage(props: { searchParams?: Promise<{ sent?: string }> }) {
   const session = await requireSession({ redirectTo: '/app/support' });
+  // Back from “Ask a question” / “Request photos” on a product page.
+  const sent = ((await props.searchParams)?.sent ?? '').slice(0, 40);
   const tickets = await prisma.supportTicket.findMany({
     where: { OR: [{ submittedById: session.user.id }, { email: session.user.email }] },
     orderBy: { updatedAt: 'desc' },
@@ -52,6 +54,12 @@ export default async function CustomerSupportPage() {
         </Button>
       </div>
 
+      {sent && tickets.some((t) => t.ref === sent) && (
+        <div role="status" className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 p-4 text-sm" data-testid="question-sent">
+          <strong>Sent — reference {sent}.</strong> Your message is with our team. We reply by email and here; you can add to it below.
+        </div>
+      )}
+
       {tickets.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <LifeBuoy className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
@@ -74,7 +82,7 @@ export default async function CustomerSupportPage() {
               : (CUSTOMER_STATUS[t.status] ?? { label: t.status.toLowerCase().replace(/_/g, ' '), variant: 'secondary' as const });
             return (
             <li key={t.id} className="rounded-2xl border border-border bg-card overflow-hidden">
-              <details>
+              <details open={t.ref === sent}>
                 <summary className="p-5 cursor-pointer list-none flex items-center gap-4 hover:bg-foreground/5">
                   <div className="flex-1 min-w-0">
                     <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">

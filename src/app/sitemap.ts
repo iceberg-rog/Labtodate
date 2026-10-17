@@ -1,5 +1,6 @@
 import type { MetadataRoute } from 'next';
 import { prisma } from '@/lib/db';
+import { publicCaseStudyWhere } from '@/lib/catalog/consent';
 
 const BASE = process.env.BETTER_AUTH_URL ?? 'https://labtodate.com';
 
@@ -13,7 +14,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     prisma.category.findMany({ select: { slug: true, updatedAt: true } }),
     prisma.blogPost.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
     prisma.wikiArticle.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
-    prisma.caseStudy.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
+    prisma.caseStudy.findMany({ where: await publicCaseStudyWhere(), select: { slug: true, updatedAt: true } }),
     prisma.labFacility.findMany({ where: { isPublished: true }, select: { slug: true, updatedAt: true } }),
   ]);
 

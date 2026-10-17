@@ -6,19 +6,25 @@ import { QuoteStatus, Prisma } from '@prisma/client';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { QuoteBulkList } from '@/components/admin/QuoteBulkList';
 import type { QuoteRowProps } from '@/components/admin/QuoteRow';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { offerAmounts } from '@/lib/quotes/pricing';
+import { QUOTE_REF, isQuoteRef } from '@/lib/quotes/offer';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Quote requests' };
 
 /**
- * Tab definitions for the operator queue. The "waiting" tab is special: it
- * carves out only deals where a formal proforma has been issued and we are
- * now waiting on the buyer to pay/decline. Without it, those deals were
- * hiding inside "Open" alongside fresh inbound RFQs that still need a reply.
+ * Tab definitions for the operator queue. "Open" = nothing priced yet (new
+ * requests and text-only negotiation). "Offer sent" = an offer is on the table
+ * and the buyer has to accept or decline it (expired offers included, so staff
+ * can re-send). "Accepted" = the buyer accepted: an order + proforma exist and
+ * we wait for the payment. The key stays `waiting` so old links keep working.
  *
  * `extraWhere` is merged into the Prisma WHERE so the tab can layer in
  * filters that don't fit the simple status[] shape.
  */
+// An order that still commits the buyer: paid / shipped, or a receipt in review.
+const PAID_FAMILY = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const;
 const TAB_STATUSES: Array<{
   key: string;
   label: string;
@@ -31,21 +37,60 @@ const TAB_STATUSES: Array<{
     key: 'open',
     label: 'Open',
     statusFilter: ['PENDING', 'RESPONDED'],
-    // Hide proforma-sent deals from Open (they belong to Waiting). A deal
-    // is in Open while either nobody's quoted yet, or staff is still mid-
-    // negotiation with text-only replies.
-    extraWhere: { proformaNumber: null },
+    // A deal is Open while nobody has priced it yet (or staff is still
+    // negotiating with text-only replies). Priced deals live in "Offer sent".
+    extraWhere: { quotedPriceCents: null },
+  },
+  {
+    key: 'review',
+    label: 'Supplier prices to review',
+    statusFilter: ['PENDING', 'RESPONDED'],
+    extraWhere: { sellerProposalStatus: 'PENDING' },
   },
   {
     key: 'waiting',
-    label: 'Waiting',
+    label: 'Offer sent',
     statusFilter: ['RESPONDED'],
-    extraWhere: { proformaNumber: { not: null } },
+    // Only offers really waiting for the buyer: legacy rows whose old order was
+    // already paid or has a receipt in review are a deal (Accepted / Won).
+    extraWhere: {
+      quotedPriceCents: { not: null },
+      OR: [
+        { order: { is: null } },
+        { order: { is: { status: 'CANCELED' } } },
+        { order: { is: { status: 'PENDING_PAYMENT', paymentSubmittedAt: null } } },
+      ],
+    },
   },
-  { key: 'won',      label: 'Won',      statusFilter: ['ACCEPTED'] },
-  { key: 'lost',     label: 'Lost',     statusFilter: ['DECLINED', 'CLOSED'] },
+  {
+    key: 'won',
+    label: 'Accepted · awaiting payment',
+    extraWhere: {
+      OR: [
+        { status: 'ACCEPTED', order: { is: { status: 'PENDING_PAYMENT' } } },
+        { status: 'ACCEPTED', order: { is: null } },
+        { status: 'RESPONDED', order: { is: { status: 'PENDING_PAYMENT', paymentSubmittedAt: { not: null } } } },
+      ],
+    },
+  },
+  {
+    key: 'paid',
+    label: 'Won · paid / on terms',
+    statusFilter: ['ACCEPTED', 'RESPONDED'],
+    extraWhere: { order: { is: { status: { in: [...PAID_FAMILY] } } } },
+  },
+  {
+    key: 'lost',
+    label: 'Lost',
+    extraWhere: {
+      OR: [
+        { status: { in: ['DECLINED', 'CLOSED'] } },
+        { order: { is: { status: { in: ['CANCELED', 'REFUNDED'] } } }, status: 'ACCEPTED' },
+      ],
+    },
+  },
   { key: 'all',      label: 'All',      statusFilter: undefined },
-  // Open + Waiting together: every live deal. The VIP/Urgent, My queue and
+  // Open + Offer sent together: every live deal. The VIP/Urgent, My queue and
   // Unassigned chips count exactly this set, so they link here — linking to
   // Open hid the proforma'd deals they had counted.
   { key: 'active',   label: 'Open + waiting', statusFilter: ['PENDING', 'RESPONDED'], hidden: true },
@@ -53,8 +98,8 @@ const TAB_STATUSES: Array<{
 // The statuses the signal chips count (= the 'active' tab).
 const ACTIVE_STATUSES: QuoteStatus[] = ['PENDING', 'RESPONDED'];
 // The reference shown on a row: the proforma number, or "RFQ-XXXXXX" (last 6 of the id).
-const RFQ_REF = /^RFQ-?[a-z0-9]{6}$/i;
-const isRefSearch = (q: string) => /^PRO-/i.test(q) || RFQ_REF.test(q);
+// Document / order references (proforma PF-…/PRO-…, invoice INV-…, credit note CN-…, order L2D-…).
+const isRefSearch = (q: string) => /^(PRO|PF|INV|CN|L2D)-/i.test(q) || isQuoteRef(q);
 
 const SORT_OPTIONS = [
   { key: 'urgency', label: 'Urgency' },
@@ -79,6 +124,7 @@ export default async function AdminQuotesPage(
 ) {
   const searchParams = await props.searchParams;
   await requireCapability('quotes:view');
+  await ensureSettingsLoaded();
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();
   // A reference (PRO-… proforma or RFQ-XXXXXX) names one deal wherever it is,
@@ -118,8 +164,21 @@ export default async function AdminQuotesPage(
             { productCategory: { contains: q, mode: 'insensitive' as const } },
             { proformaNumber: { contains: q, mode: 'insensitive' as const } },
             { product: { title: { contains: q, mode: 'insensitive' as const } } },
+            // The order and every document of the deal: order no., proforma
+            // revisions, invoice, credit notes — what a bank line or a buyer quotes.
+            {
+              order: {
+                is: {
+                  OR: [
+                    { orderNumber: { contains: q, mode: 'insensitive' as const } },
+                    { proformaNumber: { contains: q, mode: 'insensitive' as const } },
+                    { documents: { some: { number: { contains: q, mode: 'insensitive' as const } } } },
+                  ],
+                },
+              },
+            },
             // The list shows "RFQ-XXXXXX" (last 6 of the id) — make that searchable.
-            ...(RFQ_REF.test(q) ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
+            ...(isQuoteRef(q) ? [{ id: { endsWith: q.slice(-6).toLowerCase() } }] : []),
           ],
         }
       : {}),
@@ -128,7 +187,7 @@ export default async function AdminQuotesPage(
     ...(t.statusFilter ? { status: { in: t.statusFilter } } : {}),
     ...(t.extraWhere ?? {}),
   });
-  const where: Prisma.SourcingRequestWhereInput = { ...filterWhere(view === 'archived'), ...tabWhere(tab) };
+  const where: Prisma.SourcingRequestWhereInput = { AND: [filterWhere(view === 'archived'), tabWhere(tab)] };
 
   // For urgency/sla, fetch wider then sort post-fetch
   const orderByForFetch =
@@ -165,12 +224,12 @@ export default async function AdminQuotesPage(
   const linkedOrders = quoteIds.length > 0
     ? await prisma.order.findMany({
         where: { sourcingRequestId: { in: quoteIds } },
-        select: { sourcingRequestId: true, status: true },
+        select: { sourcingRequestId: true, status: true, paymentSubmittedAt: true, totalCents: true },
       })
     : [];
-  const linkedByQuote = new Map<string, string>();
+  const linkedByQuote = new Map<string, { status: string; proof: boolean; totalCents: number }>();
   for (const lo of linkedOrders) {
-    if (lo.sourcingRequestId) linkedByQuote.set(lo.sourcingRequestId, lo.status);
+    if (lo.sourcingRequestId) linkedByQuote.set(lo.sourcingRequestId, { status: lo.status, proof: !!lo.paymentSubmittedAt, totalCents: lo.totalCents });
   }
   const adminCandidates = await prisma.user.findMany({
     where: { OR: [{ role: 'ADMIN' }, { role: 'SELLER' }] },
@@ -218,7 +277,7 @@ export default async function AdminQuotesPage(
   const visibleTabs = TAB_STATUSES.filter((t) => !t.hidden || tab.key === t.key);
   const [tabMatchCounts, archivedMatchCount] = q
     ? await Promise.all([
-        Promise.all(visibleTabs.map((t) => prisma.sourcingRequest.count({ where: { ...filterWhere(false), ...tabWhere(t) } })))
+        Promise.all(visibleTabs.map((t) => prisma.sourcingRequest.count({ where: { AND: [filterWhere(false), tabWhere(t)] } })))
           .then((counts) => new Map(visibleTabs.map((t, i) => [t.key, counts[i]]))),
         prisma.sourcingRequest.count({ where: filterWhere(true) }),
       ])
@@ -274,7 +333,7 @@ export default async function AdminQuotesPage(
         <input
           name="q"
           defaultValue={q}
-          placeholder="Search buyer, email, item, proforma, category…"
+          placeholder="Search buyer, email, item, RFQ- / PF- / INV- / L2D- ref…"
           className="flex-1 min-w-[260px] h-10 px-3 rounded-lg border border-input bg-background text-sm"
         />
         <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -353,7 +412,7 @@ export default async function AdminQuotesPage(
           rows={items.map((sr): QuoteRowProps => {
             const attachmentCount = sr.messages.reduce((s, m) => s + (m.attachments?.length ?? 0), 0);
             const internalNoteCount = sr.messages.filter((m) => m.isInternalNote).length;
-            const ref = sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`;
+            const ref = sr.proformaNumber ?? QUOTE_REF(sr.id);
             const stats = sr.submittedBy ? buyerStats.get(sr.submittedBy.id) : null;
             return {
               id: sr.id,
@@ -381,11 +440,25 @@ export default async function AdminQuotesPage(
               quotedPriceCents: sr.quotedPriceCents,
               quotedCurrency: sr.quotedCurrency,
               proformaNumber: sr.proformaNumber,
+              validUntilISO: sr.validUntilAt?.toISOString() ?? null,
+              offerTotalCents: (() => {
+                const lo = linkedByQuote.get(sr.id);
+                if (lo && lo.status !== 'CANCELED') return lo.totalCents;
+                return sr.quotedPriceCents != null ? offerAmounts(sr).totalCents : null;
+              })(),
+              offerTotalExclVat: (() => {
+                const lo = linkedByQuote.get(sr.id);
+                if (lo && lo.status !== 'CANCELED') return false;
+                return sr.quotedPriceCents != null && !offerAmounts(sr).vatDecided;
+              })(),
+              proposalPending: sr.sellerProposalStatus === 'PENDING',
+              lostReason: sr.lostReason,
               archived: !!sr.archivedAt,
               isRegistered: !!sr.submittedBy,
               buyerPaidOrders: stats?.paidCount ?? 0,
               buyerLifetimeCents: stats?.lifetimeCents ?? 0,
-              linkedOrderStatus: linkedByQuote.get(sr.id) ?? null,
+              linkedOrderStatus: linkedByQuote.get(sr.id)?.status ?? null,
+              linkedOrderProof: linkedByQuote.get(sr.id)?.proof ?? false,
               admins: adminCandidates,
             };
           })}

@@ -1,14 +1,27 @@
+import { headers } from 'next/headers';
 import { prisma } from '@/lib/db';
 import { getServerSession } from '@/lib/auth-server';
 import { dispatchWebhook, type NotifyKind } from '@/lib/webhooks';
+import { capsAllow } from '@/lib/capabilities';
+import { clientIpFrom } from '@/lib/ratelimit';
 
-/** Best-effort admin action audit log. Never throws. */
+async function requestIp(): Promise<string | null> {
+  try {
+    return clientIpFrom(await headers());
+  } catch {
+    return null; // outside a request (cron, background job)
+  }
+}
+
+/** Best-effort admin action audit log (actor, actor id, IP). Never throws. */
 export async function audit(action: string, target?: string, meta?: string): Promise<void> {
   try {
-    const session = await getServerSession();
+    const session = await getServerSession().catch(() => null);
     await prisma.auditLog.create({
       data: {
         actorEmail: session?.user.email ?? null,
+        actorId: session?.user.id ?? null,
+        ip: await requestIp(),
         action,
         target: target ?? null,
         meta: meta ? meta.slice(0, 1000) : null,
@@ -17,6 +30,53 @@ export async function audit(action: string, target?: string, meta?: string): Pro
   } catch {
     /* observability must never break the action */
   }
+}
+
+/** Audit with an explicit actor — for auth events that happen before / without a session. */
+export async function auditAs(
+  actor: { email?: string | null; id?: string | null; ip?: string | null },
+  action: string,
+  target?: string,
+  meta?: string,
+): Promise<void> {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        actorEmail: actor.email ?? null,
+        actorId: actor.id ?? null,
+        ip: actor.ip ?? (await requestIp()),
+        action,
+        target: target ?? null,
+        meta: meta ? meta.slice(0, 1000) : null,
+      },
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Which capability an admin needs to act on a notification, from the admin
+ * page it links to — a scoped admin (support, content …) must not be sent
+ * order amounts, buyer names or seller offers they are not allowed to open.
+ */
+export function capabilityForAdminHref(href: string): string | null {
+  const path = href.replace(/^https?:\/\/[^/]+/, '');
+  const rules: [RegExp, string][] = [
+    [/^\/admin\/orders/, 'orders:view'],
+    [/^\/admin\/quotes/, 'quotes:view'],
+    [/^\/admin\/tickets/, 'tickets:view'],
+    [/^\/admin\/sell/, 'sell:view'],
+    [/^\/admin\/messages/, 'messages:view'],
+    [/^\/admin\/products/, 'products:view'],
+    [/^\/admin\/users/, 'users:view'],
+    [/^\/admin\/companies/, 'companies:manage'],
+    [/^\/admin\/settings/, 'settings:view'],
+    [/^\/admin\/errors/, 'errors:view'],
+    [/^\/admin\/audit/, 'audit:view'],
+  ];
+  for (const [re, cap] of rules) if (re.test(path)) return cap;
+  return null;
 }
 
 /** In-app notify every ADMIN AND fan out to any active webhooks. Never throws.
@@ -29,10 +89,13 @@ export async function notifyAdmins(
 ): Promise<void> {
   // Always attempt the in-app side first; webhook is best-effort.
   try {
-    const admins = await prisma.user.findMany({
-      where: { role: 'ADMIN' },
-      select: { id: true },
-    });
+    const needed = capabilityForAdminHref(href);
+    const admins = (
+      await prisma.user.findMany({
+        where: { role: 'ADMIN', suspendedAt: null },
+        select: { id: true, adminCaps: true },
+      })
+    ).filter((a) => !needed || capsAllow(a.adminCaps, needed));
     if (admins.length > 0) {
       await prisma.notification.createMany({
         data: admins.map((a) => ({

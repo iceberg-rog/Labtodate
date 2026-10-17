@@ -61,6 +61,12 @@ export default async function ProfilePage() {
         >
           Download my data (JSON)
         </a>
+        <div className="pt-4 border-t border-border">
+          <p className="text-sm text-muted-foreground">Delete your account and your personal data. Invoices are kept as the law requires.</p>
+          <a href="/app/privacy/delete" className="mt-2 inline-flex items-center rounded-full border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300 px-4 py-2 text-sm font-semibold hover:bg-red-50 dark:hover:bg-red-950/40">
+            Delete my account…
+          </a>
+        </div>
       </div>
     </div>
   );

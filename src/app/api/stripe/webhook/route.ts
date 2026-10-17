@@ -5,9 +5,14 @@ import { prisma } from '@/lib/db';
 import { getStripe } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { sendOrderInvoice } from '@/lib/orders/internal';
+import { recordPayment } from '@/lib/payments/ledger';
 import { cancelOrderSaga } from '@/lib/orders/stripe-handoff';
+import { confirmStripeRefunds } from '@/lib/finance/refunds';
 import { confirmedExpiredApi } from '@/lib/stripe/session-api';
-import { notifyAdmins, notifyUser, logError } from '@/lib/observability';
+import { notifyAdmins, notifyUser, logError, audit } from '@/lib/observability';
+import { primaryHold, stripeAmountMatches } from '@/lib/checkout/engine';
+import { releaseExpiredCardSession } from '@/lib/checkout/card';
+import { sellQuoteUnit } from '@/lib/quotes/stock';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -124,6 +129,50 @@ export async function POST(req: Request) {
         }
       }
 
+      // A24: the money Stripe captured must be exactly the order total, in the
+      // order's currency. Anything else is NOT a payment of this order: it is
+      // recorded as received, the order is held for staff (PAYMENT_REVIEW) and
+      // never marked paid / invoiced automatically.
+      const expected = await prisma.order.findUnique({
+        where: { id: orderId },
+        select: { totalCents: true, currency: true, orderNumber: true, shippingAddress: true, billingAddress: true, stripeSessionId: true },
+      });
+      const match = expected ? stripeAmountMatches(expected, session) : { ok: false as const, reason: 'order vanished' };
+      if (expected && !match.ok) {
+        const claim = await prisma.order.updateMany({
+          // Once per session: a redelivery finds the hold already set and stops.
+          where: { id: orderId, status: 'PENDING_PAYMENT', stripeSessionId: session.id, OR: [{ holdReason: null }, { holdReason: { not: 'PAYMENT_REVIEW' } }] },
+          data: {
+            financialStatus: 'UNDER_REVIEW',
+            holdReason: 'PAYMENT_REVIEW',
+            holdNote: `PAYMENT_REVIEW: Stripe payment does not match the order: ${match.reason} (session ${session.id}). Check it in Stripe; refund or correct before fulfilment.`.slice(0, 2000),
+            holdAt: new Date(),
+            stripePaymentIntentId: paymentIntentId,
+            openHolds: { push: 'PAYMENT_REVIEW' },
+          },
+        });
+        if (claim.count === 1 && typeof session.amount_total === 'number' && session.amount_total > 0) {
+          await recordPayment(prisma, {
+            orderId,
+            amountCents: session.amount_total,
+            currency: (session.currency || expected.currency).toUpperCase(),
+            method: 'STRIPE',
+            reference: paymentIntentId ?? session.id,
+            source: 'STRIPE',
+            stripePaymentIntentId: paymentIntentId ?? null,
+            note: `Amount/currency mismatch: ${match.reason}`,
+          }).catch((e) => logError('stripe.webhook.ledger-mismatch', e));
+          await notifyAdmins(
+            `Order ${expected.orderNumber}: Stripe amount does NOT match`,
+            `${match.reason} The order is on hold (payment review) and was not marked paid.`,
+            `/admin/orders/${orderId}`,
+            'SYSTEM',
+          );
+          await audit('order.stripe.mismatch', expected.orderNumber, match.reason);
+        }
+        return NextResponse.json({ received: true, skipped: 'amount_mismatch' });
+      }
+
       // Atomic conditional update — flips PENDING_PAYMENT → PAID once, CAS'd on
       // THIS session id so a stale/foreign completed event can't mark an order
       // that is attached to a different session PAID. Concurrent deliveries are
@@ -134,8 +183,11 @@ export async function POST(req: Request) {
           status: 'PAID',
           paidAt: new Date(),
           stripePaymentIntentId: paymentIntentId,
-          ...(shippingAddress ? { shippingAddress: shippingAddress as object } : {}),
-          ...(billingAddress ? { billingAddress: billingAddress as object } : {}),
+          // The delivery and billing addresses were decided on our checkout (VAT,
+          // shipping zone and country policy depend on them): Stripe's card
+          // details never overwrite them — they only fill a legacy order without one.
+          ...(shippingAddress && !expected?.shippingAddress ? { shippingAddress: shippingAddress as object } : {}),
+          ...(billingAddress && !expected?.billingAddress ? { billingAddress: billingAddress as object } : {}),
           ...(paymentMethodBrand ? { paymentMethodBrand } : {}),
           ...(paymentMethodLast4 ? { paymentMethodLast4 } : {}),
           ...(paymentMethodWallet ? { paymentMethodWallet } : {}),
@@ -164,11 +216,33 @@ export async function POST(req: Request) {
       }
       const paid = await prisma.order.findUnique({
         where: { id: orderId },
-        select: { orderNumber: true, totalCents: true, buyerId: true, id: true, currency: true },
+        select: { orderNumber: true, totalCents: true, buyerId: true, id: true, currency: true, sourcingRequestId: true, items: { select: { productId: true, quantity: true }, take: 1 } },
       });
       if (!paid) {
         return NextResponse.json({ received: true });
       }
+      // A quote order paid by card (pay-by-card on the payment page): its held
+      // unit is sold now, exactly as when staff verify a bank transfer (A09).
+      if (paid.sourcingRequestId) {
+        const quoteId = paid.sourcingRequestId;
+        const note = await prisma.$transaction((tx) => sellQuoteUnit(tx, quoteId, paid.id, paid.items[0])).catch(async (e) => {
+          await logError('stripe.webhook.quote-unit', e);
+          return ' Warning: the held unit could not be marked sold — check the listing before shipping.';
+        });
+        if (note) await notifyAdmins(`Order ${paid.orderNumber}: check the stock`, note.trim(), `/admin/orders/${paid.id}`, 'SYSTEM');
+      }
+      // Payments ledger: the amount Stripe actually captured (B06) — verified
+      // above to equal the order total.
+      await recordPayment(prisma, {
+        orderId: paid.id,
+        amountCents: session.amount_total as number,
+        currency: (session.currency || paid.currency || 'EUR').toUpperCase(),
+        method: 'STRIPE',
+        reference: paymentIntentId ?? session.id,
+        source: 'STRIPE',
+        stripePaymentIntentId: paymentIntentId ?? null,
+        note: 'Stripe checkout.session.completed',
+      }).catch((e) => logError('stripe.webhook.ledger', e));
       // BUG-003 fix: format with the order's actual currency, not a
       // hardcoded euro symbol.
       const fmtTotal = (() => {
@@ -188,9 +262,9 @@ export async function POST(req: Request) {
         `/admin/orders/${paid.id}`,
         'ORDER_PAID',
       );
-      // If Stripe didn't return a shipping address for a PAID order, the
-      // warehouse can't dispatch — surface that immediately.
-      if (!shippingAddress) {
+      // If neither our checkout nor Stripe has a shipping address for a PAID
+      // order, the warehouse can't dispatch — surface that immediately.
+      if (!shippingAddress && !expected?.shippingAddress) {
         await notifyAdmins(
           `Order ${paid.orderNumber}: PAID but no shipping address`,
           'Stripe did not return a shipping_details object — confirm with buyer before fulfilment.',
@@ -206,10 +280,51 @@ export async function POST(req: Request) {
       );
       await sendOrderInvoice(orderId);
     }
+  } else if (event.type === 'charge.dispute.created') {
+    // A card dispute (chargeback): hold the order and tell staff — never silent.
+    const dispute = event.data.object as { payment_intent?: unknown; amount?: number; currency?: string; reason?: string; id: string };
+    const pi = typeof dispute.payment_intent === 'string' ? dispute.payment_intent : null;
+    const order = pi ? await prisma.order.findUnique({ where: { stripePaymentIntentId: pi }, select: { id: true, orderNumber: true, openHolds: true, holdNote: true } }) : null;
+    if (order) {
+      const note = `PAYMENT_REVIEW: Card dispute ${dispute.id} opened (${dispute.reason ?? 'no reason'}; ${((dispute.amount ?? 0) / 100).toFixed(2)} ${(dispute.currency ?? '').toUpperCase()}). Do not ship until it is resolved.`;
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          holdReason: primaryHold([...order.openHolds, 'PAYMENT_REVIEW']),
+          holdNote: [order.holdNote, note].filter(Boolean).join(' | ').slice(0, 2000),
+          holdAt: new Date(),
+          ...(order.openHolds.includes('PAYMENT_REVIEW') ? {} : { openHolds: { push: 'PAYMENT_REVIEW' } }),
+        },
+      });
+      await notifyAdmins(`Order ${order.orderNumber}: card dispute opened`, `Stripe dispute ${dispute.id}. The order is on hold — answer the dispute in Stripe.`, `/admin/orders/${order.id}`, 'SYSTEM');
+      await audit('order.stripe.dispute', order.orderNumber, dispute.id);
+    } else {
+      await logError('stripe.webhook.dispute', new Error(`dispute ${dispute.id} for unknown payment ${pi ?? '?'}`));
+    }
+  } else if (event.type === 'charge.refunded') {
+    // A refund made in the Stripe dashboard (not through our admin) must be
+    // recorded here with a credit note — tell staff instead of ignoring it.
+    const charge = event.data.object as { payment_intent?: unknown; amount_refunded?: number; currency?: string; id: string };
+    const pi = typeof charge.payment_intent === 'string' ? charge.payment_intent : null;
+    const order = pi ? await prisma.order.findUnique({ where: { stripePaymentIntentId: pi }, select: { id: true, orderNumber: true, amountRefundedCents: true } }) : null;
+    // Card refunds we issued (refund ledger SENT) are confirmed once Stripe reports them (A28).
+    if (order) await confirmStripeRefunds(order.id, charge.amount_refunded ?? 0);
+    if (order && (charge.amount_refunded ?? 0) > order.amountRefundedCents) {
+      await notifyAdmins(
+        `Order ${order.orderNumber}: refunded in Stripe`,
+        `Stripe shows ${((charge.amount_refunded ?? 0) / 100).toFixed(2)} ${(charge.currency ?? '').toUpperCase()} refunded, our records ${(order.amountRefundedCents / 100).toFixed(2)}. Record the refund on the order (credit note).`,
+        `/admin/orders/${order.id}`,
+        'SYSTEM',
+      );
+    }
   } else if (event.type === 'checkout.session.expired') {
     const session = event.data.object;
     const orderId = session.metadata?.orderId;
-    if (orderId) {
+    if (orderId && session.metadata?.kind === 'existing') {
+      // A card attempt on an order that was already payable (payment page):
+      // only that session ends — the order stays open for payment.
+      await releaseExpiredCardSession(orderId, session.id);
+    } else if (orderId) {
       // Cancel + restock atomically through the Stripe-aware saga, passing THIS
       // event's session id as onlyIfSessionIs: an old expired event cannot cancel
       // an order that has since moved to a different/new session. The saga expires

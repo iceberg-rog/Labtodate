@@ -2,12 +2,14 @@ import Link from 'next/link';
 import { Clock, ArrowUpRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { prisma } from '@/lib/db';
+import { getSiteTexts } from '@/lib/catalog/site-texts';
 import { ArticleCover } from '@/components/content/ArticleCover';
 
 export const metadata = { title: 'Blog' };
 export const dynamic = 'force-dynamic';
 
 export default async function BlogIndexPage() {
+  const texts = await getSiteTexts();
   const posts = await prisma.blogPost.findMany({
     where: { status: 'PUBLISHED' },
     orderBy: { publishedAt: 'desc' },
@@ -19,11 +21,9 @@ export default async function BlogIndexPage() {
       <header className="mb-12">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">Field notes</p>
         <h1 className="text-4xl md:text-6xl font-bold tracking-tight" style={{ letterSpacing: '-0.04em' }}>
-          The lab2date journal.
+          The {texts.siteName} journal.
         </h1>
-        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
-          Buying guides, cost analyses, and technical deep-dives from procurement teams who&apos;ve done it before.
-        </p>
+        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">{texts.blogIntro}</p>
       </header>
 
       {posts.length === 0 ? (

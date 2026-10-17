@@ -1,5 +1,6 @@
 'use client';
 
+import { useStepUp } from '@/components/security/useStepUp';
 import { useEffect, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -33,11 +34,9 @@ import {
   getOrderQuickDetail,
   archiveOrder,
   unarchiveOrder,
-  verifyPayment,
   deleteOrderPermanently,
-  refundOrder,
 } from '@/app/admin/actions';
-import { humaniseBuyer, smartDate, STATUS_LABEL, STATUS_TONE, trackingUrl } from '@/lib/orders/display';
+import { humaniseBuyer, smartDate, STATUS_LABEL, STATUS_TONE } from '@/lib/orders/display';
 import { openManualPaid, ORDER_PAID_EVENT } from './ManualPaidPanel';
 import { announceAdminResult } from './AdminResultToast';
 import { BuyerEmailReveal } from './BuyerEmailReveal';
@@ -99,6 +98,8 @@ function paymentLabel(
 
 export function OrderQuickView() {
   const router = useRouter();
+  // Permanent delete asks for a fresh authenticator code (Settings → Security).
+  const { run: withStepUp, dialog: stepUpDialog } = useStepUp();
   const [id, setId] = useState<string | null>(null);
   const [data, setData] = useState<Detail | null>(null);
   const [pending, start] = useTransition();
@@ -190,6 +191,8 @@ export function OrderQuickView() {
   const sameAddr = ship && bill && JSON.stringify(ship) === JSON.stringify(bill);
 
   return (
+    <>
+    {stepUpDialog}
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" role="dialog" aria-modal>
       <button
         type="button"
@@ -277,7 +280,7 @@ export function OrderQuickView() {
                       start(async () => {
                         const fd = new FormData(); fd.set('orderId', data.id);
                         try {
-                          const r = await deleteOrderPermanently(fd);
+                          const r = await withStepUp(() => deleteOrderPermanently(fd));
                           if (r?.ok) {
                             // The modal closes (the order is gone), so the
                             // result goes to the admin toast, like the row's
@@ -302,23 +305,14 @@ export function OrderQuickView() {
                   <ShieldAlert className="h-4 w-4 text-sky-700 dark:text-sky-300 flex-shrink-0" />
                   <span className="flex-1 text-sky-900 dark:text-sky-300">
                     <strong>Payment proof submitted</strong>
-                    {data.paymentSubmittedAt && ` ${smartDate(new Date(data.paymentSubmittedAt))}`}. Review the receipt and verify (or use the row-level reject control to ask the buyer for a corrected one).
+                    {data.paymentSubmittedAt && ` ${smartDate(new Date(data.paymentSubmittedAt))}`}. Verify it on the order page with the amount and value date from your bank statement (or reject it there).
                   </span>
-                  <button
-                    type="button"
-                    disabled={pending}
-                    onClick={() => {
-                      setActionMsg(null);
-                      start(async () => {
-                        const fd = new FormData(); fd.set('orderId', data.id);
-                        try { const r = await verifyPayment(fd); report(r.ok, r.message); if (r.ok) refetch(data.id); }
-                        catch (e) { report(false, e instanceof Error ? e.message : 'Verify failed'); }
-                      });
-                    }}
-                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold disabled:opacity-50"
+                  <Link
+                    href={`/admin/orders/${data.id}#verify`}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold"
                   >
-                    <ShieldCheck className="h-3.5 w-3.5" /> Verify payment
-                  </button>
+                    <ShieldCheck className="h-3.5 w-3.5" /> Verify payment…
+                  </Link>
                 </div>
               )}
               {data.paymentVerificationStatus === 'VERIFIED' && data.paymentVerifiedByEmail && (
@@ -500,9 +494,9 @@ export function OrderQuickView() {
                       <code className="text-[10px] font-mono bg-foreground/5 px-1.5 py-0.5 rounded block mt-0.5">
                         {data.trackingNumber}
                       </code>
-                      {trackingUrl(data.trackingCarrier, data.trackingNumber) && (
+                      {data.trackingLink && (
                         <a
-                          href={trackingUrl(data.trackingCarrier, data.trackingNumber)!}
+                          href={data.trackingLink}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="mt-1 inline-flex items-center gap-1 text-[11px] font-bold text-primary hover:underline"
@@ -590,7 +584,7 @@ export function OrderQuickView() {
                     target="_blank"
                     className="inline-flex items-center gap-1 h-9 px-3 rounded-full border border-border bg-card font-semibold hover:bg-foreground/5"
                   >
-                    <ReceiptText className="h-3.5 w-3.5" /> Invoice
+                    <ReceiptText className="h-3.5 w-3.5" /> {data.status === 'PENDING_PAYMENT' || data.status === 'CANCELED' ? 'Proforma' : 'Invoice'}
                   </Link>
                   {!buyer?.anonymised && (
                     <Link
@@ -603,22 +597,12 @@ export function OrderQuickView() {
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   {['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(data.status) && !data.archivedAt && (
-                    <button
-                      type="button"
-                      disabled={pending}
-                      onClick={() => {
-                        if (!window.confirm(`Refund order ${data.orderNumber} (${fmt(data.totalCents, data.currency)})? The order is marked refunded and the buyer is emailed. This cannot be undone.`)) return;
-                        setActionMsg(null);
-                        start(async () => {
-                          const fd = new FormData(); fd.set('orderId', data.id);
-                          try { const r = await refundOrder(fd); report(r.ok, r.message); if (r.ok) refetch(data.id); }
-                          catch { report(false, 'Refund failed — refresh to check the order, then retry.'); }
-                        });
-                      }}
-                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-red-300 bg-card text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"
+                    <Link
+                      href={`/admin/orders/${data.id}#money`}
+                      className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-red-300 bg-card text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40"
                     >
-                      Refund
-                    </button>
+                      {data.status === 'SHIPPED' || data.status === 'DELIVERED' ? 'Return / refund…' : 'Cancel & refund…'}
+                    </Link>
                   )}
                   {!data.archivedAt && (
                     <button
@@ -644,6 +628,7 @@ export function OrderQuickView() {
         </div>
       </div>
     </div>
+    </>
   );
 }
 

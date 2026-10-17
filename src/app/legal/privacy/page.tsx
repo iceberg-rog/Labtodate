@@ -35,10 +35,10 @@ export default async function PrivacyPage() {
       <h2>Your rights</h2>
       <p>
         You may request access, correction or deletion of your data, or object to processing, by
-        emailing <a href={`mailto:${c.email}`}>{c.email}</a>.
+        emailing <a href={c.contactHref}>{c.contactLabel}</a>.
       </p>
       <h2>Contact</h2>
-      <p>{c.legal}{c.address ? `, ${c.address}` : ''}{c.country ? `, ${c.country}` : ''} · <a href={`mailto:${c.email}`}>{c.email}</a></p>
+      <p>{c.legal}{c.address ? `, ${c.address}` : ''}{c.country ? `, ${c.country}` : ''} · <a href={c.contactHref}>{c.contactLabel}</a></p>
     </LegalShell>
   );
 }

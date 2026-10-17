@@ -6,7 +6,7 @@ import {
   Building2, Hash, Image as ImageIcon, ExternalLink,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { requireSession } from '@/lib/auth-server';
+import { requireSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import {
   replyToSellSubmission,
@@ -15,6 +15,8 @@ import {
   saveAcquisitionShipping,
 } from '@/lib/sell/actions';
 import { ensureSettingsLoaded } from '@/lib/settings';
+import { acqBankLockStage, carriers } from '@/lib/fulfilment/policy';
+import { bankLocked, maskIban } from '@/lib/sell/stages';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { ReplyForm } from '@/components/util/ReplyForm';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
@@ -82,21 +84,39 @@ function lifecycleIndex(sub: {
   return { current: 0, lost: false };
 }
 
-export default async function SellSubmissionDetailPage(props: { params: Promise<{ id: string }> }) {
+const SELLER_MSG: Record<string, { ok: boolean; text: string }> = {
+  'bank-saved': { ok: true, text: 'Bank details saved — next, ship the item to us (address below).' },
+  'bank-updated': { ok: true, text: 'Payout account updated.' },
+  'bank-review': { ok: true, text: 'Change requested. For your security the new account is used only after our team verified it with you by phone (on the number we already have). Until then the payout is on hold — nothing else changes.' },
+  'bank-pending-exists': { ok: false, text: 'A change of your payout account is already waiting for our verification — we contact you about it. You can not send another one meanwhile.' },
+  'bank-closed': { ok: false, text: 'The payout account can no longer be changed on this deal.' },
+  'ship-saved': { ok: true, text: 'Tracking saved — we email you when the package arrives.' },
+  'ship-corrected': { ok: true, text: 'Tracking corrected.' },
+  'ship-missing': { ok: false, text: 'Choose the carrier and enter the tracking number.' },
+  stale: { ok: false, text: 'This deal moved on meanwhile (another tab or our team) — nothing was changed. The page now shows its current stage.' },
+};
+
+export default async function SellSubmissionDetailPage(props: { params: Promise<{ id: string }>; searchParams: Promise<{ msg?: string; why?: string }> }) {
   const params = await props.params;
+  const sp = await props.searchParams;
+  const flash = sp.msg === 'bank-invalid'
+    ? { ok: false, text: `The bank details were not saved: ${(sp.why ?? 'check the IBAN').slice(0, 200)}` }
+    : SELLER_MSG[sp.msg ?? ''] ?? null;
   const session = await requireSession({ redirectTo: `/app/sell-submissions/${params.id}` });
   await ensureSettingsLoaded();
 
   const sub = await prisma.sellSubmission.findUnique({
     where: { id: params.id },
-    include: { messages: { orderBy: { createdAt: 'asc' } } },
+    include: { messages: { orderBy: { createdAt: 'asc' } }, bankChanges: { where: { status: { in: ['PENDING_REVIEW', 'REJECTED'] } }, orderBy: { createdAt: 'desc' }, take: 1 } },
   });
   if (!sub) notFound();
   const role = (session.user as { role?: string }).role;
+  // Staff see other people's quotes / offers only with the permission for them (A31).
+  const staffView = role === 'ADMIN' && (await hasCapability('sell:view'));
   const owns =
     sub.submittedById === session.user.id ||
     sub.email.toLowerCase() === session.user.email.toLowerCase();
-  if (!owns && role !== 'ADMIN') notFound();
+  if (!owns && !staffView) notFound();
 
   // Saved bank details on profile — auto-fill on the bank form
   const me = await prisma.user.findUnique({
@@ -201,14 +221,28 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
           </ol>
         )}
       </section>
+      {flash && (
+        <div role={flash.ok ? 'status' : 'alert'} className={`rounded-2xl border p-4 text-sm font-semibold ${flash.ok ? 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' : 'border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300'}`}>
+          {flash.text}
+        </div>
+      )}
       {/* ── STAGE-SPECIFIC ACTION CARD ──────────────────────────────── */}
       <StageCard
         sub={sub}
         savedBank={savedBank}
         receivingAddress={receivingAddress}
+        carrierNames={[...carriers().map((c) => c.name), 'Other']}
         latestProposalCents={latestProposal?.priceCents ?? null}
         latestProposalCurrency={latestProposal?.currency ?? null}
       />
+      {['AWAITING_SHIPPING', 'IN_TRANSIT', 'RECEIVED'].includes(sub.acquisitionStage ?? '') && (
+        <PayoutAccountCard
+          id={sub.id}
+          bank={(sub.sellerBankDetails as Record<string, string> | null) ?? null}
+          locked={bankLocked(sub.acquisitionStage, acqBankLockStage())}
+          lastChange={sub.bankChanges[0] ?? null}
+        />
+      )}
       {/* ── EQUIPMENT DETAILS ──────────────────────────────────────── */}
       <section className="rounded-2xl border border-border bg-card p-6">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground mb-3 inline-flex items-center gap-1.5">
@@ -292,6 +326,54 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
 
 /* ─────────────────────────── HELPER COMPONENTS ─────────────────────── */
 
+/** Payout account after it was given (A23): shown masked; a change after the
+ *  lock stage is a request that our team verifies before it is used. */
+function PayoutAccountCard({ id, bank, locked, lastChange }: { id: string; bank: Record<string, string> | null; locked: boolean; lastChange: { status: string; createdAt: Date; reviewNote: string | null } | null }) {
+  const pending = lastChange?.status === 'PENDING_REVIEW';
+  return (
+    <section className="rounded-2xl border border-border bg-card p-6 space-y-3" data-testid="payout-account">
+      <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground inline-flex items-center gap-1.5">
+        <Banknote className="h-3.5 w-3.5" /> Payout account
+      </p>
+      {bank?.iban ? (
+        <p className="text-sm"><strong dir="auto">{bank.holder}</strong> · <span className="font-mono">{maskIban(bank.iban)}</span>{bank.bankName ? <> · {bank.bankName}</> : null}</p>
+      ) : (
+        <p className="text-sm text-muted-foreground">No payout account on file.</p>
+      )}
+      {pending ? (
+        <p className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 p-3 text-sm text-amber-900 dark:text-amber-300">
+          You asked to change this account on {lastChange!.createdAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}. We verify the new account with you by phone before we use it — the payout is on hold until then.
+        </p>
+      ) : lastChange?.status === 'REJECTED' ? (
+        <p className="rounded-xl border border-border bg-foreground/[0.03] p-3 text-xs text-muted-foreground">Your last change request was not accepted; the account above is used. Contact us in the conversation if this is wrong.</p>
+      ) : null}
+      {!pending && (
+        <details className="rounded-xl border border-border">
+          <summary className="cursor-pointer px-4 py-2.5 text-sm font-semibold text-primary">{locked ? 'Request a change of the payout account' : 'Change the payout account'}</summary>
+          <form action={saveAcquisitionBankDetails} className="space-y-3 p-4 pt-1">
+            <input type="hidden" name="submissionId" value={id} />
+            {locked && (
+              <p className="text-xs text-muted-foreground">For your protection a change is not used straight away: our team first confirms it with you by phone on the number we already have, and the payout waits until then.</p>
+            )}
+            <div className="grid sm:grid-cols-2 gap-3">
+              <BankField name="holder" label="Account holder (legal name)" required />
+              <BankField name="bankName" label="Bank name" />
+            </div>
+            <BankField name="iban" label="IBAN" required mono />
+            <div className="grid sm:grid-cols-2 gap-3">
+              <BankField name="swift" label="SWIFT / BIC (international)" mono />
+              <BankField name="country" label="Bank country" />
+            </div>
+            <Button type="submit" size="sm" variant="outline" className="rounded-full font-semibold">
+              {locked ? 'Send change request' : 'Save the new account'}
+            </Button>
+          </form>
+        </details>
+      )}
+    </section>
+  );
+}
+
 function Bubble({ m, sellerName }: { m: { id: string; body: string; createdAt: Date; fromStaff: boolean; attachments: string[]; kind: string; priceCents: number | null; currency: string | null }; sellerName: string }) {
   // SYSTEM messages render as a centered slate divider — they're audit
   // events, not chat content (e.g. "Seller accepted 28,000 EUR. Next: bank details.").
@@ -359,12 +441,14 @@ function StageCard({
   sub,
   savedBank,
   receivingAddress,
+  carrierNames,
   latestProposalCents,
   latestProposalCurrency,
 }: {
   sub: any;
   savedBank: Record<string, string> | null;
   receivingAddress: string;
+  carrierNames: string[];
   latestProposalCents: number | null;
   latestProposalCurrency: string | null;
 }) {
@@ -443,8 +527,8 @@ function StageCard({
             </div>
           ) : (
             <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
-              Our receiving address isn't configured yet — please email{' '}
-              <a href="mailto:acquisitions@lab2date.com" className="font-semibold underline">acquisitions@lab2date.com</a> for ship-to details.
+              Our receiving address isn&apos;t configured yet — reply in the conversation on this page and we send you the
+              ship-to address. Do not ship before you have it.
             </div>
           )}
           <p className="text-xs text-muted-foreground mt-2">
@@ -464,7 +548,7 @@ function StageCard({
               <span className="block text-xs font-semibold mb-1">Carrier</span>
               <select name="carrier" required className="h-10 w-full px-3 rounded-lg border border-input bg-background text-sm">
                 <option value="">—</option>
-                {['DHL','UPS','FedEx','TNT','GLS','DPD','USPS','Other'].map((c) => <option key={c} value={c}>{c}</option>)}
+                {carrierNames.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </label>
             <label className="block">
@@ -493,6 +577,23 @@ function StageCard({
         <p className="text-sm text-sky-900 dark:text-sky-300 mt-2">
           We'll stamp <strong>Received · inspecting</strong> the moment the package lands at our warehouse and email you a heads-up.
         </p>
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs font-semibold text-sky-900 dark:text-sky-300 underline">Wrong tracking number? Correct it</summary>
+          <form action={saveAcquisitionShipping} className="mt-2 grid sm:grid-cols-[1fr_2fr_auto] gap-2 items-end">
+            <input type="hidden" name="submissionId" value={sub.id} />
+            <label className="block">
+              <span className="block text-xs font-semibold mb-1">Carrier</span>
+              <select name="carrier" required defaultValue={sub.sellerShippingCarrier ?? ''} className="h-9 w-full px-2 rounded-lg border border-input bg-background text-sm">
+                {carrierNames.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs font-semibold mb-1">Tracking number</span>
+              <input name="tracking" required defaultValue={sub.sellerShippingTracking ?? ''} className="h-9 w-full px-2 rounded-lg border border-input bg-background text-sm font-mono" />
+            </label>
+            <Button type="submit" size="sm" variant="outline" className="rounded-full">Save</Button>
+          </form>
+        </details>
       </section>
     );
   }

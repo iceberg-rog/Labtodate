@@ -42,6 +42,36 @@ enum ShopPricingMode {
   HIDE_PRICE
 }
 
+/// What a supplier sync may change on an imported product (per shop).
+///  - PRICE_STOCK_ONLY: price, availability and source bookkeeping only;
+///    lab2date owns title, texts, photos, category, brand and condition.
+///  - CONTENT_TOO: also title, summary, description and photos — except the
+///    fields an admin has locked on the product (Product.lockedFields).
+enum ImportSyncPolicy {
+  PRICE_STOCK_ONLY
+  CONTENT_TOO
+}
+
+/// How a sync turns the source stock into lab2date availability.
+///  - SUBTRACT_LOCAL_SALES: the supplier does not know about lab2date sales, so
+///    units in non-cancelled lab2date orders are subtracted from source stock.
+///  - SOURCE_IS_TRUTH: the supplier updates its own stock after every lab2date
+///    purchase order, so the source quantity is used as-is.
+enum SyncStockMode {
+  SUBTRACT_LOCAL_SALES
+  SOURCE_IS_TRUTH
+}
+
+/// Status of the written agreement that lets lab2date resell a supplier's
+/// items and use its photos/texts. OWN_SHOP = the owner's own shop.
+enum SupplierAgreementStatus {
+  NONE
+  SENT
+  SIGNED
+  OWN_SHOP
+  TERMINATED
+}
+
 enum QuoteStatus {
   PENDING
   RESPONDED
@@ -72,9 +102,32 @@ enum SellerType {
 }
 
 model Setting {
-  key       String   @id
-  value     String
-  updatedAt DateTime @updatedAt
+  key         String   @id
+  value       String
+  updatedAt   DateTime @updatedAt
+  /// Admin who last wrote the row (null for rows written before 4_business_core).
+  updatedById String?
+}
+
+/// One row per changed setting key (B00). Secret values are stored masked
+/// (never the plaintext). Written by saveSettings() — the admin "Change
+/// history" panel and the per-change "Revert" read from here.
+model SettingChange {
+  id         String   @id @default(cuid())
+  key        String
+  oldValue   String?
+  newValue   String?
+  secret     Boolean  @default(false)
+  /// ADMIN (settings form) | REVERT (history revert) | SYSTEM (script)
+  source     String   @default("ADMIN")
+  actorId    String?
+  actorEmail String?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([key, createdAt])
+  @@index([createdAt])
 }
 
 enum TicketStatus {
@@ -176,6 +229,11 @@ model Testimonial {
   sortOrder Int      @default(0)
   published Boolean  @default(true)
   createdAt DateTime @default(now())
+  // Proof that the quoted person agreed to be quoted (who, when, how). With
+  // REQUIRE_CONSENT_TO_PUBLISH on, a testimonial without it cannot go live.
+  consentBy   String?
+  consentAt   DateTime?
+  consentNote String?
 
   @@index([published, sortOrder])
 }
@@ -183,6 +241,9 @@ model Testimonial {
 model AuditLog {
   id         String   @id @default(cuid())
   actorEmail String?
+  /// Who did it (user id) and from where — set for security / access events.
+  actorId    String?
+  ip         String?
   action     String
   target     String?
   meta       String?
@@ -405,9 +466,19 @@ model User {
   /// every time. Free-form JSON: { holder, iban?, swift?, bankName?, country?, notes? }
   sellerBankDetails Json?
 
+  /// better-auth twoFactor plugin: TOTP enrolled and verified.
+  twoFactorEnabled Boolean? @default(false)
+  /// Marketing e-mail consent (offers / newsletters). Off by default; set
+  /// only by the person on their e-mail preferences page (ConsentEvent keeps
+  /// the history). Transactional mail (orders, quotes, security) ignores it.
+  marketingOptIn         Boolean   @default(false)
+  marketingConsentAt     DateTime?
+  marketingConsentSource String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  twoFactors    TwoFactor[]
   sessions      Session[]
   accounts      Account[]
   productsOwned Product[] @relation("ProductSeller")
@@ -429,6 +500,7 @@ model User {
   assignedTickets           SupportTicket[]   @relation("TicketAssignee")
   cartItems                 CartItem[]        @relation("UserCart")
   reviews                   Review[]          @relation("UserReviews")
+  billingProfile            BillingProfile?
 
   @@index([role])
   @@map("user")
@@ -442,6 +514,12 @@ model Session {
   updatedAt DateTime @updatedAt
   ipAddress String?
   userAgent String?
+  /// Last fresh second-factor (or password) check on this session — the
+  /// step-up gate for dangerous admin actions reads it.
+  stepUpAt     DateTime?
+  /// Last request seen on this session (written at most once a minute) —
+  /// drives the admin idle timeout.
+  lastActiveAt DateTime?
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -507,6 +585,12 @@ model Company {
   pricingMode      ShopPricingMode @default(PASS_THROUGH)
   pricingMarkupBp  Int             @default(0)
 
+  /// 7a (A26): the shop's imported prices already include VAT — the sync
+  /// converts them to net (excl. VAT) at importVatRateBp (null = the home
+  /// standard rate, Settings → Tax & VAT).
+  importPricesIncludeVat Boolean @default(false)
+  importVatRateBp        Int?
+
   // Used by the import-woo trigger to remember which Cloud API base URL
   // this shop was imported from. Lets the admin re-sync without re-typing.
   importSourceUrl  String?
@@ -521,12 +605,35 @@ model Company {
   aiRiskNotes      String?
   aiAnalyzedAt     DateTime?
 
+  // Verification is a recorded decision (who, when, what was checked), never a
+  // default: isVerified is only true while verifiedAt is set.
+  verifiedAt        DateTime?
+  verifiedByEmail   String?
+  verificationNote  String?
+
+  // Supplier agreement (right to resell, use photos/texts). Imports are blocked
+  // without SIGNED/OWN_SHOP while IMPORT_REQUIRE_SIGNED_AGREEMENT is on.
+  agreementStatus   SupplierAgreementStatus @default(NONE)
+  agreementSignedAt DateTime?
+  agreementNote     String?
+
+  // Per-shop sync policy (WooCommerce importer).
+  syncPolicy             ImportSyncPolicy @default(PRICE_STOCK_ONLY)
+  syncStockMode          SyncStockMode    @default(SUBTRACT_LOCAL_SALES)
+  autoPublishImports     Boolean          @default(false)
+  archiveMissingAtSource Boolean          @default(true)
+  importCondition        ProductCondition @default(USED)
+  importDefaultQuantity  Int              @default(1)
+  /// null = manual only; otherwise the cron sync runs this shop every N minutes.
+  syncIntervalMinutes    Int?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   users      User[]
   products   Product[]
   facilities LabFacility[] @relation("FacilityOwner")
+  importRuns ImportRun[]
 
   @@index([isFeatured])
 }
@@ -579,7 +686,62 @@ model Product {
   hasImages    Boolean  @default(false)
   illustration String?
   yearMade     Int?
+  /// Item warranty scope / terms ("parts and labour, functional defects").
   warrantyText String?
+  /// Item warranty length: null = use the condition grade default,
+  /// 0 = explicitly no warranty (sold as-is), > 0 = months.
+  warrantyMonths Int?
+  /// Free-text condition notes (cosmetic marks, missing accessories, hours…).
+  conditionNotes String?
+  /// Inspection evidence. The product page claims an inspection only when the
+  /// item has one recorded (and, by default, a report attached).
+  inspectedAt         DateTime?
+  inspectionReportUrl String?
+  inspectionNotes     String?
+  /// Own stock number and the manufacturer part number (structured data / search).
+  sku String?
+  mpn String?
+
+  /// Supplier sync identity + field ownership (WooCommerce importer).
+  /// (companyId, externalSource, externalId) identifies the unit at its source,
+  /// so two shops that use the same slug never overwrite each other.
+  externalSource     String?
+  externalId         String?
+  sourceSlug         String?
+  /// The supplier's original photo URLs (provenance); `images` holds our copies.
+  sourceImageUrls    String[]  @default([])
+  /// Last availability reported by the source: instock | outofstock | onbackorder | removed.
+  sourceAvailability String?
+  lastSyncedAt       DateTime?
+  /// Set when the item disappeared from the source (it is archived, never re-published by sync).
+  removedAtSourceAt  DateTime?
+  /// Fields the supplier sync must never overwrite (title, summary, description, images, price).
+  lockedFields       String[]  @default([])
+
+  // 4_business_core — inputs for the VAT engine (lib/tax) and the shipping
+  // quote (lib/shipping). MARGIN = second-hand goods bought without
+  // deductible VAT, sold under the margin scheme when that setting is on.
+  vatScheme     ProductVatScheme @default(STANDARD)
+  /// 8e: purchase cost of a margin-scheme unit (cents, excl. nothing — what was paid for it); the margin VAT is computed from it.
+  purchaseCostCents Int?
+  shippingClass ShippingClass?
+  weightKg      Float?
+
+  /// 7a: the public sell price (shop markup applied; null when the price is
+  /// hidden / quote only). Maintained by a DB trigger that mirrors
+  /// lib/pricing/resolve.ts — never written by application code. Used for
+  /// price filters, sorting and every public price surface (A08).
+  displayPriceCents Int?
+
+  /// 8f: a supplier price change larger than the review thresholds (Settings →
+  /// Import & suppliers) waits here for an admin (Admin → Catalog → Price
+  /// review) instead of going live. priceOnHold = the listing cannot be bought
+  /// and shows no price meanwhile (displayPriceCents is NULL — DB trigger).
+  pendingPriceCents    Int?
+  pendingPriceCurrency String?
+  pendingPriceAt       DateTime?
+  pendingPriceNote     String?
+  priceOnHold          Boolean   @default(false)
 
   categoryId String
   category   Category @relation(fields: [categoryId], references: [id])
@@ -599,13 +761,53 @@ model Product {
   wishlistedBy     WishlistItem[]
   cartItems        CartItem[]        @relation("ProductCartItems")
   reviews          Review[]          @relation("ProductReviews")
+  reservations     StockReservation[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([companyId, externalSource, externalId])
   @@index([status])
   @@index([categoryId])
   @@index([sellerId])
+  @@index([status, displayPriceCents])
+  @@index([pendingPriceAt])
+}
+
+/// Admin-managed meaning of each product condition: buyer-facing label and
+/// explanation, schema.org itemCondition, and the default warranty an item of
+/// this condition gets when it has no item-level warranty of its own.
+/// A NULL / 0 default warranty means "no warranty unless stated on the item".
+model ConditionGrade {
+  code                  ProductCondition @id
+  label                 String
+  description           String?
+  /// schema.org itemCondition value: NewCondition | RefurbishedCondition | UsedCondition | DamagedCondition
+  schemaOrgCondition    String
+  defaultWarrantyMonths Int?
+  warrantyScope         String?
+  sortOrder             Int              @default(0)
+  updatedAt             DateTime         @updatedAt
+}
+
+/// One supplier sync / import run (dry run or real) with its full report.
+model ImportRun {
+  id         String    @id @default(cuid())
+  companyId  String
+  company    Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  dryRun     Boolean   @default(false)
+  /// ADMIN | CRON | CLI
+  trigger    String
+  /// RUNNING | SUCCEEDED | FAILED | BLOCKED
+  status     String
+  actorEmail String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  counts     Json?
+  items      Json?
+  error      String?
+
+  @@index([companyId, startedAt])
 }
 
 // ─── Sourcing / Quotes ──────────────────────────────────────
@@ -668,6 +870,41 @@ model SourcingRequest {
   lastReplyAt      DateTime?
   lastReplyByStaff Boolean  @default(false)
 
+  // 4_business_core — offer snapshot: the exact totals the buyer was shown,
+  // stored when the offer is sent (revision bumps on every re-send) so a later
+  // VAT/shipping settings change can never alter an offer already emailed.
+  offerRevision      Int           @default(0)
+  offerSubtotalCents Int?
+  offerShippingCents Int?
+  offerVatTreatment  VatTreatment?
+  offerVatRateBp     Int?
+  offerVatCents      Int?
+  offerTotalCents    Int?
+  /// { incoterm, incotermPlace, leadTime, warranty, paymentTerms, ... }
+  offerTerms         Json?
+
+  // 7b_quotes_payment — supplier proposals (A30): an assigned seller's price
+  // goes to lab2date for review/margin before the buyer sees an offer.
+  /// PENDING | APPROVED | REJECTED (null = no proposal)
+  sellerProposalStatus     String?
+  sellerProposalCents      Int?
+  sellerProposalCurrency   String?
+  sellerProposalNote       String?
+  /// { leadTime, warranty } suggested by the supplier
+  sellerProposalTerms      Json?
+  sellerProposalAt         DateTime?
+  sellerProposalById       String?
+  sellerProposalReviewNote String?
+  /// Supplier cost behind the current offer (internal margin view; never shown to the buyer).
+  offerSupplierCostCents   Int?
+  /// Why the deal ended without a sale (buyer decline reason, cancellation reason).
+  lostReason               String?
+  lostNote                 String?
+
+  /// The order created when the offer was accepted (Order.sourcingRequestId,
+  /// FK ON DELETE RESTRICT: a quote with an order can't be hard-deleted).
+  order Order?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -721,9 +958,62 @@ model Order {
   stripeSessionId       String? @unique
   stripePaymentIntentId String? @unique
   sourcingRequestId     String? @unique
+  /// FK added in 4_business_core with ON DELETE RESTRICT (A05).
+  sourcingRequest       SourcingRequest? @relation(fields: [sourcingRequestId], references: [id], onDelete: Restrict)
 
   shippingAddress Json?
   billingAddress  Json?      // separate from shipping; from Stripe charge.billing_details
+
+  // ── 4_business_core: tax (set by lib/tax at pricing time; null = legacy order
+  // priced before the VAT engine existed) ──
+  vatTreatment  VatTreatment?
+  /// Exact rate in basis points (2100 = 21%). Never derived back from cents.
+  vatRateBp     Int?
+  vatDecidedAt  DateTime?
+  /// Why this treatment applied (engine reasons, or the staff decision).
+  vatNote       String?
+  buyerVatId    String?
+  /// The VIES result the decision relied on { status, name, consultationNumber, checkedAt, ... }.
+  viesCheck     Json?
+  /// Shipping follows the VAT treatment of the goods (TAX_SHIPPING_FOLLOWS_MAIN_SUPPLY).
+  shippingTaxed Boolean       @default(true)
+  supplyDate    DateTime?
+  /// { kind: PREPAY_100 | NET_X | DEPOSIT, netDays?, depositPct?, text? }
+  paymentTerms  Json?
+  /// Payment due date printed on the proforma (single source for reminders/sweeps).
+  dueAt         DateTime?
+
+  // ── 4_business_core: money state, separate from the fulfilment `status`.
+  // A DB trigger derives it from `status` whenever a write changes `status`
+  // without setting it explicitly (keeps legacy code paths consistent). ──
+  financialStatus     FinancialStatus  @default(UNPAID)
+  amountPaidCents     Int              @default(0)
+  amountRefundedCents Int              @default(0)
+  holdReason          OrderHoldReason?
+  holdNote            String?
+  holdAt              DateTime?
+  /// Copy of the proforma number the buyer used as payment reference.
+  proformaNumber      String?
+
+  // ── 7a_checkout_pricing: what the buyer declared and saw at checkout ──
+  /// BUSINESS | INSTITUTION | CONSUMER as declared at checkout (SALES_MODE).
+  customerType        CustomerType?
+  /// When the buyer ticked the B2B declaration (B2B_DECLARATION_TEXT).
+  b2bDeclarationAt    DateTime?
+  /// Buyer's purchase-order number (CHECKOUT_PO_NUMBER).
+  poNumber            String?
+  /// Where invoices / credit notes are sent (falls back to the account email).
+  invoiceEmail        String?
+  /// VAT rate applied to the shipping charge (may differ from vatRateBp).
+  shippingVatRateBp   Int?
+  /// Evidence of the price the buyer was shown and accepted: lines, shipping
+  /// quote, VAT decision + reasons, VIES answer, country policy, display mode.
+  pricingSnapshot     Json?
+  /// When the order became payable (created without a hold, or hold released).
+  /// The unpaid-order sweep counts from here.
+  payableSince        DateTime?
+  /// Every open pre-payment hold (holdReason is the first of them).
+  openHolds           String[]   @default([])
   trackingCarrier String?
   trackingNumber  String?
   shippedAt       DateTime?
@@ -765,11 +1055,19 @@ model Order {
   paymentVerifiedById       String?
   paymentRejectionReason    String?
 
-  items OrderItem[]
+  items          OrderItem[]
+  documents      FiscalDocument[]
+  payments       Payment[]
+  refunds        Refund[]
+  shipments      Shipment[]
+  reservations   StockReservation[]
+  returnRequests ReturnRequest[]
+  addressChanges AddressChange[]
 
   @@index([buyerId])
   @@index([status])
   @@index([createdAt])
+  @@index([proformaNumber])
   // Partial raw DB indexes (WHERE col IS NOT NULL) on [archivedAt],
   // [paymentVerificationStatus] — managed in the baseline migration.
 }
@@ -790,6 +1088,525 @@ model OrderItem {
   brandSnapshot      String?
   priceCentsSnapshot Int
   quantity           Int     @default(1)
+  /// What was promised at the moment of sale (never recomputed later).
+  conditionSnapshot      String?
+  warrantySnapshot       String?
+  warrantyMonthsSnapshot Int?
+
+  // 4_business_core — price + tax provenance of the line (null on legacy rows).
+  /// GOODS | SHIPPING | SERVICE | DISCOUNT
+  lineType        String  @default("GOODS")
+  /// Supplier/base price before the shop markup (lib/pricing/resolve).
+  basePriceCents  Int?
+  appliedMarkupBp Int?
+  vatRateBp       Int?
+  taxCents        Int?
+
+  /// 8c: which shipments carried this line (partial shipments).
+  shipmentItems ShipmentItem[]
+
+  @@index([orderId])
+}
+
+// ─── Business core (migration 4_business_core) ─────────────────────────────
+// Fiscal documents, tax, payments/refunds ledger, stock reservations,
+// shipping, country policy, returns. Libraries: src/lib/{tax,documents,pricing,
+// shipping,compliance,stock}. See INTEGRATION.md.
+
+enum VatTreatment {
+  DOMESTIC_STANDARD  // home-country VAT (NL 21%) on goods + shipping
+  EU_ICS_ZERO        // intra-Community supply to an EU business with a valid VAT ID: 0%
+  EU_B2C_HOME        // EU buyer without a valid VAT ID, not under OSS: home rate
+  EU_B2C_OSS         // EU consumer under the One-Stop-Shop: destination-country rate
+  EXPORT_ZERO        // goods leave the EU: 0%
+  MARGIN_SCHEME      // second-hand goods margin scheme: no VAT shown separately
+  REVIEW_REQUIRED    // rules could not decide (VIES down, unknown country…): staff decide
+  LEGACY_UNSPECIFIED // priced before the VAT engine existed
+}
+
+enum ProductVatScheme {
+  STANDARD
+  MARGIN
+}
+
+enum FiscalDocumentKind {
+  PROFORMA
+  INVOICE
+  CREDIT_NOTE
+}
+
+enum FinancialStatus {
+  UNPAID
+  UNDER_REVIEW
+  PARTIALLY_PAID
+  PAID
+  INVOICED_ON_TERMS
+  CREDIT_APPROVED
+  OVERDUE
+  PARTIALLY_REFUNDED
+  REFUNDED
+  VOID
+}
+
+enum OrderHoldReason {
+  VAT_REVIEW
+  COMPLIANCE
+  ADDRESS_REVIEW
+  SHIPPING_PENDING
+  SUPPLIER_CONFIRMATION
+  FRAUD
+  /// 7a: money received does not match the order (e.g. Stripe amount/currency mismatch).
+  PAYMENT_REVIEW
+  /// 8e: paid, but the invoice could not be issued (missing legal details / technical error).
+  INVOICE_PENDING
+}
+
+enum CountryShipPolicy {
+  ALLOW
+  REVIEW
+  BLOCK
+}
+
+enum ShippingClass {
+  PARCEL
+  PALLET
+  FREIGHT_QUOTE
+}
+
+enum ShippingRateBasis {
+  FLAT
+  PER_ITEM
+  PER_KG
+}
+
+enum StockReservationSource {
+  ORDER
+  QUOTE
+  CART
+}
+
+enum RefundStatus {
+  REQUESTED  // approved, money not moved yet
+  SENT       // transfer / Stripe refund initiated
+  CONFIRMED  // money confirmed out
+  FAILED
+  CANCELED
+}
+
+enum ReturnType {
+  RETURN
+  TRANSPORT_DAMAGE
+  NOT_AS_DESCRIBED
+  WARRANTY
+  WITHDRAWAL
+  CANCELLATION
+}
+
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  DENIED
+  LABEL_SENT
+  IN_TRANSIT
+  RECEIVED
+  INSPECTED
+  RESOLVED
+  CANCELED
+}
+
+enum PaymentSource {
+  MANUAL
+  STRIPE
+  LEGACY
+}
+
+enum CustomerType {
+  BUSINESS
+  INSTITUTION
+  CONSUMER
+}
+
+/// Gap-free counter per document series and fiscal year. Allocated ONLY inside
+/// the transaction that inserts the FiscalDocument (lib/documents/issue.ts):
+/// the row lock serialises concurrent issuers and a rollback un-allocates.
+model InvoiceSequence {
+  id         String   @id @default(cuid())
+  /// INVOICE | CREDIT_NOTE | PROFORMA
+  series     String
+  fiscalYear Int
+  nextValue  Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([series, fiscalYear])
+}
+
+/// An issued commercial document. IMMUTABLE once inserted: a DB trigger rejects
+/// any change to its number, amounts or snapshot, and every DELETE. The PDF is
+/// rendered from `snapshot` only, stored once (pdfKey + sha256) and downloads
+/// stream those stored bytes. Corrections = a CREDIT_NOTE (invoices) or a new
+/// proforma revision (supersededById on the old one).
+model FiscalDocument {
+  id                 String             @id @default(cuid())
+  kind               FiscalDocumentKind
+  number             String             @unique
+  /// INVOICE | CREDIT_NOTE | PROFORMA | LEGACY (frozen pre-4_business_core docs)
+  series             String
+  fiscalYear         Int
+  /// Position in the series; null for LEGACY frozen documents.
+  seq                Int?
+  /// Proforma revision (1, 2, …); invoices and credit notes are always 1.
+  version            Int                @default(1)
+  orderId            String?
+  order              Order?             @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  sourcingRequestId  String?
+  originalDocumentId String?
+  originalDocument   FiscalDocument?    @relation("CreditNoteOf", fields: [originalDocumentId], references: [id], onDelete: Restrict)
+  creditNotes        FiscalDocument[]   @relation("CreditNoteOf")
+  supersededById     String?
+  issueDate          DateTime
+  supplyDate         DateTime?
+  dueDate            DateTime?
+  currency           String
+  vatTreatment       VatTreatment
+  subtotalCents      Int
+  taxCents           Int
+  totalCents         Int
+  /// { seller, buyer, shipTo, lines, vat: { treatment, breakdown[], legalText }, totals, texts, refs, payment }
+  snapshot           Json
+  pdfKey             String?
+  sha256             String?
+  pdfBytes           Int?
+  sentAt             DateTime?
+  /// Proformas only (canceled / superseded). Invoices are corrected by credit notes.
+  voidedAt           DateTime?
+  voidReason         String?
+  legacy             Boolean            @default(false)
+  issuedById         String?
+  createdAt          DateTime           @default(now())
+
+  refunds Refund[]
+
+  @@unique([series, fiscalYear, seq])
+  @@index([orderId])
+  @@index([kind, issueDate])
+  @@index([sourcingRequestId])
+}
+
+/// Buyer billing identity (per user now, per organisation later — B03).
+model BillingProfile {
+  id              String         @id @default(cuid())
+  userId          String         @unique
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  customerType    CustomerType   @default(BUSINESS)
+  legalName       String
+  contactName     String?
+  vatId           String?
+  vatValidationId String?
+  vatValidation   VatValidation? @relation(fields: [vatValidationId], references: [id], onDelete: SetNull)
+  kvkNumber       String?
+  /// { line1, line2, postalCode, city, region, country }
+  address         Json
+  country         String
+  invoiceEmail    String?
+  phone           String?
+  poRequired      Boolean        @default(false)
+  // 7b_quotes_payment — credit terms (B07 minimal): only an approved buyer
+  // with a credit limit may pay on invoice (NET terms).
+  creditApproved      Boolean   @default(false)
+  creditLimitCents    Int?
+  creditTermDays      Int?
+  creditApprovedAt    DateTime?
+  creditApprovedById  String?
+  creditNote          String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+/// VIES (or manual) VAT-ID check — also the cache lib/tax/vies.ts reads.
+model VatValidation {
+  id                 String           @id @default(cuid())
+  /// Normalised, with country prefix: DE123456789, NL123456789B01, EL… for Greece.
+  vatId              String
+  countryCode        String
+  /// VALID | INVALID | UNAVAILABLE
+  status             String
+  name               String?
+  address            String?
+  consultationNumber String?
+  /// VIES | MANUAL
+  source             String           @default("VIES")
+  checkedById        String?
+  raw                Json?
+  checkedAt          DateTime         @default(now())
+  billingProfiles    BillingProfile[]
+
+  @@index([vatId, checkedAt])
+}
+
+/// Units held for an order / accepted quote / cart. Product.quantity stays the
+/// AVAILABLE count: reserve() decrements it (guarded) and creates this row in
+/// one transaction; release() claims the row once and increments it back;
+/// consume() marks the hold as sold (no restock).
+model StockReservation {
+  id            String                 @id @default(cuid())
+  productId     String
+  product       Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
+  qty           Int
+  source        StockReservationSource
+  /// orderId / sourcingRequestId / cart id, depending on `source`.
+  refId         String
+  orderId       String?
+  order         Order?                 @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  expiresAt     DateTime?
+  releasedAt    DateTime?
+  releaseReason String?
+  consumedAt    DateTime?
+  createdAt     DateTime               @default(now())
+
+  @@index([productId])
+  @@index([source, refId])
+  @@index([expiresAt])
+}
+
+model ShippingZone {
+  id        String         @id @default(cuid())
+  name      String
+  /// ISO-3166 alpha-2 codes; '*' = every country not matched by another zone.
+  countries String[]
+  active    Boolean        @default(true)
+  sortOrder Int            @default(0)
+  rates     ShippingRate[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+}
+
+model ShippingRate {
+  id             String            @id @default(cuid())
+  zoneId         String
+  zone           ShippingZone      @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  name           String
+  shippingClass  ShippingClass
+  basis          ShippingRateBasis @default(FLAT)
+  amountCents    Int
+  currency       String            @default("EUR")
+  freeAboveCents Int?
+  handlingCents  Int               @default(0)
+  minKg          Float?
+  maxKg          Float?
+  leadTimeText   String?
+  active         Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([zoneId])
+}
+
+model Shipment {
+  id                String    @id @default(cuid())
+  orderId           String
+  order             Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  /// 8c: 1, 2, ... within the order ("Shipment 2 of 2", packing slip PS-<order>-2).
+  seq               Int       @default(1)
+  carrier           String?
+  trackingNumber    String?
+  /// Built from the carrier's URL template (Settings -> Fulfilment) when the
+  /// tracking number was recorded: the same link in the email and on the page.
+  trackingUrl       String?
+  parcels           Int       @default(1)
+  grossKg           Float?
+  insured           Boolean   @default(false)
+  insuredValueCents Int?
+  incoterm          String?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  /// Proof of delivery (private S3 key).
+  podKey            String?
+  note              String?
+  createdById       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  // 8c: notifications sent for this shipment (A27) and who confirmed delivery.
+  shippedEmailAt    DateTime?
+  trackingEmailAt   DateTime?
+  deliveredEmailAt  DateTime?
+  /// BUYER | STAFF | CARRIER_POD
+  deliveredBy       String?
+  podUploadedAt     DateTime?
+  items             ShipmentItem[]
+
+  @@index([orderId])
+}
+
+/// 8c: the order lines (and quantities) packed in a shipment (partial shipments).
+model ShipmentItem {
+  id          String    @id @default(cuid())
+  shipmentId  String
+  shipment    Shipment  @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+  orderItemId String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  qty         Int       @default(1)
+  serial      String?
+
+  @@index([shipmentId])
+  @@index([orderItemId])
+}
+
+/// Ship-to / sell-to policy per country (A12/B13) + the EU flag and standard
+/// VAT rate the VAT engine needs (OSS). Seeded with SUGGESTED defaults the
+/// owner reviews in Admin → Settings → Compliance & countries.
+model CountryPolicy {
+  country           String            @id
+  name              String
+  isEu              Boolean           @default(false)
+  vatStandardRateBp Int?
+  mode              CountryShipPolicy @default(REVIEW)
+  note              String?
+  updatedById       String?
+  updatedAt         DateTime          @updatedAt
+}
+
+/// 7a (A12): every change of an order's shipping / billing address, old → new,
+/// with who made it and whether it needs (or got) staff review.
+model AddressChange {
+  id           String   @id @default(cuid())
+  orderId      String
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  /// SHIPPING | BILLING
+  kind         String
+  oldValue     Json?
+  newValue     Json
+  /// BUYER | STAFF
+  actorRole    String
+  actorId      String?
+  /// NONE | PENDING | APPROVED | REJECTED
+  reviewStatus String   @default("NONE")
+  /// Country policy + VAT re-check result at the time of the change.
+  note         String?
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model Refund {
+  id             String          @id @default(cuid())
+  orderId        String
+  order          Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  amountCents    Int
+  currency       String
+  /// STRIPE | BANK_TRANSFER | OTHER
+  method         String
+  status         RefundStatus    @default(REQUESTED)
+  reason         String?
+  creditNoteId   String?
+  creditNote     FiscalDocument? @relation(fields: [creditNoteId], references: [id], onDelete: Restrict)
+  restock        Boolean         @default(false)
+  stripeRefundId String?
+  bankRef        String?
+  /// When the money was sent (bank transfer date / Stripe refund created).
+  executedAt     DateTime?
+  proofKey       String?
+  overrideReason String?
+  createdById    String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  // 8c: refund ledger (A28): REQUESTED -> SENT (date + reference) -> CONFIRMED.
+  returnId         String?
+  returnRequest    ReturnRequest?  @relation(fields: [returnId], references: [id], onDelete: Restrict)
+  /// IBAN the money goes to (bank transfer).
+  payeeIban        String?
+  sentById         String?
+  confirmedAt      DateTime?
+  confirmedById    String?
+  /// Buyer emails "refund requested" / "refund sent" (each once).
+  requestedEmailAt DateTime?
+  sentEmailAt      DateTime?
+
+  @@index([orderId])
+  @@index([status])
+}
+
+/// RMA (B14). Restock happens on inspected receipt, never on refund.
+model ReturnRequest {
+  id              String       @id @default(cuid())
+  rmaNumber       String       @unique
+  orderId         String
+  order           Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  type            ReturnType   @default(RETURN)
+  status          ReturnStatus @default(REQUESTED)
+  reasonCode      String?
+  description     String
+  attachments     String[]     @default([])
+  decisionReason  String?
+  receivedAt      DateTime?
+  /// RESELL | REFURBISH | SCRAP
+  inspectionGrade String?
+  /// FULL_REFUND | PARTIAL_REFUND | REPLACEMENT | REPAIR | CREDIT | NONE
+  outcome         String?
+  ticketId        String?
+  createdById     String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  items           ReturnItem[]
+  // 8c: RMA workflow (approve / reject -> receive -> inspect -> resolve).
+  /// BUYER | STAFF (opened on the buyer's behalf)
+  openedBy        String       @default("BUYER")
+  decidedAt       DateTime?
+  decidedById     String?
+  /// Return instructions as sent to the buyer (Settings text, frozen).
+  instructions    String?
+  /// Return label / extra instructions file (private S3 key).
+  labelKey        String?
+  /// The buyer keeps the goods (e.g. transport damage settled by a partial refund).
+  noReturnNeeded  Boolean      @default(false)
+  returnCarrier   String?
+  returnTracking  String?
+  receivedById    String?
+  inspectedAt     DateTime?
+  inspectedById   String?
+  inspectionNote  String?
+  /// Units put back into sellable stock at inspection (0 = none).
+  restockedQty    Int          @default(0)
+  resolvedAt      DateTime?
+  resolvedById    String?
+  resolutionNote  String?
+  refunds         Refund[]
+
+  @@index([orderId])
+  @@index([status])
+}
+
+model ReturnItem {
+  id          String        @id @default(cuid())
+  returnId    String
+  returnReq   ReturnRequest @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  orderItemId String
+  qty         Int           @default(1)
+  serial      String?
+
+  @@index([returnId])
+}
+
+/// Money actually received (B06 ledger). Order.amountPaidCents = sum of these.
+model Payment {
+  id                    String        @id @default(cuid())
+  orderId               String
+  order                 Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  amountCents           Int
+  currency              String
+  /// BANK_TRANSFER | STRIPE | OTHER
+  method                String
+  receivedAt            DateTime
+  reference             String?
+  payerName             String?
+  proofKey              String?
+  source                PaymentSource @default(MANUAL)
+  stripePaymentIntentId String?
+  verifiedById          String?
+  note                  String?
+  createdAt             DateTime      @default(now())
 
   @@index([orderId])
 }
@@ -949,6 +1766,12 @@ model CaseStudy {
   status      ContentStatus @default(DRAFT)
   publishedAt DateTime?
 
+  // Proof the customer approved this case study (who, when, how). With
+  // REQUIRE_CONSENT_TO_PUBLISH on, it cannot be published without it.
+  consentBy   String?
+  consentAt   DateTime?
+  consentNote String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1021,6 +1844,8 @@ model SellSubmission {
   paymentReceiptUrl String?
 
   messages SellMessage[]
+  /// 8c (A23): every payout-bank change, incl. ones waiting for staff review.
+  bankChanges BankDetailsChange[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1029,6 +1854,33 @@ model SellSubmission {
   @@index([email])
   @@index([submittedById])
   @@index([acquisitionStage])
+}
+
+/// 8c (A23): history of the seller's payout bank details. Before the lock stage
+/// (Settings -> Acquisitions) a change is APPLIED at once; after it, the change
+/// waits as PENDING_REVIEW (staff call the seller back on a known number) and
+/// the payout is blocked until it is approved or rejected.
+model BankDetailsChange {
+  id                String         @id @default(cuid())
+  submissionId      String
+  submission        SellSubmission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+  oldValue          Json?
+  newValue          Json
+  /// APPLIED | PENDING_REVIEW | REJECTED
+  status            String
+  stageAtRequest    String?
+  ibanValid         Boolean        @default(false)
+  holderMatches     Boolean        @default(false)
+  requestedById     String?
+  requestedByEmail  String?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  reviewNote        String?
+  callbackConfirmed Boolean        @default(false)
+  createdAt         DateTime       @default(now())
+
+  @@index([submissionId])
+  @@index([status])
 }
 
 model SellMessage {
@@ -1066,4 +1918,179 @@ model BlockedSupplier {
   blockedAt DateTime @default(now())
 
   @@index([blockedAt])
+}
+
+// -------- Security & platform (migration 5_security_platform) --------
+
+/// better-auth twoFactor plugin table (TOTP secret + backup codes, both
+/// encrypted with BETTER_AUTH_SECRET by better-auth).
+model TwoFactor {
+  id          String   @id
+  secret      String
+  backupCodes String
+  userId      String
+  verified    Boolean? @default(true)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([secret])
+  @@map("two_factor")
+}
+
+/// Persistent counters for rate limits and sign-in lockouts (survive
+/// restarts; expired rows are purged by the security sweep).
+model RateLimitBucket {
+  key         String    @id
+  count       Int       @default(0)
+  resetAt     DateTime
+  /// Set while a lockout is active (sign-in failures per account).
+  lockedUntil DateTime?
+  /// Lockouts so far in the current escalation chain (exponential backoff).
+  lockCount   Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@index([resetAt])
+  @@map("rate_limit_bucket")
+}
+
+/// Staff onboarding: a super-admin invites an e-mail address with a role
+/// preset; the person accepts while signed in with that (verified) address.
+model StaffInvite {
+  id             String    @id @default(cuid())
+  email          String
+  preset         String
+  caps           String[]
+  tokenHash      String    @unique
+  expiresAt      DateTime
+  invitedById    String
+  invitedByEmail String
+  acceptedAt     DateTime?
+  acceptedUserId String?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([email])
+  @@map("staff_invite")
+}
+
+/// One announcement / offer broadcast. E-mails are sent by a background
+/// worker in batches (AnnouncementDelivery rows), never inside the request.
+model AnnouncementJob {
+  id             String    @id @default(cuid())
+  title          String
+  body           String
+  href           String?
+  kind           String // OFFER | ANNOUNCEMENT | SYSTEM
+  audience       String // ALL (buyers + suppliers) | BUYER | SELLER
+  /// MARKETING (consent / soft opt-in required, unsubscribe) or SERVICE.
+  category       String
+  emailRequested Boolean   @default(false)
+  status         String    @default("QUEUED") // QUEUED | RUNNING | DONE | CANCELLED | FAILED
+  inAppCount     Int       @default(0)
+  total          Int       @default(0)
+  sent           Int       @default(0)
+  failed         Int       @default(0)
+  skipped        Int       @default(0)
+  lastError      String?
+  lockedUntil    DateTime?
+  createdById    String?
+  createdByEmail String?
+  createdAt      DateTime  @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+
+  deliveries AnnouncementDelivery[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("announcement_job")
+}
+
+model AnnouncementDelivery {
+  id        String          @id @default(cuid())
+  jobId     String
+  job       AnnouncementJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  userId    String?
+  email     String
+  status    String          @default("PENDING") // PENDING | SENDING | SENT | FAILED | SKIPPED
+  reason    String?
+  claimedAt DateTime?
+  sentAt    DateTime?
+
+  @@unique([jobId, email])
+  @@index([jobId, status])
+  @@map("announcement_delivery")
+}
+
+/// Addresses that must not receive a category of mail (unsubscribe, later
+/// bounces / complaints). Checked before every marketing send.
+model EmailSuppression {
+  email     String
+  scope     String // MARKETING
+  reason    String // UNSUBSCRIBE | ADMIN | BOUNCE | COMPLAINT
+  createdAt DateTime @default(now())
+
+  @@id([email, scope])
+  @@map("email_suppression")
+}
+
+/// Consent history (GDPR art. 7(1): be able to show when and how consent
+/// was given or withdrawn).
+model ConsentEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  email     String
+  kind      String // MARKETING_EMAIL
+  action    String // GRANTED | WITHDRAWN
+  source    String // preferences | unsubscribe-link | one-click | admin
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([userId])
+  @@map("consent_event")
+}
+
+/// One run of scripts/backup-v2.sh, reported by the script itself.
+model BackupRun {
+  id           String    @id @default(cuid())
+  startedAt    DateTime
+  finishedAt   DateTime?
+  status       String // RUNNING | OK | FAILED
+  host         String?
+  target       String?
+  archiveName  String?
+  archiveBytes BigInt?
+  dbBytes      BigInt?
+  mediaBytes   BigInt?
+  mediaObjects Int?
+  sha256       String?
+  verified     Boolean   @default(false)
+  error        String?
+  log          String?
+  createdAt    DateTime  @default(now())
+
+  @@index([startedAt])
+  @@map("backup_run")
+}
+
+/// 7b_quotes_payment — every automatic reminder / notice is sent at most once
+/// (payment due, overdue, auto-cancel, offer expiry), whatever the sweep does.
+model ReminderLog {
+  id          String   @id @default(cuid())
+  /// ORDER | QUOTE
+  subjectType String
+  subjectId   String
+  /// PAYMENT_DUE_SOON | PAYMENT_OVERDUE | ORDER_AUTO_CANCELED | OFFER_EXPIRING | OFFER_EXPIRED_STAFF
+  kind        String
+  /// Days-before (or 0) — one row per configured step.
+  step        Int      @default(0)
+  sentAt      DateTime @default(now())
+  /// Whether the buyer email was accepted by the mail server.
+  emailOk     Boolean  @default(false)
+  detail      String?
+
+  @@unique([subjectType, subjectId, kind, step])
+  @@index([sentAt])
 }

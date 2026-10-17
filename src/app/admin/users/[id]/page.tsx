@@ -1,24 +1,28 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { ChevronRight, ShieldOff, ShieldCheck, Trash2, KeyRound, AlertOctagon } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { ChevronRight, AlertOctagon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import { requireCapability } from '@/lib/auth-server';
+import { requireCapability, getAdminCaps } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { adminDetailTitle } from '@/app/admin/admin-title';
 import { formatPrice } from '@/lib/utils';
-import {
-  setUserRole,
-  setUserCaps,
-  suspendUser,
-  unsuspendUser,
-  deleteUser,
-} from '../../actions';
+import { setUserRole, setUserCaps, unsuspendUser, resetTwoFactorForUser } from '../../actions';
 import { AdminUserDangerZone } from '@/components/admin/AdminUserDangerZone';
-import { CAPABILITIES, CAPABILITY_PRESETS } from '@/lib/capabilities';
-import { hasCapability } from '@/lib/auth-server';
+import {
+  CAPABILITIES,
+  CAPABILITY_INFO,
+  CAPABILITY_PRESETS,
+  SUPER_ADMIN_ONLY_CAPS,
+  canGrantCapability,
+  capsAllow,
+  capsChangeProblems,
+} from '@/lib/capabilities';
 import { UserRole } from '@prisma/client';
 import { RoleSelect } from '../RoleSelect';
+import { UserAccessPanel } from '@/components/admin/UserAccessPanel';
+import { UnsuspendButton } from '@/components/admin/UnsuspendButton';
+import { getSecurityPolicy } from '@/lib/security/policy';
+import { countOtherActiveSuperAdmins } from '@/lib/security/alerts';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,13 +36,20 @@ export function generateMetadata(props: { params: Promise<{ id: string }> }) {
 
 async function updateRole(formData: FormData) {
   'use server';
-  return setUserRole(String(formData.get('userId')), formData.get('role') as UserRole);
+  return setUserRole(
+    String(formData.get('userId')),
+    formData.get('role') as UserRole,
+    (formData.get('preset') as string | null) || null,
+  );
 }
 
 export default async function AdminUserDetailPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  await requireCapability('users:view');
-  const canManageUsers = await hasCapability('users:manage');
+  const viewer = await requireCapability('users:view');
+  const viewerCaps = await getAdminCaps();
+  const can = (c: string) => capsAllow(viewerCaps, c);
+  const canManageUsers = can('users:manage');
+  const policy = await getSecurityPolicy();
 
   const user = await prisma.user.findUnique({
     where: { id: params.id },
@@ -49,24 +60,31 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
   const uid = user.id;
   const mail = user.email;
 
+  const none = Promise.resolve([] as never[]);
   const [orders, sourcing, sells, tickets, threads, reviews, wishlist, notifs, carts] =
     await Promise.all([
-      prisma.order.findMany({
-        where: { buyerId: user.id },
-        orderBy: { createdAt: 'desc' },
-        include: { items: { select: { titleSnapshot: true, quantity: true } } },
-      }),
-      prisma.sourcingRequest.findMany({
-        where: { OR: [{ submittedById: uid }, { buyerEmail: mail }] },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, description: true, status: true, quotedPriceCents: true, createdAt: true },
-      }),
-      prisma.sellSubmission.findMany({
-        where: { OR: [{ submittedById: uid }, { email: mail }] },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, itemTitle: true, status: true, phone: true, createdAt: true },
-      }),
-      prisma.supportTicket.findMany({
+      can('orders:view')
+        ? prisma.order.findMany({
+            where: { buyerId: user.id },
+            orderBy: { createdAt: 'desc' },
+            include: { items: { select: { titleSnapshot: true, quantity: true } } },
+          })
+        : none,
+      can('quotes:view')
+        ? prisma.sourcingRequest.findMany({
+            where: { OR: [{ submittedById: uid }, { buyerEmail: mail }] },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true, description: true, status: true, quotedPriceCents: true, createdAt: true },
+          })
+        : none,
+      can('sell:view')
+        ? prisma.sellSubmission.findMany({
+            where: { OR: [{ submittedById: uid }, { email: mail }] },
+            orderBy: { createdAt: 'desc' },
+            select: { id: true, itemTitle: true, status: true, phone: true, createdAt: true },
+          })
+        : none,
+      !can('tickets:view') ? none : prisma.supportTicket.findMany({
         where: { OR: [{ submittedById: uid }, { email: mail }] },
         orderBy: { createdAt: 'desc' },
         select: {
@@ -75,7 +93,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
           _count: { select: { messages: true } },
         },
       }),
-      prisma.messageThread.findMany({
+      !can('messages:view') ? none : prisma.messageThread.findMany({
         where: { OR: [{ buyerId: user.id }, { sellerId: user.id }] },
         orderBy: { lastMessageAt: 'desc' },
         select: {
@@ -100,6 +118,38 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
     .filter((o) => ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(o.status))
     .reduce((s, o) => s + o.totalCents, 0);
 
+  // Access panel: what the viewer may change for this admin (the server
+  // re-checks everything in src/lib/security/user-access.ts).
+  const isSelf = user.id === viewer.user.id;
+  const accessProblems =
+    user.role === 'ADMIN' && canManageUsers
+      ? capsChangeProblems({
+          actorId: viewer.user.id,
+          actorCaps: viewerCaps,
+          targetId: user.id,
+          targetRole: user.role,
+          targetCaps: user.adminCaps,
+          nextCaps: user.adminCaps,
+          otherActiveSuperAdmins: await countOtherActiveSuperAdmins(user.id),
+        })
+      : [];
+  const capRows = [
+    { cap: '*', info: 'Super-admin — everything, including granting admin rights', grantable: viewerCaps.includes('*'), superOnly: true },
+    ...CAPABILITIES.map((c) => ({
+      cap: c,
+      info: CAPABILITY_INFO[c],
+      grantable: canGrantCapability(viewerCaps, c),
+      superOnly: (SUPER_ADMIN_ONLY_CAPS as readonly string[]).includes(c),
+    })),
+  ];
+  const presetRows = Object.entries(CAPABILITY_PRESETS).map(([key, p]) => ({
+    key,
+    label: p.label,
+    caps: p.caps,
+    grantable: p.caps.every((c) => canGrantCapability(viewerCaps, c)),
+  }));
+  const canPromote = canManageUsers && (!policy.ONLY_SUPER_ADMIN_CREATES_ADMINS || viewerCaps.includes('*'));
+
   return (
     <div className="space-y-6">
       <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
@@ -121,14 +171,22 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
               </Badge>
             )}
             {user.company && <span>· {user.company.name}</span>}
-            {phone && <span>· ☎ {phone}</span>}
+            {phone && can('sell:view') && <span>· ☎ {phone}</span>}
             <span>· Joined {new Date(user.createdAt).toLocaleDateString('en-US', { dateStyle: 'medium' })}</span>
             <span>· {user.emailVerified ? 'Email verified' : 'Email unverified'}</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <RoleSelect userId={user.id} current={user.role} action={updateRole} />
-        </div>
+        {canManageUsers && !isSelf && (user.role !== 'ADMIN' || accessProblems.length === 0) && (
+          <div className="flex items-center gap-2">
+            <RoleSelect
+              userId={user.id}
+              current={user.role}
+              action={updateRole}
+              presets={presetRows.map(({ key, label, grantable }) => ({ key, label, grantable }))}
+              canPromote={canPromote}
+            />
+          </div>
+        )}
       </div>
       {user.suspendedAt && (
         <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-amber-900 dark:text-amber-300 flex items-start gap-3">
@@ -138,14 +196,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
             <p className="mt-1">
               Sign-in is blocked. Reason: <strong>{user.suspendedReason || '—'}</strong>
             </p>
-            {canManageUsers && (
-              <form action={unsuspendUser} className="mt-3">
-                <input type="hidden" name="userId" value={user.id} />
-                <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium">
-                  <ShieldCheck className="h-3.5 w-3.5" /> Lift suspension
-                </Button>
-              </form>
-            )}
+            {canManageUsers && <UnsuspendButton userId={user.id} action={unsuspendUser} />}
           </div>
         </div>
       )}
@@ -155,77 +206,58 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
           email={user.email}
           suspended={!!user.suspendedAt}
           isAdmin={user.role === 'ADMIN'}
+          blockedReason={
+            isSelf
+              ? 'This is your own account — suspend or delete it is not possible from here.'
+              : user.role === 'ADMIN' && accessProblems.length
+                ? accessProblems.join(' ')
+                : null
+          }
         />
       )}
       {canManageUsers && user.role === 'ADMIN' && (
-        <div className="rounded-2xl border border-border bg-card p-5">
-          <p className="text-sm font-bold mb-1">Admin capabilities</p>
-          <p className="text-xs text-muted-foreground mb-4">
-            Scope what this admin can do. <code className="font-mono">*</code> = super-admin (everything).
-            Current: <span className="font-mono text-foreground">{user.adminCaps.join(', ') || '(none)'}</span>
-          </p>
-
-          <form action={setUserCaps} className="space-y-4">
-            <input type="hidden" name="userId" value={user.id} />
-
-            <div>
-              <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
-                Apply a preset (one-click role)
-              </p>
-              <div className="flex gap-3 flex-wrap">
-                {Object.entries(CAPABILITY_PRESETS).map(([key, p]) => (
-                  <button
-                    key={key}
-                    type="submit"
-                    name="preset"
-                    value={key}
-                    className="rounded-full border border-border px-3 py-1.5 text-xs font-semibold hover:bg-muted"
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <details>
-              <summary className="text-xs font-bold uppercase tracking-wider text-muted-foreground cursor-pointer">
-                Or pick individual capabilities
-              </summary>
-              <div className="mt-3 grid sm:grid-cols-2 gap-1.5">
-                {CAPABILITIES.map((c) => (
-                  <label key={c} className="inline-flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      name="cap"
-                      value={c}
-                      defaultChecked={user.adminCaps.includes(c) || user.adminCaps.includes('*')}
-                      className="accent-primary"
-                    />
-                    <code className="font-mono text-xs">{c}</code>
-                  </label>
-                ))}
-              </div>
-              <button
-                type="submit"
-                className="mt-3 rounded-full bg-primary text-primary-foreground px-4 py-1.5 text-xs font-semibold"
-              >
-                Save selected
-              </button>
-            </details>
-          </form>
-        </div>
+        <UserAccessPanel
+          userId={user.id}
+          email={user.email}
+          caps={user.adminCaps}
+          capRows={capRows}
+          presets={presetRows}
+          canEdit={!isSelf && accessProblems.length === 0}
+          editBlockedReason={isSelf ? 'This is your own account — another super-admin has to change your permissions.' : accessProblems.join(' ') || null}
+          twoFactorEnabled={!!user.twoFactorEnabled}
+          twoFactorRequired={policy.TWO_FACTOR_REQUIRED_ROLES.includes(user.role)}
+          setCaps={setUserCaps}
+          resetTwoFactor={resetTwoFactorForUser}
+          canResetTwoFactor={!isSelf && accessProblems.length === 0}
+        />
+      )}
+      {canManageUsers && user.role !== 'ADMIN' && user.twoFactorEnabled && !isSelf && (
+        <UserAccessPanel
+          userId={user.id}
+          email={user.email}
+          caps={[]}
+          capRows={[]}
+          presets={[]}
+          canEdit={false}
+          editBlockedReason={null}
+          twoFactorEnabled
+          twoFactorRequired={policy.TWO_FACTOR_REQUIRED_ROLES.includes(user.role)}
+          setCaps={setUserCaps}
+          resetTwoFactor={resetTwoFactorForUser}
+          canResetTwoFactor
+        />
       )}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Stat label="Lifetime spend" value={formatPrice(spend, orders[0]?.currency ?? 'EUR')} />
-        <Stat label="Orders" value={String(orders.length)} />
-        <Stat label="Quote requests" value={String(sourcing.length)} />
-        <Stat label="Sell offers" value={String(sells.length)} />
-        <Stat label="Support tickets" value={String(tickets.length)} />
-        <Stat label="Seller chats" value={String(threads.length)} />
+        {can('finance:view') && <Stat label="Lifetime spend" value={formatPrice(spend, orders[0]?.currency ?? 'EUR')} />}
+        {can('orders:view') && <Stat label="Orders" value={String(orders.length)} />}
+        {can('quotes:view') && <Stat label="Quote requests" value={String(sourcing.length)} />}
+        {can('sell:view') && <Stat label="Sell offers" value={String(sells.length)} />}
+        {can('tickets:view') && <Stat label="Support tickets" value={String(tickets.length)} />}
+        {can('messages:view') && <Stat label="Seller chats" value={String(threads.length)} />}
         <Stat label="Reviews" value={String(reviews.length)} />
         <Stat label="Wishlist · cart" value={`${wishlist} · ${carts}`} />
       </div>
-      <Section title={`Orders (${orders.length})`}>
+      {can('orders:view') && <Section title={`Orders (${orders.length})`}>
         {orders.length === 0 ? <Empty /> : orders.map((o) => (
           <Row key={o.id} href={`/admin/orders/${o.id}`}
             main={o.orderNumber}
@@ -233,22 +265,22 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
             right={`${formatPrice(o.totalCents, o.currency)} · ${o.status.toLowerCase()}`}
             date={o.createdAt} />
         ))}
-      </Section>
-      <Section title={`Quote / sourcing requests (${sourcing.length})`}>
+      </Section>}
+      {can('quotes:view') && <Section title={`Quote / sourcing requests (${sourcing.length})`}>
         {sourcing.length === 0 ? <Empty /> : sourcing.map((s) => (
           <Row key={s.id} href={`/admin/quotes/${s.id}`}
             main={s.description.slice(0, 80) || 'Request'}
             sub={s.quotedPriceCents ? `Quoted ${formatPrice(s.quotedPriceCents, 'EUR')}` : 'Not yet quoted'}
             right={s.status.toLowerCase()} date={s.createdAt} />
         ))}
-      </Section>
-      <Section title={`Sell offers (${sells.length})`}>
+      </Section>}
+      {can('sell:view') && <Section title={`Sell offers (${sells.length})`}>
         {sells.length === 0 ? <Empty /> : sells.map((s) => (
           <Row key={s.id} href={`/admin/sell/${s.id}`}
             main={s.itemTitle} sub="" right={s.status.toLowerCase()} date={s.createdAt} />
         ))}
-      </Section>
-      <Section title={`Support tickets (${tickets.length})`}>
+      </Section>}
+      {can('tickets:view') && <Section title={`Support tickets (${tickets.length})`}>
         {tickets.length === 0 ? <Empty /> : tickets.map((t) => (
           <Row
             key={t.id}
@@ -259,14 +291,14 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
             date={t.lastReplyAt ?? t.createdAt}
           />
         ))}
-      </Section>
-      <Section title={`Seller conversations (${threads.length})`}>
+      </Section>}
+      {can('messages:view') && <Section title={`Seller conversations (${threads.length})`}>
         {threads.length === 0 ? <Empty /> : threads.map((th) => (
           <Row key={th.id} href={`/admin/messages/threads/${th.id}`}
             main={th.subject ?? 'Conversation'} sub={`${th._count.messages} messages`}
             right="" date={th.lastMessageAt} />
         ))}
-      </Section>
+      </Section>}
       <Section title={`Reviews (${reviews.length})`}>
         {reviews.length === 0 ? <Empty /> : reviews.map((r) => (
           <Row key={r.id} href={`/marketplace/${r.product.slug}`}
@@ -274,10 +306,10 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
         ))}
       </Section>
       <div className="rounded-2xl border border-border bg-foreground/[0.02] p-5 text-sm text-muted-foreground">
-        <p className="font-semibold text-foreground mb-1">Not tracked</p>
-        Page views, product-search history and AI-assistant chats are <strong>not recorded</strong> by
-        the platform, so they cannot be shown here. Adding that requires opt-in event/search logging
-        and persisting assistant conversations — ask if you want it built.
+        <p className="font-semibold text-foreground mb-1">Not shown here</p>
+        Page views and product-search history are <strong>not recorded</strong> by the platform. Conversations with
+        the on-site assistant <strong>are</strong> stored{can('messages:view') ? <> — see <Link href="/admin/messages" className="underline">Messages</Link></> : null}.
+        {!can('orders:view') || !can('quotes:view') || !can('sell:view') ? ' Sections you have no permission for are hidden.' : ''}
       </div>
     </div>
   );

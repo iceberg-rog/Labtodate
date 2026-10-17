@@ -145,13 +145,18 @@ docker compose up -d
 
 # ---------- install ops cron + nginx (idempotent) ----------
 
-if [[ -f "$REPO_ROOT/scripts/backup.sh" && -f "$REPO_ROOT/scripts/uptime.sh" ]]; then
-  echo "[+] installing ops crons (daily db backup + 5-min healthcheck)"
-  chmod +x "$REPO_ROOT/scripts/backup.sh" "$REPO_ROOT/scripts/uptime.sh"
+if [[ -f "$REPO_ROOT/scripts/backup-v2.sh" && -f "$REPO_ROOT/scripts/uptime.sh" ]]; then
+  echo "[+] installing ops crons (daily encrypted off-site backup + 5-min healthcheck)"
+  chmod +x "$REPO_ROOT/scripts/backup-v2.sh" "$REPO_ROOT/scripts/uptime.sh"
   ( crontab -l 2>/dev/null | grep -v 'lab2date/scripts/' ; \
-    echo "0 3 * * * $REPO_ROOT/scripts/backup.sh >> /var/log/lab2date-backup.log 2>&1" ; \
+    echo "15 3 * * * $REPO_ROOT/scripts/backup-v2.sh >> /var/log/lab2date-backup.log 2>&1" ; \
     echo "*/5 * * * * $REPO_ROOT/scripts/uptime.sh" \
   ) | crontab -
+  if [[ ! -f "$REPO_ROOT/backup.env" ]]; then
+    echo "  [warn] backups are scheduled but NOT configured yet: create $REPO_ROOT/backup.env with the"
+    echo "         encryption key + off-site destination (docs/BACKUPS.md). Until then every run fails"
+    echo "         and e-mails the super-admins."
+  fi
 fi
 
 if [[ -f "$REPO_ROOT/nginx/lab2date.conf" ]] && command -v nginx >/dev/null 2>&1; then

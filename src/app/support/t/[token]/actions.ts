@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins } from '@/lib/observability';
-import { sendEmail } from '@/lib/email';
+import { sendInternalEmail } from '@/lib/email';
 import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
 
 function parseAttachments(v: FormDataEntryValue | null): string[] {
@@ -69,12 +69,14 @@ export async function guestReplyByToken(formData: FormData): Promise<void> {
   });
 
   const ops =
-    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
-  await sendEmail({
+    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '';
+  // Staff copy — skipped for placeholder inboxes and never fatal: the guest's
+  // reply is already saved.
+  await sendInternalEmail({
     to: ops,
     subject: `[${t.ref}] Guest reply: ${headerText(t.subject, 160)}`,
     html: `<p>${escapeHtml(t.name)} (${escapeHtml(t.email)}) replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
-  });
+  }, 'support:guest-reply');
   await notifyAdmins(
     `Guest replied · ${t.ref}`,
     `${t.name} replied via magic link on "${t.subject}"`,

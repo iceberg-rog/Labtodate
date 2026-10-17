@@ -170,43 +170,8 @@ export const PRIORITY_CLASS: Record<Priority, string> = {
   NORMAL: 'bg-foreground/5 text-muted-foreground border-border',
 };
 
-/** Carrier tracking URL builder. Returns `null` if both carrier and number
- *  are missing; falls back to a Google search for unknown carriers so the
- *  operator still has *something* to click. */
-export function trackingUrl(carrier: string | null | undefined, number: string | null | undefined): string | null {
-  const n = (number ?? '').trim();
-  if (!n) return null;
-  const c = (carrier ?? '').trim().toUpperCase();
-  switch (c) {
-    case 'DHL':
-      return `https://www.dhl.com/global-en/home/tracking/tracking-express.html?submit=1&tracking-id=${encodeURIComponent(n)}`;
-    case 'UPS':
-      return `https://www.ups.com/track?tracknum=${encodeURIComponent(n)}`;
-    case 'FEDEX':
-      return `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(n)}`;
-    case 'POSTNL':
-      return `https://jouw.postnl.nl/track-and-trace/${encodeURIComponent(n)}`;
-    case 'DPD':
-      return `https://tracking.dpd.de/status/en_GB/parcel/${encodeURIComponent(n)}`;
-    case 'GLS':
-      return `https://gls-group.com/track/${encodeURIComponent(n)}`;
-    case 'TNT':
-      return `https://www.tnt.com/express/en_gc/site/shipping-tools/tracking.html?searchType=con&cons=${encodeURIComponent(n)}`;
-    case 'USPS':
-      return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(n)}`;
-    case 'ROYAL MAIL':
-    case 'ROYALMAIL':
-      return `https://www.royalmail.com/track-your-item#/tracking-results/${encodeURIComponent(n)}`;
-    case 'POSTE ITALIANE':
-    case 'POSTEITALIANE':
-      return `https://www.poste.it/cerca/index.html#/risultati-spedizioni/${encodeURIComponent(n)}`;
-    default:
-      // For unknown / "Other" carriers we don't know a real tracking URL.
-      // Send the tracking number to Google as-is — no carrier word in the
-      // query, otherwise "Other" leaks into the search ("Other ABC123").
-      return `https://www.google.com/search?q=${encodeURIComponent(`tracking ${n}`)}`;
-  }
-}
+/* Carrier tracking links come from Settings → Fulfilment & delivery → Carriers
+ * (lib/fulfilment/rules.ts buildTrackingUrl), stored on each Shipment. */
 
 /** Pretty status text + colour family. */
 export type Tone = 'amber' | 'emerald' | 'sky' | 'violet' | 'slate' | 'red';

@@ -5,6 +5,7 @@ import { auth, type Session } from './auth';
 import { prisma } from './db';
 import { capsAllow, type Capability } from './capabilities';
 import { rateLimit } from './ratelimit';
+import { getSecurityPolicy } from './security/policy';
 
 /**
  * Read the current session in a server component / server action / route handler.
@@ -19,42 +20,121 @@ export async function getServerSession(): Promise<Session | null> {
   return getActiveSession();
 }
 
+/** Security facts about the current session (see {@link getSessionSecurity}). */
+export type SessionSecurity = {
+  sessionId: string;
+  role: string;
+  /** The account's role must use an authenticator app (policy). */
+  twoFactorRequired: boolean;
+  twoFactorEnabled: boolean;
+  /** Required but not set up yet: the account can only reach the set-up page. */
+  twoFactorMissing: boolean;
+  stepUpAt: Date | null;
+};
+
+const LAST_ACTIVE_WRITE_MS = 60_000;
+
+type Active = { session: Session; security: SessionSecurity };
+
 /**
  * The current session, re-read from the session row instead of trusting the
  * ≤60s cookie cache, and refusing suspended accounts — so a sign-out, revoked
- * session or suspension takes effect immediately. Behind getServerSession,
- * requireSession and the sign-in / sign-up pages' "already signed in"
- * redirect, which must all agree or they would bounce a user between them.
+ * session or suspension takes effect immediately. Also applies the admin
+ * session policy (absolute lifetime + idle timeout from Settings → Security):
+ * an expired admin session is deleted and treated as signed out.
  * Cached per request (layout + page + capability checks share one lookup).
  */
-export const getActiveSession = cache(async (): Promise<Session | null> => {
+const loadActive = cache(async (): Promise<Active | null> => {
   const session = await auth.api.getSession({
     headers: await headers(),
     query: { disableCookieCache: true },
   });
   if (!session?.user.emailVerified) return null;
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { suspendedAt: true },
+  const row = await prisma.session.findUnique({
+    where: { id: session.session.id },
+    select: {
+      createdAt: true,
+      lastActiveAt: true,
+      stepUpAt: true,
+      user: { select: { suspendedAt: true, role: true, twoFactorEnabled: true } },
+    },
   });
-  if (!user || user.suspendedAt) return null;
-  return session;
+  if (!row || row.user.suspendedAt) return null;
+  const policy = await getSecurityPolicy();
+  const now = Date.now();
+  if (row.user.role === 'ADMIN') {
+    const ageMs = now - row.createdAt.getTime();
+    const idleMs = now - (row.lastActiveAt ?? row.createdAt).getTime();
+    const tooOld = policy.ADMIN_SESSION_ABSOLUTE_HOURS > 0 && ageMs > policy.ADMIN_SESSION_ABSOLUTE_HOURS * 3600_000;
+    const idle = policy.ADMIN_IDLE_TIMEOUT_MIN > 0 && idleMs > policy.ADMIN_IDLE_TIMEOUT_MIN * 60_000;
+    if (tooOld || idle) {
+      await prisma.session.deleteMany({ where: { id: session.session.id } }).catch(() => {});
+      await prisma.auditLog
+        .create({
+          data: {
+            actorEmail: session.user.email,
+            actorId: session.user.id,
+            action: tooOld ? 'auth.session.expired_absolute' : 'auth.session.expired_idle',
+            target: session.user.id,
+            meta: tooOld
+              ? `admin session older than ${policy.ADMIN_SESSION_ABSOLUTE_HOURS}h`
+              : `idle ${Math.round(idleMs / 60_000)} min (limit ${policy.ADMIN_IDLE_TIMEOUT_MIN})`,
+          },
+        })
+        .catch(() => {});
+      return null;
+    }
+  }
+  if (!row.lastActiveAt || now - row.lastActiveAt.getTime() > LAST_ACTIVE_WRITE_MS) {
+    await prisma.session
+      .update({ where: { id: session.session.id }, data: { lastActiveAt: new Date(now) } })
+      .catch(() => {});
+  }
+  const twoFactorRequired = policy.TWO_FACTOR_REQUIRED_ROLES.includes(row.user.role);
+  const twoFactorEnabled = !!row.user.twoFactorEnabled;
+  return {
+    session,
+    security: {
+      sessionId: session.session.id,
+      role: row.user.role,
+      twoFactorRequired,
+      twoFactorEnabled,
+      twoFactorMissing: twoFactorRequired && !twoFactorEnabled,
+      stepUpAt: row.stepUpAt,
+    },
+  };
 });
+
+export const getActiveSession = cache(async (): Promise<Session | null> => (await loadActive())?.session ?? null);
+
+/** 2FA / step-up facts for the current session, or null when signed out. */
+export async function getSessionSecurity(): Promise<SessionSecurity | null> {
+  return (await loadActive())?.security ?? null;
+}
+
+/** Where an account that must set up 2FA is sent. */
+export function twoFactorSetupUrl(redirectTo?: string): string {
+  return `/auth/two-factor/setup${redirectTo ? `?redirect=${encodeURIComponent(redirectTo)}` : ''}`;
+}
 
 /**
  * Require a session in a server component. Redirects to /auth/sign-in if missing.
- * Optionally checks role.
+ * Optionally checks role. Accounts whose role must use two-factor sign-in
+ * (Settings → Security) are sent to the set-up page until they have done so —
+ * this is the gate in front of every /admin page and admin action.
  */
 export async function requireSession(opts?: {
   roles?: readonly ('BUYER' | 'SELLER' | 'ADMIN')[];
   redirectTo?: string;
 }): Promise<Session> {
-  const session = await getActiveSession();
-  if (!session) {
+  const active = await loadActive();
+  if (!active) {
     const signInUrl = new URL('/auth/sign-in', process.env.BETTER_AUTH_URL || 'http://localhost:3000');
     if (opts?.redirectTo) signInUrl.searchParams.set('redirect', opts.redirectTo);
     redirect(signInUrl.pathname + signInUrl.search);
   }
+  const { session, security } = active;
+  if (security.twoFactorMissing) redirect(twoFactorSetupUrl(opts?.redirectTo));
   if (opts?.roles && !opts.roles.includes(session.user.role as 'BUYER' | 'SELLER' | 'ADMIN')) {
     redirect('/app?error=forbidden');
   }
@@ -90,16 +170,20 @@ export async function sendAdminPasswordReset(adminId: string, user: { id: string
   });
 }
 
-/** Fetch the current admin's capability set (empty if not an admin). */
-export async function getAdminCaps(): Promise<string[]> {
-  const session = await getServerSession();
-  if (!session || session.user.role !== 'ADMIN') return [];
+/**
+ * Fetch the current admin's capability set (empty if not an admin, or if the
+ * admin still has to set up two-factor sign-in — so API routes that check
+ * capabilities refuse them too).
+ */
+export const getAdminCaps = cache(async (): Promise<string[]> => {
+  const active = await loadActive();
+  if (!active || active.session.user.role !== 'ADMIN' || active.security.twoFactorMissing) return [];
   const row = await prisma.user.findUnique({
-    where: { id: session.user.id },
+    where: { id: active.session.user.id },
     select: { adminCaps: true },
   });
   return row?.adminCaps ?? [];
-}
+});
 
 /** Non-throwing check: does the current admin have a capability? */
 export async function hasCapability(cap: Capability | string): Promise<boolean> {

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { Banknote, Package, TrendingUp, Truck, CircleAlert, Calendar, Download, Building2, Users as UsersIcon, Repeat } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { firstPublicImage } from '@/lib/media/public-src';
 import { formatPrice } from '@/lib/utils';
 import { OrderStatus, Prisma } from '@prisma/client';
 import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
@@ -18,6 +19,10 @@ import {
   STATUS_LABEL,
   STATUS_TONE,
 } from '@/lib/orders/display';
+import { isQuoteRef } from '@/lib/quotes/offer';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { carriers as configuredCarriers, requireTrackingToShip, staffCancelReasons } from '@/lib/fulfilment/policy';
+import { buildTrackingUrl, findCarrier, trackingRequired } from '@/lib/fulfilment/rules';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Orders' };
@@ -25,6 +30,11 @@ export const metadata = { title: 'Orders' };
 const PAID_STATES: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 const FULFIL_PENDING: OrderStatus[] = ['PAID', 'PROCESSING'];
 const PAGE_SIZE = 50;
+/** Paid / on-terms orders whose invoice is held (shown in the list, the filter and the overview). */
+const INVOICE_HOLD_WHERE: Prisma.OrderWhereInput = {
+  status: { in: ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] },
+  OR: [{ holdReason: { in: ['VAT_REVIEW', 'INVOICE_PENDING'] } }, { openHolds: { hasSome: ['VAT_REVIEW', 'INVOICE_PENDING'] } }],
+};
 
 type Range = 'all' | '7d' | '30d' | '90d';
 
@@ -41,12 +51,20 @@ export default async function AdminOrdersPage(
 ) {
   const searchParams = await props.searchParams;
   await requireCapability('orders:view');
+  await ensureSettingsLoaded();
+  const carrierList = configuredCarriers();
+  const carrierOptions = carrierList.map((c) => ({ name: c.name, needsTracking: trackingRequired(c, requireTrackingToShip()) }));
+  const [openReturns, refundsToSend] = await Promise.all([
+    prisma.returnRequest.count({ where: { status: { in: ['REQUESTED', 'APPROVED', 'LABEL_SENT', 'IN_TRANSIT', 'RECEIVED', 'INSPECTED'] } } }),
+    prisma.refund.count({ where: { status: 'REQUESTED' } }),
+  ]);
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
   const awaiting = searchParams.awaiting === '1';
   // Views: 'awaiting_verify' surfaces buyer-submitted proofs the team needs to
   // review; 'archived' shows soft-archived rows that are otherwise hidden.
-  const view = searchParams.view === 'archived' || searchParams.view === 'awaiting_verify' ? searchParams.view : '';
+  const VIEWS = ['archived', 'awaiting_verify', 'invoice_hold', 'refunds_open'] as const;
+  const view = (VIEWS as readonly string[]).includes(searchParams.view ?? '') ? (searchParams.view as (typeof VIEWS)[number]) : '';
   const range: Range =
     searchParams.range === '7d' || searchParams.range === '30d' || searchParams.range === '90d'
       ? searchParams.range
@@ -72,6 +90,10 @@ export default async function AdminOrdersPage(
     // view=archived is explicitly requested.
     ...(view === 'archived' ? { archivedAt: { not: null } } : { archivedAt: null }),
     ...(view === 'awaiting_verify' ? { paymentVerificationStatus: 'AWAITING_VERIFICATION' } : {}),
+    // Paid (or on terms) but the invoice is held back: VAT review / missing details / technical error.
+    ...(view === 'invoice_hold' ? INVOICE_HOLD_WHERE : {}),
+    // Bank refunds approved but not sent yet.
+    ...(view === 'refunds_open' ? { refunds: { some: { status: 'REQUESTED' } } } : {}),
     ...(q
       ? {
           OR: [
@@ -79,6 +101,12 @@ export default async function AdminOrdersPage(
             { buyer: { name: { contains: q, mode: 'insensitive' } } },
             { buyer: { email: { contains: q, mode: 'insensitive' } } },
             { items: { some: { titleSnapshot: { contains: q, mode: 'insensitive' } } } },
+            // Bank-statement reconciliation: the proforma the buyer quoted as
+            // transfer reference (any revision), the invoice / credit note, the RFQ.
+            { proformaNumber: { contains: q, mode: 'insensitive' } },
+            { documents: { some: { number: { contains: q, mode: 'insensitive' } } } },
+            { sourcingRequest: { is: { proformaNumber: { contains: q, mode: 'insensitive' } } } },
+            ...(isQuoteRef(q) ? [{ sourcingRequestId: { endsWith: q.slice(-6).toLowerCase() } }] : []),
           ],
         }
       : {}),
@@ -86,9 +114,11 @@ export default async function AdminOrdersPage(
 
   // Counts for the two new tabs (independent of current filters so the chip
   // counters always reflect the total backlog the operator is responsible for).
-  const [archivedCount, awaitingVerifyCount] = await Promise.all([
+  const [archivedCount, awaitingVerifyCount, invoiceHoldCount, refundsOpenCount] = await Promise.all([
     prisma.order.count({ where: { archivedAt: { not: null } } }),
     prisma.order.count({ where: { paymentVerificationStatus: 'AWAITING_VERIFICATION', archivedAt: null } }),
+    prisma.order.count({ where: { ...INVOICE_HOLD_WHERE, archivedAt: null } }),
+    prisma.order.count({ where: { refunds: { some: { status: 'REQUESTED' } }, archivedAt: null } }),
   ]);
 
   const [orders, total, statusBreakdown, agg, paidCount] = await Promise.all([
@@ -99,6 +129,7 @@ export default async function AdminOrdersPage(
       take: PAGE_SIZE,
       include: {
         buyer: { select: { id: true, name: true, email: true, company: { select: { name: true } } } },
+        refunds: { where: { status: 'REQUESTED' }, select: { id: true } },
         items: {
           select: {
             quantity: true,
@@ -225,7 +256,7 @@ export default async function AdminOrdersPage(
     if (merged.page) sp.set('page', merged.page);
     return sp.toString() ? `/admin/orders?${sp}` : '/admin/orders';
   }
-  function viewHref(v: '' | 'archived' | 'awaiting_verify') {
+  function viewHref(v: '' | (typeof VIEWS)[number]) {
     const sp = new URLSearchParams();
     if (v) sp.set('view', v);
     if (range !== 'all') sp.set('range', range);
@@ -237,6 +268,8 @@ export default async function AdminOrdersPage(
     { key: '__all', label: 'All', count: allStatusTotal, active: !statusFilter && !awaiting && !view, href: viewHref('') },
     { key: '__awaiting_verify', label: 'Awaiting verification', count: awaitingVerifyCount, active: view === 'awaiting_verify', href: viewHref('awaiting_verify') },
     { key: '__awaiting', label: 'Awaiting fulfilment', count: awaitingCount, active: awaiting && !view },
+    { key: '__invoice_hold', label: 'Invoice on hold', count: invoiceHoldCount, active: view === 'invoice_hold', href: viewHref('invoice_hold') },
+    { key: '__refunds_open', label: 'Refunds to send', count: refundsOpenCount, active: view === 'refunds_open', href: viewHref('refunds_open') },
     { key: 'PENDING_PAYMENT', label: 'pending payment', count: byStatus['PENDING_PAYMENT'] ?? 0, active: !view && statusFilter?.length === 1 && statusFilter[0] === 'PENDING_PAYMENT' && !awaiting },
     { key: 'PAID', label: 'paid', count: byStatus['PAID'] ?? 0, active: !view && statusFilter?.length === 1 && statusFilter[0] === 'PAID' && !awaiting },
     { key: 'PROCESSING', label: 'processing', count: byStatus['PROCESSING'] ?? 0, active: !view && statusFilter?.length === 1 && statusFilter[0] === 'PROCESSING' && !awaiting },
@@ -278,6 +311,15 @@ export default async function AdminOrdersPage(
               </Link>
             ))}
           </div>
+          <Link
+            href="/admin/orders/returns"
+            className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-xs font-semibold hover:bg-foreground/5"
+          >
+            <Repeat className="h-3.5 w-3.5" /> Returns &amp; refunds
+            {openReturns + refundsToSend > 0 && (
+              <span className="ml-0.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold">{openReturns + refundsToSend}</span>
+            )}
+          </Link>
           <a
             href={`/admin/orders/export${range !== 'all' ? `?range=${range}` : ''}`}
             className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-xs font-semibold hover:bg-foreground/5"
@@ -315,7 +357,7 @@ export default async function AdminOrdersPage(
         />
       </section>
 
-      <AdminSearch basePath="/admin/orders" q={q} status={statusFilter?.[0]} placeholder="Search order #, buyer, item…" />
+      <AdminSearch basePath="/admin/orders" q={q} status={statusFilter?.[0]} placeholder="Search order #, PF- / INV- / CN- / RFQ- ref, buyer, item…" />
 
       {/* Drillable stat tiles — Revenue dominant (2-cols); action tiles next.
           Pending-payment uses alert-red when >0 so the eye catches it. */}
@@ -388,6 +430,8 @@ export default async function AdminOrdersPage(
       ) : (
         <OrdersListShell
           view={view}
+          carriers={carrierOptions}
+          cancelReasons={staffCancelReasons()}
           rows={orders.map((o) => {
             const buyer = humaniseBuyer(o.buyer);
             const intel = intelByBuyer.get(o.buyer.id) ?? { paidCount: 0, lifetimeCents: 0 };
@@ -420,7 +464,7 @@ export default async function AdminOrdersPage(
               itemsCount: o.items.reduce((s, i) => s + i.quantity, 0),
               dateLabel: 'Ordered ' + new Date(o.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }),
               firstItemTitle: o.items[0]?.titleSnapshot ?? null,
-              firstItemImage: o.items[0]?.product?.images?.[0] ?? null,
+              firstItemImage: firstPublicImage(o.items[0]?.product?.images),
               firstItemSlug: o.items[0]?.product?.slug ?? null,
               firstItemCategory: o.items[0]?.product?.category?.name ?? null,
               itemCountExtra: Math.max(0, o.items.length - 1),
@@ -429,6 +473,8 @@ export default async function AdminOrdersPage(
               distinctSuppliers: supplierNames.length,
               carrier: o.trackingCarrier,
               trackingNumber: o.trackingNumber,
+              trackingLink: buildTrackingUrl(findCarrier(carrierList, o.trackingCarrier), o.trackingNumber),
+              carrierNames: carrierList.map((c) => c.name),
               hasReceipt: !!o.paymentProofUrl,
               hasShippingAddress: shippingAddressIsComplete(o.shippingAddress),
               shipTo: shipAddressOneLiner(o.shippingAddress),
@@ -437,6 +483,9 @@ export default async function AdminOrdersPage(
               paymentVerificationStatus: (o.paymentVerificationStatus ?? null) as 'AWAITING_VERIFICATION' | 'VERIFIED' | 'REJECTED' | null,
               paymentSubmittedAtISO: o.paymentSubmittedAt?.toISOString() ?? null,
               archived: !!o.archivedAt,
+              openCents: Math.max(0, o.totalCents - o.amountPaidCents),
+              holds: Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])])),
+              refundsToSend: o.refunds.length,
             };
           })}
         />

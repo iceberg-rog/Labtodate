@@ -5,7 +5,7 @@ import { cookies } from 'next/headers';
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { getServerSession, requireCapability } from '@/lib/auth-server';
+import { getServerSession, requireCapability, hasCapability } from '@/lib/auth-server';
 import { rateLimit } from '@/lib/ratelimit';
 import { aiChat, type AIMessage } from '@/lib/ai';
 import { ensureSettingsLoaded } from '@/lib/settings';
@@ -425,7 +425,8 @@ export async function readConversation(conversationId: string): Promise<{
   const owns = conv.userId
     ? conv.userId === session?.user?.id
     : !!conv.guestToken && conv.guestToken === guestToken;
-  if (!owns && role !== 'ADMIN') {
+  // Staff read other people's chats only with messages:view (A31).
+  if (!owns && !(role === 'ADMIN' && (await hasCapability('messages:view')))) {
     return { conversationId, messages: [], status: conv.status, rating: null, closedAt: null };
   }
   return {

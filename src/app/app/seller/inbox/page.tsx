@@ -1,8 +1,12 @@
 import Link from 'next/link';
 import { FileText, ArrowRight } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
-import { requireSession } from '@/lib/auth-server';
+import { requireSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { computeDealState } from '@/lib/quotes/deal-state';
+import { DealStateBadge } from '@/components/quotes/DealStateBadge';
+import { sellerSeesSellPrice } from '@/lib/quotes/policy';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Quote inbox' };
@@ -10,9 +14,12 @@ export const metadata = { title: 'Quote inbox' };
 export default async function SellerInboxPage() {
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller/inbox' });
   const role = (session.user as { role?: string }).role;
+  // Staff see other people's quotes / offers only with the permission for them (A31).
+  const staffView = role === 'ADMIN' && (await hasCapability('quotes:view'));
+  await ensureSettingsLoaded();
 
   const items = await prisma.sourcingRequest.findMany({
-    where: role === 'ADMIN' ? {} : { assignedToId: session.user.id },
+    where: staffView ? {} : { assignedToId: session.user.id },
     orderBy: { updatedAt: 'desc' },
     include: {
       product: { select: { title: true } },
@@ -26,12 +33,20 @@ export default async function SellerInboxPage() {
     },
   });
 
+  const linked = items.length
+    ? await prisma.order.findMany({
+        where: { sourcingRequestId: { in: items.map((q) => q.id) } },
+        select: { sourcingRequestId: true, status: true, paymentSubmittedAt: true },
+      })
+    : [];
+  const orderByQuote = new Map(linked.map((o) => [o.sourcingRequestId!, o]));
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Quote inbox</h1>
         <p className="text-muted-foreground mt-1">
-          {role === 'ADMIN' ? 'All sourcing requests across the platform.' : 'Quote requests routed to you.'}
+          {staffView ? 'All sourcing requests across the platform.' : 'Quote requests routed to you.'}
         </p>
       </div>
 
@@ -50,15 +65,30 @@ export default async function SellerInboxPage() {
                   {/* Sellers never see who the buyer is — lab2date mediates (same
                       rule as the detail page). Admins see the real buyer. */}
                   <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1 truncate">
-                    {role === 'ADMIN' ? `${q.buyerName} · ${q.buyerEmail}` : 'lab2date Buyer'}
+                    {staffView ? `${q.buyerName} · ${q.buyerEmail}` : 'lab2date Buyer'}
                   </p>
-                  <p className="font-semibold truncate">
+                  <p dir="auto" className="font-semibold truncate">
                     {q.product?.title ?? q.productCategory ?? 'General sourcing request'}
                   </p>
-                  <p className="text-sm text-muted-foreground line-clamp-1 mt-1">{q.description}</p>
+                  <p dir="auto" className="text-sm text-muted-foreground line-clamp-1 mt-1">{q.description}</p>
                 </div>
                 <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                  <StatusPill status={q.status} lastFromBuyer={q.messages[0]?.fromStaff === false} />
+                  <DealStateBadge
+                    size="sm"
+                    badge={computeDealState({
+                      status: q.status,
+                      // Who wrote last decides whose move it is.
+                      lastReplyByStaff: q.messages[0] ? q.messages[0].fromStaff : q.lastReplyByStaff,
+                      proformaNumber: q.proformaNumber,
+                      quotedPriceCents: q.quotedPriceCents,
+                      validUntilAt: q.validUntilAt,
+                      linkedOrder: orderByQuote.get(q.id) ?? null,
+                    }, 'staff')}
+                  />
+                  {/* Suppliers see their own proposal, not lab2date's buyer price (SELLER_SEES_SELL_PRICE). */}
+                  {staffView || sellerSeesSellPrice()
+                    ? q.quotedPriceCents != null && <p className="text-sm font-bold tabular-nums">{formatPrice(q.offerTotalCents ?? q.offerSubtotalCents ?? q.quotedPriceCents, q.quotedCurrency ?? 'EUR')}{q.offerTotalCents == null ? ' excl. VAT' : ''}</p>
+                    : q.sellerProposalCents != null && <p className="text-sm font-bold tabular-nums">Your price {formatPrice(q.sellerProposalCents, q.sellerProposalCurrency ?? 'EUR')}</p>}
                   <p className="text-xs text-muted-foreground tabular-nums">
                     {new Date(q.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </p>
@@ -71,27 +101,4 @@ export default async function SellerInboxPage() {
       )}
     </div>
   );
-}
-
-function StatusPill({
-  status,
-  lastFromBuyer,
-}: {
-  status: 'PENDING' | 'RESPONDED' | 'ACCEPTED' | 'DECLINED' | 'CLOSED';
-  lastFromBuyer: boolean;
-}) {
-  const map: Record<typeof status, { variant: 'success' | 'warning' | 'accent' | 'secondary'; label: string }> = {
-    PENDING:   { variant: 'warning', label: 'New · awaiting reply' },
-    RESPONDED: { variant: 'accent', label: 'Awaiting buyer' },
-    ACCEPTED:  { variant: 'success', label: 'Accepted' },
-    DECLINED:  { variant: 'secondary', label: 'Declined' },
-    CLOSED:    { variant: 'secondary', label: 'Closed' },
-  };
-  // RESPONDED stays set after the buyer follows up; their message makes it
-  // the seller's move again (same rule as the thread's header pill).
-  const m =
-    status === 'RESPONDED' && lastFromBuyer
-      ? { variant: 'warning' as const, label: 'Buyer replied — your move' }
-      : map[status];
-  return <Badge variant={m.variant}>{m.label}</Badge>;
 }

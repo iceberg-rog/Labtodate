@@ -9,26 +9,35 @@ import {
   Calendar,
   ArrowRight,
   ChevronRight,
-  MapPin,
+  Building2,
+  ClipboardCheck,
+  FileText,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { productImage } from '@/lib/images';
+import { getCatalogPolicy, getConditionGrades } from '@/lib/catalog/policy';
+import { resolveWarranty, resolveInspection } from '@/lib/catalog/warranty';
+import { resolveOfferPrice } from '@/lib/catalog/offer-price';
+import { buildProductJsonLd, isPlaceholderBrand, publicPlainText } from '@/lib/catalog/jsonld';
+import { publicProductImages, firstPublicImage, absoluteSiteUrl } from '@/lib/media/public-src';
 import { StartThreadButton } from '@/components/messages/StartThreadButton';
 import { WishlistButton } from '@/components/marketplace/WishlistButton';
 import { ProductGallery } from '@/components/marketplace/ProductGallery';
 import { ProductCard } from '@/components/marketplace/ProductCard';
-import { getProductBySlug, getSimilarProducts } from '@/lib/marketplace/queries';
+import { getProductBySlug, getSimilarProducts, LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
+import { isDeliverableEmail } from '@/lib/email-address';
 import { resolveProductSlug } from '@/lib/products/slug';
 import { prisma } from '@/lib/db';
-import type { IllustrationName } from '@/components/illustrations/instruments';
 import { startCheckout } from '@/lib/orders/actions';
 import { addToCart } from '@/lib/cart/actions';
 import { getMarketing } from '@/lib/marketing';
 import { submitReview } from '@/lib/reviews/actions';
 import { isWishlisted } from '@/lib/wishlist/actions';
 import { getServerSession } from '@/lib/auth-server';
-import { formatPrice } from '@/lib/utils';
+import { PriceTag } from '@/components/pricing/PriceTag';
+import { loadPriceDisplay } from '@/lib/pricing/server';
 import { sanitizeRichHtml } from '@/lib/sanitize';
+import { ensureSettingsLoaded, settingBool } from '@/lib/settings';
+import { reservedUnits } from '@/lib/stock/reserve';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -42,7 +51,13 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
   // ARCHIVED) products via metadata. Owner/admin preview still renders the
   // page itself; generic metadata is acceptable there.
   if (!product || product.status !== 'PUBLISHED') return { title: 'Not found' };
-  const description = product.summary ?? `${product.brand?.name ?? ''} ${product.title}`;
+  const policy = await getCatalogPolicy();
+  // Never "Other …": a placeholder brand is not a brand.
+  const brandName = isPlaceholderBrand(product.brand, policy.placeholderBrands) ? '' : `${product.brand?.name} `;
+  // No other price in search results than ours: sentences with a price are left out.
+  const description = publicPlainText(product.summary, 300) ?? `${brandName}${product.title}`.trim();
+  // OG image: our own copy, on our own domain — never the supplier's URL.
+  const ogImage = firstPublicImage(product.images);
   return {
     title: product.title,
     description,
@@ -51,9 +66,9 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
       title: product.title,
       description,
       type: 'website',
-      siteName: 'lab2date',
+      siteName: policy.siteName,
       url: `/marketplace/${product.slug}`,
-      images: product.images?.[0] ? [product.images[0]] : undefined,
+      images: ogImage ? [absoluteSiteUrl(ogImage)] : undefined,
     },
     twitter: { card: 'summary_large_image', title: product.title, description },
   };
@@ -68,7 +83,7 @@ export default async function ProductDetailPage(props: PageProps) {
   if (!product) notFound();
   const reviewNote = searchParams?.review === 'needpurchase';
   const reviewInvalid = searchParams?.review === 'invalid';
-  const mk = await getMarketing();
+  const [mk, policy, grades, display] = await Promise.all([getMarketing(), getCatalogPolicy(), getConditionGrades(), loadPriceDisplay()]);
 
   const session = await getServerSession();
 
@@ -103,9 +118,17 @@ export default async function ProductDetailPage(props: PageProps) {
           ? 'Checkout was not completed. No payment was taken.'
           : null;
   const similar = await getSimilarProducts(product.categoryId, product.slug, 4);
-  const companyListings = product.companyId
-    ? await prisma.product.count({ where: { companyId: product.companyId, status: 'PUBLISHED' } })
-    : 0;
+  // "Sold by" = the seller of record: its own number of live listings (never
+  // the hidden supplier's, which would reveal who holds the unit).
+  const sellerListings = policy.sellerBoxShowListings ? await prisma.product.count({ where: LIVE_PRODUCT_WHERE }) : null;
+  // Imported items belong to importer accounts without an inbox: questions go
+  // to the lab2date team (a support ticket), not to a "seller" nobody reads.
+  const sellerReachable = isDeliverableEmail(product.seller.email);
+  const contact = {
+    channel: (sellerReachable ? 'SELLER' : 'TEAM') as 'SELLER' | 'TEAM',
+    teamName: policy.sellerLegalName,
+    minChars: policy.productQuestionMinChars,
+  };
   // Aggregate for count+average (accurate over ALL reviews), but only render
   // the latest 24 — an unbounded findMany on a public page is a DoS lever.
   const [reviewAgg, reviews] = await Promise.all([
@@ -123,39 +146,44 @@ export default async function ProductDetailPage(props: PageProps) {
       ? Math.round(reviewAgg._avg.rating * 10) / 10
       : null;
 
-  const base = process.env.BETTER_AUTH_URL ?? 'https://labtodate.com';
-  const abs = (u: string | null | undefined) =>
-    u ? (u.startsWith('http') ? u : `${base}${u.startsWith('/') ? '' : '/'}${u}`) : undefined;
-  const jsonLd = {
-    '@context': 'https://schema.org/',
-    '@type': 'Product',
-    name: product.title,
-    description: product.summary ?? product.description ?? undefined,
-    sku: product.slug,
-    image: abs(product.images?.[0]),
-    brand: product.brand ? { '@type': 'Brand', name: product.brand.name } : undefined,
-    category: product.category.name,
-    url: `${base}/marketplace/${product.slug}`,
-    aggregateRating:
-      reviewCount > 0 && avgRating
-        ? { '@type': 'AggregateRating', ratingValue: avgRating, reviewCount }
-        : undefined,
-    offers: product.priceCents
-      ? {
-          '@type': 'Offer',
-          priceCurrency: product.currency,
-          price: (product.priceCents / 100).toFixed(2),
-          availability: 'https://schema.org/InStock',
-          itemCondition:
-            product.condition === 'NEW'
-              ? 'https://schema.org/NewCondition'
-              : product.condition === 'REFURBISHED'
-              ? 'https://schema.org/RefurbishedCondition'
-              : 'https://schema.org/UsedCondition',
-          seller: { '@type': 'Organization', name: 'lab2date' },
-        }
-      : undefined,
-  };
+  const base = (process.env.BETTER_AUTH_URL ?? 'https://labtodate.com').replace(/\/+$/, '');
+  // ── What we may truthfully say about THIS unit ──
+  const grade = grades[product.condition];
+  const conditionLabel = grade.label;
+  const warranty = resolveWarranty(product, grade, policy.warrantyFallbackText, policy.warrantyMonthsFormat);
+  const inspection = resolveInspection(product, policy.inspectionRequiresReport);
+  // Reports are served by /api/inspection-report (only while the item is published).
+  const inspectionReport = inspection.reportUrl?.startsWith('/api/inspection-report/') ? inspection.reportUrl : null;
+  const photos = publicProductImages(product.images);
+  const brandKnown = !isPlaceholderBrand(product.brand, policy.placeholderBrands);
+  // Same resolver as the price block (shop markup / force-quote / hidden price).
+  const offer = resolveOfferPrice(
+    { priceCents: product.basePriceCents, currency: product.currency, mode: product.baseMode, priceOnHold: product.priceOnHold },
+    product.company,
+  );
+  // Not sold here: the supplier no longer has it (out of stock / removed /
+  // on backorder). Never "Sold" — and a backorder says so.
+  const onBackorder = product.sourceAvailability === 'onbackorder';
+  const unavailableAtSource =
+    product.quantity <= 0 && (!!product.removedAtSourceAt || ['outofstock', 'removed', 'onbackorder'].includes(product.sourceAvailability ?? ''));
+  const backorderUnavailable = unavailableAtSource && onBackorder && !product.removedAtSourceAt;
+  const sellableBackorder = product.quantity > 0 && onBackorder;
+  // A unit held for another buyer's accepted offer / unpaid order (A09) is
+  // "Reserved", not "Sold" — it comes back if that order is not completed.
+  await ensureSettingsLoaded();
+  const reservedForOther = product.quantity <= 0 && !unavailableAtSource && settingBool('SHOW_RESERVED_BADGE') && (await reservedUnits(product.id)) > 0;
+  const jsonLd = buildProductJsonLd({
+    baseUrl: base,
+    product,
+    images: photos,
+    brand: product.brand,
+    categoryName: product.category.name,
+    schemaOrgCondition: grade.schemaOrgCondition,
+    offer,
+    sellerName: policy.sellerLegalName,
+    returnPolicyDays: policy.seoReturnPolicyDays,
+    rating: reviewCount > 0 && avgRating ? { average: avgRating, count: reviewCount } : null,
+  });
   const breadcrumbLd = {
     '@context': 'https://schema.org',
     '@type': 'BreadcrumbList',
@@ -167,10 +195,21 @@ export default async function ProductDetailPage(props: PageProps) {
     ],
   };
 
-  const heroImg = product.images?.[0] || productImage(product.illustration, product.slug, 900);
   const specs = (product.specs as Record<string, string> | null) ?? null;
-  const conditionLabel =
-    product.condition === 'NEW' ? 'New' : product.condition === 'REFURBISHED' ? 'Refurbished' : 'Used';
+  const trustTiles = [
+    {
+      key: 'warranty',
+      icon: ShieldCheck,
+      title: warranty.headline,
+      subtitle: warranty.hasWarranty ? (warranty.source === 'ITEM' ? 'On this unit' : `${conditionLabel} items`) : 'See terms',
+      href: warranty.hasWarranty ? undefined : '/legal/terms',
+    },
+    ...(inspection.claim && inspection.date
+      ? [{ key: 'inspected', icon: ClipboardCheck, title: 'Inspected', subtitle: inspection.date.toLocaleDateString('en-GB', { dateStyle: 'medium' }) }]
+      : []),
+    ...(policy.shippingClaim ? [{ key: 'shipping', icon: Truck, title: policy.shippingClaim, subtitle: 'Shipping' }] : []),
+    ...(policy.returnsClaim ? [{ key: 'returns', icon: RotateCcw, title: policy.returnsClaim, subtitle: 'Returns' }] : []),
+  ];
 
   return (
     <div className="container-px py-10 md:py-14">
@@ -204,26 +243,42 @@ export default async function ProductDetailPage(props: PageProps) {
         {/* ── Left: gallery ── */}
         <div>
           <ProductGallery
-            images={product.images}
-            fallback={heroImg}
+            images={photos}
+            photoMode={policy.missingPhotoMode}
+            illustration={product.illustration}
             title={product.title}
             conditionLabel={conditionLabel}
             mode={product.mode}
           />
+          {photos.length === 0 && (
+            <div className="mt-3">
+              <StartThreadButton
+                productSlug={product.slug}
+                productTitle={product.title}
+                kind="PHOTOS"
+                {...contact}
+                label={policy.texts.askPhotosLabel}
+                initialMessage={policy.texts.askPhotosMessage.replace(/\{TITLE\}/g, product.title)}
+              />
+            </div>
+          )}
 
-          {/* Trust strip */}
-          <div className="mt-6 grid grid-cols-3 gap-3">
-            <TrustItem icon={ShieldCheck} title={mk.warranty} subtitle="On all refurbished" />
-            <TrustItem icon={Truck} title="Worldwide shipping" subtitle="Crated & insured" />
-            <TrustItem icon={RotateCcw} title="Buyer protection" subtitle="Refund if not as described" />
+          {/* Trust strip: only what is true for THIS unit, plus the promises
+              the owner configured (Settings → Catalog & claims). */}
+          <div className={`mt-6 grid gap-3 ${trustTiles.length === 3 ? 'grid-cols-3' : trustTiles.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+            {trustTiles.map((t) => (
+              <TrustItem key={t.key} icon={t.icon} title={t.title} subtitle={t.subtitle} href={'href' in t ? t.href : undefined} />
+            ))}
           </div>
         </div>
 
         {/* ── Right: detail ── */}
         <div>
-          <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">
-            {product.brand?.name ?? 'Generic'}
-          </p>
+          {brandKnown && (
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">
+              {product.brand?.name}
+            </p>
+          )}
           <h1
             className="text-3xl md:text-4xl font-bold leading-tight text-foreground"
             style={{ letterSpacing: '-0.03em' }}
@@ -241,17 +296,26 @@ export default async function ProductDetailPage(props: PageProps) {
 
           {/* Price block */}
           <div className="mt-7 rounded-2xl border border-border bg-card p-6">
-            {product.priceCents ? (
+            {product.priceOnHold ? (
+              <div data-testid="pdp-price-review">
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold">Price</p>
+                <p className="text-2xl font-bold mt-2">Being confirmed</p>
+                <p className="mt-1 text-xs text-muted-foreground">{policy.texts.priceReview}</p>
+              </div>
+            ) : product.priceCents ? (
               <div>
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold">
                   List price
                 </p>
-                <div className="flex items-baseline gap-3 mt-2">
-                  <span className="text-4xl font-bold data">
-                    {formatPrice(product.priceCents, product.currency)}
-                  </span>
-                  <span className="text-sm text-muted-foreground">ex. VAT</span>
+                <div className="mt-2" data-testid="pdp-price">
+                  <PriceTag netCents={product.priceCents} currency={product.currency} size="xl" scheme={product.vatScheme} settings={display} />
                 </div>
+                {display.note && <p className="mt-1.5 text-xs text-muted-foreground">{display.note}</p>}
+                {sellableBackorder && (
+                  <p className="mt-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300" data-testid="pdp-backorder-lead">
+                    {policy.texts.backorderLeadTime}
+                  </p>
+                )}
                 {mk.financing && (
                   <p className="mt-1 text-xs text-muted-foreground">{mk.financing}</p>
                 )}
@@ -261,7 +325,9 @@ export default async function ProductDetailPage(props: PageProps) {
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold">Custom pricing</p>
                 <p className="text-2xl font-bold mt-2">Request a quote</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Typical response within 24 business hours from the supplier.
+                  {mk.quoteTurnaround
+                    ? `We reply with a written offer, usually within ${mk.quoteTurnaround}.`
+                    : 'We reply with a written offer.'}
                 </p>
               </div>
             )}
@@ -270,18 +336,26 @@ export default async function ProductDetailPage(props: PageProps) {
               {product.quantity <= 0 ? (
                 <>
                   <div className="rounded-2xl border border-border bg-muted/40 p-4 text-center">
-                    <p className="text-sm font-bold text-foreground">Sold</p>
+                    <p className="text-sm font-bold text-foreground" data-testid="pdp-stock-title">
+                      {backorderUnavailable ? policy.texts.backorderTitle : unavailableAtSource ? policy.texts.unavailableTitle : reservedForOther ? 'Reserved' : policy.texts.soldTitle}
+                    </p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      This unit is no longer available. We can source a similar one.
+                      {backorderUnavailable
+                        ? policy.texts.backorderText
+                        : unavailableAtSource
+                          ? policy.texts.unavailableText
+                          : reservedForOther
+                            ? policy.texts.reservedText
+                            : policy.texts.soldText}
                     </p>
                   </div>
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
                     <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Source a similar unit</Link>
                   </Button>
-                  <StartThreadButton productSlug={product.slug} productTitle={product.title} />
+                  <StartThreadButton productSlug={product.slug} productTitle={product.title} {...contact} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
                 </>
-              ) : product.mode !== 'QUOTE_ONLY' && product.priceCents ? (
+              ) : product.buyable ? (
                 <>
                   <form action={startCheckout.bind(null, product.slug)}>
                     <Button type="submit" size="lg" className="rounded-2xl font-semibold w-full">
@@ -294,7 +368,7 @@ export default async function ProductDetailPage(props: PageProps) {
                       Add to cart
                     </Button>
                   </form>
-                  <StartThreadButton productSlug={product.slug} productTitle={product.title} />
+                  <StartThreadButton productSlug={product.slug} productTitle={product.title} {...contact} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
                   <Link
                     href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}
@@ -309,7 +383,7 @@ export default async function ProductDetailPage(props: PageProps) {
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
                     <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Request a quote</Link>
                   </Button>
-                  <StartThreadButton productSlug={product.slug} productTitle={product.title} />
+                  <StartThreadButton productSlug={product.slug} productTitle={product.title} {...contact} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />
                 </>
               )}
@@ -320,12 +394,8 @@ export default async function ProductDetailPage(props: PageProps) {
           <dl className="mt-6 grid grid-cols-2 gap-3">
             <Fact icon={BadgeCheck} label="Condition" value={conditionLabel} />
             {product.yearMade && <Fact icon={Calendar} label="Year" value={String(product.yearMade)} />}
-            <Fact
-              icon={MapPin}
-              label="Supplier"
-              value="lab2date Verified Supplier"
-            />
-            <Fact icon={ShieldCheck} label="Warranty" value={mk.warranty} />
+            <Fact icon={Building2} label="Sold by" value={policy.sellerLegalName} />
+            <Fact icon={ShieldCheck} label="Warranty" value={warranty.headline} />
           </dl>
         </div>
       </div>
@@ -344,7 +414,7 @@ export default async function ProductDetailPage(props: PageProps) {
               />
             ) : (
               <p className="text-base text-muted-foreground leading-relaxed">
-                {product.summary ?? 'Contact the supplier for full specifications and availability.'}
+                {product.summary ?? policy.texts.noDescription}
               </p>
             )}
           </section>
@@ -355,14 +425,24 @@ export default async function ProductDetailPage(props: PageProps) {
               Item details
             </h2>
             <dl className="grid sm:grid-cols-2 gap-x-10 rounded-2xl border border-border bg-card p-6">
-              <DetailRow label="Status" value={product.quantity > 0 ? 'For sale · in stock' : 'Sold'} />
+              <DetailRow
+                label="Status"
+                value={
+                  product.quantity > 0
+                    ? sellableBackorder ? 'For sale · on backorder at our supplier' : 'For sale · in stock'
+                    : backorderUnavailable ? policy.texts.backorderTitle : unavailableAtSource ? policy.texts.unavailableTitle : reservedForOther ? 'Reserved' : policy.texts.soldTitle
+                }
+              />
               <DetailRow label="Condition" value={conditionLabel} />
-              <DetailRow label="Brand" value={product.brand?.name ?? '—'} />
+              {product.conditionNotes && <DetailRow label="Condition notes" value={product.conditionNotes} />}
+              <DetailRow label="Brand" value={brandKnown && product.brand ? product.brand.name : 'Not specified'} />
+              {product.mpn && <DetailRow label="Part number (MPN)" value={product.mpn} />}
+              {product.sku && <DetailRow label="Stock number" value={product.sku} />}
               <DetailRow label="Category" value={product.category.name} />
-              <DetailRow label="Supplier" value="lab2date Verified Supplier" />
-              <DetailRow label="Location" value={product.company?.country ?? 'EU'} />
+              <DetailRow label="Sold by" value={policy.sellerLegalName} />
+              {product.company?.country && <DetailRow label="Location" value={product.company.country} />}
               {product.yearMade && <DetailRow label="Year" value={String(product.yearMade)} />}
-              <DetailRow label="Warranty" value={mk.warranty} />
+              <DetailRow label="Warranty" value={warranty.full} />
               {specs &&
                 Object.entries(specs).map(([k, v]) => (
                   <DetailRow key={k} label={k} value={String(v)} />
@@ -374,11 +454,40 @@ export default async function ProductDetailPage(props: PageProps) {
             <h2 className="text-2xl font-bold mb-3" style={{ letterSpacing: '-0.025em' }}>
               Inspection &amp; warranty
             </h2>
-            <p className="text-base text-muted-foreground leading-relaxed">
-              Every item passes a {mk.inspection} by qualified technicians — calibration
-              verification, mechanical wear, and component-level diagnostics — and ships with a{' '}
-              {mk.warranty} and buyer protection.
-            </p>
+            <div className="space-y-3 text-base text-muted-foreground leading-relaxed">
+              <p>
+                <span className="font-semibold text-foreground">Warranty:</span> {warranty.full}.
+              </p>
+              {grade.description && (
+                <p>
+                  <span className="font-semibold text-foreground">{conditionLabel}:</span> {grade.description}
+                </p>
+              )}
+              {inspection.claim && inspection.date ? (
+                <p>
+                  <span className="font-semibold text-foreground">Inspection:</span> this unit was inspected on{' '}
+                  {inspection.date.toLocaleDateString('en-GB', { dateStyle: 'long' })}.
+                  {inspection.notes ? ` ${inspection.notes}` : ''}
+                  {inspectionReport && (
+                    <>
+                      {' '}
+                      <a
+                        href={inspectionReport}
+                        target="_blank"
+                        rel="noopener"
+                        className="inline-flex items-center gap-1 font-semibold text-primary hover:underline"
+                      >
+                        <FileText className="h-3.5 w-3.5" /> View the inspection report
+                      </a>
+                    </>
+                  )}
+                </p>
+              ) : (
+                <p>
+                  <span className="font-semibold text-foreground">Inspection:</span> {policy.inspectionNoneText}
+                </p>
+              )}
+            </div>
           </section>
 
           <section>
@@ -394,7 +503,7 @@ export default async function ProductDetailPage(props: PageProps) {
             </div>
 
             {reviews.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No reviews yet — be the first.</p>
+              <p className="text-sm text-muted-foreground">{policy.texts.reviewsEmpty}</p>
             ) : (
               <ul className="space-y-4">
                 {reviews.map((r) => (
@@ -474,24 +583,33 @@ export default async function ProductDetailPage(props: PageProps) {
             </p>
             <div className="flex items-center gap-3">
               <div className="h-12 w-12 rounded-xl bg-primary text-primary-foreground flex items-center justify-center font-bold text-sm" style={{ letterSpacing: '-0.04em' }}>
-                L2
+                {policy.sellerLegalName.replace(/[^A-Za-z0-9]/g, '').slice(0, 2).toUpperCase() || 'L2'}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="font-semibold text-foreground truncate">
-                  lab2date Verified Supplier
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Inspected &amp; warrantied · ships worldwide
-                </p>
+                <p className="font-semibold text-foreground truncate">{policy.sellerLegalName}</p>
+                {(policy.sellerKvk || policy.sellerVat) && (
+                  <p className="text-xs text-muted-foreground">
+                    {[policy.sellerKvk && `KvK ${policy.sellerKvk}`, policy.sellerVat && `VAT ${policy.sellerVat}`]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </p>
+                )}
+                {product.company?.verifiedAt && (
+                  <p className="text-xs text-muted-foreground mt-0.5 inline-flex items-center gap-1">
+                    <BadgeCheck className="h-3.5 w-3.5 text-primary" /> Sourced from a supplier we verified
+                  </p>
+                )}
               </div>
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-3 pt-4 border-t border-border text-center">
+            <div className={`mt-4 grid ${sellerListings !== null ? 'grid-cols-2' : 'grid-cols-1'} gap-3 pt-4 border-t border-border text-center`}>
+              {sellerListings !== null && (
+                <div data-testid="seller-live-listings">
+                  <div className="text-base font-bold tabular-nums">{sellerListings.toLocaleString('en-GB')}</div>
+                  <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">live listings</div>
+                </div>
+              )}
               <div>
-                <div className="text-base font-bold tabular-nums">{companyListings.toLocaleString()}</div>
-                <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">live listings</div>
-              </div>
-              <div>
-                <div className="text-base font-bold">{product.company?.country ?? '—'}</div>
+                <div className="text-base font-bold">{product.company?.country || '—'}</div>
                 <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">location</div>
               </div>
             </div>
@@ -521,15 +639,17 @@ export default async function ProductDetailPage(props: PageProps) {
                   slug: s.slug,
                   title: s.title,
                   brand: s.brand?.name ?? '—',
-                  supplier: 'lab2date Verified Supplier',
-                  illustration: (s.illustration ?? 'balance') as IllustrationName,
-                  imageUrl: s.images?.[0] ?? null,
+                  supplier: policy.sellerLegalName,
+                  illustration: s.illustration,
+                  imageUrl: firstPublicImage(s.images),
                   condition: s.condition,
                   mode: s.mode,
                   priceCents: s.priceCents,
                   currency: s.currency,
                   yearMade: s.yearMade,
+                  vatScheme: s.vatScheme,
                 }}
+                display={display}
               />
             ))}
           </div>
@@ -552,16 +672,24 @@ function TrustItem({
   icon: Icon,
   title,
   subtitle,
+  href,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   title: string;
   subtitle: string;
+  href?: string;
 }) {
   return (
     <div className="rounded-2xl border border-border bg-card p-4 text-center">
       <Icon className="h-5 w-5 mx-auto text-primary" />
       <p className="text-xs font-semibold mt-2">{title}</p>
-      <p className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</p>
+      {href ? (
+        <Link href={href} className="text-[11px] font-semibold text-primary hover:underline mt-0.5 inline-block">
+          {subtitle}
+        </Link>
+      ) : (
+        <p className="text-[11px] text-muted-foreground mt-0.5">{subtitle}</p>
+      )}
     </div>
   );
 }

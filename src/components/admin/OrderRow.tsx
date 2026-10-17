@@ -1,5 +1,6 @@
 'use client';
 
+import { useStepUp } from '@/components/security/useStepUp';
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -25,9 +26,7 @@ import {
 } from 'lucide-react';
 import {
   setOrderFulfillment,
-  refundOrder,
   cancelOrder,
-  verifyPayment,
   rejectPayment,
   archiveOrder,
   unarchiveOrder,
@@ -39,7 +38,6 @@ import { announceAdminResult } from './AdminResultToast';
 import {
   PRIORITY_CLASS,
   PRIORITY_LABEL,
-  trackingUrl,
   type Priority,
 } from '@/lib/orders/display';
 
@@ -101,10 +99,29 @@ export type OrderRowProps = {
   // guard in setOrderFulfillment still catches any direct POST, but we
   // don't want to present a user-facing option that's known to fail.
   hasShippingAddress?: boolean;
+  /** Carrier tracking link (Settings → Fulfilment → Carriers), computed on the server. */
+  trackingLink?: string | null;
+  /** Carriers staff can choose (Settings → Fulfilment → Carriers). */
+  carrierNames?: string[];
   archived?: boolean;
   selected?: boolean;
   onToggleSelect?: (id: string, checked: boolean) => void;
-  onOpenManualPaid?: (id: string) => void;
+  onOpenManualPaid?: (id: string, openCents?: number) => void;
+  /** Amount still open (total − received), prefilled when marking paid. */
+  openCents?: number;
+  /** Open holds (VAT review, invoice not issued, compliance, …) — shown as a marker. */
+  holds?: string[];
+  /** Bank refunds approved but not sent yet. */
+  refundsToSend?: number;
+};
+
+const HOLD_CHIP: Record<string, string> = {
+  VAT_REVIEW: 'VAT review',
+  INVOICE_PENDING: 'Invoice not issued',
+  COMPLIANCE: 'Compliance hold',
+  ADDRESS_REVIEW: 'Address review',
+  SHIPPING_PENDING: 'Freight to confirm',
+  PAYMENT_REVIEW: 'Payment review',
 };
 
 function flagFromCountry(code: string | null | undefined): string {
@@ -121,7 +138,6 @@ function nthOrderLabel(n: number): string {
   return idx + (s[(v - 20) % 10] || s[v] || s[0]) + ' order';
 }
 
-const CARRIERS = ['DHL', 'UPS', 'FedEx', 'PostNL', 'DPD', 'GLS', 'TNT', 'USPS', 'Royal Mail', 'Poste Italiane', 'Other'];
 
 /**
  * 5-column grid order card with a clickable body.
@@ -135,6 +151,8 @@ const CARRIERS = ['DHL', 'UPS', 'FedEx', 'PostNL', 'DPD', 'GLS', 'TNT', 'USPS', 
  */
 export function OrderRow(p: OrderRowProps) {
   const router = useRouter();
+  // Permanent delete asks for a fresh authenticator code (Settings → Security).
+  const { run: withStepUp, dialog: stepUpDialog } = useStepUp();
   const [pending, start] = useTransition();
   const [copied, setCopied] = useState(false);
   // One armed confirmation at a time, keyed by action — a single shared flag
@@ -155,7 +173,7 @@ export function OrderRow(p: OrderRowProps) {
   const canManualPay = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify && !p.archived;
   const canCancel = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify && !p.archived;
   const canRefund = p.status === 'PAID' || p.status === 'PROCESSING' || p.status === 'SHIPPED' || p.status === 'DELIVERED';
-  const trackUrl = trackingUrl(p.carrier, p.trackingNumber);
+  const trackUrl = p.trackingLink ?? null;
   const [rejectReason, setRejectReason] = useState('');
   const [showReject, setShowReject] = useState(false);
 
@@ -169,7 +187,7 @@ export function OrderRow(p: OrderRowProps) {
   }
 
   function runAction(
-    action: (fd: FormData) => Promise<{ ok: boolean; message: string }>,
+    action: (fd: FormData) => Promise<{ ok: boolean; message: string; stepUp?: true; method?: 'totp' | 'password' }>,
     extra?: Record<string, string>,
     onOk?: () => void,
   ) {
@@ -179,7 +197,7 @@ export function OrderRow(p: OrderRowProps) {
       fd.set('orderId', p.id);
       for (const [k, v] of Object.entries(extra ?? {})) fd.set(k, v);
       try {
-        const r = await action(fd);
+        const r = await withStepUp(() => action(fd));
         if (r?.ok) {
           announceAdminResult(r);
           onOk?.();
@@ -209,6 +227,8 @@ export function OrderRow(p: OrderRowProps) {
   }
 
   return (
+    <>
+    {stepUpDialog}
     <li
       onClick={handleBodyClick}
       className={`group relative rounded-2xl border border-border bg-card overflow-hidden transition-shadow hover:shadow-[0_8px_24px_-12px_rgba(15,79,64,0.18)] cursor-pointer
@@ -411,6 +431,16 @@ export function OrderRow(p: OrderRowProps) {
             <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${TONE_BADGE[p.statusTone]}`}>
               {p.statusLabel}
             </span>
+            {(p.holds ?? []).filter((h) => HOLD_CHIP[h]).map((h) => (
+              <span key={h} data-hold-chip={h} className="ml-1 inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                {HOLD_CHIP[h]}
+              </span>
+            ))}
+            {p.refundsToSend ? (
+              <span data-hold-chip="REFUND" className="ml-1 inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
+                Refund to send
+              </span>
+            ) : null}
             <div className="text-[10px] text-muted-foreground">
               {`${p.itemsCount} item${p.itemsCount === 1 ? '' : 's'}`}
             </div>
@@ -432,8 +462,9 @@ export function OrderRow(p: OrderRowProps) {
               <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Status</span>
               <select name="status" defaultValue={p.status} className="h-8 px-2 rounded-md border border-input bg-background text-xs font-medium">
                 {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const)
-                  // Forward-only (the server rejects backward moves).
+                  // Forward-only (the server rejects backward moves); delivered only after shipping.
                   .filter((s, i, all) => i >= all.indexOf(p.status as (typeof all)[number]))
+                  .filter((s) => s !== 'DELIVERED' || p.status === 'SHIPPED')
                   .filter((s) => p.hasShippingAddress !== false || (s !== 'SHIPPED' && s !== 'DELIVERED'))
                   .map((s) => (
                     <option key={s} value={s}>{s.toLowerCase()}</option>
@@ -450,7 +481,7 @@ export function OrderRow(p: OrderRowProps) {
               <span className="block text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">Carrier</span>
               <select name="carrier" defaultValue={p.carrier ?? ''} className="h-8 px-2 rounded-md border border-input bg-background text-xs font-medium w-28">
                 <option value="">—</option>
-                {CARRIERS.map((c) => <option key={c} value={c}>{c}</option>)}
+                {(p.carrierNames ?? []).map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
             </label>
             <label className="block flex-1 min-w-[140px]">
@@ -461,16 +492,13 @@ export function OrderRow(p: OrderRowProps) {
               <Truck className="h-3.5 w-3.5" /> Save &amp; notify
             </button>
             {canRefund && (
-              <DestructiveAction
-                pending={pending}
-                confirming={confirm === 'refund'}
-                onArm={() => setConfirm('refund')}
-                onCancelArm={() => setConfirm(null)}
-                onConfirm={() => runAction(refundOrder)}
-                label="Refund"
-                activeLabel="Refund this order?"
-                toneText="text-red-700 dark:text-red-300"
-              />
+              <Link
+                href={`/admin/orders/${p.id}#money`}
+                className="inline-flex items-center h-8 px-3 rounded-md border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40"
+                data-noopen
+              >
+                {p.status === 'SHIPPED' ? 'Return / refund…' : 'Cancel & refund…'}
+              </Link>
             )}
           </OrderActionForm>
         </div>
@@ -484,17 +512,14 @@ export function OrderRow(p: OrderRowProps) {
           data-noopen
           onClick={(e) => e.stopPropagation()}
         >
-          <span className="flex-1 text-muted-foreground">Delivered. Returned or disputed? Record a refund.</span>
-          <DestructiveAction
-            pending={pending}
-            confirming={confirm === 'refund'}
-            onArm={() => setConfirm('refund')}
-            onCancelArm={() => setConfirm(null)}
-            onConfirm={() => runAction(refundOrder)}
-            label="Refund"
-            activeLabel="Refund this delivered order?"
-            toneText="text-red-700 dark:text-red-300"
-          />
+          <span className="flex-1 text-muted-foreground">Delivered. A problem or a return? Handle it on the order page (return / RMA, refund with credit note).</span>
+          <Link
+            href={`/admin/orders/${p.id}#money`}
+            className="inline-flex items-center h-8 px-3 rounded-md border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40"
+            data-noopen
+          >
+            Return / refund…
+          </Link>
         </div>
       )}
 
@@ -509,18 +534,15 @@ export function OrderRow(p: OrderRowProps) {
             <strong>Buyer submitted payment proof.</strong>{' '}
             {p.paymentSubmittedAtISO ? `Uploaded ${new Date(p.paymentSubmittedAtISO).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.` : ''} Verify or reject.
           </span>
-          <button
-            type="button"
-            disabled={pending}
-            onClick={(e) => {
-              e.stopPropagation();
-              runAction(verifyPayment);
-            }}
-            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 disabled:opacity-50"
+          {/* Verifying records the amount and value date from the bank statement: on the order page. */}
+          <Link
+            href={`/admin/orders/${p.id}#verify`}
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800"
             data-noopen
           >
-            <ShieldCheck className="h-3.5 w-3.5" /> Verify payment
-          </button>
+            <ShieldCheck className="h-3.5 w-3.5" /> Verify payment…
+          </Link>
           {!showReject ? (
             <button
               type="button"
@@ -578,7 +600,7 @@ export function OrderRow(p: OrderRowProps) {
           {p.onOpenManualPaid && (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); p.onOpenManualPaid?.(p.id); }}
+              onClick={(e) => { e.stopPropagation(); p.onOpenManualPaid?.(p.id, p.openCents); }}
               className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-amber-700 text-white text-xs font-bold hover:bg-amber-800"
               data-noopen
             >
@@ -650,6 +672,7 @@ export function OrderRow(p: OrderRowProps) {
         </p>
       )}
     </li>
+    </>
   );
 }
 

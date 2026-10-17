@@ -5,14 +5,22 @@ import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
-import { sendEmail } from '@/lib/email';
+import { sendEmail, sendInternalEmail, trySendEmail } from '@/lib/email';
 import { escapeHtml as esc, escapeHtmlLines, headerText } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
 import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
 import { notifyAndMaybeEmail } from '@/lib/notify-throttled';
+import { Prisma } from '@prisma/client';
+import { isValidIban } from '@/lib/settings/defs';
+import { readVerifiedUpload } from '@/lib/storage/file-type';
+import { alertSuperAdmins } from '@/lib/security/alerts';
+import { acqBankLockStage, acqCallbackRequired, acqRequireValidIban } from '@/lib/fulfilment/policy';
+import { bankLocked, canMoveAcq, holderMatches, maskIban, normaliseIban, payoutAccountProblem } from './stages';
 
-const OPS_EMAIL_FALLBACK = 'acquisitions@lab2date.com';
+// No hard-coded fallback inbox: an unset SELL_INTAKE_EMAIL means the staff
+// copy is skipped (in-app notification only), never mail to a foreign domain.
+const OPS_EMAIL_FALLBACK = '';
 
 const SellInput = z.object({
   sellerType: z.enum(['INDIVIDUAL', 'COMPANY']),
@@ -130,7 +138,7 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
   // receipt — otherwise the form relays arbitrary text from lab2date to any
   // inbox. The ops copy below carries the full (escaped) details.
   const echo = !!session && parsed.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
-  await sendEmail({
+  await trySendEmail({
     to: parsed.email,
     subject: echo
       ? `We received your equipment submission: ${headerText(parsed.itemTitle, 120)}`
@@ -138,16 +146,16 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:560px;">
         <h2 style="color:#0E4F40;">Thanks${echo ? `, ${esc(parsed.contactName)}` : ''} — we&rsquo;ve got it</h2>
-        <p>Our acquisitions team will review your submission and reply within <strong>2 business days</strong> with a valuation and next steps.</p>
+        <p>Our acquisitions team will review your submission and reply${(process.env.SELL_VALUATION_TURNAROUND ?? '').trim() ? ` within <strong>${esc((process.env.SELL_VALUATION_TURNAROUND ?? '').trim())}</strong>` : ''} with ${(process.env.SELL_ACQUISITION_MODEL ?? 'OUTRIGHT_PURCHASE') === 'CONSIGNMENT' ? 'a valuation' : 'an offer'} and next steps.</p>
         ${echo ? `<table style="border-collapse:collapse;font-size:14px;margin:16px 0;">${summaryRows}</table>` : ''}
         ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t offer equipment to lab2date, you can ignore this email.</p>`}
         <p style="color:#888;font-size:12px;">Reference: ${created.id}</p>
       </div>
     `,
-  });
+  }, 'sell:ack');
 
-  // Notify acquisitions / ops
-  await sendEmail({
+  // Notify acquisitions / ops (skipped for placeholder inboxes, never fatal)
+  await sendInternalEmail({
     to: OPS_EMAIL,
     subject: `New sell submission: ${headerText(parsed.itemTitle, 120)} (${parsed.sellerType})`,
     html: `
@@ -168,7 +176,7 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
         <p style="color:#888;font-size:12px;">Reference: ${created.id}</p>
       </div>
     `,
-  });
+  }, 'sell:intake');
   } catch (e) {
     console.error('sell submission emails failed (non-fatal)', e);
   }
@@ -532,23 +540,159 @@ export async function acceptAcquisitionPrice(formData: FormData): Promise<void> 
 }
 
 /**
- * Seller submits/updates bank-payout details. Stored on the submission AND
- * cached on User.sellerBankDetails so repeat sellers don't re-enter every
- * time. Advances the stage to AWAITING_SHIPPING.
+ * Seller submits / changes the payout bank account (A23). The account is
+ * checked (IBAN mod-97 per Settings → Acquisitions). Before the lock stage it is
+ * applied at once (first time: the deal moves to “ship to us”); from the lock
+ * stage on, a change waits for staff review (call-back on a known number), the
+ * payout is blocked meanwhile and staff are alerted. Every change is kept
+ * (BankDetailsChange). The outcome is shown on the page (?msg=…).
  */
 export async function saveAcquisitionBankDetails(formData: FormData): Promise<void> {
   const session = await requireSession({ redirectTo: '/app/sell-submissions' });
   await ensureSettingsLoaded();
   const id = String(formData.get('submissionId') ?? '');
+  const back: (msg: string) => never = (msg) => redirect(`/app/sell-submissions/${id}?msg=${msg}`);
   const details = {
     holder: String(formData.get('holder') ?? '').trim().slice(0, 120),
-    iban:   String(formData.get('iban')   ?? '').trim().slice(0, 60),
-    swift:  String(formData.get('swift')  ?? '').trim().slice(0, 24),
+    iban: normaliseIban(String(formData.get('iban') ?? '')).slice(0, 40),
+    swift: String(formData.get('swift') ?? '').replace(/\s+/g, '').toUpperCase().slice(0, 11),
     bankName: String(formData.get('bankName') ?? '').trim().slice(0, 120),
-    country:  String(formData.get('country') ?? '').trim().slice(0, 60),
-    notes:    String(formData.get('notes') ?? '').trim().slice(0, 500),
+    country: String(formData.get('country') ?? '').trim().slice(0, 60),
+    notes: String(formData.get('notes') ?? '').trim().slice(0, 500),
   };
-  if (!id || !details.holder || !details.iban) return;
+  if (!id) return;
+  const sub = await prisma.sellSubmission.findUnique({
+    where: { id },
+    select: { submittedById: true, email: true, itemTitle: true, acquisitionStage: true, contactName: true, companyName: true, sellerBankDetails: true },
+  });
+  if (!sub) throw new Error('Submission not found');
+  if (!ownsSellerSide({ submittedById: sub.submittedById, email: sub.email }, { id: session.user.id, email: session.user.email })) {
+    throw new Error('Forbidden');
+  }
+  const problem = payoutAccountProblem(details, acqRequireValidIban());
+  if (problem) back(`bank-invalid&why=${encodeURIComponent(problem)}`);
+  const stage = sub.acquisitionStage;
+  if (!stage || stage === 'COMPLETED') back('bank-closed');
+  const ref = `SS-${id.slice(-6).toUpperCase()}`;
+  const matches = holderMatches(details.holder, [sub.contactName, sub.companyName]);
+  const ibanValid = isValidIban(details.iban);
+  const locked = bankLocked(stage, acqBankLockStage()) && !!sub.sellerBankDetails;
+
+  if (locked) {
+    // A change after the lock stage: kept aside for review, never applied silently.
+    const pending = await prisma.bankDetailsChange.count({ where: { submissionId: id, status: 'PENDING_REVIEW' } });
+    if (pending) back('bank-pending-exists');
+    await prisma.bankDetailsChange.create({
+      data: {
+        submissionId: id, oldValue: (sub.sellerBankDetails ?? undefined) as Prisma.InputJsonValue | undefined, newValue: details, status: 'PENDING_REVIEW', stageAtRequest: stage,
+        ibanValid, holderMatches: matches, requestedById: session.user.id, requestedByEmail: session.user.email,
+      },
+    });
+    await emitSystemMessage(id, 'The seller asked to change the payout bank account. The change is on hold until our team verifies it by phone; no payout is made meanwhile.');
+    const title = `⚠ Payout account change requested · ${ref}`;
+    const body = `The seller asked to change the payout account at stage ${stage.toLowerCase().replace(/_/g, ' ')} (new IBAN ${maskIban(details.iban)}, holder ${details.holder}${matches ? '' : ' — does NOT match the seller name'}). Verify it by calling the seller on a number you already had before approving. Payout is blocked until then.`;
+    await notifyAdmins(title, body, `/admin/sell/${id}`, 'SYSTEM').catch(() => null);
+    await sendInternalEmail({ to: process.env.SELL_INTAKE_EMAIL || OPS_EMAIL_FALLBACK, subject: title, html: `<p>${esc(body)}</p>` }, 'sell:bank-change-alert');
+    await alertSuperAdmins(title, [body], `/admin/sell/${id}`).catch(() => null);
+    await audit('sell.bank.change.requested', ref, `stage ${stage} · new ${maskIban(details.iban)} · holderMatch=${matches} · by=${session.user.email}`);
+    revalidatePath(`/app/sell-submissions/${id}`);
+    revalidatePath(`/admin/sell/${id}`);
+    back('bank-review');
+  }
+
+  const first = stage === 'AWAITING_BANK';
+  const applied = await prisma.$transaction(async (tx) => {
+    const r = await tx.sellSubmission.updateMany({
+      where: { id, acquisitionStage: stage },
+      data: { sellerBankDetails: details, ...(first ? { acquisitionStage: 'AWAITING_SHIPPING' } : {}) },
+    });
+    if (r.count !== 1) return false;
+    await tx.bankDetailsChange.create({
+      data: {
+        submissionId: id, oldValue: (sub.sellerBankDetails ?? undefined) as Prisma.InputJsonValue | undefined, newValue: details, status: 'APPLIED', stageAtRequest: stage,
+        ibanValid, holderMatches: matches, requestedById: session.user.id, requestedByEmail: session.user.email,
+      },
+    });
+    // Cache on the profile for the next offer.
+    await tx.user.update({ where: { id: session.user.id }, data: { sellerBankDetails: details } });
+    return true;
+  });
+  if (!applied) back('stale');
+  await emitSystemMessage(id, first ? 'Seller provided bank details. Next: ship the item to us.' : 'Seller updated the payout bank details.');
+  await notifyAdmins(
+    `${first ? 'Bank details received' : 'Bank details updated'} · ${ref}`,
+    `Payout account ${maskIban(details.iban)} (${details.holder})${matches ? '' : ' — holder does NOT match the seller name, check it'} for "${sub.itemTitle}".`,
+    `/admin/sell/${id}`,
+    'SYSTEM',
+  ).catch(() => null);
+  await audit(first ? 'sell.bank.save' : 'sell.bank.update', ref, `${maskIban(details.iban)} · holderMatch=${matches} · by=${session.user.email}`);
+  revalidatePath(`/app/sell-submissions/${id}`);
+  revalidatePath(`/admin/sell/${id}`);
+  back(first ? 'bank-saved' : 'bank-updated');
+}
+
+/**
+ * Staff approve or reject a pending payout-account change (A23). Approving
+ * needs the confirmed call-back when Settings say so; the new account is then
+ * applied, the seller is told either way, and everything is kept in history.
+ */
+export async function reviewBankDetailsChange(formData: FormData): Promise<void> {
+  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
+  await ensureSettingsLoaded();
+  const changeId = String(formData.get('changeId') ?? '');
+  const decision = String(formData.get('decision') ?? '');
+  const note = String(formData.get('note') ?? '').trim().slice(0, 500);
+  const callback = String(formData.get('callback') ?? '') === 'on';
+  const ch = await prisma.bankDetailsChange.findUnique({ where: { id: changeId }, select: { id: true, status: true, submissionId: true, newValue: true, submission: { select: { submittedById: true, email: true, contactName: true, acquisitionStage: true } } } });
+  if (!ch) redirect('/admin/sell');
+  const id = ch.submissionId;
+  const back: (msg: string) => never = (msg) => redirect(`/admin/sell/${id}?err=${msg}`);
+  if (ch.status !== 'PENDING_REVIEW') back('bank-decided');
+  if (note.length < 5) back('bank-note');
+  if (decision === 'approve' && acqCallbackRequired() && !callback) back('bank-callback');
+  if (ch.submission.acquisitionStage === 'COMPLETED') back('state');
+  const ref = `SS-${id.slice(-6).toUpperCase()}`;
+  const ok = await prisma.$transaction(async (tx) => {
+    const c = await tx.bankDetailsChange.updateMany({
+      where: { id: ch.id, status: 'PENDING_REVIEW' },
+      data: { status: decision === 'approve' ? 'APPLIED' : 'REJECTED', reviewedById: session.user.id, reviewedAt: new Date(), reviewNote: note, callbackConfirmed: callback },
+    });
+    if (c.count !== 1) return false;
+    if (decision === 'approve') await tx.sellSubmission.update({ where: { id }, data: { sellerBankDetails: ch.newValue as Prisma.InputJsonValue } });
+    return true;
+  });
+  if (!ok) back('bank-decided');
+  await emitSystemMessage(id, decision === 'approve' ? 'The new payout bank account was verified and is now used for the payout.' : 'The requested change of the payout bank account was not accepted; the previous account stays in use.');
+  const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
+  await notifySellerMilestone({
+    userId: ch.submission.submittedById,
+    toEmail: ch.submission.email,
+    notifTitle: decision === 'approve' ? `Payout account updated · ${ref}` : `Payout account change not accepted · ${ref}`,
+    notifBody: decision === 'approve' ? 'We verified your new bank account.' : 'Your previous bank account stays in use. Contact us if this is wrong.',
+    notifHref: `/app/sell-submissions/${id}`,
+    emailSubject: `[${ref}] ${decision === 'approve' ? 'Your new payout account is verified' : 'Your payout account change was not accepted'}`,
+    emailHtml: `<p>Hi ${esc(ch.submission.contactName || 'there')},</p><p>${decision === 'approve' ? 'We verified the new bank account you gave us; the payout for this deal goes there.' : 'We could not verify the bank account change you asked for, so the payout goes to the account you gave us earlier. If you did not ask for a change, please contact us right away.'}</p><p><a href="${base}/app/sell-submissions/${id}">Open the deal</a></p>`,
+  });
+  await audit(`sell.bank.change.${decision === 'approve' ? 'approved' : 'rejected'}`, ref, `callback=${callback} · "${note.slice(0, 120)}" · by=${session.user.email}`);
+  revalidatePath(`/admin/sell/${id}`);
+  revalidatePath(`/app/sell-submissions/${id}`);
+  redirect(`/admin/sell/${id}?ok=bank-${decision === 'approve' ? 'approved' : 'rejected'}`);
+}
+
+/**
+ * Seller posts the device and enters the carrier / tracking: AWAITING_SHIPPING
+ * → IN_TRANSIT once (a correction while in transit only updates the tracking;
+ * any other stage is refused — a stale tab can not move a deal back).
+ */
+export async function saveAcquisitionShipping(formData: FormData): Promise<void> {
+  const session = await requireSession({ redirectTo: '/app/sell-submissions' });
+  await ensureSettingsLoaded();
+  const id = String(formData.get('submissionId') ?? '');
+  const carrier = String(formData.get('carrier') ?? '').trim().slice(0, 40);
+  const tracking = String(formData.get('tracking') ?? '').trim().slice(0, 120);
+  if (!id) return;
+  const back: (msg: string) => never = (msg) => redirect(`/app/sell-submissions/${id}?msg=${msg}`);
+  if (!carrier || tracking.length < 3) back('ship-missing');
   const sub = await prisma.sellSubmission.findUnique({
     where: { id },
     select: { submittedById: true, email: true, itemTitle: true, acquisitionStage: true },
@@ -557,74 +701,32 @@ export async function saveAcquisitionBankDetails(formData: FormData): Promise<vo
   if (!ownsSellerSide({ submittedById: sub.submittedById, email: sub.email }, { id: session.user.id, email: session.user.email })) {
     throw new Error('Forbidden');
   }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.sellSubmission.update({
-      where: { id },
-      data: {
-        sellerBankDetails: details,
-        acquisitionStage: sub.acquisitionStage === 'AWAITING_BANK' ? 'AWAITING_SHIPPING' : sub.acquisitionStage,
-      },
-    });
-    // Cache on user profile for next time
-    await tx.user.update({
-      where: { id: session.user.id },
-      data: { sellerBankDetails: details },
-    });
-  });
-  await emitSystemMessage(id, `Seller provided bank details. Next: ship the item to us.`);
-  await notifyAdmins(
-    `Bank details received · ${`SS-${id.slice(-6).toUpperCase()}`}`,
-    `Seller submitted payout bank details for "${sub.itemTitle}".`,
-    `/admin/sell/${id}`,
-    'SYSTEM',
-  ).catch(() => null);
-  await audit('sell.bank.save', `SS-${id.slice(-6).toUpperCase()}`, `by=${session.user.email}`);
-  revalidatePath(`/app/sell-submissions/${id}`);
-  revalidatePath(`/admin/sell/${id}`);
-}
-
-/**
- * Seller posts the device and enters the carrier/tracking. Moves the stage
- * to IN_TRANSIT and surfaces the tracking on both sides.
- */
-export async function saveAcquisitionShipping(formData: FormData): Promise<void> {
-  const session = await requireSession({ redirectTo: '/app/sell-submissions' });
-  await ensureSettingsLoaded();
-  const id = String(formData.get('submissionId') ?? '');
-  const carrier = String(formData.get('carrier') ?? '').trim().slice(0, 40);
-  const tracking = String(formData.get('tracking') ?? '').trim().slice(0, 120);
-  if (!id || !carrier || !tracking) return;
-  const sub = await prisma.sellSubmission.findUnique({
-    where: { id },
-    select: { submittedById: true, email: true, itemTitle: true },
-  });
-  if (!sub) throw new Error('Submission not found');
-  if (!ownsSellerSide({ submittedById: sub.submittedById, email: sub.email }, { id: session.user.id, email: session.user.email })) {
-    throw new Error('Forbidden');
+  const ref = `SS-${id.slice(-6).toUpperCase()}`;
+  if (sub.acquisitionStage === 'IN_TRANSIT') {
+    const r = await prisma.sellSubmission.updateMany({ where: { id, acquisitionStage: 'IN_TRANSIT' }, data: { sellerShippingCarrier: carrier, sellerShippingTracking: tracking } });
+    if (r.count === 1) {
+      await emitSystemMessage(id, `Seller corrected the tracking: ${carrier} (${tracking}).`);
+      await audit('sell.shipping.correct', ref, `${carrier} ${tracking} by=${session.user.email}`);
+    }
+    revalidatePath(`/app/sell-submissions/${id}`);
+    revalidatePath(`/admin/sell/${id}`);
+    back(r.count === 1 ? 'ship-corrected' : 'stale');
   }
-  await prisma.sellSubmission.update({
-    where: { id },
-    data: {
-      sellerShippingCarrier: carrier,
-      sellerShippingTracking: tracking,
-      sellerShippedAt: new Date(),
-      acquisitionStage: 'IN_TRANSIT',
-    },
+  if (!canMoveAcq(sub.acquisitionStage, 'IN_TRANSIT')) back('stale');
+  const r = await prisma.sellSubmission.updateMany({
+    where: { id, acquisitionStage: 'AWAITING_SHIPPING' },
+    data: { sellerShippingCarrier: carrier, sellerShippingTracking: tracking, sellerShippedAt: new Date(), acquisitionStage: 'IN_TRANSIT' },
   });
+  if (r.count !== 1) back('stale');
   await emitSystemMessage(id, `Seller shipped via ${carrier} (${tracking}). Awaiting receipt.`);
-  await notifyAdmins(
-    `Shipment in transit · ${`SS-${id.slice(-6).toUpperCase()}`}`,
-    `${carrier} · ${tracking} — "${sub.itemTitle}"`,
-    `/admin/sell/${id}`,
-    'SYSTEM',
-  ).catch(() => null);
-  await audit('sell.shipping.save', `SS-${id.slice(-6).toUpperCase()}`, `${carrier} ${tracking} by=${session.user.email}`);
+  await notifyAdmins(`Shipment in transit · ${ref}`, `${carrier} · ${tracking} — "${sub.itemTitle}"`, `/admin/sell/${id}`, 'SYSTEM').catch(() => null);
+  await audit('sell.shipping.save', ref, `${carrier} ${tracking} by=${session.user.email}`);
   revalidatePath(`/app/sell-submissions/${id}`);
   revalidatePath(`/admin/sell/${id}`);
+  back('ship-saved');
 }
 
-/** Admin stamps that the package has physically arrived at the warehouse. */
+/** Admin stamps that the package arrived (from IN_TRANSIT, or AWAITING_SHIPPING when no tracking was entered). Emails once. */
 export async function markAcquisitionReceived(formData: FormData): Promise<void> {
   const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
   await ensureSettingsLoaded();
@@ -632,17 +734,15 @@ export async function markAcquisitionReceived(formData: FormData): Promise<void>
   if (!id) return;
   const sub = await prisma.sellSubmission.findUnique({
     where: { id },
-    select: { submittedById: true, email: true, contactName: true, itemTitle: true },
+    select: { submittedById: true, email: true, contactName: true, itemTitle: true, acquisitionStage: true },
   });
   if (!sub) throw new Error('Submission not found');
-  await prisma.sellSubmission.update({
-    where: { id },
-    data: {
-      acquisitionStage: 'RECEIVED',
-      receivedAt: new Date(),
-      receivedById: session.user.id,
-    },
+  if (!canMoveAcq(sub.acquisitionStage, 'RECEIVED')) redirect(`/admin/sell/${id}?err=stage`);
+  const claim = await prisma.sellSubmission.updateMany({
+    where: { id, acquisitionStage: { in: ['IN_TRANSIT', 'AWAITING_SHIPPING'] } },
+    data: { acquisitionStage: 'RECEIVED', receivedAt: new Date(), receivedById: session.user.id },
   });
+  if (claim.count !== 1) redirect(`/admin/sell/${id}?err=stage`);
   await emitSystemMessage(id, `Package received at warehouse. Inspection in progress.`);
   const ref = `SS-${id.slice(-6).toUpperCase()}`;
   const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
@@ -658,18 +758,27 @@ export async function markAcquisitionReceived(formData: FormData): Promise<void>
                 <p>Once QC clears we wire payment to the bank details on file and email you the transfer receipt.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Track status in your dashboard</a></p>`,
   });
-  await audit('sell.received', ref, `by=${session.user.email}`);
+  await audit('sell.received', ref, `from ${sub.acquisitionStage} by=${session.user.email}`);
   revalidatePath(`/admin/sell/${id}`);
   revalidatePath(`/app/sell-submissions/${id}`);
+  redirect(`/admin/sell/${id}?ok=received`);
+}
+
+/** Why the payout can not be completed now (null = it can). */
+async function payoutBlocker(id: string): Promise<string | null> {
+  const s = await prisma.sellSubmission.findUnique({ where: { id }, select: { acquisitionStage: true, sellerBankDetails: true, bankChanges: { where: { status: 'PENDING_REVIEW' }, select: { id: true } } } });
+  if (!s) return 'state';
+  if (!canMoveAcq(s.acquisitionStage, 'COMPLETED')) return 'stage';
+  const b = s.sellerBankDetails as Record<string, string> | null;
+  if (!b?.iban) return 'bank-missing';
+  if (s.bankChanges.length) return 'bank-pending';
+  return null;
 }
 
 /**
- * Admin completes the acquisition: payment wired + receipt uploaded. The
- * paymentReceiptUrl is set on the submission; seller sees it on their
- * dashboard. Status moves to COMPLETED (terminal).
- *
- * paymentReceiptUrl arrives as a pre-uploaded URL string (the file goes
- * through the existing attachment-upload route first).
+ * Admin completes the acquisition: payment wired + receipt uploaded. Only from
+ * RECEIVED, never while a payout-account change waits for review; the seller is
+ * emailed exactly once (compare-and-set on the stage).
  */
 export async function completeAcquisition(formData: FormData): Promise<void> {
   const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
@@ -677,21 +786,21 @@ export async function completeAcquisition(formData: FormData): Promise<void> {
   const id = String(formData.get('submissionId') ?? '');
   const receiptUrl = String(formData.get('paymentReceiptUrl') ?? '').trim();
   if (!id || !receiptUrl) return;
+  const blocked = await payoutBlocker(id);
+  if (blocked) redirect(`/admin/sell/${id}?err=${blocked}`);
   const sub = await prisma.sellSubmission.findUnique({
     where: { id },
-    select: { submittedById: true, email: true, contactName: true, itemTitle: true, agreedPriceCents: true, agreedCurrency: true },
+    select: { submittedById: true, email: true, contactName: true, itemTitle: true, agreedPriceCents: true, agreedCurrency: true, sellerBankDetails: true },
   });
   if (!sub) throw new Error('Submission not found');
-  await prisma.sellSubmission.update({
-    where: { id },
-    data: {
-      acquisitionStage: 'COMPLETED',
-      completedAt: new Date(),
-      paymentReceiptUrl: receiptUrl,
-    },
+  const claim = await prisma.sellSubmission.updateMany({
+    where: { id, acquisitionStage: 'RECEIVED' },
+    data: { acquisitionStage: 'COMPLETED', completedAt: new Date(), paymentReceiptUrl: receiptUrl },
   });
+  if (claim.count !== 1) redirect(`/admin/sell/${id}?err=stage`);
   const paid = fmtAmount(sub.agreedPriceCents ?? 0, sub.agreedCurrency ?? 'EUR');
-  await emitSystemMessage(id, `Acquisition completed. Payment of ${paid} wired; receipt attached.`);
+  const iban = (sub.sellerBankDetails as Record<string, string> | null)?.iban ?? '';
+  await emitSystemMessage(id, `Acquisition completed. Payment of ${paid} wired to ${maskIban(iban)}; receipt attached.`);
   const ref = `SS-${id.slice(-6).toUpperCase()}`;
   const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
   await notifySellerMilestone({
@@ -702,43 +811,36 @@ export async function completeAcquisition(formData: FormData): Promise<void> {
     notifHref: `/app/sell-submissions/${id}`,
     emailSubject: `[${ref}] Payment wired — acquisition complete`,
     emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
-                <p>We've wired <strong>${esc(paid)}</strong> to your bank for offer <strong>${ref}</strong>.</p>
+                <p>We've wired <strong>${esc(paid)}</strong> to your bank account ${esc(maskIban(iban))} for offer <strong>${ref}</strong>.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Open dashboard</a> to download the transfer receipt.</p>
                 <p>Thanks for selling through lab2date — the instrument is going to a new home.</p>`,
   });
-  await audit('sell.completed', ref, `by=${session.user.email}`);
+  await audit('sell.completed', ref, `${paid} to ${maskIban(iban)} by=${session.user.email}`);
   revalidatePath(`/admin/sell/${id}`);
   revalidatePath(`/app/sell-submissions/${id}`);
+  redirect(`/admin/sell/${id}?ok=completed`);
 }
 
 /**
- * Convenience wrapper for the admin "Complete + upload receipt" form. Takes
- * a file via the multipart request, uploads it to S3 (private prefix), then
- * calls completeAcquisition with the resulting URL. Keeps the admin
- * page's UX as a single form-submit click instead of two-step (upload then
- * paste URL).
+ * Admin “Complete + upload receipt”: checks the stage / pending bank change
+ * BEFORE storing the file, then completes once (see completeAcquisition).
  */
 export async function uploadReceiptAndComplete(formData: FormData): Promise<void> {
-  const session = await requireCapability('sell:status', { redirectTo: '/admin/sell' });
+  await requireCapability('sell:status', { redirectTo: '/admin/sell' });
+  await ensureSettingsLoaded();
   const id = String(formData.get('submissionId') ?? '');
   const file = formData.get('receipt');
-  if (!id || !file || typeof file === 'string') return;
-  const f = file as File;
-  if (f.size === 0) return;
-  if (f.size > 8_000_000) throw new Error('Receipt must be under 8 MB');
-  const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-  if (!allowed.includes(f.type)) throw new Error('Receipt must be JPG / PNG / WEBP / PDF');
-
+  if (!id) return;
+  const blocked = await payoutBlocker(id);
+  if (blocked) redirect(`/admin/sell/${id}?err=${blocked}`);
+  if (!file || typeof file === 'string' || (file as File).size === 0) redirect(`/admin/sell/${id}?err=receipt`);
+  const up = await readVerifiedUpload(file as File, { allow: ['jpeg', 'png', 'webp', 'pdf'], maxBytes: 8_000_000, label: 'Receipt' });
+  if (!up.ok) redirect(`/admin/sell/${id}?err=receipt`);
   const { uploadObject } = await import('@/lib/storage/s3');
-  const ext = (f.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
-  const buf = Buffer.from(await f.arrayBuffer());
-  const key = `order-proofs/sell-receipt-${id}-${Date.now()}.${ext}`;
-  const up = await uploadObject(key, buf, f.type);
-
-  // Build the inner FormData the actual completer expects.
+  const key = `order-proofs/sell-receipt-${id}-${Date.now()}.${up.upload.ext}`;
+  const stored = await uploadObject(key, up.upload.buf, up.upload.mime);
   const fd = new FormData();
   fd.append('submissionId', id);
-  fd.append('paymentReceiptUrl', up.url);
+  fd.append('paymentReceiptUrl', stored.url);
   await completeAcquisition(fd);
-  void session;
 }

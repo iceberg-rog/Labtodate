@@ -6,6 +6,7 @@ import { Mail, Loader2, ArrowRight } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { authErrorMessage } from '@/lib/auth-rules';
 import { Button } from '@/components/ui/button';
+import { TwoFactorStep } from './sign-in/TwoFactorStep';
 
 const OTP_LEN = 5;
 
@@ -15,15 +16,20 @@ export async function sendVerificationCode(email: string): Promise<string | null
   if (!error) return null;
   // 429 (rate limit) and 403 (suspended) carry a readable message; anything
   // else is a mail/server failure the user can only retry.
-  if ((error.status === 429 || error.status === 403) && error.message) return error.message;
+  // 503 = e-mail not configured, 502 = the mail server refused: both carry a
+  // message that says so (instead of "wait a moment").
+  if ([429, 403, 502, 503].includes(error.status) && error.message) return error.message;
   return 'We couldn’t send the code just now. Wait a moment, then press “Resend code”.';
 }
 
 /**
- * The "enter the 5-digit code" screen. Verifying the code signs the browser in
- * (autoSignInAfterVerification), so on success it just navigates on. Callers
- * send the first code themselves and pass any failure as `initialError`; the
- * user is never let in without a verified address.
+ * The "enter the 5-digit code" screen. The code ONLY confirms the address —
+ * it never signs anyone in (src/lib/auth.ts VERIFY_ONLY_PATHS). Once it is
+ * confirmed, this step signs in with the password the person just typed, over
+ * the normal password path (brute-force policy, and the authenticator step
+ * when the account has two-factor sign-in). Callers send the first code
+ * themselves and pass any failure as `initialError`; the user is never let in
+ * without a verified address.
  */
 export function VerifyEmailStep({
   email,
@@ -52,6 +58,8 @@ export function VerifyEmailStep({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(initialError ?? null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [needsTotp, setNeedsTotp] = useState(false);
+  const [confirmedOnly, setConfirmedOnly] = useState<string | null>(null);
   const boxes = useRef<(HTMLInputElement | null)[]>([]);
 
   const code = digits.join('');
@@ -81,8 +89,41 @@ export function VerifyEmailStep({
       boxes.current[0]?.focus();
       return;
     }
+    // Address confirmed. Now the real sign-in: password (+ authenticator code).
+    const { data, error: signErr } = await authClient.signIn.email({ email, password });
+    setLoading(false);
+    if (signErr) {
+      setConfirmedOnly(
+        signErr.status === 429 && signErr.message
+          ? `Your email address is confirmed. ${signErr.message}`
+          : 'Your email address is confirmed. Sign in with your password to continue (if it was not accepted, use “Forgot password”).',
+      );
+      return;
+    }
+    if (data && 'twoFactorRedirect' in data && data.twoFactorRedirect) {
+      setNeedsTotp(true);
+      return;
+    }
     router.push(redirect);
     router.refresh();
+  }
+
+  if (needsTotp) {
+    return <TwoFactorStep email={email} redirect={redirect} onBack={onBack} />;
+  }
+
+  if (confirmedOnly) {
+    return (
+      <div className="rounded-2xl border bg-card p-6 shadow-sm space-y-4 text-center" data-testid="email-confirmed">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+          <Mail className="h-6 w-6" />
+        </div>
+        <p className="text-sm" role="status">{confirmedOnly}</p>
+        <Button asChild className="w-full">
+          <a href={`/auth/sign-in?redirect=${encodeURIComponent(redirect)}`}>Go to sign-in</a>
+        </Button>
+      </div>
+    );
   }
 
   async function handleResend() {

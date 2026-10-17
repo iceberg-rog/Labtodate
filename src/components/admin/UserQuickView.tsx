@@ -168,12 +168,12 @@ export function UserQuickView() {
               </div>
 
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
-                <Stat icon={<ShoppingBag className="h-3.5 w-3.5" />} label="Orders" value={String(data.totals.orders)} />
-                <Stat icon={<FileText className="h-3.5 w-3.5" />} label="Spend" value={fmt(data.totals.spendCents, data.totals.currency)} accent />
-                <Stat icon={<FileText className="h-3.5 w-3.5" />} label="Quotes" value={String(data.totals.sourcing)} />
-                <Stat icon={<Wrench className="h-3.5 w-3.5" />} label="Sell offers" value={String(data.totals.sells)} />
-                <Stat icon={<LifeBuoy className="h-3.5 w-3.5" />} label="Tickets" value={String(data.totals.tickets)} />
-                <Stat icon={<MessageSquare className="h-3.5 w-3.5" />} label="Chats" value={String(data.totals.threads)} />
+                {data.totals.orders !== null && <Stat icon={<ShoppingBag className="h-3.5 w-3.5" />} label="Orders" value={String(data.totals.orders)} />}
+                {data.totals.spendCents !== null && <Stat icon={<FileText className="h-3.5 w-3.5" />} label="Spend" value={fmt(data.totals.spendCents, data.totals.currency)} accent />}
+                {data.totals.sourcing !== null && <Stat icon={<FileText className="h-3.5 w-3.5" />} label="Quotes" value={String(data.totals.sourcing)} />}
+                {data.totals.sells !== null && <Stat icon={<Wrench className="h-3.5 w-3.5" />} label="Sell offers" value={String(data.totals.sells)} />}
+                {data.totals.tickets !== null && <Stat icon={<LifeBuoy className="h-3.5 w-3.5" />} label="Tickets" value={String(data.totals.tickets)} />}
+                {data.totals.threads !== null && <Stat icon={<MessageSquare className="h-3.5 w-3.5" />} label="Chats" value={String(data.totals.threads)} />}
                 <Stat icon={<Heart className="h-3.5 w-3.5" />} label="Wishlist" value={String(data.totals.wishlist)} />
                 <Stat icon={<ShoppingCart className="h-3.5 w-3.5" />} label="Cart" value={String(data.totals.cart)} />
               </div>
@@ -229,6 +229,7 @@ export function UserQuickView() {
                   email={data.email}
                   suspended={data.suspended}
                   isAdmin={data.role === 'ADMIN'}
+                  blockedReason={data.actionBlockedReason}
                   onDone={() => {
                     setOpenId(null);
                     router.refresh();

@@ -1,14 +1,21 @@
 import { PackageCheck, Globe2, BadgeCheck } from 'lucide-react';
 import { prisma } from '@/lib/db';
+import { LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
+import { getCatalogPolicy } from '@/lib/catalog/policy';
+import { isPlaceholderBrand } from '@/lib/catalog/jsonld';
 import { WaveCanvas } from '@/components/home/WaveCanvas';
 
 export async function FeaturedSuppliers() {
   // Aggregate, non-identifying trust signals only — we never expose the
   // underlying source suppliers (customers must transact through lab2date).
-  const [listings, brands] = await Promise.all([
-    prisma.product.count({ where: { status: 'PUBLISHED' } }),
-    prisma.brand.count({ where: { products: { some: { status: 'PUBLISHED' } } } }),
+  // Live = what a buyer can actually get (published AND in stock); the brand
+  // count leaves out importer placeholders such as "Other".
+  const [listings, brandRows, policy] = await Promise.all([
+    prisma.product.count({ where: LIVE_PRODUCT_WHERE }),
+    prisma.brand.findMany({ where: { products: { some: LIVE_PRODUCT_WHERE } }, select: { name: true, slug: true } }),
+    getCatalogPolicy(),
   ]);
+  const brands = brandRows.filter((b) => !isPlaceholderBrand(b, policy.placeholderBrands)).length;
 
   return (
     <section className="relative overflow-hidden border-y border-foreground/5 bg-foreground/[0.02]">
@@ -24,7 +31,7 @@ export async function FeaturedSuppliers() {
       <div className="relative z-10 container-px py-24">
         <div className="text-center mb-14 max-w-2xl mx-auto">
           <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-3">
-            Verified supply
+            How buying works
           </p>
           <h2
             className="text-3xl md:text-5xl font-bold text-foreground"
@@ -39,10 +46,11 @@ export async function FeaturedSuppliers() {
           </p>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 max-w-4xl mx-auto">
-          <Stat icon={PackageCheck} value={listings.toLocaleString()} label="Listings" />
+        <div className={`grid gap-4 max-w-4xl mx-auto ${policy.shippingClaim ? 'grid-cols-2 lg:grid-cols-3' : 'grid-cols-2 max-w-xl'}`}>
+          <Stat icon={PackageCheck} value={listings.toLocaleString()} label="Listings available" />
           <Stat icon={BadgeCheck} value={`${brands}`} label="Instrument brands" />
-          <Stat icon={Globe2} value="Worldwide" label="Crated &amp; insured shipping" />
+          {/* Only the shipping promise the owner configured — none by default. */}
+          {policy.shippingClaim && <Stat icon={Globe2} value="Shipping" label={policy.shippingClaim} />}
         </div>
       </div>
     </section>

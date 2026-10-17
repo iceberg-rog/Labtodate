@@ -1,7 +1,7 @@
 'use client';
 
 import { createAuthClient } from 'better-auth/react';
-import { magicLinkClient, emailOTPClient, inferAdditionalFields } from 'better-auth/client/plugins';
+import { magicLinkClient, emailOTPClient, inferAdditionalFields, twoFactorClient } from 'better-auth/client/plugins';
 import type { auth } from './auth';
 
 export const authClient = createAuthClient({
@@ -15,6 +15,9 @@ export const authClient = createAuthClient({
   plugins: [
     magicLinkClient(),
     emailOTPClient(),
+    // The sign-in form handles the "enter your authenticator code" step itself
+    // (no automatic redirect).
+    twoFactorClient(),
     inferAdditionalFields<typeof auth>(),
   ],
 });

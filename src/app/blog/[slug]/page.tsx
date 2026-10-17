@@ -13,7 +13,8 @@ export const dynamic = 'force-dynamic';
 export async function generateMetadata(props: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const params = await props.params;
   const post = await prisma.blogPost.findUnique({ where: { slug: params.slug } });
-  if (!post) return { title: 'Not found' };
+  // A draft's title/excerpt must not leak through <title> by guessing its slug.
+  if (!post || post.status !== 'PUBLISHED') return { title: 'Not found' };
   return { title: post.title, description: post.excerpt ?? undefined };
 }
 

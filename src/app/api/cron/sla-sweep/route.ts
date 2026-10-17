@@ -1,10 +1,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
-import { isDeliverableEmail, sendEmail } from '@/lib/email';
+import { isDeliverableEmail, sendEmail, sendInternalEmail } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
-import { expireProformaTransition } from '@/lib/quotes/proforma-expiry';
-import { orphanSweepTtlMinutes } from '@/lib/orders/orphan-ttl';
+import { runPaymentDueSweep } from '@/lib/orders/due-sweep';
+import { QUOTE_REF } from '@/lib/quotes/offer';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -84,12 +84,16 @@ export async function POST(req: NextRequest) {
   }
 
   // ─── Quote requests sweep (mirror of the ticket flow) ────────────────
+  // Only requests waiting on lab2date: a new request, or one the buyer wrote
+  // last, with no order behind it (an open offer / accepted deal waits on the buyer).
   const overdueQuotes = await prisma.sourcingRequest.findMany({
     where: {
       archivedAt: null,
       slaBreachAt: null,
       dueAt: { lt: now },
       status: { in: ['PENDING', 'RESPONDED'] },
+      OR: [{ status: 'PENDING' }, { lastReplyByStaff: false }],
+      order: { is: null },
     },
     select: {
       id: true, proformaNumber: true, buyerName: true, buyerEmail: true,
@@ -110,7 +114,7 @@ export async function POST(req: NextRequest) {
     });
     if (claim.count !== 1) continue; // another sweep already flagged this one
     const overdueMinutes = Math.max(1, Math.round((now.getTime() - (q.dueAt?.getTime() ?? now.getTime())) / 60_000));
-    const ref = q.proformaNumber ?? `RFQ-${q.id.slice(-6).toUpperCase()}`;
+    const ref = q.proformaNumber ?? QUOTE_REF(q.id);
     const subject = q.product?.title ?? q.productCategory ?? `from ${q.buyerName}`;
     const title = `SLA breached · ${ref}`;
     const body = `${q.priority}: "${subject}" — overdue by ${overdueMinutes}m`;
@@ -120,13 +124,13 @@ export async function POST(req: NextRequest) {
       // Imported sellers have placeholder addresses; send those to the intake inbox.
       const slaTo = isDeliverableEmail(q.assignedTo?.email) ? q.assignedTo?.email : process.env.QUOTE_INTAKE_EMAIL;
       if (slaTo) {
-        await sendEmail({
+        await sendInternalEmail({
           to: slaTo,
           subject: `[SLA] Quote ${ref} — overdue ${overdueMinutes}m`,
           html: `<p><strong>${escapeHtml(q.priority)}</strong> quote <code>${ref}</code> has breached its SLA.</p>
                  <p>${escapeHtml(subject)}</p>
                  <p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open in admin</a></p>`,
-        }).catch(() => null);
+        }, 'sla:quote');
       }
     } else {
       await notifyAdmins(title, body, href, 'SYSTEM');
@@ -135,170 +139,23 @@ export async function POST(req: NextRequest) {
     quotesNotified++;
   }
 
-  // ─── Proforma expiry sweep ───────────────────────────────────────────
-  // Finds proformas whose validUntilAt has passed while the buyer never
-  // moved on the deal. Closes the request (→ Lost) and cancels the linked
-  // PENDING_PAYMENT order so the buyer's payment workspace blocks further
-  // upload attempts. Sequentially idempotent: once status=CLOSED it falls out
-  // of the WHERE on the next sweep. BUG-044: it was NOT overlap-safe — two
-  // concurrent invocations (GET→POST sidecar wget + a slow sweep overrunning
-  // into the next scheduled tick, the exact scenario BUG-042 hardened the
-  // ticket/quote sweeps for) both findMany the same RESPONDED row before either
-  // commits, and the unconditional sourcingRequest.update + ungated side effects
-  // then double-emailed the buyer "proforma expired", double-notified, and
-  // double-audited a single expiry. Fixed below by claiming the RESPONDED→CLOSED
-  // transition atomically (updateMany guarded on status='RESPONDED') and only
-  // firing notify/email/audit when THIS invocation won the claim.
-  const expiredProformas = await prisma.sourcingRequest.findMany({
-    where: {
-      archivedAt: null,
-      proformaNumber: { not: null },
-      validUntilAt: { lt: now },
-      // Only deals still in negotiation. Accepted/declined/closed are terminal.
-      status: 'RESPONDED',
-    },
-    select: {
-      id: true, proformaNumber: true, buyerEmail: true, buyerName: true,
-      submittedById: true, validUntilAt: true,
-      product: { select: { title: true } },
-      productCategory: true,
-    },
-    take: 100,
-  });
+  // ─── Payment due dates, reminders, auto-cancel, offer expiry (A25) ────
+  // One rule for quote and checkout orders (lib/orders/due-sweep.ts): the
+  // due date printed on the proforma; reminders before it; cancellation only
+  // after due date + grace (AUTO_CANCEL_UNPAID), always emailed; a receipt in
+  // review, an invoice-terms request or ANY hold stops it (pre-payment holds —
+  // shipping / VAT / compliance / address — are staff's turn, not the buyer's,
+  // and a payment review means money arrived). An order that was on hold
+  // counts its payment term from when it became payable (Order.payableSince).
+  const due = await runPaymentDueSweep(now);
 
-  let proformasExpired = 0;
-  for (const q of expiredProformas) {
-    const ref = q.proformaNumber!;
-    const item = q.product?.title ?? q.productCategory ?? 'requested equipment';
-
-    // Close the quote and cancel its linked order atomically — but ONLY if the
-    // buyer hasn't submitted a payment proof. The proof check lives INSIDE the
-    // transaction (expireProformaTransition), which closes the interleaving where
-    // a proof landing between an external read and the commit let the quote close
-    // (→ Lost) and expiry fire while the order stayed PENDING_PAYMENT with proof.
-    // Outcomes:
-    //   proof-in-flight — buyer acted; nothing changes, zero side effects.
-    //   lost-race       — an overlapping sweep won the RESPONDED→CLOSED claim; it
-    //                     owns the side effects.
-    //   expired         — order CANCELED + quote CLOSED committed together; fire
-    //                     notify/email/audit exactly once, below, after commit.
-    const outcome = await expireProformaTransition(prisma, q.id);
-    if (outcome !== 'expired') continue;
-
-    if (q.submittedById) {
-      await notifyUser(
-        q.submittedById,
-        `Proforma expired — ${ref}`,
-        `Your proforma for "${item}" expired on ${q.validUntilAt?.toISOString().slice(0, 10)}. If you still want this, reply to your quote and we'll re-issue.`,
-        `/app/quotes/${q.id}`,
-      ).catch(() => null);
-    }
-    if (q.buyerEmail) {
-      await sendEmail({
-        to: q.buyerEmail,
-        subject: `[${ref}] Your proforma has expired`,
-        html: `<p>Hi ${escapeHtml(q.buyerName ?? 'there')},</p>
-               <p>Your proforma <strong>${ref}</strong> for ${escapeHtml(item)} expired on ${q.validUntilAt?.toISOString().slice(0, 10)}.</p>
-               <p>If you'd still like to proceed, just reply to your quote thread and we'll re-issue with up-to-date pricing.</p>
-               <p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/quotes/${q.id}">Open your quote</a></p>`,
-      }).catch(() => null);
-    }
-    await notifyAdmins(
-      `Proforma expired · ${ref}`,
-      `${item} — buyer never decided. Moved to Lost.`,
-      `/admin/quotes/${q.id}`,
-      'SYSTEM',
-    ).catch(() => null);
-    await audit('quote.proforma.expire', ref, `item="${item}" buyer=${q.buyerEmail}`);
-    proformasExpired++;
-  }
-
-  // ─── Orphaned PENDING_PAYMENT order sweep (BUG-007) ──────────────────
-  // Releases stock reserved by orders that were never paid and show no sign
-  // of buyer payment activity. In manual-payment posture an order can
-  // legitimately sit in PENDING_PAYMENT for days while the buyer arranges a
-  // bank transfer, so the TTL is deliberately generous (default 7 days) and
-  // we only touch orders with NO payment proof in flight, NO stripe session,
-  // and NOT tied to a sourcing/proforma deal (the proforma sweep owns those).
-  // Idempotent + race-safe: the cancel is an atomic updateMany guarded by
-  // status=PENDING_PAYMENT AND paymentSubmittedAt=null, so a buyer who submits
-  // proof between the select and the update wins and is never cancelled.
-  // Hard safety FLOOR (not merely the configurable TTL): never sweep below the
-  // Stripe checkout-session max lifetime (24h) + margin. A handoff that crashed
-  // after create() but before persist/expire can leave an order with a null
-  // stripeSessionId yet a still-payable Stripe session; the floor guarantees any
-  // such session has expired on Stripe's side before this sweep cancels+restocks.
-  // Fail-safe TTL: hard 25h floor (> Stripe's 24h session max), 7d default, never
-  // NaN. See orphanSweepTtlMinutes (unit-tested in verify-expired-restock-once.ts).
-  const orphanTtlMin = orphanSweepTtlMinutes(process.env.ORPHAN_ORDER_TTL_MINUTES);
-  const orphanCutoff = new Date(now.getTime() - orphanTtlMin * 60_000);
-  const orphanCandidates = await prisma.order.findMany({
-    where: {
-      status: 'PENDING_PAYMENT',
-      createdAt: { lt: orphanCutoff },
-      stripeSessionId: null,
-      paymentSubmittedAt: null,
-      paymentVerificationStatus: null,
-      sourcingRequestId: null,
-      archivedAt: null,
-    },
-    select: {
-      id: true, orderNumber: true, buyerId: true,
-      items: { select: { productId: true, quantity: true } },
-    },
-    take: 100,
-  });
-
-  let orphansCanceled = 0;
-  for (const o of orphanCandidates) {
-    let canceled = false;
-    try {
-      await prisma.$transaction(async (tx) => {
-        const res = await tx.order.updateMany({
-          where: { id: o.id, status: 'PENDING_PAYMENT', paymentSubmittedAt: null },
-          data: { status: 'CANCELED' },
-        });
-        if (res.count !== 1) return; // lost the race — buyer acted; leave it
-        canceled = true;
-        // Return each reserved unit to stock exactly once.
-        for (const it of o.items) {
-          if (!it.productId) continue;
-          await tx.product.update({
-            where: { id: it.productId },
-            data: { quantity: { increment: it.quantity } },
-          });
-        }
-      });
-    } catch {
-      continue;
-    }
-    if (!canceled) continue;
-    if (o.buyerId) {
-      await notifyUser(
-        o.buyerId,
-        `Order ${o.orderNumber} canceled — no payment received`,
-        `We released the items reserved for order ${o.orderNumber} because we didn't receive payment. You're welcome to order again.`,
-        `/app/orders/${o.orderNumber}`,
-      ).catch(() => null);
-    }
-    await notifyAdmins(
-      `Orphan order canceled · ${o.orderNumber}`,
-      `Stale PENDING_PAYMENT (> ${orphanTtlMin}m, no proof, no session). Reserved stock released.`,
-      `/admin/orders/${o.id}`,
-      'SYSTEM',
-    ).catch(() => null);
-    await audit('order.orphan.cancel', o.orderNumber, `ttlMin=${orphanTtlMin} items=${o.items.length}`);
-    orphansCanceled++;
-  }
-
-  const swept = overdueTickets.length + overdueQuotes.length + proformasExpired + orphansCanceled;
+  const swept = overdueTickets.length + overdueQuotes.length + due.canceled + due.paymentReminders + due.overdueNotices + due.offerReminders;
   return NextResponse.json({
     swept,
     sweptAt: now.toISOString(),
     tickets: { swept: overdueTickets.length, notified: ticketsNotified },
     quotes: { swept: overdueQuotes.length, notified: quotesNotified },
-    proformas: { expired: proformasExpired },
-    orphanOrders: { canceled: orphansCanceled },
+    payments: due,
   });
 }
 

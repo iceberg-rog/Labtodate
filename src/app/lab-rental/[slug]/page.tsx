@@ -12,7 +12,8 @@ export const dynamic = 'force-dynamic';
 export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
   const f = await prisma.labFacility.findUnique({ where: { slug: params.slug } });
-  return { title: f?.name ?? 'Not found' };
+  // A hidden facility's name must not leak through <title>.
+  return { title: f && f.isPublished ? f.name : 'Not found' };
 }
 
 export default async function FacilityPage(props: { params: Promise<{ slug: string }> }) {

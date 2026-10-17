@@ -8,9 +8,14 @@ import { resolveProductSlug } from '@/lib/products/slug';
 import { AdminProductForm } from '@/components/admin/AdminProductForm';
 import { adminUpdateProduct, adminDeleteProduct, type AdminProductInputType } from '@/app/admin/actions';
 import { Button } from '@/components/ui/button';
+import { formatPrice } from '@/lib/utils';
 import { redirect } from 'next/navigation';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 import { DeleteProductButton } from './DeleteProductButton';
+import { ProductSyncPanel } from '@/components/admin/ProductSyncPanel';
+import { getCatalogPolicy, getConditionGrades } from '@/lib/catalog/policy';
+import { isOwnStoredImage, ownMediaPath } from '@/lib/media/public-src';
+import { ensureSettingsLoaded, settingBool } from '@/lib/settings';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,12 +30,18 @@ export function generateMetadata(props: { params: Promise<{ slug: string }> }) {
 export default async function AdminProductEditPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
   await requireCapability('products:edit');
+  await ensureSettingsLoaded();
 
   // Matches imported slugs stored with a literal '%c2%b5' (see resolveProductSlug).
-  const product = await prisma.product.findUnique({ where: { slug: await resolveProductSlug(params.slug) } });
+  const product = await prisma.product.findUnique({
+    where: { slug: await resolveProductSlug(params.slug) },
+    include: { company: { select: { name: true, slug: true, syncPolicy: true } } },
+  });
   if (!product) notFound();
 
-  const [categories, brands, companies, orderLines] = await Promise.all([
+  const [policy, grades, categories, brands, companies, orderLines] = await Promise.all([
+    getCatalogPolicy(),
+    getConditionGrades(),
     prisma.category.findMany({ orderBy: { sortOrder: 'asc' }, select: { id: true, name: true } }),
     prisma.brand.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true } }),
     prisma.company.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true } }),
@@ -50,10 +61,20 @@ export default async function AdminProductEditPage(props: { params: Promise<{ sl
     currency: product.currency,
     quantity: product.quantity,
     yearMade: product.yearMade ?? null,
-    illustration: (product.illustration ?? 'balance') as IllustrationName,
+    illustration: (product.illustration as IllustrationName | null) ?? null,
     images: product.images,
     specs: (product.specs as Record<string, string> | null) ?? {},
     status: product.status,
+    warrantyMonths: product.warrantyMonths,
+    warrantyText: product.warrantyText,
+    conditionNotes: product.conditionNotes,
+    inspectedAt: product.inspectedAt ? product.inspectedAt.toISOString().slice(0, 10) : null,
+    inspectionReportUrl: product.inspectionReportUrl,
+    inspectionNotes: product.inspectionNotes,
+    sku: product.sku,
+    mpn: product.mpn,
+    vatScheme: product.vatScheme,
+    purchaseCostCents: product.purchaseCostCents,
   };
 
   const slug = product.slug;
@@ -93,11 +114,41 @@ export default async function AdminProductEditPage(props: { params: Promise<{ sl
           </form>
         </div>
       </div>
+      {product.pendingPriceCents !== null && (
+        <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 px-4 py-3 text-sm" data-testid="pending-price-notice">
+          <strong>A supplier price change waits for your review:</strong>{' '}
+          {product.priceCents !== null ? formatPrice(product.priceCents, product.currency) : 'no price'} →{' '}
+          {formatPrice(product.pendingPriceCents, product.pendingPriceCurrency || product.currency)}.{' '}
+          {product.priceOnHold ? 'The listing cannot be bought until you decide. ' : 'It is still sold at the current price. '}
+          <Link href="/admin/catalog/price-review" className="font-semibold underline">Price review</Link> — or set a price below (that decides it too).
+        </div>
+      )}
+      <ProductSyncPanel
+        slug={product.slug}
+        shopName={product.company?.name ?? null}
+        shopSlug={product.company?.slug ?? null}
+        syncPolicy={product.company?.syncPolicy ?? null}
+        externalId={product.externalId}
+        sourceUrl={product.sourceUrl}
+        sourceAvailability={product.sourceAvailability}
+        lastSyncedAt={product.lastSyncedAt ? product.lastSyncedAt.toISOString() : null}
+        removedAtSourceAt={product.removedAtSourceAt ? product.removedAtSourceAt.toISOString() : null}
+        lockedFields={product.lockedFields}
+        foreignPhotos={product.images.filter((u) => !isOwnStoredImage(u)).length}
+      />
       <AdminProductForm
         initial={initial}
         categories={categories}
         brands={brands}
         companies={companies}
+        grades={grades}
+        warrantyFallbackText={policy.warrantyFallbackText}
+        warrantyMonthsFormat={policy.warrantyMonthsFormat}
+        inspectionRequiresReport={policy.inspectionRequiresReport}
+        marginSchemeEnabled={settingBool('TAX_MARGIN_SCHEME_ENABLED')}
+        photoMode={policy.missingPhotoMode}
+        photoLabels={{ noPhoto: policy.noPhotoLabel, illustration: policy.illustrationLabel }}
+        publicPaths={Object.fromEntries(product.images.map((u) => [u, ownMediaPath(u)]))}
         onSubmit={handleSave}
         submitLabel="Save changes"
       />

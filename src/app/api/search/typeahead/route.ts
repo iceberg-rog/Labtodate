@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { searchProvider } from '@/lib/search/provider';
 import { rateLimit } from '@/lib/ratelimit';
+import { loadPriceDisplay } from '@/lib/pricing/server';
+import { priceParts } from '@/lib/pricing/display';
+import { getCatalogPolicy } from '@/lib/catalog/policy';
+import { isPlaceholderBrand } from '@/lib/catalog/jsonld';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +24,17 @@ export async function GET(req: Request) {
   }
   const limit = Math.min(10, parseInt(url.searchParams.get('limit') ?? '6', 10) || 6);
 
-  const hits = await searchProvider.typeahead(q, limit);
+  const [raw, display, policy] = await Promise.all([searchProvider.typeahead(q, limit), loadPriceDisplay(), getCatalogPolicy()]);
+  // The shown price + its VAT basis, exactly as on cards (Settings → Tax & VAT).
+  const hits = raw.map((h) => {
+    const p = h.priceCents ? priceParts(h.priceCents, display) : null;
+    return {
+      ...h,
+      brand: h.brand && !isPlaceholderBrand({ name: h.brand }, policy.placeholderBrands) ? h.brand : null,
+      priceCents: p ? p.primaryCents : null,
+      priceLabel: p ? p.primaryLabel : null,
+      noPhotoLabel: policy.noPhotoLabel,
+    };
+  });
   return NextResponse.json({ hits });
 }

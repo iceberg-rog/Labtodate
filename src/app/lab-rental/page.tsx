@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { MapPin, Beaker } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { prisma } from '@/lib/db';
+import { getSiteTexts } from '@/lib/catalog/site-texts';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
 import { formatPrice } from '@/lib/utils';
 
@@ -9,6 +10,7 @@ export const metadata = { title: 'Lab Rental Facilities' };
 export const dynamic = 'force-dynamic';
 
 export default async function LabRentalIndexPage() {
+  const texts = await getSiteTexts();
   const facilities = await prisma.labFacility.findMany({
     where: { isPublished: true },
     orderBy: { name: 'asc' },
@@ -23,10 +25,7 @@ export default async function LabRentalIndexPage() {
           Rent the instrument.<br />
           <span className="text-primary">Not the whole lab.</span>
         </h1>
-        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
-          Partner facilities offering hourly and daily access to specific instruments — useful for one-off
-          experiments or method development before committing to purchase.
-        </p>
+        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">{texts.labRentalIntro}</p>
       </header>
 
       {facilities.length === 0 ? (

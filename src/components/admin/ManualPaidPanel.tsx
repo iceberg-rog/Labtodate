@@ -20,18 +20,27 @@ export function ManualPaidPanel() {
   const [pending, start] = useTransition();
   const [res, setRes] = useState<{ ok: boolean; message: string } | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [method, setMethod] = useState<'BANK_TRANSFER' | 'INVOICE' | 'RECEIPT' | 'OTHER'>('BANK_TRANSFER');
+  const [method, setMethod] = useState<'BANK_TRANSFER' | 'RECEIPT' | 'OTHER'>('BANK_TRANSFER');
   const [note, setNote] = useState('');
+  // From the bank statement: the invoice prints the value date, and a short
+  // payment is never booked as paid in full.
+  const [amount, setAmount] = useState('');
+  const [receivedAt, setReceivedAt] = useState('');
+  const [bankRef, setBankRef] = useState('');
 
   useEffect(() => {
     function handler(e: Event) {
-      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      const d = (e as CustomEvent<{ id: string; openCents?: number }>).detail;
+      const id = d?.id;
       if (!id) return;
       setOrderId(id);
       setRes(null);
       setFile(null);
       setMethod('BANK_TRANSFER');
       setNote('');
+      setAmount(typeof d?.openCents === 'number' ? (d.openCents / 100).toFixed(2) : '');
+      setReceivedAt(new Date().toISOString().slice(0, 10));
+      setBankRef('');
     }
     window.addEventListener('admin:manualpaid', handler);
     return () => window.removeEventListener('admin:manualpaid', handler);
@@ -61,6 +70,9 @@ export function ManualPaidPanel() {
     fd.set('orderId', target);
     fd.set('method', method);
     fd.set('note', note);
+    fd.set('amount', amount);
+    fd.set('receivedAt', receivedAt);
+    fd.set('bankRef', bankRef);
     if (file) fd.set('proof', file);
     start(async () => {
       try {
@@ -93,7 +105,7 @@ export function ManualPaidPanel() {
             </p>
             <h2 className="text-lg font-bold mt-0.5">Confirm off-platform payment</h2>
             <p className="text-xs text-muted-foreground mt-1">
-              For quote / invoice / bank-transfer orders. Audit-logged with your email + timestamp.
+              Only for money that was really received (bank transfer, other). Payment on invoice is not “paid”: approve credit terms on the order page instead. Audit-logged.
             </p>
           </div>
           <button type="button" disabled={pending} onClick={() => setOrderId(null)} className="p-1.5 rounded-lg hover:bg-foreground/5 text-muted-foreground disabled:opacity-50">
@@ -110,11 +122,40 @@ export function ManualPaidPanel() {
               className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm"
             >
               <option value="BANK_TRANSFER">Bank transfer (SEPA / wire)</option>
-              <option value="INVOICE">Invoice (NET-30 / company account)</option>
               <option value="RECEIPT">Receipt uploaded</option>
               <option value="OTHER">Other (specify in note)</option>
             </select>
           </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="block text-sm font-semibold mb-1.5">Amount received (€)</span>
+              <input
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                inputMode="decimal"
+                required
+                placeholder="1210.00"
+                className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm tabular-nums"
+                data-testid="manual-paid-amount"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-sm font-semibold mb-1.5">Value date</span>
+              <input
+                type="date"
+                value={receivedAt}
+                onChange={(e) => setReceivedAt(e.target.value)}
+                required
+                className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm"
+              />
+            </label>
+            <label className="block col-span-2">
+              <span className="block text-sm font-semibold mb-1.5">Bank reference (optional)</span>
+              <input value={bankRef} onChange={(e) => setBankRef(e.target.value)} maxLength={120} placeholder="As on the bank statement" className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm" />
+            </label>
+            <p className="col-span-2 text-[11px] text-muted-foreground -mt-1">As on the bank statement: the invoice prints the value date as the payment date. Less than the open amount (beyond the tolerance in Settings) is not “paid”.</p>
+          </div>
 
           <label className="block">
             <span className="block text-sm font-semibold mb-1.5">Receipt / proof (optional)</span>
@@ -175,6 +216,6 @@ export function ManualPaidPanel() {
 }
 
 /** Reusable trigger — open the modal for a given order id. */
-export function openManualPaid(id: string) {
-  window.dispatchEvent(new CustomEvent('admin:manualpaid', { detail: { id } }));
+export function openManualPaid(id: string, openCents?: number) {
+  window.dispatchEvent(new CustomEvent('admin:manualpaid', { detail: { id, openCents } }));
 }

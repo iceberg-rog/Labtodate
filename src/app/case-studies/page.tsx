@@ -1,14 +1,17 @@
 import Link from 'next/link';
+import { publicCaseStudyWhere } from '@/lib/catalog/consent';
 import { ArrowUpRight } from 'lucide-react';
 import { prisma } from '@/lib/db';
+import { getSiteTexts } from '@/lib/catalog/site-texts';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
 
 export const metadata = { title: 'Case studies' };
 export const dynamic = 'force-dynamic';
 
 export default async function CaseStudiesPage() {
+  const texts = await getSiteTexts();
   const cases = await prisma.caseStudy.findMany({
-    where: { status: 'PUBLISHED' },
+    where: await publicCaseStudyWhere(),
     orderBy: { publishedAt: 'desc' },
     take: 60,
   });
@@ -18,13 +21,16 @@ export default async function CaseStudiesPage() {
       <header className="mb-12">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">Case studies</p>
         <h1 className="text-4xl md:text-6xl font-bold tracking-tight" style={{ letterSpacing: '-0.04em' }}>
-          Real labs. Real numbers.
+          Customer stories.
         </h1>
-        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
-          How research teams cut procurement cost and time using lab2date.
-        </p>
+        <p className="mt-4 text-muted-foreground text-lg max-w-2xl">{texts.caseStudiesIntro}</p>
       </header>
 
+      {cases.length === 0 && (
+        <p className="rounded-2xl border border-dashed border-border p-10 text-center text-muted-foreground">
+          No case studies are published yet.
+        </p>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {cases.map((c) => (
           <Link key={c.slug} href={`/case-studies/${c.slug}`} className="group rounded-2xl border border-border bg-card overflow-hidden hover:border-primary/40 hover:shadow-xl transition-all">

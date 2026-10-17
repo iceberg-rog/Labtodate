@@ -16,8 +16,11 @@ import {
   ShieldOff,
   Target,
   Percent,
+  Undo2,
 } from 'lucide-react';
-import { requireSession } from '@/lib/auth-server';
+import { requireSession, getAdminCaps } from '@/lib/auth-server';
+import { capsAllow } from '@/lib/capabilities';
+import { BackupStatusTile } from '@/components/admin/BackupStatusTile';
 import { prisma } from '@/lib/db';
 import { TICKETS_AWAITING_SUPPORT } from '@/lib/support/statuses';
 import { formatPrice } from '@/lib/utils';
@@ -64,8 +67,16 @@ function delta(curr: number, prev: number): { sign: '+' | '−' | '·'; pct: str
   return { sign, pct: `${Math.abs(Math.round(change * 100))}%`, tone };
 }
 
-export default async function AdminDashboardPage() {
+export default async function AdminDashboardPage(props: { searchParams?: Promise<{ forbidden?: string }> }) {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  const forbidden = ((await props.searchParams)?.forbidden ?? '').slice(0, 60);
+  // A31: every card is gated by the capability for what it shows — a support
+  // or content admin sees no revenue, order amounts or buyer e-mails.
+  const caps = await getAdminCaps();
+  const can = (c: string) => capsAllow(caps, c);
+  const canOrders = can('orders:view');
+  const canMoney = can('finance:view');
+  const canQuotes = can('quotes:view');
   const now = Date.now();
   const since30 = new Date(now - 30 * DAY);
   const since14 = new Date(now - 14 * DAY);
@@ -160,6 +171,18 @@ export default async function AdminDashboardPage() {
   ]);
 
   const usersThisWeek = await prisma.user.count({ where: { createdAt: { gte: since7 } } });
+  // Money corrections waiting for a person: paid orders whose invoice is held
+  // (VAT review / missing details / error) and bank refunds approved but not sent.
+  const [invoiceHeld, refundsToSend] = await Promise.all([
+    prisma.order.count({
+      where: {
+        archivedAt: null,
+        status: { in: ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] },
+        OR: [{ holdReason: { in: ['VAT_REVIEW', 'INVOICE_PENDING'] } }, { openHolds: { hasSome: ['VAT_REVIEW', 'INVOICE_PENDING'] } }],
+      },
+    }),
+    prisma.refund.count({ where: { status: 'REQUESTED' } }),
+  ]);
 
   // Filter tickets to those genuinely awaiting reply (last message from buyer
   // or no reply at all).
@@ -225,6 +248,7 @@ export default async function AdminDashboardPage() {
   const tiles = [
     {
       key: 'fulfil',
+      cap: 'orders:view',
       icon: <Truck className="h-4 w-4" />,
       label: 'Awaiting fulfilment',
       value: fulfilPending.length,
@@ -233,7 +257,28 @@ export default async function AdminDashboardPage() {
       sub: fulfilPending.length > 0 ? `oldest ${timeAgo(fulfilPending[0].createdAt, now)} ago` : 'all caught up',
     },
     {
+      key: 'invoicehold',
+      cap: 'orders:view',
+      icon: <FileText className="h-4 w-4" />,
+      label: 'Paid, invoice on hold',
+      value: invoiceHeld,
+      href: '/admin/orders?view=invoice_hold',
+      tone: invoiceHeld > 0 ? 'red' : 'neutral',
+      sub: invoiceHeld > 0 ? 'VAT review / missing details' : 'every paid order invoiced',
+    },
+    {
+      key: 'refunds',
+      cap: 'orders:view',
+      icon: <Undo2 className="h-4 w-4" />,
+      label: 'Refunds to send',
+      value: refundsToSend,
+      href: '/admin/orders?view=refunds_open',
+      tone: refundsToSend > 0 ? 'red' : 'neutral',
+      sub: refundsToSend > 0 ? 'approved, transfer not sent' : 'none open',
+    },
+    {
       key: 'approvals',
+      cap: 'products:view',
       icon: <ShieldCheck className="h-4 w-4" />,
       label: 'Pending approvals',
       value: pendingProducts,
@@ -243,6 +288,7 @@ export default async function AdminDashboardPage() {
     },
     {
       key: 'tickets',
+      cap: 'tickets:view',
       icon: <LifeBuoy className="h-4 w-4" />,
       label: 'Tickets stale > 24h',
       value: awaitingTickets.length,
@@ -252,6 +298,7 @@ export default async function AdminDashboardPage() {
     },
     {
       key: 'quotes',
+      cap: 'quotes:view',
       icon: <FileText className="h-4 w-4" />,
       label: 'Quotes pending > 48h',
       value: quotesStale.length,
@@ -261,6 +308,7 @@ export default async function AdminDashboardPage() {
     },
     {
       key: 'sells',
+      cap: 'sell:view',
       icon: <Wrench className="h-4 w-4" />,
       label: 'Sell submissions',
       value: pendingSells,
@@ -270,6 +318,7 @@ export default async function AdminDashboardPage() {
     },
     {
       key: 'errors',
+      cap: 'errors:view',
       icon: <AlertTriangle className="h-4 w-4" />,
       label: 'Errors · 24h',
       value: errors24,
@@ -279,6 +328,7 @@ export default async function AdminDashboardPage() {
     },
     {
       key: 'lastcopy',
+      cap: 'products:view',
       icon: <Boxes className="h-4 w-4" />,
       label: 'Last-copy stock',
       value: lastCopyStock.length,
@@ -286,7 +336,7 @@ export default async function AdminDashboardPage() {
       tone: lastCopyStock.length > 0 ? 'amber' : 'neutral',
       sub: lastCopyStock.length > 0 ? 'qty = 1' : 'no critical items',
     },
-  ];
+  ].filter((t) => can(t.cap));
 
   const actionTiles = tiles.filter((t) => t.value > 0);
   const clearTiles = tiles.filter((t) => t.value === 0);
@@ -310,6 +360,12 @@ export default async function AdminDashboardPage() {
 
   return (
     <div className="space-y-8">
+      {forbidden && (
+        <div role="alert" className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
+          You don’t have permission for that page (it needs <code className="font-mono">{forbidden}</code>). Ask a super-admin
+          if you need it.
+        </div>
+      )}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Overview</h1>
@@ -328,9 +384,9 @@ export default async function AdminDashboardPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs flex-wrap">
-          <KpiChip label="Users" value={String(usersTotal)} delta={dUsers7} />
+          {can('users:view') && <KpiChip label="Users" value={String(usersTotal)} delta={dUsers7} />}
           <KpiChip label="Live listings" value={String(catalogLive)} />
-          <KpiChip label="Open quotes" value={String(quotesOpenAll)} />
+          {canQuotes && <KpiChip label="Open quotes" value={String(quotesOpenAll)} />}
         </div>
       </div>
 
@@ -342,23 +398,26 @@ export default async function AdminDashboardPage() {
               <h2 className="text-xs uppercase tracking-[0.18em] font-bold text-muted-foreground">
                 Needs attention ({actionTiles.length})
               </h2>
-              {fulfilPending.length > 0 && <BulkShipButton count={fulfilPending.length} />}
+              {fulfilPending.length > 0 && can('orders:fulfil') && <BulkShipButton count={fulfilPending.length} />}
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               {actionTiles.map((t) => {
-                const { key, ...rest } = t;
+                const { key, cap: _cap, ...rest } = t;
+                void _cap;
                 return <QueueTile key={key} {...rest} />;
               })}
-              {/* Revenue card always present in action row as positive context */}
-              <QueueTile
-                key="rev7"
-                icon={<ShoppingBag className="h-4 w-4" />}
-                label="Orders · 7d"
-                value={orders7}
-                href="/admin/orders"
-                tone="emerald"
-                sub={`${formatPrice(revenue7, currency)} · ${dRev7.sign}${dRev7.pct} rev`}
-              />
+              {/* Orders card as positive context (revenue only with finance:view) */}
+              {canOrders && (
+                <QueueTile
+                  key="rev7"
+                  icon={<ShoppingBag className="h-4 w-4" />}
+                  label="Orders · 7d"
+                  value={orders7}
+                  href="/admin/orders"
+                  tone="emerald"
+                  sub={canMoney ? `${formatPrice(revenue7, currency)} · ${dRev7.sign}${dRev7.pct} rev` : 'placed in the last 7 days'}
+                />
+              )}
             </div>
           </>
         ) : (
@@ -369,7 +428,8 @@ export default async function AdminDashboardPage() {
             <div>
               <p className="text-lg font-bold text-emerald-900 dark:text-emerald-300">Inbox clean · nothing waiting on you</p>
               <p className="text-sm text-emerald-800 dark:text-emerald-300 mt-0.5">
-                No fulfilment, approvals, tickets, quotes, sells, errors or last-copy items. Last 7d: {orders7} orders · {formatPrice(revenue7, currency)} ({dRev7.sign}{dRev7.pct} vs prior).
+                Nothing waiting in the sections you can see.
+                {canOrders && <> Last 7d: {orders7} orders{canMoney && <> · {formatPrice(revenue7, currency)} ({dRev7.sign}{dRev7.pct} vs prior)</>}.</>}
               </p>
             </div>
           </div>
@@ -397,18 +457,23 @@ export default async function AdminDashboardPage() {
           Operational metrics · last 7d
         </h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Kpi
-            icon={<Banknote className="h-4 w-4" />}
-            label="Revenue"
-            value={formatPrice(revenue7, currency)}
-            delta={dRev7}
-          />
+          {canMoney && (
+            <Kpi
+              icon={<Banknote className="h-4 w-4" />}
+              label="Revenue"
+              value={formatPrice(revenue7, currency)}
+              delta={dRev7}
+            />
+          )}
+          {canOrders && (
           <Kpi
             icon={<ShoppingBag className="h-4 w-4" />}
             label="Orders placed"
             value={String(orders7)}
             delta={dOrd7}
           />
+          )}
+          {canOrders && (
           <Kpi
             icon={<Target className="h-4 w-4" />}
             label={`Fulfilment SLA (${FULFIL_SLA_HOURS}h)`}
@@ -416,6 +481,8 @@ export default async function AdminDashboardPage() {
             footnote={slaTotal === 0 ? 'no shipped orders in 30d' : `${slaHit} of ${slaTotal} shipped in time (30d)`}
             tone={slaTotal === 0 ? 'flat' : slaHit / slaTotal >= 0.9 ? 'good' : slaHit / slaTotal >= 0.7 ? 'flat' : 'bad'}
           />
+          )}
+          {canQuotes && (
           <Kpi
             icon={<Percent className="h-4 w-4" />}
             label="Quote → order"
@@ -423,24 +490,30 @@ export default async function AdminDashboardPage() {
             footnote={quoteTotal === 0 ? 'no quotes in 30d' : `${quoteAccepted} of ${quoteTotal} accepted (30d)`}
             tone={quoteTotal === 0 ? 'flat' : quoteAccepted / quoteTotal >= 0.3 ? 'good' : 'flat'}
           />
+          )}
+          {canMoney && (
           <Kpi
             icon={<TrendingUp className="h-4 w-4" />}
             label="Avg order value"
             value={aov7 === 0 ? '—' : formatPrice(aov7, currency)}
             footnote={paidLast7.length === 0 ? 'no paid orders this week' : `from ${paidLast7.length} paid order${paidLast7.length === 1 ? '' : 's'}`}
           />
+          )}
           <Kpi
             icon={<Package className="h-4 w-4" />}
             label="Live listings"
             value={String(catalogLive)}
             footnote={`${lastCopyStock.length} last-copy`}
           />
+          {canQuotes && (
           <Kpi
             icon={<FileText className="h-4 w-4" />}
             label="Open quotes"
             value={String(quotesOpenAll)}
             footnote={`${quoteTotal} new in 30d`}
           />
+          )}
+          {can('errors:view') && (
           <Kpi
             icon={<AlertTriangle className="h-4 w-4" />}
             label="Errors · 24h"
@@ -448,11 +521,13 @@ export default async function AdminDashboardPage() {
             footnote={errors24 === 0 ? 'clean window' : 'investigate'}
             tone={errors24 === 0 ? 'good' : errors24 > 10 ? 'bad' : 'flat'}
           />
+          )}
         </div>
       </section>
 
       {/* === Trend charts (only when there's data) === */}
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {canMoney && (
         <div>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-xs uppercase tracking-[0.18em] font-bold text-muted-foreground inline-flex items-center gap-1.5">
@@ -481,6 +556,8 @@ export default async function AdminDashboardPage() {
             />
           )}
         </div>
+        )}
+        {can('errors:view') && (
         <div>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-xs uppercase tracking-[0.18em] font-bold text-muted-foreground inline-flex items-center gap-1.5">
@@ -507,11 +584,13 @@ export default async function AdminDashboardPage() {
             />
           )}
         </div>
+        )}
+        {(caps.includes('*') || can('security:manage')) && <BackupStatusTile />}
       </section>
 
       {/* === Drill panels === */}
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {fulfilPending.length > 0 && (
+        {canOrders && fulfilPending.length > 0 && (
           <DrillPanel
             title="Orders to fulfil"
             icon={<Truck className="h-4 w-4 text-amber-700 dark:text-amber-300" />}
@@ -537,7 +616,7 @@ export default async function AdminDashboardPage() {
                     </p>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <p className="text-sm font-bold tabular-nums">{formatPrice(o.totalCents, o.currency)}</p>
+                    {canMoney && <p className="text-sm font-bold tabular-nums">{formatPrice(o.totalCents, o.currency)}</p>}
                     <p className={`text-[11px] inline-flex items-center gap-1 ${breach ? 'text-red-700 dark:text-red-300 font-bold' : 'text-muted-foreground'}`}>
                       <Clock className="h-3 w-3" /> {timeAgo(o.createdAt, now)}
                       {breach && ' · SLA breach'}
@@ -549,7 +628,7 @@ export default async function AdminDashboardPage() {
           </DrillPanel>
         )}
 
-        {awaitingTickets.length > 0 && (
+        {can('tickets:view') && awaitingTickets.length > 0 && (
           <DrillPanel
             title="Customers waiting for reply"
             icon={<LifeBuoy className="h-4 w-4 text-red-700 dark:text-red-300" />}
@@ -578,7 +657,7 @@ export default async function AdminDashboardPage() {
           </DrillPanel>
         )}
 
-        {quotesStale.length > 0 && (
+        {canQuotes && quotesStale.length > 0 && (
           <DrillPanel
             title="Quotes pending reply"
             icon={<FileText className="h-4 w-4 text-red-700 dark:text-red-300" />}
@@ -603,7 +682,7 @@ export default async function AdminDashboardPage() {
           </DrillPanel>
         )}
 
-        {lastCopyStock.length > 0 && (
+        {can('products:view') && lastCopyStock.length > 0 && (
           <DrillPanel
             title="Last-copy in stock"
             icon={<Boxes className="h-4 w-4 text-amber-700 dark:text-amber-300" />}

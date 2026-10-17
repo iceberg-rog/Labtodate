@@ -3,8 +3,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Search, Loader2, ArrowRight } from 'lucide-react';
-import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
+import { Search, Loader2, ArrowRight, Camera } from 'lucide-react';
 import { formatPrice } from '@/lib/utils';
 
 interface Hit {
@@ -12,8 +11,11 @@ interface Hit {
   title: string;
   brand: string | null;
   category: string;
-  illustration: IllustrationName;
+  /** Our own photo, or null (then a neutral “no photo” tile — never a drawing posing as the item). */
+  image: string | null;
+  noPhotoLabel?: string;
   priceCents: number | null;
+  priceLabel?: string | null;
   currency: string;
   condition: string;
 }
@@ -181,10 +183,13 @@ export function SearchTypeahead({
                         focusedIdx === i ? 'bg-foreground/5' : ''
                       }`}
                     >
-                      {/* Decorative: the generic illustration's SVG text
-                          ("125.4382 g") was read out as part of every option. */}
-                      <div className="flex-shrink-0 h-12 w-12 rounded-lg bg-gradient-to-br from-[hsl(82_55%_92%)] to-[hsl(168_30%_92%)] p-1.5" aria-hidden="true">
-                        <InstrumentIllustration name={h.illustration} />
+                      <div className="flex-shrink-0 h-12 w-12 rounded-lg overflow-hidden bg-muted border border-border flex items-center justify-center" aria-hidden="true">
+                        {h.image ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={h.image} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <Camera className="h-4 w-4 text-muted-foreground" aria-label={h.noPhotoLabel ?? 'Photo on request'} />
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-bold">
@@ -194,8 +199,9 @@ export function SearchTypeahead({
                       </div>
                       <div className="text-right flex-shrink-0">
                         {h.priceCents ? (
-                          <span className="text-sm font-bold tabular-nums">
-                            {formatPrice(h.priceCents, h.currency)}
+                          <span className="flex flex-col items-end">
+                            <span className="text-sm font-bold tabular-nums">{formatPrice(h.priceCents, h.currency)}</span>
+                            {h.priceLabel && <span className="text-[10px] text-muted-foreground">{h.priceLabel}</span>}
                           </span>
                         ) : (
                           <span className="text-xs font-medium text-primary">Quote</span>

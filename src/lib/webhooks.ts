@@ -18,8 +18,8 @@ export const NOTIFY_KINDS = [
   'PAYMENT_VERIFIED',     // admin verified a buyer-submitted proof
   'PAYMENT_REJECTED',     // admin rejected; buyer asked to resubmit
   'QUOTE_NEW',            // new sourcing request
-  'QUOTE_APPROVED',       // proforma sent (priced) — buyer should see it
-  'ORDER_FROM_QUOTE',     // quote accepted → Order auto-created
+  'QUOTE_APPROVED',       // offer sent / updated (priced) — waiting for the buyer to accept
+  'ORDER_FROM_QUOTE',     // buyer accepted an offer → order + proforma invoice created
   'TICKET_NEW',           // new support ticket
   'SELL_NEW',             // new sell submission
   'ANNOUNCEMENT',         // manual broadcast

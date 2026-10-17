@@ -47,7 +47,7 @@ const orders: Order[] = [
 ];
 
 // ── Cancel predicates, copied verbatim from each production path ────────────
-// 1) cron proforma-expiry sweep — linked-order cancel (route.ts ~168)
+// 1) due-date sweep — quote order (lib/quotes/cancel.ts cancelQuoteOrder WHERE)
 const cronProformaCancels = (o: Order) =>
   o.status === 'PENDING_PAYMENT' && o.paymentSubmittedAt === null;
 // plus the pre-check `continue` guard (route.ts ~150): skip whole action if any
@@ -70,7 +70,7 @@ const singleCancelCancels = (o: Order) => {
 };
 
 const paths: Record<string, (o: Order) => boolean> = {
-  'cron.proforma-expiry': cronProformaCancels,
+  'cron.due-sweep.quote': cronProformaCancels,
   'cron.orphan-sweep': cronOrphanCancels,
   'admin.bulkCancel': bulkCancelCancels,
   'admin.singleCancel': singleCancelCancels,
@@ -80,16 +80,17 @@ const paths: Record<string, (o: Order) => boolean> = {
 let failures = 0;
 const rows: string[] = [];
 
-// Production coupling: the proforma path's receipt-in-flight guard is now enforced
-// by expireProformaTransition (the proof check runs INSIDE the transaction, and a
-// proof in flight aborts to 'proof-in-flight' with zero side effects) — proven
-// end-to-end in scripts/it-order-atomicity.ts. Assert the sweep actually routes
-// through it (and dropped the stale external read) so this model can't drift.
+// Production coupling: the due-date sweep (lib/orders/due-sweep.ts) selects only
+// orders with paymentSubmittedAt = null, and both cancel paths re-check it inside
+// their write (cancelQuoteOrder: updateMany WHERE paymentSubmittedAt null;
+// cancelAndRestockOrder requireNoProof) — so a receipt landing mid-sweep wins.
 {
-  const sweep = readFileSync('src/app/api/cron/sla-sweep/route.ts', 'utf8');
-  const wired = /expireProformaTransition\s*\(/.test(sweep) && !/const paymentInFlight/.test(sweep);
-  if (!wired) { failures++; rows.push('FAIL  cron.proforma-expiry     wiring: sweep does NOT route through expireProformaTransition'); }
-  else rows.push('ok    cron.proforma-expiry     wiring: routes through expireProformaTransition');
+  const sweep = readFileSync('src/lib/orders/due-sweep.ts', 'utf8');
+  const cancel = readFileSync('src/lib/quotes/cancel.ts', 'utf8');
+  const wired = /paymentSubmittedAt: null/.test(sweep) && /requireNoProof: true/.test(sweep) &&
+    /where: \{ id: o\.id, status: 'PENDING_PAYMENT', paymentSubmittedAt: null \}/.test(cancel);
+  if (!wired) { failures++; rows.push('FAIL  cron.due-sweep           wiring: a receipt in flight is not re-checked in the cancel write'); }
+  else rows.push('ok    cron.due-sweep           wiring: proof re-checked inside both cancel writes');
 }
 
 for (const [name, pred] of Object.entries(paths)) {

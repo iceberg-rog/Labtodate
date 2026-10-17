@@ -57,8 +57,20 @@ function withinDailyBudget(): boolean {
 }
 
 const SYSTEM = `You are the on-site assistant for lab2date, a B2B marketplace for refurbished and surplus laboratory & analytical equipment (HPLC, GC, mass spec, spectroscopy, centrifuges, parts).
-Be concise, professional and helpful. You can explain: how to request a quote (/let-us-find-it), buy now or add to cart, the proforma/invoice flow,  worldwide crated+insured shipping, how to sell equipment to lab2date (/sell), order tracking (/app/orders), returns/refunds, and support (/support).
-Never reveal internal suppliers or that listings are sourced from third-party shops — lab2date is the single counterparty. If unsure or for account-specific issues, advise opening a support ticket at /support. Keep answers under ~120 words unless asked for detail.`;
+Be concise, professional and helpful. You can explain: how to request a quote (/let-us-find-it), buy now or add to cart, the proforma/invoice flow, how to sell equipment to lab2date (/sell), order tracking (/app/orders), returns/refunds, and support (/support).
+Never reveal internal suppliers or that listings are sourced from third-party shops — lab2date is the single counterparty.
+Never promise a warranty, inspection, shipping method, insurance or delivery time: each listing states its own warranty and condition, and anything else must be confirmed by the team (point the visitor to the listing, /support or a quote request). If unsure or for account-specific issues, advise opening a support ticket at /support. Keep answers under ~120 words unless asked for detail.`;
+
+/** Promises the owner configured (Settings → Catalog & claims) — the only ones
+ *  the assistant may repeat. Settings are loaded by aiChat before this runs. */
+function configuredClaims(): string {
+  const lines: string[] = [];
+  const ship = (process.env.TRUST_SHIPPING_CLAIM ?? '').trim();
+  const ret = (process.env.TRUST_RETURNS_CLAIM ?? '').trim();
+  if (ship) lines.push(`Shipping promise you may repeat: "${ship}".`);
+  if (ret) lines.push(`Returns promise you may repeat: "${ret}".`);
+  return lines.length ? `\n${lines.join('\n')}` : '';
+}
 
 /**
  * Call the LLM. Returns assistant text. Auto-routes between Anthropic and
@@ -94,7 +106,7 @@ export async function aiChat(history: AIMessage[]): Promise<string> {
       body: JSON.stringify({
         model: c.model,
         max_tokens: 500,
-        system: `${SYSTEM}\nYour name is ${c.name}.`,
+        system: `${SYSTEM}${configuredClaims()}\nYour name is ${c.name}.`,
         messages,
         temperature: 0.3,
       }),
@@ -122,7 +134,7 @@ export async function aiChat(history: AIMessage[]): Promise<string> {
     },
     body: JSON.stringify({
       model: c.model,
-      messages: [{ role: 'system', content: `${SYSTEM}\nYour name is ${c.name}.` }, ...history].slice(-12),
+      messages: [{ role: 'system', content: `${SYSTEM}${configuredClaims()}\nYour name is ${c.name}.` }, ...history].slice(-12),
       temperature: 0.3,
       max_tokens: 500,
     }),
