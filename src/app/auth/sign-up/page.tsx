@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { getActiveSession } from '@/lib/auth-server';
 import { getMarketing } from '@/lib/marketing';
 import { safeRedirect } from '@/lib/safe-redirect';
+import { authCaptchaFlags } from '@/lib/security/captcha';
 import SignUpForm from './SignUpForm';
 
 export const metadata = { title: 'Sign up' };
@@ -19,10 +20,10 @@ export default async function SignUpPage({
     redirect(target.startsWith('/auth/') ? '/auth/continue' : target);
   }
   // Same live (or admin-set) catalogue count the header search shows.
-  const { listings } = await getMarketing();
+  const [{ listings }, captcha] = await Promise.all([getMarketing(), authCaptchaFlags()]);
   return (
     <Suspense>
-      <SignUpForm listings={listings} />
+      <SignUpForm listings={listings} captcha={captcha} />
     </Suspense>
   );
 }

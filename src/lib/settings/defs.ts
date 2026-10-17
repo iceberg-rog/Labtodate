@@ -193,6 +193,19 @@ function securityPolicySetting(d: PolicyDef): DefInput {
         ...(d.default ? { default: d.default } : {}),
         validate: (v) => (d.pattern && !d.pattern.test(v) ? `“${v}” is not valid (${d.patternHint ?? 'check the format'}).` : null),
       };
+    case 'list':
+      return {
+        ...base,
+        type: 'list',
+        optional: true,
+        ...(d.default.length ? { default: d.default.join(',') } : {}),
+        validate: (v) => {
+          const items = v.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+          const bad = items.filter((s) => !d.item.test(s));
+          if (bad.length) return `“${bad.slice(0, 5).join('”, “')}” not valid (${d.itemHint}).`;
+          return items.length > d.maxItems ? `at most ${d.maxItems} entries.` : null;
+        },
+      };
   }
 }
 

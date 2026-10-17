@@ -1,11 +1,25 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import nodemailer, { type Transporter } from 'nodemailer';
 import { ensureSettingsLoaded } from './settings';
 import { prisma } from './db';
 import { headerText, plainTextBody } from './email-html';
+import { clientIp } from './ratelimit';
+import {
+  bareAddress,
+  bypassesGuards,
+  emailDomain,
+  guardOutgoing,
+  isPermanentRecipientFailure,
+  recordPermanentFailure,
+  type EmailTrigger,
+  type GuardScope,
+  type GuardStatus,
+} from './email-guard';
 
 import { isDeliverableEmail } from './email-address';
 
 export { isDeliverableEmail };
+export type { EmailTrigger };
 
 export interface EmailAttachment {
   filename: string;
@@ -24,6 +38,12 @@ interface SendEmailParams {
   replyTo?: string;
   /** Extra MIME headers, e.g. List-Unsubscribe / List-Unsubscribe-Post (RFC 8058). */
   headers?: Record<string, string>;
+  /**
+   * What makes the site send this e-mail (src/lib/email-guard/rules.ts).
+   * Triggers a visitor can cause without signing in (auth.*, form.*) are
+   * rate-limited per address / domain / hour. Default: transactional.
+   */
+  trigger?: EmailTrigger;
 }
 
 /** Thrown when no real mail transport is configured (production). */
@@ -31,6 +51,38 @@ export class EmailNotConfiguredError extends Error {
   constructor(reason: string) {
     super(`Email is not configured: ${reason}`);
     this.name = 'EmailNotConfiguredError';
+  }
+}
+
+/** Thrown when the anonymous-mail guards refuse an e-mail (nothing was handed to the mail server). */
+export class EmailBlockedError extends Error {
+  constructor(
+    readonly status: GuardStatus,
+    readonly scope: GuardScope,
+    readonly code: string,
+    readonly userMessage: string,
+    readonly retryAfterSec: number | undefined,
+    reason: string,
+  ) {
+    super(`Not sent (${status}): ${reason}`);
+    this.name = 'EmailBlockedError';
+  }
+}
+
+/**
+ * Guard refusals during one request. better-auth swallows errors thrown by
+ * its mail senders, so the auth route runs the endpoint inside
+ * `mailRefusals.run([], …)` and reads back what was held back.
+ */
+export const mailRefusals = new AsyncLocalStorage<EmailBlockedError[]>();
+
+/** The client address of the request that is sending, when there is one (not in cron / scripts). */
+async function requestIp(): Promise<string | null> {
+  try {
+    const ip = await clientIp();
+    return ip && ip !== 'unknown' ? ip.slice(0, 64) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -226,9 +278,27 @@ export async function sendEmail({
   attachments,
   replyTo,
   headers,
+  trigger = 'transactional',
 }: SendEmailParams): Promise<void> {
   await ensureSettingsLoaded();
   const status = emailTransportStatus();
+  const logMeta = { trigger, toDomain: emailDomain(to) || null, ip: await requestIp() };
+  // Blocked / throw-away domains, suppressed addresses and the limits on
+  // e-mails visitors can trigger: refused before anything reaches the mail
+  // server, and logged like a failed send so the trail stays complete.
+  const guard = await guardOutgoing(to, trigger);
+  if (!guard.ok) {
+    try {
+      await prisma.emailLog.create({
+        data: { toAddr: to, subject: headerText(rawSubject, 250), status: guard.status, error: guard.reason.slice(0, 500), ...logMeta },
+      });
+    } catch {
+      /* best effort */
+    }
+    const refusal = new EmailBlockedError(guard.status, guard.scope, guard.code, guard.message, guard.retryAfterSec, guard.reason);
+    mailRefusals.getStore()?.push(refusal);
+    throw refusal;
+  }
   // Subjects often carry user-typed parts (ticket subject, item title): keep
   // the header single-line and bounded. Callers escape their own HTML.
   const subject = headerText(rawSubject, 250);
@@ -271,6 +341,10 @@ export async function sendEmail({
     }
   } catch (e) {
     sendError = e instanceof Error ? e : new Error(String(e));
+    // "No such mailbox" and the like: stop sending there (staff copies excepted).
+    if (!bypassesGuards(trigger) && isPermanentRecipientFailure(e)) {
+      await recordPermanentFailure(bareAddress(to), sendError.message).catch(() => false);
+    }
   }
   // Persist an audit row regardless of outcome so ops has a trail when a
   // recipient says "I never got it." The DB write is itself try/catch'd —
@@ -283,6 +357,7 @@ export async function sendEmail({
         status: sendError instanceof EmailNotConfiguredError ? 'not_configured' : sendError ? 'failed' : 'sent',
         error: sendError ? sendError.message.slice(0, 500) : null,
         messageId: result?.messageId ?? null,
+        ...logMeta,
       },
     });
   } catch {
@@ -330,7 +405,7 @@ export async function sendInternalEmail(params: SendEmailParams, context = 'inte
   if (!isDeliverableEmail(params.to)) {
     return { ok: false, skipped: true, error: `skipped: ${params.to || '(no address)'} is not a deliverable address` };
   }
-  return trySendEmail(params, context);
+  return trySendEmail({ trigger: 'internal', ...params }, context);
 }
 
 /** The billing / company inbox for document copies, or null when unset or a placeholder. */

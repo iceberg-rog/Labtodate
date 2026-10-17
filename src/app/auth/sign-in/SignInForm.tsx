@@ -7,8 +7,10 @@ import { Mail, Lock, Loader2, ArrowRight } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { Button } from '@/components/ui/button';
 import { magicLinkTargets, safeRedirect } from '@/lib/safe-redirect';
-import { VerifyEmailStep, sendVerificationCode } from '../VerifyEmailStep';
+import { VerifyEmailStep } from '../VerifyEmailStep';
 import { TwoFactorStep } from './TwoFactorStep';
+import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
+import type { AuthCaptchaFlags } from '@/lib/security/captcha-shared';
 
 // ?error= codes this page can receive: from a magic link (better-auth appends
 // them to errorCallbackURL) or from the magic-link guard in src/lib/auth.ts.
@@ -22,7 +24,7 @@ const LINK_ERRORS: Record<string, string> = {
     'E-mailed sign-in links are switched off for this account (staff or two-factor sign-in). Sign in with your password and authenticator app.',
 };
 
-export default function SignInPage() {
+export default function SignInPage({ captcha: flags }: { captcha: AuthCaptchaFlags }) {
   const router = useRouter();
   const params = useSearchParams();
   // Default to the role-aware dispatcher (/auth/continue) so admins land on
@@ -38,27 +40,48 @@ export default function SignInPage() {
     const code = params.get('error');
     return code ? (LINK_ERRORS[code] ?? 'That sign-in link couldn’t be used. Please sign in again.') : null;
   });
-  const [codeError, setCodeError] = useState<string | null>(null);
   const [magicSent, setMagicSent] = useState(false);
+  // Progressive bot check: password sign-in asks for it once the server says
+  // so (after a few wrong passwords for the account or from the network).
+  const signinCheck = useCaptcha('signin', { required: flags.signin });
+  // E-mailed sign-in links: the check appears when the button is pressed.
+  const magicCheck = useCaptcha('magic_link', { required: false });
 
   async function handlePassword(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading('password');
+    const token = await signinCheck.token();
+    if (token === null) {
+      setLoading(null);
+      setError(CAPTCHA_NOT_SOLVED);
+      return;
+    }
     // No callbackURL: we navigate ourselves, and better-auth would reject
     // (403 "Invalid callbackURL") targets it doesn't like.
-    const { data, error: err } = await authClient.signIn.email({ email, password });
+    const { data, error: err } = await authClient.signIn.email({
+      email,
+      password,
+      fetchOptions: { headers: signinCheck.headers(token) },
+    });
+    if (token) signinCheck.reset();
     if (err?.code === 'EMAIL_NOT_VERIFIED') {
-      // Right password, but the address was never confirmed: confirm it now.
-      const sendErr = await sendVerificationCode(email);
+      // Right password, but the address was never confirmed: confirm it now
+      // (the code screen sends the code, after its own bot check).
       setLoading(null);
-      setCodeError(sendErr);
       setStep('verify');
       return;
     }
     setLoading(null);
     if (err) {
-      setError(err.message || 'Sign-in failed. Check your email and password.');
+      const needsCheck = signinCheck.handleError(err as { code?: string; captchaRequired?: boolean });
+      setError(
+        needsCheck && err.code !== 'INVALID_EMAIL_OR_PASSWORD'
+          ? err.message || CAPTCHA_NOT_SOLVED
+          : needsCheck
+            ? `${(err.message || 'Invalid email or password').replace(/[.!]?$/, '.')} Before the next try, please complete the “I’m not a robot” check below.`
+            : err.message || 'Sign-in failed. Check your email and password.',
+      );
       return;
     }
     // Password right; the account uses an authenticator app: ask for the code.
@@ -78,9 +101,22 @@ export default function SignInPage() {
     }
     setError(null);
     setLoading('magic');
-    const { error: err } = await authClient.signIn.magicLink({ email, ...magicLinkTargets(redirect) });
+    if (flags.magic_link) magicCheck.require();
+    const token = await magicCheck.token();
+    if (token === null) {
+      setLoading(null);
+      setError(CAPTCHA_NOT_SOLVED);
+      return;
+    }
+    const { error: err } = await authClient.signIn.magicLink({
+      email,
+      ...magicLinkTargets(redirect),
+      fetchOptions: { headers: magicCheck.headers(token) },
+    });
+    if (token) magicCheck.reset();
     setLoading(null);
     if (err) {
+      magicCheck.handleError(err);
       setError(err.message || 'Could not send the magic link.');
       return;
     }
@@ -109,11 +145,12 @@ export default function SignInPage() {
         title="Confirm your email"
         lead={
           <>
-            Your email address hasn&apos;t been confirmed yet. Enter the 5-digit code we sent to{' '}
+            Your email address hasn&apos;t been confirmed yet. Enter the 5-digit code we are sending to{' '}
             <strong className="text-foreground">{email}</strong> to finish signing in.
           </>
         }
-        initialError={codeError}
+        captcha={flags.verify_email}
+        sendFirst
         onBack={() => {
           setStep('form');
           setError(null);
@@ -185,6 +222,8 @@ export default function SignInPage() {
           </div>
         </div>
 
+        {signinCheck.widget}
+
         {error && (
           <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2">{error}</p>
         )}
@@ -211,6 +250,7 @@ export default function SignInPage() {
         >
           {loading === 'magic' ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Mail className="h-4 w-4" /> Email me a magic link</>}
         </Button>
+        {magicCheck.widget}
       </form>
 
       <p className="text-sm text-center text-muted-foreground mt-6">

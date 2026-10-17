@@ -1212,6 +1212,7 @@ export async function sendTestEmail(): Promise<{ ok: boolean; message: string }>
   try {
     await sendEmail({
       to,
+      trigger: 'admin',
       subject: `${site} — test email ✅`,
       html:
         '<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;">' +

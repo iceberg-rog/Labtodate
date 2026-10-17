@@ -9,7 +9,7 @@ export type PolicyField = {
   key: string;
   group: string;
   groupLabel: string;
-  type: 'bool' | 'int' | 'text' | 'set';
+  type: 'bool' | 'int' | 'text' | 'set' | 'list';
   label: string;
   hint: string;
   value: boolean | number | string | string[];
@@ -23,7 +23,10 @@ export type PolicyField = {
 };
 
 function show(v: PolicyField['value']): string {
-  if (Array.isArray(v)) return v.length ? v.join(', ') : '(none)';
+  if (Array.isArray(v)) {
+    if (!v.length) return '(none)';
+    return v.length > 4 ? `${v.slice(0, 3).join(', ')} … (${v.length})` : v.join(', ');
+  }
   if (typeof v === 'boolean') return v ? 'on' : 'off';
   return v === '' ? '(empty)' : String(v);
 }
@@ -108,6 +111,19 @@ export function SecurityPolicyForm({
                     placeholder={f.placeholder}
                     disabled={!canEdit}
                     className="w-full h-9 px-3 rounded-lg border border-input bg-background text-sm"
+                  />
+                )}
+                {f.type === 'list' && (
+                  <textarea
+                    id={f.key}
+                    name={f.key}
+                    rows={Math.min(8, Math.max(3, (f.value as string[]).length + 1))}
+                    defaultValue={(f.value as string[]).join('\n')}
+                    placeholder={f.placeholder}
+                    disabled={!canEdit}
+                    spellCheck={false}
+                    autoCapitalize="none"
+                    className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm font-mono leading-5"
                   />
                 )}
                 {f.type === 'set' && f.options && (

@@ -7,19 +7,37 @@ import { authClient } from '@/lib/auth-client';
 import { authErrorMessage } from '@/lib/auth-rules';
 import { Button } from '@/components/ui/button';
 import { TwoFactorStep } from './sign-in/TwoFactorStep';
+import { CAPTCHA_NOT_SOLVED, useCaptcha, type Captcha } from '@/components/security/Captcha';
 
 const OTP_LEN = 5;
 
-/** Email the 5-digit verification code. Returns a readable error, or null once sent. */
-export async function sendVerificationCode(email: string): Promise<string | null> {
-  const { error } = await authClient.emailOtp.sendVerificationOtp({ email, type: 'email-verification' });
+/**
+ * Email the 5-digit verification code. Returns a readable error, or null once
+ * sent. `headers` carries a solved bot check (none right after a checked
+ * sign-up: that one may send its first code without a second check).
+ */
+export async function sendVerificationCode(email: string, headers?: Record<string, string>): Promise<string | null> {
+  const { error } = await authClient.emailOtp.sendVerificationOtp({
+    email,
+    type: 'email-verification',
+    fetchOptions: headers ? { headers } : undefined,
+  });
   if (!error) return null;
-  // 429 (rate limit) and 403 (suspended) carry a readable message; anything
-  // else is a mail/server failure the user can only retry.
-  // 503 = e-mail not configured, 502 = the mail server refused: both carry a
-  // message that says so (instead of "wait a moment").
-  if ([429, 403, 502, 503].includes(error.status) && error.message) return error.message;
+  // 429 (rate limit) and 403 (suspended / bot check) carry a readable message;
+  // 400 = domain refused; anything else is a mail/server failure the user can
+  // only retry. 503 = e-mail not configured, 502 = the mail server refused:
+  // both carry a message that says so (instead of "wait a moment").
+  if ([400, 429, 403, 502, 503].includes(error.status) && error.message) return error.message;
   return 'We couldn’t send the code just now. Wait a moment, then press “Resend code”.';
+}
+
+/** Send a code with the bot check (solving it first when it is on). */
+async function sendWithCheck(email: string, captcha: Captcha): Promise<string | null> {
+  const token = await captcha.token();
+  if (token === null) return CAPTCHA_NOT_SOLVED;
+  const err = await sendVerificationCode(email, captcha.headers(token));
+  if (token) captcha.reset();
+  return err;
 }
 
 /**
@@ -41,6 +59,8 @@ export function VerifyEmailStep({
   initialError,
   onBack,
   backLabel,
+  captcha: captchaOn,
+  sendFirst = false,
 }: {
   email: string;
   password: string;
@@ -52,6 +72,10 @@ export function VerifyEmailStep({
   initialError?: string | null;
   onBack: () => void;
   backLabel: string;
+  /** Bot check on new codes (Settings → Security: verification codes). */
+  captcha: boolean;
+  /** Send the first code from here (sign-in of an unverified account), after the bot check. */
+  sendFirst?: boolean;
 }) {
   const router = useRouter();
   const [digits, setDigits] = useState<string[]>(Array(OTP_LEN).fill(''));
@@ -61,12 +85,27 @@ export function VerifyEmailStep({
   const [needsTotp, setNeedsTotp] = useState(false);
   const [confirmedOnly, setConfirmedOnly] = useState<string | null>(null);
   const boxes = useRef<(HTMLInputElement | null)[]>([]);
+  const captcha = useCaptcha('verify_email', { required: captchaOn });
+  const [sending, setSending] = useState(sendFirst);
+  const sentFirst = useRef(false);
 
   const code = digits.join('');
 
   useEffect(() => {
     boxes.current[0]?.focus();
   }, []);
+
+  // Sign-in of an unverified account: the code is sent from this screen, once
+  // the bot check (if on) has been solved.
+  useEffect(() => {
+    if (!sendFirst || sentFirst.current) return;
+    sentFirst.current = true;
+    void (async () => {
+      const err = await sendWithCheck(email, captcha);
+      setSending(false);
+      if (err) setError(err);
+    })();
+  }, [sendFirst, email, captcha]);
 
   async function handleVerify(e?: React.FormEvent) {
     e?.preventDefault();
@@ -130,11 +169,14 @@ export function VerifyEmailStep({
     setError(null);
     setNotice(null);
     setLoading(true);
-    const sendErr = await sendVerificationCode(email);
+    const sendErr = await sendWithCheck(email, captcha);
     setLoading(false);
     if (sendErr) setError(sendErr);
     else {
-      setNotice(`We sent another email to ${email}.`);
+      // The server doesn't say when a new code was held back (one was sent to
+      // this address moments ago): that would tell anyone which addresses
+      // have an account.
+      setNotice(`A new code is on its way to ${email}. Nothing after a minute? Check your spam folder.`);
       setDigits(Array(OTP_LEN).fill(''));
       boxes.current[0]?.focus();
     }
@@ -205,6 +247,14 @@ export function VerifyEmailStep({
           ))}
         </div>
 
+        {sending && (
+          <p role="status" className="text-sm text-muted-foreground text-center inline-flex w-full items-center justify-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin" /> Sending your code…
+          </p>
+        )}
+
+        {captcha.widget}
+
         {error && (
           <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2 text-center">{error}</p>
         )}
@@ -217,7 +267,7 @@ export function VerifyEmailStep({
         </Button>
 
         <div className="flex items-center justify-between text-xs pt-1">
-          <button type="button" onClick={handleResend} disabled={loading} className="text-primary font-medium hover:underline disabled:opacity-50">
+          <button type="button" onClick={handleResend} disabled={loading || sending} className="text-primary font-medium hover:underline disabled:opacity-50">
             Resend code
           </button>
           <button type="button" onClick={onBack} className="text-muted-foreground hover:text-foreground">

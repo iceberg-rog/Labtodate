@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import { getActiveSession } from '@/lib/auth-server';
 import { safeRedirect } from '@/lib/safe-redirect';
+import { authCaptchaFlags } from '@/lib/security/captcha';
 import SignInForm from './SignInForm';
 
 export const metadata = { title: 'Sign in' };
@@ -17,9 +18,10 @@ export default async function SignInPage({
     const target = safeRedirect(typeof raw === 'string' ? raw : null);
     redirect(target.startsWith('/auth/') ? '/auth/continue' : target);
   }
+  const captcha = await authCaptchaFlags();
   return (
     <Suspense>
-      <SignInForm />
+      <SignInForm captcha={captcha} />
     </Suspense>
   );
 }

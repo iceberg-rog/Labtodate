@@ -18,6 +18,7 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { formatPrice } from '@/lib/utils';
 import { rateLimit } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit, logError } from '@/lib/observability';
+import { guardPublicForm, PublicFormError } from '@/lib/security/captcha';
 import { createOrderWithUniqueNumber } from '@/lib/orders/internal';
 import { absoluteDocumentHref } from '@/lib/documents';
 import { documentAttachment, issueProforma, markDocumentSent, voidProformas } from '@/lib/documents/issue';
@@ -107,6 +108,8 @@ const SourcingInput = z.object({
   facilitySlug: z.string().max(200).optional().nullable(),
   // Honeypot — hidden in the UI; only bots fill it. Presence => silent drop.
   company_url: z.string().optional().nullable(),
+  /** Solved bot check (only when Settings → Security asks signed-in customers too). */
+  captcha: z.string().max(8000).optional(),
 });
 
 export type SourcingInputType = z.infer<typeof SourcingInput>;
@@ -130,6 +133,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     await audit('quote.honeypot', 'blocked', parsed.buyerEmail || 'unknown').catch(() => {});
     return { id: '', accessToken: null };
   }
+  await guardPublicForm('quote', { captcha: parsed.captcha }, true);
   // Counted only after validation: a buyer fixing a too-long field must not
   // burn through the limit and get locked out of the corrected submit.
   await rateLimit('quote');
@@ -1690,7 +1694,7 @@ async function setQuoteStatusCore(
  * throw: production builds replace thrown messages with a generic "Server
  * Components render" error, so the buyer never learned why nothing was sent.
  */
-export async function submitAndRedirect(input: SourcingInputType): Promise<{ error: string }> {
+export async function submitAndRedirect(input: SourcingInputType): Promise<{ error: string; captcha?: boolean }> {
   if (!(await getServerSession())) {
     return { error: 'You are signed out. Sign in again, then send your request.' };
   }
@@ -1698,6 +1702,7 @@ export async function submitAndRedirect(input: SourcingInputType): Promise<{ err
   try {
     result = await submitSourcingRequest(input);
   } catch (e) {
+    if (e instanceof PublicFormError) return { error: e.message, captcha: e.captcha };
     return { error: quoteSubmitError(e) };
   }
   // Empty id => the hidden anti-bot field was filled. Buyers are signed in, so

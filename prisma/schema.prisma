@@ -428,13 +428,24 @@ model EmailLog {
   id        String   @id @default(cuid())
   toAddr    String
   subject   String
-  status    String   // sent | failed
+  /// sent | failed | not_configured | blocked (domain refused) |
+  /// suppressed (address bounced before) | throttled (anonymous-mail limits)
+  status    String
   error     String?
   messageId String?
+  /// What made the site send it (src/lib/email-guard: auth.signup-code,
+  /// form.support, transactional, internal …). Null on rows before 9a.
+  trigger   String?
+  /// Lower-cased domain of toAddr (per-domain views and caps).
+  toDomain  String?
+  /// Client address of the request that triggered the e-mail, when known.
+  ip        String?
   createdAt DateTime @default(now())
 
   @@index([toAddr])
   @@index([createdAt])
+  @@index([trigger, createdAt])
+  @@index([toDomain, createdAt])
 }
 
 // -------- Better-Auth managed tables --------
@@ -2026,7 +2037,10 @@ model AnnouncementDelivery {
 /// bounces / complaints). Checked before every marketing send.
 model EmailSuppression {
   email     String
-  scope     String // MARKETING
+  /// MARKETING (unsubscribed from offers) | ALL (no e-mail at all: the mail
+  /// server rejected the address permanently, or an admin stopped it —
+  /// src/lib/email-guard; staff copies excepted)
+  scope     String // MARKETING | ALL
   reason    String // UNSUBSCRIBE | ADMIN | BOUNCE | COMPLAINT
   createdAt DateTime @default(now())
 

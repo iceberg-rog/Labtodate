@@ -5,21 +5,26 @@ import { Loader2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { submitAndRedirect } from '@/lib/quotes/actions';
+import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
 
 export function SourcingForm({
   anchor,
   facility = null,
   buyer,
   note = '',
+  captcha: captchaOn = false,
 }: {
   anchor: { slug: string; title: string; brand: string | null } | null;
   facility?: { slug: string; name: string; location: string } | null;
   buyer: { name: string; email: string };
   /** Settings → Site texts & pages → SOURCING_NO_OBLIGATION_TEXT. */
   note?: string;
+  /** Bot check for signed-in customers (Settings → Security; off by default). */
+  captcha?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const captcha = useCaptcha('quote', { required: captchaOn, start: 'focus' });
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -40,7 +45,14 @@ export function SourcingForm({
 
     startTransition(async () => {
       try {
-        const res = await submitAndRedirect(input);
+        const token = await captcha.token();
+        if (token === null) {
+          setError(CAPTCHA_NOT_SOLVED);
+          return;
+        }
+        const res = await submitAndRedirect({ ...input, ...(token ? { captcha: token } : {}) });
+        if (token) captcha.reset();
+        if (res?.captcha) captcha.require();
         if (res?.error) setError(res.error);
       } catch (err) {
         if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
@@ -110,8 +122,10 @@ export function SourcingForm({
             ? `Which instruments at ${facility.name}, how long, and what you plan to run…`
             : 'Make / model / specs / condition / quantity / location — anything relevant.'} />
 
+      {captcha.widget}
+
       {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm">{error}</p>
+        <p role="alert" className="rounded-md border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm">{error}</p>
       )}
 
       <Button type="submit" size="lg" disabled={pending} className="rounded-2xl font-semibold w-full">
