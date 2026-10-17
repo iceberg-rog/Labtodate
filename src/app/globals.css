@@ -576,3 +576,26 @@
   .sfoot-grid > :first-child { grid-column: 1 / -1; }
   .sfoot-bar { padding-bottom: 96px; }
 }
+
+/* ── Header menu panel: a compact card under the menu button (full width on phones), the main actions with a line
+   each, then the resources as tiles. Opaque: it sits over the live 3D canvas, where a backdrop blur costs a pass a frame ── */
+.site-menu { width: 100%; margin-top: 4px; padding: 10px; border-radius: 22px; background: linear-gradient(180deg, hsl(170 40% 8%), hsl(170 45% 5%));
+  border: 1px solid hsl(var(--teal) / 0.18); box-shadow: 0 30px 70px -24px rgb(0 0 0 / 0.85), inset 0 1px 0 hsl(0 0% 100% / 0.05); animation: site-menu-in 0.18s cubic-bezier(0.2, 0.7, 0.2, 1); }
+@media (min-width: 768px) { .site-menu { width: 400px; } }
+@keyframes site-menu-in { from { opacity: 0; transform: translateY(-6px) scale(0.985); } to { opacity: 1; transform: none; } }
+.site-menu-k { margin: 10px 8px 6px; font-family: var(--font-mono), ui-monospace, monospace; font-size: 10px; letter-spacing: 0.24em; text-transform: uppercase; color: hsl(var(--muted-foreground) / 0.8); }
+.site-menu-row { display: flex; align-items: center; gap: 12px; padding: 9px 10px; border-radius: 14px; transition: background-color 0.15s; }
+.site-menu-row:hover, .site-menu-row:focus-visible { background: hsl(var(--teal) / 0.07); }
+.site-menu-row b { display: block; font-size: 14px; font-weight: 600; color: hsl(var(--foreground)); }
+.site-menu-row small { display: block; margin-top: 1px; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.site-menu-ico { display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 11px; color: hsl(var(--teal)); background: hsl(var(--teal) / 0.08); border: 1px solid hsl(var(--teal) / 0.16); }
+.site-menu-ico svg { width: 17px; height: 17px; }
+.site-menu-go { flex: none; width: 15px; height: 15px; color: hsl(var(--muted-foreground) / 0.6); transition: color 0.15s, transform 0.15s; }
+.site-menu-row:hover .site-menu-go { color: hsl(82 76% 55%); transform: translate(1px, -1px); }
+.site-menu-row[aria-current='page'] { background: linear-gradient(100deg, hsl(82 76% 55% / 0.13), hsl(var(--teal) / 0.07)); }
+.site-menu-row[aria-current='page'] .site-menu-ico { color: hsl(82 76% 55%); border-color: hsl(82 76% 55% / 0.4); background: hsl(82 76% 55% / 0.1); }
+.site-menu-tile { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 12px; font-size: 13.5px; font-weight: 500; color: hsl(var(--foreground) / 0.88); border: 1px solid hsl(var(--teal) / 0.1); transition: background-color 0.15s, border-color 0.15s; }
+.site-menu-tile svg { width: 16px; height: 16px; color: hsl(var(--teal)); flex: none; }
+.site-menu-tile:hover, .site-menu-tile:focus-visible { background: hsl(var(--teal) / 0.07); border-color: hsl(var(--teal) / 0.24); }
+.site-menu-tile[aria-current='page'] { border-color: hsl(82 76% 55% / 0.45); color: hsl(var(--foreground)); }
+.site-menu-foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid hsl(var(--teal) / 0.1); display: grid; }

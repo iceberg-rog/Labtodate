@@ -34,7 +34,7 @@ export function initPoster() {
       if (gone || html.classList.contains('poster-gone')) return;
       const s = P.shapes(); if (!s) return;
       const vw = VW(), vh = size ? size[1] : VH();
-      try { drawPoster(cv, size ? { clientWidth: size[0] } : box, s, vw, vh, glDpr(vw, vh, s.mobile), lt); P.drawn = true; mark('intro:poster'); } catch (e) { /* the scene still draws the lockup */ }
+      try { drawPoster(cv, size ? { clientWidth: size[0] } : box, s, vw, vh, glDpr(vw, vh, s.mobile), lt); P.drawn = true; html.classList.add('poster-drawn'); mark('intro:poster'); } catch (e) { /* the scene still draws the lockup */ }
     },
     release() { gone = true; ro && ro.disconnect(); mo && mo.disconnect(); },
     toStill() { /* no flight canvas to swap: the still frame is already up */ },

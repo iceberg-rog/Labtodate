@@ -3,6 +3,7 @@ import type { Prisma, ProductCondition, ProductMode } from '@prisma/client';
 import { sellPriceOf } from '@/lib/pricing/server';
 import { shownToNetCents, type PriceDisplaySettings } from '@/lib/pricing/display';
 import { productTextWhere } from '@/lib/search/where';
+import { pickCardImage } from '@/lib/card-image-pick';
 import { firstPublicImage } from '@/lib/media/public-src';
 
 export interface MarketplaceFilters {
@@ -267,27 +268,27 @@ export async function getTopCategoriesWithImage(limit = 10) {
 
       // Only our own photos qualify (never a hotlinked supplier image).
       const owned = pool.filter((p) => firstPublicImage(p.images));
-      let best = owned[0] ?? null;
-      let bestScore = -Infinity;
-      for (const p of owned) {
-        let score = Math.min(p.images.length, 4); // more photos ≈ a feature listing
-        if (GOOD.test(p.title)) score += 6;
-        if (BAD.test(p.title)) score -= 6;
-        if (c.name.length > 3 && p.title.toLowerCase().includes(c.name.toLowerCase())) score += 4;
-        if (score > bestScore) {
-          bestScore = score;
-          best = p;
-        }
-      }
+      const ranked = owned
+        .map((p) => {
+          let score = Math.min(p.images.length, 4); // more photos ≈ a feature listing
+          if (GOOD.test(p.title)) score += 6;
+          if (BAD.test(p.title)) score -= 6;
+          if (c.name.length > 3 && p.title.toLowerCase().includes(c.name.toLowerCase())) score += 4;
+          return { score, image: firstPublicImage(p.images) };
+        })
+        .sort((a, b) => b.score - a.score)
+        .map((r) => r.image)
+        .filter((u): u is string => !!u);
 
       // Always surface the best available real photo for the category. The
       // scoring above already prefers full-system instrument shots over
-      // tiny-part close-ups; for a parts category a part photo is fine.
+      // tiny-part close-ups; for a parts category a part photo is fine. Among
+      // the best-ranked, one with enough pixels for the homepage's card wins.
       return {
         slug: c.slug,
         name: c.name,
         count: c._count.products,
-        image: best ? firstPublicImage(best.images) : null,
+        image: pickCardImage(ranked.slice(0, 10), ranked[0] ?? null),
       };
     }),
   );

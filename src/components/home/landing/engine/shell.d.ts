@@ -21,4 +21,4 @@ export interface LandingConfig {
   lanes: { label: string; lat: number; lon: number }[];
 }
 
-export function startLanding(config: LandingConfig): { dispose(): void };
+export declare function startLanding(config: LandingConfig): { dispose(): void };

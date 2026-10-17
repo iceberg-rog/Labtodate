@@ -11,7 +11,8 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { type HomeExtra, type HomeStation, getHomeContent, getHomeSectionOrder, isStation, parseHeroStats } from '@/lib/home-sections';
 import { getLiveHeroStats } from '@/lib/home-stats';
 import { getSiteTexts } from '@/lib/catalog/site-texts';
-import { getDemoProduct, getLiveListingCount, getStationCategories } from '@/lib/home-landing-data';
+import { type DemoProduct, type StationCategory, getDemoProduct, getLiveListingCount, getStationCategories } from '@/lib/home-landing-data';
+import { staleWhileRevalidate } from '@/lib/stale-cache';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,23 +27,32 @@ export default async function HomePage() {
   const texts = await getSiteTexts();
   const build = isBuildPhase();
 
-  // Unless admin typed explicit (parseable) HERO_STATS, show REAL counts so the
-  // headline never lies — an unparseable value falls back to live counts too,
-  // never to the zero placeholders.
-  if (!build && !parseHeroStats(process.env.HERO_STATS)) {
-    content.stats = await getLiveHeroStats();
-  }
-
-  // "Popular" chips (defaults or admin's HOMEPAGE_POPULAR) must lead somewhere:
-  // drop any term the marketplace search would return nothing for.
+  // The live data below is public and the same for every visitor: computed at
+  // most once a minute, in parallel, and served from memory meanwhile (refreshed
+  // in the background), so the page doesn't wait on these queries.
+  let categories: StationCategory[] = [];
+  let listings = 0;
+  let demo: DemoProduct | null = null;
   if (!build) {
-    const counts = await Promise.all(content.popular.map((t) => countSearchMatches(t)));
-    content.popular = content.popular.filter((_, i) => counts[i] > 0);
+    const ttl = 60_000;
+    const [stats, hits, c, l, d] = await Promise.all([
+      // Unless admin typed explicit (parseable) HERO_STATS, show REAL counts so the
+      // headline never lies — an unparseable value falls back to live counts too,
+      // never to the zero placeholders.
+      parseHeroStats(process.env.HERO_STATS) ? null : staleWhileRevalidate('home:stats', ttl, getLiveHeroStats),
+      // "Popular" chips (defaults or admin's HOMEPAGE_POPULAR) must lead somewhere:
+      // drop any term the marketplace search would return nothing for.
+      staleWhileRevalidate(`home:popular:${content.popular.join('|')}`, ttl, () => Promise.all(content.popular.map((t) => countSearchMatches(t)))),
+      staleWhileRevalidate('home:categories', ttl, () => getStationCategories(9)),
+      staleWhileRevalidate('home:listings', ttl, getLiveListingCount),
+      staleWhileRevalidate('home:demo', ttl, getDemoProduct),
+    ]);
+    if (stats) content.stats = stats;
+    content.popular = content.popular.filter((_, i) => hits[i] > 0);
+    categories = c;
+    listings = l;
+    demo = d;
   }
-
-  const [categories, listings, demo] = build
-    ? [[], 0, null]
-    : await Promise.all([getStationCategories(9), getLiveListingCount(), getDemoProduct()]);
 
   const order = getHomeSectionOrder();
   const stations = order.filter(isStation) as HomeStation[];

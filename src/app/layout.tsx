@@ -89,12 +89,12 @@ export const viewport: Viewport = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  // getMarketing() loads Settings, so THEME_DEFAULT below is the admin's value.
+  // getMarketing() loads Settings (the admin's values) for the chrome below.
   const mk = await getMarketing();
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
-        <ThemeScript fallback={process.env.THEME_DEFAULT} />
+        <ThemeScript />
       </head>
       <body className="min-h-screen bg-background font-sans antialiased flex flex-col">
         <PublicChrome
