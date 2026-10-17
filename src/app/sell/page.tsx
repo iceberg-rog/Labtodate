@@ -1,6 +1,8 @@
 import { Tag, Banknote, Truck, ShieldCheck, Clock, Search, FileCheck2, Handshake } from 'lucide-react';
 import { SellForm } from './SellForm';
 import { getCatalogPolicy, getConditionGrades, type CatalogPolicy } from '@/lib/catalog/policy';
+import { getServerSession } from '@/lib/auth-server';
+import { formCaptchaFlag } from '@/lib/security/captcha';
 
 export const metadata = {
   title: 'Sell your lab equipment',
@@ -68,7 +70,8 @@ function sellCopy(p: CatalogPolicy) {
 }
 
 export default async function SellPage() {
-  const [policy, grades] = await Promise.all([getCatalogPolicy(), getConditionGrades()]);
+  const [policy, grades, session] = await Promise.all([getCatalogPolicy(), getConditionGrades(), getServerSession()]);
+  const captcha = await formCaptchaFlag('sell', !!session);
   const copy = sellCopy(policy);
   return (
     <div>
@@ -138,6 +141,7 @@ export default async function SellPage() {
               turnaround={policy.sellValuationTurnaround}
               offerWord={policy.sellAcquisitionModel === 'OUTRIGHT_PURCHASE' ? 'offer' : 'valuation'}
               conditions={(['USED', 'REFURBISHED', 'NEW'] as const).map((c) => [c, grades[c].label])}
+              captcha={captcha}
             />
           </div>
         </div>

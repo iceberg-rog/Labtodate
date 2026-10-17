@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/copy-altcha-worker.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-altcha-worker.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
@@ -41,6 +43,8 @@
     "@tiptap/pm": "^2.27.2",
     "@tiptap/react": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
+    "altcha": "3.2.3",
+    "altcha-lib": "2.5.0",
     "better-auth": "^1.1.10",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

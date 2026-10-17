@@ -59,6 +59,7 @@ export async function noteSuccessfulSignIn(
     const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Amsterdam' });
     await sendEmail({
       to: user.email,
+      trigger: 'account',
       subject: 'New sign-in to your lab2date account',
       html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
         <h2 style="color:#0E4F40;">New sign-in</h2>

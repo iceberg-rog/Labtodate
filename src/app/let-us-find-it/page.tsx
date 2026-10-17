@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { prisma } from '@/lib/db';
 import { getServerSession } from '@/lib/auth-server';
 import { getMarketing } from '@/lib/marketing';
+import { formCaptchaFlag } from '@/lib/security/captcha';
 
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
@@ -14,6 +15,7 @@ export const dynamic = 'force-dynamic';
 export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string; facility?: string; reason?: string }> }) {
   const mk = await getMarketing();
   const session = await getServerSession();
+  const captcha = session ? await formCaptchaFlag('quote', true) : false;
   const sp = await searchParams;
   const slug = sp.product;
   // Checkout's "Other — request a shipping quote" country lands here.
@@ -86,6 +88,7 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
               facility={facility}
               buyer={{ name: session.user.name ?? '', email: session.user.email }}
               note={mk.noObligation}
+              captcha={captcha}
             />
           </Suspense>
         ) : (

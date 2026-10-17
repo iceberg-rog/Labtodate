@@ -17,6 +17,7 @@ import { readVerifiedUpload } from '@/lib/storage/file-type';
 import { alertSuperAdmins } from '@/lib/security/alerts';
 import { acqBankLockStage, acqCallbackRequired, acqRequireValidIban } from '@/lib/fulfilment/policy';
 import { bankLocked, canMoveAcq, holderMatches, maskIban, normaliseIban, payoutAccountProblem } from './stages';
+import { guardPublicForm, PublicFormError } from '@/lib/security/captcha';
 
 // No hard-coded fallback inbox: an unset SELL_INTAKE_EMAIL means the staff
 // copy is skipped (in-app notification only), never mail to a foreign domain.
@@ -54,6 +55,8 @@ const SellInput = z.object({
     .nullable()
     .or(z.literal('')),
   images: z.array(z.string().url().max(500)).max(8).optional(),
+  /** Solved bot check (Settings → Security; guests by default). */
+  captcha: z.string().max(8000).optional(),
 });
 
 export type SellInputType = z.input<typeof SellInput>;
@@ -68,9 +71,17 @@ const FIELD_LABELS: Record<string, string> = {
   photosUrl: 'Link to photos',
 };
 
-export type SellResult = { ok: true; id: string } | { ok: false; error: string };
+export type SellResult = { ok: true; id: string } | { ok: false; error: string; captcha?: boolean };
 
 export async function submitSellSubmission(input: SellInputType): Promise<SellResult> {
+  // Bot check (guests) and blocked / throw-away domains first: the form
+  // e-mails a receipt to whatever address is typed.
+  try {
+    await guardPublicForm('sell', { captcha: input?.captcha, email: typeof input?.email === 'string' ? input.email : null }, !!(await getServerSession()));
+  } catch (e) {
+    if (e instanceof PublicFormError) return { ok: false, error: e.message, captcha: e.captcha };
+    throw e;
+  }
   await rateLimit('sell');
   await ensureSettingsLoaded();
   const OPS_EMAIL = process.env.SELL_INTAKE_EMAIL || OPS_EMAIL_FALLBACK;
@@ -140,6 +151,7 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
   const echo = !!session && parsed.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
   await trySendEmail({
     to: parsed.email,
+    trigger: echo ? 'transactional' : 'form.sell',
     subject: echo
       ? `We received your equipment submission: ${headerText(parsed.itemTitle, 120)}`
       : 'We received your equipment submission',
@@ -194,7 +206,7 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
 
 export async function submitSellAndRedirect(
   input: SellInputType,
-): Promise<{ ok: false; error: string } | never> {
+): Promise<{ ok: false; error: string; captcha?: boolean } | never> {
   const result = await submitSellSubmission(input);
   if (!result.ok) return result; // show the validation message, don't redirect
   redirect(`/sell/thanks?id=${result.id}`);

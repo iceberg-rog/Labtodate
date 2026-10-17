@@ -1,6 +1,7 @@
 import { legalContext } from '@/components/site/LegalShell';
 import { getServerSession } from '@/lib/auth-server';
 import { SupportForm } from '@/components/support/SupportForm';
+import { formCaptchaFlag } from '@/lib/security/captcha';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Contact' };
@@ -8,6 +9,7 @@ export const metadata = { title: 'Contact' };
 export default async function ContactPage() {
   const c = await legalContext();
   const session = await getServerSession();
+  const captcha = await formCaptchaFlag('support', !!session?.user);
   return (
     <div className="container-px py-12 md:py-20">
       <div className="grid lg:grid-cols-[1fr_1.3fr] gap-12 items-start max-w-6xl mx-auto">
@@ -47,7 +49,7 @@ export default async function ContactPage() {
 
         <div>
           <p className="text-sm font-semibold mb-3">Send us a message — we&apos;ll open a tracked ticket.</p>
-          <SupportForm defaultEmail={session?.user.email ?? ''} />
+          <SupportForm defaultEmail={session?.user.email ?? ''} captcha={captcha} />
         </div>
       </div>
     </div>

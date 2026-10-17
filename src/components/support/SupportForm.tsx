@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { Loader2, ArrowRight, UserCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { submitTicketAndRedirect } from '@/lib/support/actions';
+import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
 
 const CATEGORIES = ['General', 'Order / delivery', 'Quote / pricing', 'Selling', 'Technical', 'Billing'];
 
@@ -11,13 +12,17 @@ export function SupportForm({
   defaultEmail = '',
   defaultName = '',
   signedIn = false,
+  captcha: captchaOn = false,
 }: {
   defaultEmail?: string;
   defaultName?: string;
   signedIn?: boolean;
+  /** Bot check (Settings → Security; guests by default). */
+  captcha?: boolean;
 }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const captcha = useCaptcha('support', { required: captchaOn, start: 'focus' });
 
   function handle(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -33,7 +38,14 @@ export function SupportForm({
     };
     start(async () => {
       try {
-        const res = await submitTicketAndRedirect(input);
+        const token = await captcha.token();
+        if (token === null) {
+          setError(CAPTCHA_NOT_SOLVED);
+          return;
+        }
+        const res = await submitTicketAndRedirect({ ...input, ...(token ? { captcha: token } : {}) });
+        if (token) captcha.reset();
+        if (res?.captcha) captcha.require();
         if (res?.error) setError(res.error);
       } catch (err) {
         if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
@@ -92,7 +104,8 @@ export function SupportForm({
         <span className="block text-sm font-semibold mb-1.5">How can we help? <span className="text-red-600 dark:text-red-400">*</span></span>
         <textarea name="body" required minLength={10} maxLength={5000} rows={6} placeholder="Describe your question or issue…" className={f} />
       </label>
-      {error && <p className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-3 py-2 text-sm">{error}</p>}
+      {captcha.widget}
+      {error && <p role="alert" className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 px-3 py-2 text-sm">{error}</p>}
       <Button type="submit" size="lg" disabled={pending} className="rounded-2xl font-semibold w-full">
         {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Submit ticket <ArrowRight className="h-4 w-4" /></>}
       </Button>

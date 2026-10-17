@@ -64,6 +64,14 @@ export default async function SecuritySettingsPage() {
           Two-factor sign-in, admin sessions, brute-force protection, marketing e-mail rules and backups. Every change is
           logged with its old and new value and e-mailed to all super-admins.
         </p>
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          <Link href="/admin/settings/security/email" className="inline-flex items-center h-8 px-3 rounded-full border border-border font-semibold hover:bg-muted">
+            E-mail protection: what visitors triggered, held back, suppressed
+          </Link>
+          <Link href="/admin/users/unverified" className="inline-flex items-center h-8 px-3 rounded-full border border-border font-semibold hover:bg-muted">
+            Unverified accounts
+          </Link>
+        </div>
       </div>
 
       {canSeeAdmins && (

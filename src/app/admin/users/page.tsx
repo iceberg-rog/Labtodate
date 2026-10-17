@@ -105,11 +105,16 @@ export default async function AdminUsersPage(
           {totalPages > 1 ? ` · page ${page}/${totalPages}` : ''}
         </p>
         </div>
-        {canManage && (
-          <a href="/admin/users/invite" className="inline-flex items-center h-9 px-4 rounded-full border border-border text-sm font-semibold hover:bg-muted">
-            Invite staff
+        <div className="flex flex-wrap gap-2">
+          <a href="/admin/users/unverified" className="inline-flex items-center h-9 px-4 rounded-full border border-border text-sm font-semibold hover:bg-muted">
+            Unverified accounts
           </a>
-        )}
+          {canManage && (
+            <a href="/admin/users/invite" className="inline-flex items-center h-9 px-4 rounded-full border border-border text-sm font-semibold hover:bg-muted">
+              Invite staff
+            </a>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

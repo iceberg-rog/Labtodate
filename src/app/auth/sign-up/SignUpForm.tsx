@@ -17,8 +17,10 @@ import {
   PASSWORD_RULE,
 } from '@/lib/auth-rules';
 import { VerifyEmailStep, sendVerificationCode } from '../VerifyEmailStep';
+import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
+import type { AuthCaptchaFlags } from '@/lib/security/captcha-shared';
 
-export default function SignUpPage({ listings }: { listings: string }) {
+export default function SignUpPage({ listings, captcha: flags }: { listings: string; captcha: AuthCaptchaFlags }) {
   const params = useSearchParams();
   // Role-aware landing after the account is verified + signed in. Only a
   // same-origin relative path is honoured (blocks open-redirect phishing).
@@ -31,6 +33,9 @@ export default function SignUpPage({ listings }: { listings: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
+  // Bot check (Settings → Security): solved in the background while the form
+  // is filled in; the first code e-mail right after needs no second one.
+  const captcha = useCaptcha('signup', { required: flags.signup, start: 'focus' });
 
   // Step 1 — create the account (no session yet, autoSignIn is off), then email
   // the 5-digit verification code and move to the code screen.
@@ -47,9 +52,22 @@ export default function SignUpPage({ listings }: { listings: string }) {
       return;
     }
     setLoading(true);
-    const { error: signErr } = await authClient.signUp.email({ name: fullName, email, password });
+    const token = await captcha.token();
+    if (token === null) {
+      setLoading(false);
+      setError(CAPTCHA_NOT_SOLVED);
+      return;
+    }
+    const { error: signErr } = await authClient.signUp.email({
+      name: fullName,
+      email,
+      password,
+      fetchOptions: { headers: captcha.headers(token) },
+    });
+    if (token) captcha.reset();
     if (signErr) {
       setLoading(false);
+      captcha.handleError(signErr);
       setError(authErrorMessage(signErr, 'Could not create your account.'));
       return;
     }
@@ -69,6 +87,7 @@ export default function SignUpPage({ listings }: { listings: string }) {
         password={password}
         name={cleanName(name) ?? undefined}
         redirect={redirect}
+        captcha={flags.verify_email}
         title="Check your email"
         lead={
           <>
@@ -149,6 +168,8 @@ export default function SignUpPage({ listings }: { listings: string }) {
             />
           </div>
         </div>
+
+        {captcha.widget}
 
         {error && (
           <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2">{error}</p>

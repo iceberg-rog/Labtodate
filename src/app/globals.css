@@ -411,3 +411,26 @@
   color: hsl(var(--accent-deep));
   font-weight: 800;
 }
+
+/* Bot check (ALTCHA widget, src/components/security/Captcha.tsx) in the site's
+   colours; its own stylesheet follows color-scheme, the site uses .dark. */
+.captcha-box altcha-widget {
+  --altcha-color-base: hsl(var(--card));
+  --altcha-color-base-content: hsl(var(--foreground));
+  --altcha-color-neutral: hsl(var(--border));
+  --altcha-color-neutral-content: hsl(var(--muted-foreground));
+  --altcha-color-primary: hsl(var(--primary));
+  --altcha-color-primary-content: hsl(var(--primary-foreground));
+  --altcha-color-success: hsl(var(--primary));
+  --altcha-color-success-content: hsl(var(--primary-foreground));
+  --altcha-color-error: #dc2626;
+  --altcha-color-error-content: #ffffff;
+  --altcha-checkbox-border-color: hsl(var(--input));
+  --altcha-checkbox-outline-color: hsl(var(--ring));
+  --altcha-spinner-color: hsl(var(--primary));
+  --altcha-border-radius: 0.75rem;
+  --altcha-max-width: 100%;
+  --altcha-padding: 0.7rem 0.85rem;
+  display: block;
+  font-size: 0.875rem;
+}

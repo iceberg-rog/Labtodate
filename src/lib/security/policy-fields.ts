@@ -20,7 +20,7 @@ export function buildPolicyFields(policy: SecurityPolicy): PolicyField[] {
       isDefault: JSON.stringify(Array.isArray(value) ? [...value].sort() : value) === JSON.stringify(Array.isArray(def) ? [...def].sort() : def),
       ...(d.type === 'set' ? { options: d.options } : {}),
       ...(d.type === 'int' ? { min: d.min, max: d.max, unit: d.unit } : {}),
-      ...(d.type === 'text' ? { placeholder: d.placeholder } : {}),
+      ...(d.type === 'text' || d.type === 'list' ? { placeholder: d.placeholder } : {}),
     };
   });
   return fields;

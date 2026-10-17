@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { Loader2, ArrowRight, User, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { submitSellAndRedirect, type SellInputType } from '@/lib/sell/actions';
+import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
 
 /** `turnaround` = Settings → Acquisitions → Valuation reply time ('' = no promise).
  *  `conditions` = the condition labels the owner set (Admin → Catalog → Conditions & warranty). */
@@ -11,9 +12,17 @@ export function SellForm({
   turnaround = '',
   offerWord = 'valuation',
   conditions = [['USED', 'Used'], ['REFURBISHED', 'Refurbished'], ['NEW', 'New']],
-}: { turnaround?: string; offerWord?: string; conditions?: ReadonlyArray<readonly [string, string]> } = {}) {
+  captcha: captchaOn = false,
+}: {
+  turnaround?: string;
+  offerWord?: string;
+  conditions?: ReadonlyArray<readonly [string, string]>;
+  /** Bot check (Settings → Security; guests by default). */
+  captcha?: boolean;
+} = {}) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const captcha = useCaptcha('sell', { required: captchaOn, start: 'focus' });
   const [sellerType, setSellerType] = useState<'INDIVIDUAL' | 'COMPANY'>('COMPANY');
   const [images, setImages] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -77,7 +86,14 @@ export function SellForm({
 
     startTransition(async () => {
       try {
-        const res = await submitSellAndRedirect(input);
+        const token = await captcha.token();
+        if (token === null) {
+          setError(CAPTCHA_NOT_SOLVED);
+          return;
+        }
+        const res = await submitSellAndRedirect({ ...input, ...(token ? { captcha: token } : {}) });
+        if (token) captcha.reset();
+        if (res && !res.ok && res.captcha) captcha.require();
         if (res && !res.ok) setError(res.error);
       } catch (err) {
         if ((err as Error)?.message?.includes('NEXT_REDIRECT')) return;
@@ -223,8 +239,10 @@ export function SellForm({
         />
       </div>
 
+      {captcha.widget}
+
       {error && (
-        <p className="rounded-md border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm">
+        <p role="alert" className="rounded-md border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-sm">
           {error}
         </p>
       )}

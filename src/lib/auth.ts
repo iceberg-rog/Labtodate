@@ -12,6 +12,16 @@ import { isOwnMediaUrl } from './products/image-urls';
 import { safeRedirect, signInErrorURL } from './safe-redirect';
 import { getSecurityPolicy } from './security/policy';
 import { clearAccountSignInLocks } from './security/throttle';
+import {
+  CAPTCHA_HEADER,
+  captchaAlwaysOn,
+  consumeCodePass,
+  grantCodePass,
+  verifyCaptcha,
+  type CaptchaPurpose,
+} from './security/captcha';
+import { domainBlock } from './email-guard/rules';
+import { guardOutgoing } from './email-guard';
 
 // Startup sanity check (non-fatal): surface a misconfigured production secret
 // in the logs without taking the site down. A placeholder/short secret means
@@ -42,6 +52,77 @@ export const VERIFY_ONLY_PATHS = ['/email-otp/verify-email', '/verify-email'];
 /** Same answer as a wrong code, so the endpoint tells nobody which addresses exist. */
 function invalidCodeError() {
   return new APIError('BAD_REQUEST', { message: 'Invalid OTP', code: 'INVALID_OTP' });
+}
+
+/**
+ * Endpoints that e-mail an address the visitor types, and the bot check that
+ * guards each (Settings → Security → Bot check). Checked here, on the
+ * endpoint's own path (whatever URL variant reached it), and only for HTTP
+ * requests: server code calling auth.api.* (an admin's "Send reset e-mail")
+ * has no visitor to ask.
+ */
+const MAIL_ENDPOINT_CAPTCHA: Record<string, CaptchaPurpose> = {
+  '/sign-up/email': 'signup',
+  '/sign-in/magic-link': 'magic_link',
+  '/request-password-reset': 'password_reset',
+  '/send-verification-email': 'verify_email',
+  '/email-otp/send-verification-otp': 'verify_email',
+};
+
+/**
+ * Refuse blocked / throw-away domains up front (so no account is even created
+ * for …@txt.att.net), then require a solved bot check where it is on. A
+ * sign-up that passed the check may send its first code without a second one.
+ *
+ * A new code REPLACES the one already e-mailed, so when the e-mail guard
+ * would hold the new one back (the address had a code moments ago) the
+ * request is answered here, before a code is made: the first code keeps
+ * working. Same answer as for an address without an account (no enumeration).
+ * Returns that answer, or undefined to let the endpoint run.
+ */
+async function guardMailEndpoint(path: string, purpose: CaptchaPurpose, email: string, headers: Headers | undefined): Promise<{ success: true } | undefined> {
+  const policy = await getSecurityPolicy();
+  if (email) {
+    const block = domainBlock(email, policy);
+    if (block) {
+      await auditAuth('auth.email.blocked', email, `${path}: ${block.kind} domain ${block.matched}`);
+      throw new APIError('BAD_REQUEST', { message: block.message, code: 'EMAIL_DOMAIN_BLOCKED' });
+    }
+  }
+  if (captchaAlwaysOn(policy, purpose)) {
+    const payload = headers?.get(CAPTCHA_HEADER);
+    const passed = !payload && path === '/email-otp/send-verification-otp' && !!email && (await consumeCodePass(email));
+    if (!passed) {
+      const check = await verifyCaptcha(payload, purpose);
+      if (!check.ok) {
+        if (check.code !== 'CAPTCHA_REQUIRED') await auditAuth('auth.captcha.failed', email || '(no e-mail)', `${path}: ${check.code}`);
+        throw new APIError('FORBIDDEN', { message: check.message, code: check.code });
+      }
+    }
+  }
+  if (path === '/email-otp/send-verification-otp' && email) {
+    const pre = await guardOutgoing(email, 'auth.signup-code', policy, { count: false });
+    if (!pre.ok) {
+      if (pre.scope === 'address') {
+        await prisma.emailLog
+          .create({
+            data: {
+              toAddr: email,
+              subject: '(verification code) not sent',
+              status: pre.status,
+              error: `${pre.reason} — no new code made, the last one stays valid`.slice(0, 500),
+              trigger: 'auth.signup-code',
+              toDomain: email.split('@')[1] ?? null,
+              ip: headers?.get('x-real-ip')?.slice(0, 64) ?? null,
+            },
+          })
+          .catch(() => {});
+        return { success: true };
+      }
+      throw new APIError(pre.status === 'blocked' ? 'BAD_REQUEST' : 'TOO_MANY_REQUESTS', { message: pre.message, code: pre.code });
+    }
+  }
+  return undefined;
 }
 
 // better-auth endpoints that change the account on the strength of a session
@@ -80,6 +161,7 @@ async function sendTwoFactorNotice(email: string, on: boolean) {
     : 'Your account no longer asks for an authenticator code at sign-in.';
   await sendEmail({
     to: email,
+    trigger: 'account',
     subject,
     html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
       <h2 style="color:#0E4F40;">${escapeHtml(subject)}</h2>
@@ -211,6 +293,7 @@ export const auth = betterAuth({
       await auditAuth('auth.password.reset', user.email);
       await sendEmail({
         to: user.email,
+        trigger: 'account',
         subject: 'Your lab2date password was changed',
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
@@ -225,6 +308,7 @@ export const auth = betterAuth({
     sendResetPassword: async ({ user, url }) => {
       await sendEmail({
         to: user.email,
+        trigger: 'auth.password-reset',
         subject: 'Reset your lab2date password',
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
@@ -262,6 +346,7 @@ export const auth = betterAuth({
       const note = !user.emailVerified && (await hasPassword(user.id)) ? PASSWORD_REMOVAL_NOTE : null;
       await sendEmail({
         to: user.email,
+        trigger: 'auth.verify-link',
         subject: 'Verify your lab2date email',
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
@@ -444,6 +529,14 @@ export const auth = betterAuth({
         return { context: { query: next } };
       }
 
+      const captchaPurpose = MAIL_ENDPOINT_CAPTCHA[ctx.path];
+      if (captchaPurpose && ctx.request) {
+        const raw = (ctx.body ?? {}) as { email?: unknown };
+        const email = typeof raw.email === 'string' ? raw.email.trim().toLowerCase().slice(0, 254) : '';
+        const answered = await guardMailEndpoint(ctx.path, captchaPurpose, email, ctx.headers ?? ctx.request.headers);
+        if (answered) return answered;
+      }
+
       // Session-backed writes inside better-auth (Profile name / photo via
       // update-user, …) re-read the session row instead of trusting the ≤60s
       // cookie cache, so a signed-out, revoked or suspended session can't
@@ -492,6 +585,17 @@ export const auth = betterAuth({
       }
     }),
     after: createAuthMiddleware(async (ctx) => {
+      // A sign-up that passed the bot check: its code e-mail (sent by the form
+      // right after) needs no second check. Only when sign-up has the check on.
+      if (ctx.path === '/sign-up/email') {
+        const done = ctx.context.returned;
+        const raw = (ctx.body ?? {}) as { email?: unknown };
+        if (ctx.request && done && !(done instanceof APIError) && typeof raw.email === 'string') {
+          const policy = await getSecurityPolicy();
+          if (captchaAlwaysOn(policy, 'signup')) await grantCodePass(raw.email);
+        }
+        return;
+      }
       // Two-factor switched on or off: audit it, tell the owner, and when it
       // was just switched on sign out every other session (opened without it).
       if (ctx.path !== '/two-factor/verify-totp' && ctx.path !== '/two-factor/disable') return;
@@ -536,6 +640,7 @@ export const auth = betterAuth({
         if (!exists) {
           await sendEmail({
             to: email,
+            trigger: 'auth.notice',
             subject: 'Sign-in request for lab2date',
             html: `
               <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
@@ -556,6 +661,7 @@ export const auth = betterAuth({
           await auditAuth('auth.magiclink.refused', email, 'requested for an admin / 2FA account');
           await sendEmail({
             to: email,
+            trigger: 'auth.notice',
             subject: 'Sign-in links are switched off for your lab2date account',
             html: `
               <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
@@ -572,6 +678,7 @@ export const auth = betterAuth({
         const note = !exists.emailVerified && (await hasPassword(exists.id)) ? PASSWORD_REMOVAL_NOTE : null;
         await sendEmail({
           to: email,
+          trigger: 'auth.magic-link',
           subject: 'Your lab2date sign-in link',
           html: `
             <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
@@ -613,6 +720,7 @@ export const auth = betterAuth({
             // and silently drop the password they just typed — explain instead.
             await sendEmail({
               to: email,
+              trigger: 'auth.notice',
               subject: 'You already have a lab2date account',
               html: `
                 <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
@@ -629,6 +737,7 @@ export const auth = betterAuth({
         }
         await sendEmail({
           to: email,
+          trigger: 'auth.signup-code',
           subject: `${otp} is your lab2date verification code`,
           html: `
             <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">

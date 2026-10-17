@@ -39,6 +39,28 @@ export type SecurityPolicy = {
   IP_SIGNIN_LIMIT_PER_15MIN: number;
   LOCKOUT_EMAIL_ENABLED: boolean;
   NEW_DEVICE_ALERT: boolean;
+  CAPTCHA_ALWAYS: string[];
+  CAPTCHA_SIGNED_IN_FORMS: boolean;
+  CAPTCHA_SIGNIN_AFTER_FAILS: number;
+  CAPTCHA_SIGNIN_AFTER_IP_FAILS: number;
+  CAPTCHA_COST: number;
+  CAPTCHA_MAX_TRIES: number;
+  CAPTCHA_ESCALATE_AFTER: number;
+  CAPTCHA_EXPIRY_MIN: number;
+  MAIL_BLOCKED_DOMAINS: string[];
+  MAIL_BLOCK_DISPOSABLE: boolean;
+  MAIL_ALLOWED_DOMAINS: string[];
+  MAIL_ADDRESS_COOLDOWN_SEC: number;
+  MAIL_ADDRESS_MAX_PER_DAY: number;
+  MAIL_DOMAIN_MAX_PER_HOUR: number;
+  MAIL_DOMAIN_CAP_EXEMPT: string[];
+  MAIL_ANON_MAX_PER_HOUR: number;
+  MAIL_IP_SIGNUPS_PER_HOUR: number;
+  MAIL_IP_REQUESTS_PER_15MIN: number;
+  MAIL_BOUNCE_SUPPRESS_AFTER: number;
+  MAIL_GUARD_ALERTS: boolean;
+  UNVERIFIED_PURGE_DAYS: number;
+  UNVERIFIED_AUTO_PURGE: boolean;
   MARKETING_SOFT_OPT_IN: boolean;
   ANNOUNCEMENT_EMAILS_PER_MINUTE: number;
   EMAIL_REPLY_TO: string;
@@ -52,10 +74,26 @@ export type PolicyKey = keyof SecurityPolicy;
 
 const DEFS_BY_KEY = new Map(POLICY_DEFS.map((d) => [d.key, d]));
 
+/** Entries of a 'list' value as typed (one per line or comma-separated): trimmed, lower-cased, de-duplicated. */
+export function splitPolicyList(raw: string): string[] {
+  return Array.from(
+    new Set(
+      raw
+        .split(/[\s,;]+/)
+        .map((s) => s.trim().toLowerCase().replace(/^@/, '').replace(/\.$/, ''))
+        .filter(Boolean),
+    ),
+  );
+}
+
 /** Parse a stored string; returns undefined when it is not a valid value for the def. */
 function parseStored(d: PolicyDef, raw: string): unknown {
   const v = raw.trim();
   switch (d.type) {
+    case 'list': {
+      const items = splitPolicyList(v);
+      return items.length <= d.maxItems && items.every((i) => d.item.test(i)) ? items : undefined;
+    }
     case 'bool':
       if (v === 'true') return true;
       if (v === 'false') return false;
@@ -118,7 +156,10 @@ export function invalidatePolicyCache(): void {
 /** Human-readable value for history / alerts. */
 export function formatPolicyValue(key: string, value: unknown): string {
   const d = DEFS_BY_KEY.get(key);
-  if (Array.isArray(value)) return value.length ? value.join(', ') : '(none)';
+  if (Array.isArray(value)) {
+    if (!value.length) return '(none)';
+    return value.length > 12 ? `${value.slice(0, 12).join(', ')} … (${value.length} in total)` : value.join(', ');
+  }
   if (typeof value === 'boolean') return value ? 'on' : 'off';
   if (d?.type === 'int' && d.unit) return `${value} ${d.unit}`;
   return value === '' ? '(empty)' : String(value);
@@ -151,6 +192,18 @@ export function planPolicySave(
         continue;
       }
       next = Array.from(new Set(arr)).sort();
+    } else if (d.type === 'list') {
+      const items = splitPolicyList(Array.isArray(raw) ? raw.join('\n') : String(raw ?? ''));
+      const bad = items.filter((i) => !d.item.test(i));
+      if (bad.length) {
+        problems.push(`${d.label}: “${bad.slice(0, 5).join('”, “')}” ${bad.length === 1 ? 'is' : 'are'} not valid (${d.itemHint}).`);
+        continue;
+      }
+      if (items.length > d.maxItems) {
+        problems.push(`${d.label}: at most ${d.maxItems} entries.`);
+        continue;
+      }
+      next = items.sort();
     } else if (d.type === 'int') {
       const s = String(raw ?? '').trim();
       const n = Number(s);

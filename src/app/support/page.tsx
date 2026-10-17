@@ -1,6 +1,7 @@
 import { LifeBuoy, Clock, ShieldCheck } from 'lucide-react';
 import { getServerSession } from '@/lib/auth-server';
 import { SupportForm } from '@/components/support/SupportForm';
+import { formCaptchaFlag } from '@/lib/security/captcha';
 
 export const metadata = { title: 'Support' };
 export const dynamic = 'force-dynamic';
@@ -8,6 +9,7 @@ export const dynamic = 'force-dynamic';
 export default async function SupportPage() {
   const session = await getServerSession();
   const signedIn = !!session?.user;
+  const captcha = await formCaptchaFlag('support', signedIn);
   return (
     <div className="container-px py-12 md:py-20">
       <div className="grid lg:grid-cols-[1fr_1.3fr] gap-12 items-start max-w-6xl mx-auto">
@@ -31,6 +33,7 @@ export default async function SupportPage() {
           defaultEmail={session?.user.email ?? ''}
           defaultName={session?.user.name ?? ''}
           signedIn={signedIn}
+          captcha={captcha}
         />
       </div>
     </div>

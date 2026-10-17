@@ -6,6 +6,7 @@ import { prisma } from './db';
 import { capsAllow, type Capability } from './capabilities';
 import { rateLimit } from './ratelimit';
 import { getSecurityPolicy } from './security/policy';
+import { mailRefusals, type EmailBlockedError } from './email';
 
 /**
  * Read the current session in a server component / server action / route handler.
@@ -164,10 +165,16 @@ export async function sendAdminPasswordReset(adminId: string, user: { id: string
       `${user.email} was already sent several reset emails in the last 15 minutes. Ask them to check spam, or try again later.`,
     );
   }
-  await auth.api.requestPasswordReset({
-    body: { email: user.email, redirectTo: '/auth/reset-password' },
-    headers: await headers(),
-  });
+  const refusals: EmailBlockedError[] = [];
+  const h = await headers();
+  await mailRefusals.run(refusals, () =>
+    auth.api.requestPasswordReset({
+      body: { email: user.email, redirectTo: '/auth/reset-password' },
+      headers: h,
+    }),
+  );
+  // better-auth swallows mail errors; the e-mail guards say why it was held back.
+  if (refusals.length) throw new Error(`Not sent to ${user.email}: ${refusals[0].userMessage}`);
 }
 
 /**

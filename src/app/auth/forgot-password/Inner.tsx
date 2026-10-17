@@ -5,28 +5,39 @@ import Link from 'next/link';
 import { Mail, Loader2, CheckCircle2, ArrowLeft } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { Button } from '@/components/ui/button';
+import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
+import type { AuthCaptchaFlags } from '@/lib/security/captcha-shared';
 
-export default function ForgotPasswordInner() {
+export default function ForgotPasswordInner({ captcha: flags }: { captcha: AuthCaptchaFlags }) {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const captcha = useCaptcha('password_reset', { required: flags.password_reset, start: 'focus' });
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
+      const token = await captcha.token();
+      if (token === null) {
+        setError(CAPTCHA_NOT_SOLVED);
+        return;
+      }
       // Better-Auth: requests a reset email if the account exists. The
       // response is intentionally generic — we always render the same success
       // screen so account enumeration is impossible.
       const { error: err } = await authClient.requestPasswordReset({
         email,
         redirectTo: '/auth/reset-password',
+        fetchOptions: { headers: captcha.headers(token) },
       });
-      // Mail not configured / refused / rate-limited: say so instead of
-      // "check your e-mail". (Unknown addresses still get the same success.)
-      if (err && [429, 502, 503].includes(err.status) && err.message) {
+      if (token) captcha.reset();
+      // Bot check missing / failed, blocked domain, mail not configured /
+      // refused / rate-limited: say so instead of "check your e-mail".
+      // (Unknown addresses still get the same success.)
+      if (err && (captcha.handleError(err) || [400, 429, 502, 503].includes(err.status)) && err.message) {
         setError(err.message);
         return;
       }
@@ -95,8 +106,10 @@ export default function ForgotPasswordInner() {
           </div>
         </label>
 
+        {captcha.widget}
+
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-xs">
+          <div role="alert" className="rounded-lg border border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-3 py-2 text-xs">
             {error}
           </div>
         )}

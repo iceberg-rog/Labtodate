@@ -238,6 +238,7 @@ async function runJob(jobId: string): Promise<void> {
       try {
         await sendEmail({
           to: d.email,
+          trigger: 'marketing',
           subject: job.title,
           html,
           text,

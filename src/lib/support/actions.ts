@@ -13,6 +13,7 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
 import { computeDueAt } from '@/lib/support/statuses';
+import { guardPublicForm, PublicFormError } from '@/lib/security/captcha';
 
 // ────────────────────────────────────────────────────────────────────────────
 //   Slice A helpers — priority + SLA + linked-commerce auto-detection
@@ -117,6 +118,8 @@ const TicketInput = z.object({
   category: z.string().max(60).optional().nullable(),
   body: z.string().min(10).max(5000),
   hp: z.string().optional(),
+  /** Solved bot check (Settings → Security; guests by default). */
+  captcha: z.string().max(8000).optional(),
 });
 
 function ref(): string {
@@ -155,9 +158,12 @@ const TICKET_FIELD_LIMITS: Record<string, string> = {
 export async function submitTicket(input: z.infer<typeof TicketInput>) {
   const p = TicketInput.parse(input);
   if (p.hp && p.hp.trim()) return { ref: 'TKT-OK' }; // honeypot: silently drop bots
+  const session = await getServerSession();
+  // Bot check (guests) and blocked / throw-away domains: the form echoes a
+  // confirmation to whatever address is typed here.
+  await guardPublicForm('support', { captcha: p.captcha, email: p.email }, !!session);
   await rateLimit('ticket');
   await ensureSettingsLoaded();
-  const session = await getServerSession();
 
   // Auto-detect linked commerce + compute priority. These are cheap (single
   // indexed lookup each) and run BEFORE the insert so dueAt is right on disk.
@@ -215,6 +221,9 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
   // thrown error here made customers resubmit and create duplicate tickets).
   await trySendEmail({
     to: p.email,
+    // Anyone can type any address here: limited like the other e-mails a
+    // visitor can trigger, unless it is the signed-in account's own address.
+    trigger: echo ? 'transactional' : 'form.support',
     subject: `[${ticket.ref}] We received your request`,
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:560px;">
@@ -286,11 +295,12 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
  * `error`: production builds replace thrown messages with a generic "Server
  * Components render" error, so the customer could not tell what to fix.
  */
-export async function submitTicketAndRedirect(input: z.infer<typeof TicketInput>): Promise<{ error: string }> {
+export async function submitTicketAndRedirect(input: z.infer<typeof TicketInput>): Promise<{ error: string; captcha?: boolean }> {
   let r: string;
   try {
     ({ ref: r } = await submitTicket(input));
   } catch (e) {
+    if (e instanceof PublicFormError) return { error: e.message, captcha: e.captcha };
     if (e instanceof z.ZodError) {
       const field = String(e.issues[0]?.path[0] ?? '');
       return { error: TICKET_FIELD_LIMITS[field] ?? 'Some details are invalid. Please check the form and try again.' };
