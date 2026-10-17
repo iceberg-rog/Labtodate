@@ -7,8 +7,20 @@
 // optimized/resized/WebP and cached — fast — while staying host-agnostic.
 const MINIO_INTERNAL = 'http://minio:9000';
 
+// Hosts whose /media/** the image optimizer may fetch. Every stored image is
+// our own MinIO media (all 1565 Product.images on 2026-10-17 are
+// https://labtodate.com/media/…). IMAGE_HOSTS (comma-separated, read at build
+// time) adds hosts for other deployments, e.g. a local test domain.
+const IMAGE_HOSTS = [
+  'labtodate.com',
+  'www.labtodate.com',
+  ...(process.env.IMAGE_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
+];
+
 const nextConfig = {
   reactStrictMode: true,
+  // src/lib/image-hosts.ts: images on any other host are loaded by the browser, not the optimizer
+  env: { NEXT_PUBLIC_IMAGE_HOSTS: IMAGE_HOSTS.join(',') },
   output: 'standalone',
   experimental: {
     serverActions: {
@@ -23,19 +35,15 @@ const nextConfig = {
   },
   images: {
     // optimizer fetches /media/* via the rewrite below (same origin).
-    // For Product.images that point at external suppliers (lab2.nl,
-    // lab2parts.com, plus any future supplier added through the AI shop
-    // suggester or the URL importer) we allow all HTTPS sources — the
-    // optimizer still validates the response is an image, so the risk is
-    // bounded to bandwidth (mitigated by Next's size+count limits and the
-    // per-IP nginx limit on /_next/image).
-    // SECURITY: `http` is intentionally NOT allowed. Plaintext internal
-    // services (169.254.169.254 metadata, db:5432, minio:9000, xray:9443)
-    // all speak http, so an http:** allowlist turned the optimizer into an
-    // SSRF probe into the private network. HTTPS-only closes that.
-    remotePatterns: [
-      { protocol: 'https', hostname: '**' },
-    ],
+    // SECURITY (2026-10-17): the optimizer used to accept ANY https host.
+    // Next 16.2.7 follows redirects from that host without re-checking
+    // protocol or allowlist, so https://attacker → 302 → http://minio:9000
+    // reached the private Docker network, and every attacker-chosen file went
+    // through the sharp/libvips decoders — all without signing in. Supplier
+    // photos are localized into MinIO on import (localize-images.ts), so only
+    // our own /media/** is allowed. Unsplash demo photos never reach Next:
+    // nginx answers those /_next/image URLs from local copies.
+    remotePatterns: IMAGE_HOSTS.map((hostname) => ({ protocol: 'https', hostname, pathname: '/media/**' })),
   },
   async headers() {
     return [

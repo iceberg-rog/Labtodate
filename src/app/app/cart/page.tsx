@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import Image from 'next/image';
+import { loadDirectly } from '@/lib/image-hosts';
 import { redirect } from 'next/navigation';
 import { ShoppingCart, Trash2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -120,7 +121,7 @@ export default async function CartPage(
                 <li key={i.id} className={`p-4 grid grid-cols-[64px_1fr] sm:grid-cols-[80px_1fr_auto] gap-x-4 gap-y-3 items-center ${listed ? '' : 'bg-red-50/60 dark:bg-red-950/20'}`}>
                   <div className="relative h-14 w-16 sm:h-16 sm:w-20 rounded-lg overflow-hidden bg-card">
                     {i.product.images[0] && (
-                      <Image src={i.product.images[0]} alt={i.product.title} fill sizes="80px" className="object-contain p-1.5" />
+                      <Image src={i.product.images[0]} unoptimized={loadDirectly(i.product.images[0])} alt={i.product.title} fill sizes="80px" className="object-contain p-1.5" />
                     )}
                   </div>
                   <div className="min-w-0">

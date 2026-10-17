@@ -35,6 +35,25 @@ const SUSPENSION_GATED = ['/sign-up/email', '/email-otp/send-verification-otp', 
 // ones — change-password, revoke-sessions, … — already bypass it).
 const SESSION_WRITES = ['/update-user', '/update-session', '/link-social', '/unlink-account'];
 
+// Confirming an address is only ever a sign-in for an account that was NOT
+// verified yet (sign-up / first sign-in). Security fix: a guessed or leaked
+// e-mail code minted a full session for already verified accounts — admins
+// included — with no password. Requests to /email-otp/verify-email whose
+// account was still unverified when they arrived are recorded here; the
+// session hook refuses every other session on that path.
+const verifyingUnverified = new WeakSet<Request>();
+
+function invalidCodeError() {
+  // Same answer as a wrong code, so it can't be used to probe which addresses are verified.
+  return new APIError('BAD_REQUEST', { message: 'Invalid OTP', code: 'INVALID_OTP' });
+}
+
+/** better-auth stores e-mail verification codes under this identifier (emailOTP plugin). */
+async function dropVerificationCodes(email: string) {
+  const ids = [...new Set([email, email.toLowerCase()])].map((e) => `email-verification-otp-${e}`);
+  await prisma.verification.deleteMany({ where: { identifier: { in: ids } } }).catch(() => {});
+}
+
 function suspendedError(reason: string | null) {
   return new APIError('FORBIDDEN', { message: `Account suspended: ${reason || 'contact support'}` });
 }
@@ -272,7 +291,14 @@ export const auth = betterAuth({
         // The one choke point every session passes through (password, code,
         // magic link, verification link): suspended or unverified accounts
         // never get one, whichever route they come in by.
-        before: async (session) => {
+        before: async (session, ctx) => {
+          // A verification code is not a password: it may only sign in the
+          // account it just confirmed for the first time (see verifyingUnverified).
+          const c = ctx as { path?: string; request?: Request } | null | undefined;
+          if (c?.path === '/email-otp/verify-email' && !(c.request && verifyingUnverified.has(c.request))) {
+            console.warn('[auth] refused a session from an e-mail code for an already verified account', session.userId);
+            throw invalidCodeError();
+          }
           const user = await prisma.user.findUnique({
             where: { id: session.userId },
             select: { emailVerified: true, suspendedAt: true, suspendedReason: true },
@@ -378,8 +404,23 @@ export const auth = betterAuth({
       if (ctx.path === '/email-otp/send-verification-otp' && body.type !== 'email-verification') {
         throw new APIError('BAD_REQUEST', { message: 'Invalid code type.' });
       }
-      if (ctx.path === '/email-otp/verify-email' && ctx.request) {
-        chosenAtVerification.set(ctx.request, { password: body.password, name: body.name });
+      if (ctx.path === '/email-otp/verify-email') {
+        // An already confirmed address has nothing to confirm: no code is ever
+        // e-mailed for it (sendVerificationOTP below), so a "correct" code can
+        // only have been guessed or leaked. Drop any stored code and answer
+        // exactly like a wrong code.
+        const owner = email
+          ? await prisma.user.findUnique({ where: { email }, select: { emailVerified: true } })
+          : null;
+        if (!owner || owner.emailVerified) {
+          if (email) await dropVerificationCodes(email);
+          if (owner) console.warn('[auth] refused an e-mail code for an already verified account');
+          throw invalidCodeError();
+        }
+        if (ctx.request) {
+          verifyingUnverified.add(ctx.request);
+          chosenAtVerification.set(ctx.request, { password: body.password, name: body.name });
+        }
       }
     }),
   } satisfies BetterAuthOptions['hooks'],
@@ -440,10 +481,15 @@ export const auth = betterAuth({
       expiresIn: 60 * 10, // 10 minutes
       allowedAttempts: 5,
       disableSignUp: true,
+      // Only a hash of the code is kept: a database / log leak gives no code.
+      storeOTP: 'hashed',
       sendVerificationOTP: async ({ email, otp, type }) => {
         if (type === 'email-verification') {
           const existing = await prisma.user.findUnique({ where: { email }, select: { emailVerified: true } });
           if (existing?.emailVerified) {
+            // better-auth stored a code before calling us; it is never mailed,
+            // so remove it — nothing redeemable is left behind.
+            await dropVerificationCodes(email);
             // Sign-up with an address that already has an account (sign-up
             // answers as if it were new, so it can't be used to probe which
             // addresses are registered). A code would only sign the person in

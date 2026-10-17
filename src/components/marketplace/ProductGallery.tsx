@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Image from 'next/image';
+import { loadDirectly } from '@/lib/image-hosts';
 import { X, ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
@@ -51,6 +52,7 @@ export function ProductGallery({
       >
         <Image
           src={pics[active]}
+          unoptimized={loadDirectly(pics[active])}
           alt={title}
           fill
           priority
@@ -80,7 +82,7 @@ export function ProductGallery({
               }`}
               aria-label={`View image ${i + 1}`}
             >
-              <Image src={src} alt="" fill sizes="96px" className="object-contain p-1.5" />
+              <Image src={src} unoptimized={loadDirectly(src)} alt="" fill sizes="96px" className="object-contain p-1.5" />
             </button>
           ))}
         </div>
@@ -130,6 +132,7 @@ export function ProductGallery({
           >
             <Image
               src={pics[active]}
+              unoptimized={loadDirectly(pics[active])}
               alt={title}
               fill
               sizes="100vw"

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import Image from 'next/image';
+import { loadDirectly } from '@/lib/image-hosts';
 import { ArrowUpRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { formatPrice } from '@/lib/utils';
@@ -37,6 +38,7 @@ export function ProductCard({ p }: { p: ProductCardData }) {
       <div className="relative aspect-[4/3] overflow-hidden bg-muted">
         <Image
           src={img}
+          unoptimized={loadDirectly(img)}
           alt={p.title}
           fill
           sizes="(min-width:1024px) 25vw, (min-width:640px) 50vw, 100vw"

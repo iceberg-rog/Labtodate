@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import Image from 'next/image';
+import { loadDirectly } from '@/lib/image-hosts';
 import { ArrowUpRight } from 'lucide-react';
 import { getTopCategoriesWithImage } from '@/lib/marketplace/queries';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
@@ -62,6 +63,7 @@ export async function CategoryGrid() {
               {c.image ? (
                 <Image
                   src={c.image}
+                  unoptimized={loadDirectly(c.image)}
                   alt={c.name}
                   fill
                   sizes="(min-width:1024px) 25vw, (min-width:768px) 33vw, 50vw"
