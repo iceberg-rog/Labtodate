@@ -41,12 +41,16 @@ export function ThemeToggle({ className }: { className?: string }) {
       aria-label={dark ? 'Switch to light theme' : 'Switch to dark theme'}
       title={dark ? 'Light mode' : 'Dark mode'}
       className={cn(
-        'inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
+        // The header passes its own round glass shape (.hud-round); elsewhere
+        // the toggle keeps its compact square look.
+        className?.includes('hud-round')
+          ? ''
+          : 'inline-flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground',
         className,
       )}
     >
-      <Sun className={cn('h-5 w-5', dark ? 'block' : 'hidden')} />
-      <Moon className={cn('h-5 w-5', dark ? 'hidden' : 'block')} />
+      <Sun className={cn('h-[18px] w-[18px]', dark ? 'block' : 'hidden')} />
+      <Moon className={cn('h-[18px] w-[18px]', dark ? 'hidden' : 'block')} />
     </button>
   );
 }

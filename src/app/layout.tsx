@@ -34,7 +34,7 @@ const mono = localFont({
 // hard-coded here, so changing the setting never reached <title> / OG tags.
 export async function generateMetadata(): Promise<Metadata> {
   if (!isBuildPhase()) await ensureSettingsLoaded();
-  const site = process.env.SITE_NAME?.trim() || 'lab2date';
+  const site = process.env.SITE_NAME?.trim() || 'Labtodate';
   return {
     metadataBase: new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com'),
     title: {
@@ -85,22 +85,23 @@ export const viewport: Viewport = {
   initialScale: 1,
   themeColor: [
     { media: '(prefers-color-scheme: light)', color: '#FAF8F2' },
-    { media: '(prefers-color-scheme: dark)', color: '#171E22' },
+    { media: '(prefers-color-scheme: dark)', color: '#031110' },
   ],
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // getMarketing() loads Settings, so THEME_DEFAULT below is the admin's value.
   const mk = await getMarketing();
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
-        <ThemeScript />
+        <ThemeScript fallback={process.env.THEME_DEFAULT} />
       </head>
       <body className="min-h-screen bg-background font-sans antialiased flex flex-col">
         <PublicChrome
           header={<Header searchPlaceholder={`Search ${mk.listings} instruments…`} />}
           footer={<Footer />}
-          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'lab2date'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'lab2date'} /></>}
+          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'Labtodate'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'Labtodate'} /></>}
         >
           {children}
         </PublicChrome>

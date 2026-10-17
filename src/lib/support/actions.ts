@@ -214,7 +214,7 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
     }),
   );
 
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
   // GUEST tickets get a magic-link button so the customer can follow up
   // without creating an account. REGISTERED tickets get a dashboard link.
   const followUpHref = accessToken
@@ -377,7 +377,7 @@ export async function replyTicket(formData: FormData) {
   // admin UI. The "reply to this email" line is dead weight until slice D
   // (inbound parsing); the magic link line is the actionable one for guests.
   if (!isInternalNote) {
-    const site = process.env.SITE_NAME || 'lab2date';
+    const site = process.env.SITE_NAME || 'Labtodate';
     const continueLine = t.accessToken
       ? `<p style="margin-top:18px;"><a href="${process.env.BETTER_AUTH_URL ?? ''}/support/t/${t.accessToken}" style="background:#0E4F40;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Open ticket ${t.ref}</a></p>`
       : `<p style="margin-top:18px;"><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/support" style="background:#0E4F40;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Open ticket ${t.ref}</a></p>`;
@@ -778,7 +778,7 @@ export async function reissueGuestMagicLink(
     },
   });
 
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
   const href = `${process.env.BETTER_AUTH_URL ?? ''}/support/t/${newToken}`;
   await sendEmail({
     to: t.email,

@@ -3,8 +3,8 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 export async function legalContext() {
   await ensureSettingsLoaded();
   return {
-    site: process.env.SITE_NAME || 'lab2date',
-    legal: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'lab2date',
+    site: process.env.SITE_NAME || 'Labtodate',
+    legal: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'Labtodate',
     address: process.env.COMPANY_ADDRESS || '',
     country: process.env.COMPANY_COUNTRY || '',
     vat: process.env.COMPANY_VAT || '',

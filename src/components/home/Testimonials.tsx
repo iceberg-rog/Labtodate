@@ -24,7 +24,7 @@ export async function Testimonials({
   // sample quotes credited to real-sounding people (fake-review risk).
   if (list.length === 0) return null;
   return (
-    <section className="border-y border-foreground/5 bg-foreground/[0.02]">
+    <section data-hud="VOICES" className="border-y border-[hsl(var(--teal)/0.1)] bg-[hsl(var(--teal)/0.02)]">
       <div className="container-px py-24">
         <div className="text-center mb-14 max-w-2xl mx-auto">
           <div className="inline-flex items-center gap-2 mb-4">
@@ -50,7 +50,7 @@ export async function Testimonials({
               className={`relative rounded-3xl p-7 ${
                 idx === 1
                   ? 'bg-primary text-primary-foreground'
-                  : 'bg-card border border-border'
+                  : 'glass-panel'
               }`}
             >
               <div className="flex items-center gap-1 mb-5">
