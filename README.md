@@ -30,6 +30,9 @@ If a host port is already taken, edit the matching `*_PORT` value in `.env`.
 
 ## Full restore on a fresh server (production clone)
 
+> Nightly encrypted backups with an off-site copy, and how to restore from them:
+> **[docs/BACKUPS.md](docs/BACKUPS.md)**. The bundle flow below predates them.
+
 To stand up a new VPS with the **exact same state** as current production
 (all 786 products, the Sam Pars Benelux company identity, every order/quote,
 all uploaded images) on a fresh Ubuntu/Debian box:
