@@ -470,7 +470,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
     iban: process.env.BANK_IBAN || '',
     swift: process.env.BANK_SWIFT || '',
     refHint: process.env.BANK_REFERENCE_HINT || 'Use the proforma number as transfer reference',
-    company: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'lab2date',
+    company: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'Labtodate',
   };
   // BUG-031: the buyer must be instructed to transfer the SAME total the order
   // records (subtotalCents + shippingCents + taxCents), never the bare subtotal.

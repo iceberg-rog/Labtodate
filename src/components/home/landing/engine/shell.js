@@ -57,7 +57,7 @@ export function startLanding(config) {
     const q = (x) => root.querySelector(x), qa = (x) => [...root.querySelectorAll(x)];
     const status = q('#ad-status'), offer = q('#ad-offer'), accept = q('#ad-accept'), toastEl = q('#ad-toast'), cursor = q('#ad-cursor');
     const steps = qa('#ad-timeline li');
-    const LABEL = ['Requested', 'Offer received', 'Accepted', 'Paid', 'Shipped'];
+    const LABEL = ['Requested', 'Quote received', 'Accepted', 'Paid', 'Shipped'];
     const sleep = (ms) => new Promise((r) => later(r, ms));
     const toast = (t) => { toastEl.textContent = t; toastEl.classList.add('on'); clearTimeout(toast.k); toast.k = later(() => toastEl.classList.remove('on'), 1700); };
     const setStep = (k) => {
@@ -80,10 +80,10 @@ export function startLanding(config) {
         while (!took && !stopped) {
           if (!visible || document.hidden) { await sleep(400); continue; }
           setStep(0); await sleep(1400); guard();
-          setStep(1); toast('Offer received — proforma attached'); await sleep(1500); guard();
+          setStep(1); toast('Quote received — proforma attached'); await sleep(1500); guard();
           await moveTo(accept); accept.classList.add('press'); await sleep(260); accept.classList.remove('press'); guard();
-          setStep(2); toast('Offer accepted'); cursor.classList.remove('on'); await sleep(1600); guard();
-          setStep(3); toast('Proforma paid — VAT invoice issued'); await sleep(1700); guard();
+          setStep(2); toast('Quote accepted'); cursor.classList.remove('on'); await sleep(1600); guard();
+          setStep(3); toast('Payment confirmed'); await sleep(1700); guard();
           setStep(4); toast('Shipped'); await sleep(2600); guard();
         }
       } catch (e) { if (e !== STOP) throw e; }
@@ -92,7 +92,7 @@ export function startLanding(config) {
     const takeOver = (e) => { if (e.isTrusted && !took) { took = true; cursor.classList.remove('on'); } };
     on(root, 'pointerdown', takeOver, true); on(root, 'keydown', takeOver, true);
     // the visitor can play it too
-    on(accept, 'click', () => { setStep(2); toast('Offer accepted'); });
+    on(accept, 'click', () => { setStep(2); toast('Quote accepted'); });
     if (!reduced) {
       on(root, 'pointermove', (e) => {
         if (e.pointerType === 'touch') return; const r = root.getBoundingClientRect();

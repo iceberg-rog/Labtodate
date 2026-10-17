@@ -89,7 +89,7 @@ export const HOME_DEFAULTS: HomeContent = {
   heroTitle: 'The marketplace for',
   heroAccent: 'science.',
   heroSubtitle:
-    'Buy used laboratory equipment online, or request a written quote — every order with a proforma and a VAT invoice.',
+    'Buy used laboratory equipment online, or request a written quote — quote, proforma and shipping handled end to end.',
   // Counts are computed live from the DB at request time (see src/lib/home-stats.ts)
   // whenever HERO_STATS is unset; these zeros are a type-level fallback only and
   // must never be pre-filled into the editor (saving them used to ship "0 / 0 / 0").
@@ -119,8 +119,8 @@ export const HOME_DEFAULTS: HomeContent = {
   netSteps: [
     'Your request|Tell us the instrument you need',
     'Sourcing|We search our supply network',
-    'Offer|A written offer you accept first',
-    'Delivery|Shipped from our hub to your lab',
+    'Quote|A written quote and proforma',
+    'Delivery|Shipped to your lab',
   ].join('\n'),
   netHub: 'Labtodate hub|52.37|4.90',
   netLabs: 'Your lab',
@@ -128,8 +128,8 @@ export const HOME_DEFAULTS: HomeContent = {
   // Station 5: the live buying-panel demo next to this copy (sample data, said so on screen)
   demoTitle: 'Buying, step by step,',
   demoAccent: 'in your account.',
-  demoLead: 'Every quote, offer, proforma and shipment sits in one place — and nothing is ordered until you accept the offer.',
-  demoBullets: ['Request a quote|on any listing, or for anything we do not list', 'Accept the offer|an itemised written offer, no surprises', 'Pay the proforma|VAT invoice with every order', 'Follow the shipment|from our hub to your lab'].join('\n'),
+  demoLead: 'Every quote, proforma and shipment sits in one place, in your account.',
+  demoBullets: ['Request a quote|on any listing, or for anything we do not list', 'Get a written quote|itemised, with a proforma', 'Pay the proforma|against the bank details on it', 'Follow the shipment|from your account'].join('\n'),
   demoCta: 'Create your account|/auth/sign-up',
   demoNote: 'Sample data — your real quotes live in your account.',
   // Station 6: ways to buy — one per line: Title|Tag|Text|bullet;bullet;bullet|Button|/link
@@ -137,12 +137,12 @@ export const HOME_DEFAULTS: HomeContent = {
   waysAccent: 'how you buy.',
   waysLead: 'Four ways to get an instrument into your lab — all through one accountable counterparty.',
   waysItems: [
-    'Buy now|Listed price|Instruments with a listed price can be ordered straight away.|Order at the listed price;Proforma and VAT invoice;Follow it in your account|Browse the marketplace|/marketplace',
-    'Request a quote|Written offer|Ask for a quote on any listing — nothing is ordered until you accept the offer.|Itemised written offer;You accept before anything is ordered;Pay against the proforma|Request a quote|/marketplace',
-    'Let us find it|Sourcing|Discontinued or rare? Tell us what you need and we search our supply network.|Tell us the model or the specs;We search our supply network;You decide on every offer|Submit a sourcing request|/let-us-find-it',
+    'Buy now|Listed price|Instruments with a listed price can be ordered straight away.|Order at the listed price;Pay against the proforma;Follow it in your account|Browse the marketplace|/marketplace',
+    'Request a quote|Written quote|Ask for a quote on any listing and get a written, itemised quote.|Itemised written quote;Proforma before payment;Follow it in your account|Request a quote|/marketplace',
+    'Let us find it|Sourcing|Discontinued or rare? Tell us what you need and we search our supply network.|Tell us the model or the specs;We search our supply network;You decide on every quote|Submit a sourcing request|/let-us-find-it',
     'Sell to us|Acquisitions|Surplus instruments in your lab? Send us the details and we reply with an offer.|Send photos and details;We review and reply;Agree the pick-up together|Sell your equipment|/sell',
   ].join('\n'),
-  waysChips: 'Proforma before payment, VAT invoice with every order, Everything in your account',
+  waysChips: 'Proforma before payment, Everything in your account',
   outroWord: 'SOURCED.',
 };
 

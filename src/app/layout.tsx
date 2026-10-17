@@ -34,7 +34,7 @@ const mono = localFont({
 // hard-coded here, so changing the setting never reached <title> / OG tags.
 export async function generateMetadata(): Promise<Metadata> {
   if (!isBuildPhase()) await ensureSettingsLoaded();
-  const site = process.env.SITE_NAME?.trim() || 'lab2date';
+  const site = process.env.SITE_NAME?.trim() || 'Labtodate';
   return {
     metadataBase: new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com'),
     title: {

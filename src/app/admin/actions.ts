@@ -1326,7 +1326,7 @@ export async function sendAnnouncement(formData: FormData): Promise<{ ok: boolea
   let emailFailed = 0;
   let skipped = 0;
   if (alsoEmail) {
-    const site = process.env.SITE_NAME || 'lab2date';
+    const site = process.env.SITE_NAME || 'Labtodate';
     const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
     const link = href
       ? href.startsWith('http')
@@ -2008,7 +2008,7 @@ export async function setOrderFulfillment(formData: FormData): Promise<{ ok: boo
   // into an error for a save that DID happen; report it in the message.
   let emailFailed = false;
   if (status === 'SHIPPED' && order.status !== 'SHIPPED') {
-    const site = process.env.SITE_NAME || 'lab2date';
+    const site = process.env.SITE_NAME || 'Labtodate';
     const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
     await sendEmail({
       to: order.buyer.email,

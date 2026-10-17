@@ -114,7 +114,6 @@ export async function Footer() {
             <p>© {new Date().getFullYear()} {siteName}. All rights reserved.</p>
             {legalParts.length > 0 && <p>{legalParts.join(' · ')}</p>}
           </div>
-          {mk.footerSignoff && <p>{mk.footerSignoff}</p>}
         </div>
       </div>
     </footer>

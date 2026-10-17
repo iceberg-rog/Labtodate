@@ -1,8 +1,8 @@
 import { prisma } from '@/lib/db';
 import { LIVE_PRODUCT_WHERE, getTopCategoriesWithImage } from '@/lib/marketplace/queries';
-import { getCatalogPolicy } from '@/lib/catalog/policy';
-import { isPlaceholderBrand } from '@/lib/catalog/jsonld';
-import { firstPublicImage } from '@/lib/media/public-src';
+
+// importer placeholders that are not real brands (never shown as a category's leading brands)
+const PLACEHOLDER_BRANDS = /^(other|others|unknown|various|generic|n\/?a|none|no brand|unbranded|misc(ellaneous)?)$/i;
 
 export interface StationCategory {
   slug: string;
@@ -18,7 +18,7 @@ export interface StationCategory {
  * as "Other" left out).
  */
 export async function getStationCategories(limit = 9): Promise<StationCategory[]> {
-  const [categories, policy] = await Promise.all([getTopCategoriesWithImage(limit), getCatalogPolicy()]);
+  const categories = await getTopCategoriesWithImage(limit);
   return Promise.all(
     categories.map(async (c) => {
       const rows = await prisma.product.groupBy({
@@ -32,7 +32,7 @@ export async function getStationCategories(limit = 9): Promise<StationCategory[]
       const brands = ids.length ? await prisma.brand.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, slug: true } }) : [];
       const names = ids
         .map((id) => brands.find((b) => b.id === id))
-        .filter((b): b is NonNullable<typeof b> => !!b && !isPlaceholderBrand(b, policy.placeholderBrands))
+        .filter((b): b is NonNullable<typeof b> => !!b && !PLACEHOLDER_BRANDS.test(b.name.trim()))
         .map((b) => b.name)
         .slice(0, 3);
       return { slug: c.slug, name: c.name, count: c.count, image: c.image, brands: names };
@@ -59,7 +59,7 @@ export async function getDemoProduct(): Promise<DemoProduct | null> {
     select: { title: true, images: true, brand: { select: { name: true } }, category: { select: { name: true } } },
   });
   if (!p) return null;
-  return { title: p.title, brand: p.brand?.name ?? '', image: firstPublicImage(p.images), category: p.category.name };
+  return { title: p.title, brand: p.brand?.name ?? '', image: p.images.find((u) => /^https:\/\/|^\//.test(u)) ?? null, category: p.category.name };
 }
 
 export async function getLiveListingCount(): Promise<number> {

@@ -376,17 +376,17 @@ function BuyDemo({ product, note }: { product: DemoProduct | null; note: string 
           </div>
           <ol className="ad-timeline" id="ad-timeline">
             <li data-step="0"><i /><b>Quote requested</b><small>You asked for this instrument</small></li>
-            <li data-step="1"><i /><b>Offer received</b><small>Itemised offer + proforma</small></li>
-            <li data-step="2"><i /><b>Offer accepted</b><small>Nothing ordered before this</small></li>
-            <li data-step="3"><i /><b>Proforma paid</b><small>VAT invoice issued</small></li>
+            <li data-step="1"><i /><b>Quote received</b><small>Itemised quote + proforma</small></li>
+            <li data-step="2"><i /><b>Quote accepted</b><small>You confirm the quote</small></li>
+            <li data-step="3"><i /><b>Proforma paid</b><small>Payment confirmed</small></li>
             <li data-step="4"><i /><b>Shipped</b><small>On its way to your lab</small></li>
           </ol>
           <div className="ad-offer" id="ad-offer">
             <div className="ad-offer-row"><span>Instrument as listed</span><em>1 ×</em></div>
             <div className="ad-offer-row"><span>Packing &amp; shipping</span><em>incl.</em></div>
-            <div className="ad-offer-row ad-total"><span>Offer total</span><em>sample</em></div>
+            <div className="ad-offer-row ad-total"><span>Quote total</span><em>sample</em></div>
             <div className="ad-actions">
-              <button type="button" tabIndex={-1} className="ad-accept" id="ad-accept">Accept offer</button>
+              <button type="button" tabIndex={-1} className="ad-accept" id="ad-accept">Accept quote</button>
               <button type="button" tabIndex={-1} className="ad-decline">Ask a question</button>
             </div>
           </div>

@@ -10,7 +10,6 @@ import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { type HomeExtra, type HomeStation, getHomeContent, getHomeSectionOrder, isStation, parseHeroStats } from '@/lib/home-sections';
 import { getLiveHeroStats } from '@/lib/home-stats';
-import { getSiteTexts } from '@/lib/catalog/site-texts';
 import { getDemoProduct, getLiveListingCount, getStationCategories } from '@/lib/home-landing-data';
 
 export const dynamic = 'force-dynamic';
@@ -23,7 +22,6 @@ export const dynamic = 'force-dynamic';
 export default async function HomePage() {
   await ensureSettingsLoaded();
   const content = getHomeContent();
-  const texts = await getSiteTexts();
   const build = isBuildPhase();
 
   // Unless admin typed explicit (parseable) HERO_STATS, show REAL counts so the
@@ -66,7 +64,8 @@ export default async function HomePage() {
     name: process.env.SITE_NAME || 'Labtodate',
     url: base,
     logo: process.env.COMPANY_LOGO_URL || undefined,
-    description: texts.metaDescription,
+    description:
+      'B2B marketplace for refurbished and surplus laboratory & analytical equipment across Europe — HPLC, GC, mass spectrometry and more.',
     email: process.env.SUPPORT_EMAIL || undefined,
     address: process.env.COMPANY_ADDRESS
       ? {
@@ -98,7 +97,7 @@ export default async function HomePage() {
         categories={categories}
         listings={listings}
         demo={demo}
-        sourcingNote={texts.sourcingNoObligation}
+        sourcingNote=""
       >
         {extras.length > 0 && <div className="lnd-extras">{extras.map((k) => extra[k])}</div>}
       </Landing>
