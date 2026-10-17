@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db';
 import type { Prisma, ProductCondition, ProductMode } from '@prisma/client';
 import { applyShopPricing, type ShopPricingMode } from '@/lib/shop-pricing';
 import { productTextWhere } from '@/lib/search/where';
+import { pickCardImage } from '@/lib/card-image-pick';
 
 export interface MarketplaceFilters {
   q?: string;
@@ -259,27 +260,27 @@ export async function getTopCategoriesWithImage(limit = 10) {
         select: { title: true, images: true },
       });
 
-      let best = pool[0] ?? null;
-      let bestScore = -Infinity;
-      for (const p of pool) {
-        let score = Math.min(p.images.length, 4); // more photos ≈ a feature listing
-        if (GOOD.test(p.title)) score += 6;
-        if (BAD.test(p.title)) score -= 6;
-        if (c.name.length > 3 && p.title.toLowerCase().includes(c.name.toLowerCase())) score += 4;
-        if (score > bestScore) {
-          bestScore = score;
-          best = p;
-        }
-      }
+      const ranked = pool
+        .map((p) => {
+          let score = Math.min(p.images.length, 4); // more photos ≈ a feature listing
+          if (GOOD.test(p.title)) score += 6;
+          if (BAD.test(p.title)) score -= 6;
+          if (c.name.length > 3 && p.title.toLowerCase().includes(c.name.toLowerCase())) score += 4;
+          return { score, image: p.images.find((u) => /^https:\/\/|^\//.test(u)) ?? null };
+        })
+        .sort((a, b) => b.score - a.score)
+        .map((r) => r.image)
+        .filter((u): u is string => !!u);
 
       // Always surface the best available real photo for the category. The
       // scoring above already prefers full-system instrument shots over
-      // tiny-part close-ups; for a parts category a part photo is fine.
+      // tiny-part close-ups; for a parts category a part photo is fine. Among
+      // the best-ranked, one with enough pixels for the homepage's card wins.
       return {
         slug: c.slug,
         name: c.name,
         count: c._count.products,
-        image: best?.images?.[0] ?? null,
+        image: pickCardImage(ranked.slice(0, 10), ranked[0] ?? null),
       };
     }),
   );

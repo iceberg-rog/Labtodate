@@ -51,8 +51,8 @@ html.poster-reveal .poster canvas { animation: poster-in 1.1s cubic-bezier(0.16,
 html.poster-lt .poster { mix-blend-mode: normal; }
 html.poster-lt.poster-reveal .poster canvas { animation-name: poster-in-lt; }
 @keyframes poster-in-lt { from { opacity: 0; filter: blur(14px); transform: scale(1.06); } to { opacity: 1; filter: none; transform: none; } }
-/* the DOM word under it is only the no-JS / no-canvas fallback */
-html.is-landing .intro-word { opacity: 0; }
+/* the server-rendered word holds the first paint until the poster has drawn the lockup (then it gives way) */
+html.poster-drawn .intro-word, html.gl-ready .intro-word { opacity: 0; transition: opacity 0.5s ease; }
 
 /* the global header floats over the stations (Shelter's .top) */
 html.is-landing body > header, html.is-landing header.sticky { position: fixed; left: 0; right: 0; top: 0; }
@@ -111,8 +111,14 @@ html.can-hover .lnd .btn-link:hover { text-decoration: underline; text-underline
 
 /* 1 · intro */
 #intro .stick { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; padding-bottom: 9vh; text-align: center; }
-.intro-word { position: absolute; left: 0; right: 0; top: 42%; transform: translateY(-50%); font-weight: 800; letter-spacing: -0.045em; line-height: 1; font-size: clamp(76px, 15.5vw, 236px); pointer-events: none; transition: opacity 0.9s ease 0.1s; }
+.intro-word { position: absolute; left: 0; right: 0; top: 51%; transform: translateY(-50%); font-weight: 800; letter-spacing: -0.045em; line-height: 1; font-size: clamp(64px, 12.6vw, 210px); pointer-events: none; transition: opacity 0.9s ease 0.1s; }
 .intro-word span { display: inline-block; filter: drop-shadow(0 0 34px hsl(82 76% 55% / 0.25)); }
+/* the server-rendered word moves from the first paint (no wait on scripts or the network): the poster's particles then
+   take it over. Opacity and transform only: the compositor runs it while the main thread is busy */
+@media (prefers-reduced-motion: no-preference) {
+  html.js .intro-word span { animation: intro-word-in 1.1s cubic-bezier(0.16, 0.84, 0.3, 1) both; }
+}
+@keyframes intro-word-in { from { opacity: 0; transform: translateY(18px) scale(0.965); } to { opacity: 1; transform: none; } }
 html.gl-ready .intro-word { opacity: 0; }
 .intro-tag { font-size: clamp(0.95rem, 1.3vw, 1.12rem); color: var(--l-muted); margin: 0 0 6px; }
 .intro-tag strong { color: var(--l-ink); }
@@ -417,3 +423,6 @@ html.is-landing:not(.dark) .lnd .btn-g, html.is-landing:not(.dark) .lnd .tour-bt
 
 /* below the story: laid out only when near (the stations' frames never pay for the footer and the extras) */
 html.is-landing .lnd > .lnd-extras > *, html.is-landing body > footer.sfoot { content-visibility: auto; contain-intrinsic-size: auto 900px; }
+
+/* (portrait: the poster sets the word a little higher and wider) */
+@media (max-aspect-ratio: 9/10) { .intro-word { top: 48.5%; font-size: clamp(56px, 19vw, 120px); } }

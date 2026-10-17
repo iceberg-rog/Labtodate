@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import type { LandingConfig } from './engine/shell';
+import { startLanding, type LandingConfig } from './engine/shell';
 
 /**
  * Starts the homepage engine (ported from the Shelter landing) after the first
@@ -12,17 +12,15 @@ import type { LandingConfig } from './engine/shell';
 export function LandingShell({ config }: { config: LandingConfig }) {
   const key = JSON.stringify(config);
   useEffect(() => {
+    // (the shell ships with the page: ~15 KB, no extra round trip before the poster; three.js stays a chunk of its
+    // own, loaded once the poster is up)
     let handle: { dispose(): void } | null = null;
-    let dead = false;
-    import('./engine/shell.js')
-      .then((m) => {
-        if (!dead) handle = m.startLanding(JSON.parse(key) as LandingConfig);
-      })
-      .catch((e) => console.warn('landing engine unavailable', e));
-    return () => {
-      dead = true;
-      handle?.dispose();
-    };
+    try {
+      handle = startLanding(JSON.parse(key) as LandingConfig);
+    } catch (e) {
+      console.warn('landing engine unavailable', e);
+    }
+    return () => handle?.dispose();
   }, [key]);
   return null;
 }

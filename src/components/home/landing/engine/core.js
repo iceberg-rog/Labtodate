@@ -205,6 +205,6 @@ export function disposeCore() {
   boot.disposed = true;
   for (const f of offs.splice(0)) { try { f(); } catch (e) { /* already gone */ } }
   const cl = document.documentElement.classList;
-  for (const c of ['gl-ready', 'gl-full', 'gl-settled', 'gl-gone', 'gl-exiting', 'gl-lost', 'no-webgl', 'at-end', 'past-hero', 'in-foot', 'touring', 'poster-off', 'poster-gone', 'poster-reveal', 'poster-lt', 'cursor', 'can-hover', 'is-landing', 'below-ready']) cl.remove(c);
+  for (const c of ['gl-ready', 'gl-full', 'gl-settled', 'gl-gone', 'gl-exiting', 'gl-lost', 'no-webgl', 'at-end', 'past-hero', 'in-foot', 'touring', 'poster-off', 'poster-gone', 'poster-reveal', 'poster-lt', 'cursor', 'can-hover', 'is-landing', 'below-ready', 'poster-drawn']) cl.remove(c);
   document.documentElement.style.removeProperty('--gl-exit');
 }

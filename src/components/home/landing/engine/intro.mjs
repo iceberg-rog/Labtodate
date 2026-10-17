@@ -97,8 +97,12 @@ export function introLayout(vw, vh) {
   const visW = 2 * D * Math.tan((FOV * Math.PI) / 360) * (vw / vh);
   const w = Number.isFinite(visW) ? Math.min(15.5, visW * 0.84) : 12;
   const wt = portrait ? Math.min(w * 0.92, 9) : Math.min(11.5, w * 0.7);    // wordmark width
-  const wr = portrait ? Math.min(w * 1.05, 10) : Math.min(15, w * 0.94);    // roof width
-  return { portrait, D, w, wt, wr, wordY: 0.25, roofY: 0.25 + wr * MARK_AR * 0.2, roofZ: -2.6 };
+  const wr = portrait ? Math.min(w * 1.05, 10) : Math.min(11.8, w * 0.76);    // the mark's width
+  // (landscape: the lockup centred a little lower and the mark tucked closer behind the word, so its top atoms keep
+  // clear of the header: the visible height at the word is ~12.3 units, the header takes its top ~1.3)
+  return portrait
+    ? { portrait, D, w, wt, wr, wordY: 0.25, roofY: 0.25 + wr * MARK_AR * 0.2, roofZ: -2.6 }
+    : { portrait, D, w, wt, wr, wordY: -0.15, roofY: -0.15 + wr * MARK_AR * 0.15, roofZ: -2.6 };
 }
 
 /* the drawing-buffer pixel ratio the scene will most likely start at (its budget for an ordinary GPU; scene.js) */

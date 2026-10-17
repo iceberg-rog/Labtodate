@@ -72,7 +72,7 @@ export function Landing({ stations, content: c, siteName, categories, listings, 
     links: {},
     games: categories.map((k, i) => ({
       name: k.name, slug: k.slug, c: CARD_C[i % CARD_C.length], plat: k.brands.slice(0, 3),
-      fa: `${k.count.toLocaleString('en-US')} ${k.count === 1 ? 'listing' : 'listings'}`, wide: img(k.image, 1080), artSm: img(k.image, 640),
+      fa: `${k.count.toLocaleString('en-US')} ${k.count === 1 ? 'listing' : 'listings'}`, wide: img(k.image, 828), artSm: img(k.image, 640),
     })),
     text: { outro: c.outroWord, globe_labs: c.netLabs, geo_node: hub?.label ?? '' },
     hub: hub ?? null,
