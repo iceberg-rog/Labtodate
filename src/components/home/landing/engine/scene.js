@@ -1277,23 +1277,36 @@ export async function run() {
     // (x0: a clear gap from the station rail's ticks, which sit over the card's left edge)
     const x0 = W * 0.135, maxW = W * 0.3;
     g.letterSpacing = `${Math.round(2 * u)}px`; g.font = `600 ${Math.round(64 * u)}px ${MONO}`;
-    // one line when the name still fits at a large size ("HPLC / LC"), else wrapped between words
-    const lines = [];
-    if (g.measureText(game.name).width * 44 / 64 <= maxW) lines.push(game.name);
+    // The block (brands, name, count) stands on the card's lower left and must stay below ~45% of its height, where
+    // the station rail's label crosses the card. One line when the name fits at a large size ("HPLC / LC"); else the
+    // largest size whose word-wrapped lines fit both the width and that height ("Parts, Modules & Consumables" in three
+    // lines instead of four climbing into the rail).
+    const last = H * 0.86 - (game.fa ? 44 * u : 0), ceil = H * 0.45;
+    const wrap = (px) => {
+      g.font = `600 ${px}px ${MONO}`;
+      const out = []; let line = '';
+      for (const w of game.name.split(' ')) { const tl = line ? `${line} ${w}` : w; if (g.measureText(tl).width > maxW && line) { out.push(line); line = w; } else line = tl; }
+      out.push(line); return out;
+    };
+    const fits = (ls, px) => Math.max(...ls.map((l) => g.measureText(l).width)) <= maxW && last - (ls.length - 1) * px * 1.08 - px - 35 * u >= ceil;
+    let fs = 30 * u, lines = null;
+    const one = Math.min(64 * u, Math.floor(64 * u * maxW / g.measureText(game.name).width));
+    if (one >= 44 * u) { fs = one; lines = [game.name]; g.font = `600 ${fs}px ${MONO}`; }
     else {
-      let line = '';
-      for (const w of game.name.split(' ')) { const tl = line ? `${line} ${w}` : w; if (g.measureText(tl).width > maxW && line) { lines.push(line); line = w; } else line = tl; }
-      lines.push(line);
+      for (let s = 64; s >= 30; s -= 2) { const ls = wrap(s * u); if (fits(ls, s * u)) { fs = s * u; lines = ls; break; } }
+      if (!lines) lines = wrap(fs);   // (a very long name: the smallest size, as many lines as it takes)
     }
-    const fs = Math.max(30 * u, Math.min(64 * u, Math.floor(64 * u * maxW / Math.max(...lines.map((l) => g.measureText(l).width)))));
-    g.font = `600 ${fs}px ${MONO}`; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
-    const lh = fs * 1.08, last = H * 0.86 - (game.fa ? 44 * u : 0), top = last - (lines.length - 1) * lh;
+    g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+    const lh = fs * 1.08, top = last - (lines.length - 1) * lh;
     g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 16 * u; g.fillStyle = '#f2fff8';
     lines.forEach((l, k) => g.fillText(l, x0, top + k * lh));
     g.shadowBlur = 8 * u;
     if (game.plat && game.plat.length) {
       g.letterSpacing = `${Math.round(3 * u)}px`; g.font = `500 ${Math.round(17 * u)}px ${MONO}`; g.fillStyle = 'rgba(164,227,53,.92)';
-      g.fillText(game.plat.join(' · ').toUpperCase(), x0, top - fs - 22 * u, maxW + W * 0.04);
+      // (as many of the leading brands as fit the column at full size: squeezing three long names made them unreadable
+      // and ran them under the photo)
+      const pl = game.plat.map((p) => p.toUpperCase()); while (pl.length > 1 && g.measureText(pl.join(' · ')).width > maxW) pl.pop();
+      g.fillText(pl.join(' · '), x0, top - fs - 22 * u, maxW);
     }
     if (game.fa) {
       g.letterSpacing = '0px'; g.font = `600 ${Math.round(24 * u)}px ${SANS}`; g.fillStyle = 'rgba(225,250,240,.82)';
