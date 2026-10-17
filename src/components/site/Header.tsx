@@ -44,7 +44,7 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
         className="absolute inset-0 -z-10 bg-gradient-to-b from-background/90 via-background/70 to-background/0 backdrop-blur-[6px] [mask-image:linear-gradient(to_bottom,black_60%,transparent)]"
       />
       <div className="container-px flex h-[76px] items-center gap-4">
-        <Link href="/" className="flex-shrink-0" aria-label="lab2date home">
+        <Link href="/" className="flex-shrink-0" aria-label="Labtodate home">
           <Logo />
         </Link>
 

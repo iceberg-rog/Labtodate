@@ -47,7 +47,7 @@ export default async function HomePage() {
   const order = getHomeSectionOrder();
   const stations = order.filter(isStation) as HomeStation[];
   const extras = order.filter((k) => !isStation(k)) as HomeExtra[];
-  const siteName = process.env.SITE_NAME?.trim() || 'lab2date';
+  const siteName = process.env.SITE_NAME?.trim() || 'Labtodate';
   const extra: Record<HomeExtra, React.ReactNode> = {
     trustbar: <TrustBar key="trustbar" />,
     featured: <Reveal key="featured"><FeaturedProducts /></Reveal>,
@@ -63,7 +63,7 @@ export default async function HomePage() {
   const orgLd = {
     '@context': 'https://schema.org',
     '@type': 'Organization',
-    name: process.env.SITE_NAME || 'lab2date',
+    name: process.env.SITE_NAME || 'Labtodate',
     url: base,
     logo: process.env.COMPANY_LOGO_URL || undefined,
     description: texts.metaDescription,
@@ -79,7 +79,7 @@ export default async function HomePage() {
   const siteLd = {
     '@context': 'https://schema.org',
     '@type': 'WebSite',
-    name: process.env.SITE_NAME || 'lab2date',
+    name: process.env.SITE_NAME || 'Labtodate',
     url: base,
     potentialAction: {
       '@type': 'SearchAction',

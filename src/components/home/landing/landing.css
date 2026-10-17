@@ -132,7 +132,8 @@ html.touring .tour-btn { opacity: 0; pointer-events: none; }
   transition: opacity 0.35s, transform 0.35s, visibility 0s 0.35s; }
 html.touring .tour-bar { opacity: 1; visibility: visible; transform: translate(-50%, 0); transition: opacity 0.35s, transform 0.35s; }
 .tb-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--l-lime); }
-.tb-dot::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: hsl(82 76% 55% / 0.5); animation: lnd-pulse 1.6s cubic-bezier(0.2, 0.6, 0.4, 1) infinite; }
+.tb-dot::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: hsl(82 76% 55% / 0.5); }
+html.touring .tb-dot::after { animation: lnd-pulse 1.6s cubic-bezier(0.2, 0.6, 0.4, 1) infinite; }
 @keyframes lnd-pulse { 0% { transform: scale(1); opacity: 1; } 100% { transform: scale(3.25); opacity: 0; } }
 .tb-t { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; font-weight: 800; color: var(--l-hi); white-space: nowrap; }
 .tb-t small { font-size: 10.5px; font-weight: 500; color: var(--l-muted); }
@@ -191,7 +192,7 @@ html.can-hover .wk-tile:hover .go { color: var(--l-hi); transform: translate(2px
 html.can-hover .wk-pager button:hover { border-color: var(--l-lime); }
 .wk-pager span { display: flex; gap: 8px; align-items: center; padding: 0 6px; min-width: 15em; }
 .wk-pager b { color: var(--l-lime); font-weight: 500; }
-.wk-pager i { font-style: normal; color: var(--l-ink); white-space: nowrap; }
+.wk-pager i { font-style: normal; color: var(--l-ink); white-space: nowrap; display: inline-block; max-width: 32ch; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; contain: layout paint; }
 .wk-fallback { display: none; }
 html.no-webgl .wk-fallback { display: flex; gap: 18px; position: absolute; left: 8vw; top: 50%; transform: translateY(-50%); }
 .wk-fcard { width: 200px; border-radius: 16px; overflow: hidden; border: 1px solid var(--l-line-2); background: var(--l-panel); }
@@ -305,11 +306,13 @@ html.can-hover .ways-tabs button:hover { color: var(--l-hi); }
 .ways-deal { position: relative; display: grid; grid-template-columns: minmax(220px, 0.8fr) 1.2fr; align-items: center; gap: 24px; width: min(1000px, 100%); min-height: 330px; padding: 34px 40px; border-radius: 26px; text-align: left; }
 .ways-code { position: absolute; left: 26px; top: 16px; }
 .ways-rank { position: relative; height: 260px; display: grid; place-items: center; }
-.we-frame { width: min(240px, 100%); height: auto; overflow: visible; filter: drop-shadow(0 0 18px hsl(82 76% 55% / 0.3)); }
-.we-ring, .we-hex { transform-box: view-box; transform-origin: 50% 50%; }
+.we-frame { width: min(240px, 100%); }
+.we-frame { position: relative; display: grid; aspect-ratio: 1; }
+.we-frame > * { grid-area: 1 / 1; width: 100%; height: 100%; }
+.we-l { will-change: transform; }
 .we-ring { animation: we-spin 40s linear infinite; }
 .we-hex { animation: we-spin 90s linear infinite reverse; }
-.we-glow { animation: we-pulse 4.5s ease-in-out infinite; }
+.we-glow { border-radius: 50%; background: radial-gradient(closest-side, hsl(82 76% 55% / 0.36), hsl(var(--teal) / 0.12) 60%, transparent); transform: scale(0.72); will-change: opacity; animation: we-pulse 4.5s ease-in-out infinite; }
 .we-ico { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; transform: scale(0.7) rotate(-18deg); transition: opacity 0.45s, transform 0.6s cubic-bezier(0.2, 0.8, 0.2, 1); }
 .we-ico.on { opacity: 1; transform: none; }
 .we-ico svg { width: 54px; height: 54px; color: #ecffd2; stroke-width: 1.6; filter: drop-shadow(0 0 10px hsl(82 76% 55% / 0.65)); }
@@ -393,3 +396,24 @@ html.gl-ready .play-word { opacity: 0; }
   .ways-rank { height: 120px; }
   .ways-chips { display: none; }
 }
+
+/* ---------- performance: no backdrop blur over the live canvas ----------
+   A backdrop-filter re-blurs what lies under it whenever that changes, and the WebGL canvas under the landing's chrome
+   changes every frame: each blurred element cost a full blur pass per frame (most of the frame on an integrated GPU).
+   Over the stations the glass is drawn as tinted glass instead: no blur, a denser tint, the same borders and shadows. */
+html.is-landing body > header > div[aria-hidden]:first-child,
+html.is-landing .nav-pill,
+html.is-landing .lnd .glass-panel,
+html.is-landing .lnd .btn-g,
+html.is-landing .lnd .tour-btn,
+html.is-landing .lnd .tour-bar,
+html.is-landing .lnd .ways-tabs { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+html.is-landing.dark .nav-pill { background: linear-gradient(180deg, hsl(170 45% 9% / 0.9), hsl(170 50% 6% / 0.86)); }
+html.is-landing.dark .lnd .glass-panel { background: linear-gradient(160deg, hsl(var(--teal) / 0.09), hsl(var(--teal) / 0.03) 60%), hsl(var(--card) / 0.86); }
+html.is-landing.dark .lnd .btn-g, html.is-landing.dark .lnd .tour-btn, html.is-landing.dark .lnd .ways-tabs { background-color: hsl(var(--card) / 0.82); }
+html.is-landing.dark .lnd .tour-bar { background: hsl(var(--card) / 0.95); }
+html.is-landing:not(.dark) .lnd .glass-panel, html.is-landing:not(.dark) .nav-pill { background: hsl(0 0% 100% / 0.9); }
+html.is-landing:not(.dark) .lnd .btn-g, html.is-landing:not(.dark) .lnd .tour-btn, html.is-landing:not(.dark) .lnd .ways-tabs { background-color: hsl(0 0% 100% / 0.86); }
+
+/* below the story: laid out only when near (the stations' frames never pay for the footer and the extras) */
+html.is-landing .lnd > .lnd-extras > *, html.is-landing body > footer.sfoot { content-visibility: auto; contain-intrinsic-size: auto 900px; }

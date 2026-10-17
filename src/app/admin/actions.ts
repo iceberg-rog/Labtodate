@@ -1208,7 +1208,7 @@ export async function sendTestEmail(): Promise<{ ok: boolean; message: string }>
   }
   const via = transport.label;
 
-  const site = process.env.SITE_NAME?.trim() || 'lab2date';
+  const site = process.env.SITE_NAME?.trim() || 'Labtodate';
   try {
     await sendEmail({
       to,

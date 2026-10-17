@@ -45,7 +45,7 @@ export async function createStaffInvite(formData: FormData): Promise<{ ok: boole
     },
   });
   const link = inviteUrl(token);
-  const site = process.env.SITE_NAME || 'lab2date';
+  const site = process.env.SITE_NAME || 'Labtodate';
   const twoFa = policy.TWO_FACTOR_REQUIRED_ROLES.includes('ADMIN');
   const sent = await trySendEmail(
     {

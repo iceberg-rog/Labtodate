@@ -34,7 +34,7 @@ export function startLanding(config) {
     const pick = (i, focus = false) => {
       tabs.forEach((b, k) => { b.classList.toggle('on', k === i); b.setAttribute('aria-selected', String(k === i)); b.tabIndex = k === i ? 0 : -1; });
       panels.forEach((p, k) => { p.hidden = k !== i; p.classList.toggle('on', k === i); });
-      $('[data-way-emb]').forEach((e, k) => e.classList.toggle('on', k === i));
+      $$('[data-way-emb]').forEach((e, k) => e.classList.toggle('on', k === i));
       if (code) code.textContent = `WAY ${String(i + 1).padStart(2, '0')} // ${(tabs[i]?.querySelector('em')?.textContent || '').toUpperCase()}`;
       if (focus) tabs[i]?.focus();
       if (scene && scene.setWay) scene.setWay(i);
@@ -112,16 +112,18 @@ export function startLanding(config) {
      canvas fades out over the first ~20% of a screen of that exit and the scene stops drawing (html.gl-gone). */
   {
     const last = sections[sections.length - 1];
-    let pend = false, prevX = -1;
+    let pend = false, prevX = -1, endY = 0;
+    const measureEnd = () => { endY = 0; for (let e = last; e; e = e.offsetParent) endY += e.offsetTop; if (last) endY += last.offsetHeight; };
+    measureEnd();
     const upd = () => {
       pend = false; if (!last || stopped) return;
-      const vh = innerHeight; const x = Math.min(1, Math.max(0, (vh - last.getBoundingClientRect().bottom) / (vh * 0.2)));
+      const vh = innerHeight; const x = Math.min(1, Math.max(0, (vh - (endY - window.scrollY)) / (vh * 0.2)));
       if (Math.abs(x - prevX) < 0.003) return; prevX = x;
       html.style.setProperty('--gl-exit', x.toFixed(3));
       html.classList.toggle('gl-exiting', x > 0); html.classList.toggle('gl-gone', x >= 1);
     };
     on(window, 'scroll', () => { if (!pend) { pend = true; requestAnimationFrame(upd); } }, { passive: true });
-    on(window, 'resize', upd); upd();
+    on(window, 'resize', () => { measureEnd(); upd(); }); if (document.fonts) document.fonts.ready.then(() => { if (!stopped) { measureEnd(); upd(); } }); upd();
   }
 
   /* ---------------------------------------------------------------- below the stage: the extras and the footer hide the HUD */

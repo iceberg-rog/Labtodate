@@ -21,7 +21,7 @@ export interface SiteTexts {
 export function siteTextsFrom(get: (k: string) => string): SiteTexts {
   const r = (k: string, d: string) => (get(k) ?? '').trim() || d;
   return {
-    siteName: r('SITE_NAME', 'lab2date'),
+    siteName: r('SITE_NAME', 'Labtodate'),
     titleSuffix: r('SITE_TITLE_SUFFIX', T.siteTitleSuffix),
     metaDescription: r('SITE_META_DESCRIPTION', T.siteMetaDescription),
     footerSignoff: (get('FOOTER_SIGNOFF') ?? '').trim(),

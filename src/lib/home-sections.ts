@@ -114,7 +114,7 @@ export const HOME_DEFAULTS: HomeContent = {
   catAskSub: 'Ask us to source it',
   // Station 4: the route story — four beats, one per line "Title|line"; hub + lanes are "NAME|lat|lon"
   netTitle: 'The route of an instrument,',
-  netAccent: 'through lab2date.',
+  netAccent: 'through Labtodate.',
   netSubtitle: 'One accountable counterparty from your request to your lab — quote, proforma, payment and shipping.',
   netSteps: [
     'Your request|Tell us the instrument you need',
@@ -122,7 +122,7 @@ export const HOME_DEFAULTS: HomeContent = {
     'Offer|A written offer you accept first',
     'Delivery|Shipped from our hub to your lab',
   ].join('\n'),
-  netHub: 'lab2date hub|52.37|4.90',
+  netHub: 'Labtodate hub|52.37|4.90',
   netLabs: 'Your lab',
   netLanes: ['NYC|40.71|-74.00', 'GRU|-23.55|-46.63', 'MAD|40.42|-3.70', 'STO|59.33|18.07', 'IST|41.01|28.97', 'CAI|30.04|31.24', 'DXB|25.20|55.27', 'BOM|19.08|72.88', 'JNB|-26.20|28.05'].join('\n'),
   // Station 5: the live buying-panel demo next to this copy (sample data, said so on screen)

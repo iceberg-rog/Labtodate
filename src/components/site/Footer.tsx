@@ -50,7 +50,7 @@ export async function Footer() {
   await ensureSettingsLoaded();
   // Only a configured address — never a made-up one on a domain we do not own.
   const supportEmail = (process.env.SUPPORT_EMAIL || '').trim();
-  const siteName = process.env.SITE_NAME || 'lab2date';
+  const siteName = process.env.SITE_NAME || 'Labtodate';
   const mk = await getMarketing();
   // Legal identity (Settings → Company), same source as the invoices — shown
   // only for the fields that are filled in.
@@ -68,7 +68,7 @@ export async function Footer() {
         <div className="sfoot-grid">
           <div className="space-y-4">
             <Link href="/" aria-label={`${siteName} home`} className="inline-block">
-              <Logo />
+              <Logo name={siteName} />
             </Link>
             <p className="text-sm text-muted-foreground max-w-xs">{mk.footerTagline}</p>
             <div className="sfoot-social">

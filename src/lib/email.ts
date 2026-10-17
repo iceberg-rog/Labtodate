@@ -236,7 +236,7 @@ export async function sendEmail({
   // Outside production a missing From falls back to a dev placeholder; in
   // production emailTransportStatus() refuses to send without a real one.
   const addr = process.env.EMAIL_FROM || 'no-reply@lab2date.local';
-  const name = headerText(process.env.SITE_NAME || 'lab2date', 80).replace(/"/g, '') || 'lab2date';
+  const name = headerText(process.env.SITE_NAME || 'Labtodate', 80).replace(/"/g, '') || 'Labtodate';
   const from = addr.includes('<') ? addr : `"${name}" <${addr}>`;
   // Attachment filenames end up in a MIME header: keep them single-line and safe.
   const files = attachments?.map((a) => ({

@@ -54,7 +54,7 @@ export async function alertSuperAdmins(
     }
     const to = new Set((opts?.onlyTo?.length ? opts.onlyTo : admins.map((a) => a.email)).map((e) => e.toLowerCase()));
     for (const e of opts?.extraTo ?? []) to.add(e.toLowerCase());
-    const site = process.env.SITE_NAME || 'lab2date';
+    const site = process.env.SITE_NAME || 'Labtodate';
     const link = `${siteUrl()}${href}`;
     for (const addr of to) {
       const r = await sendInternalEmail(

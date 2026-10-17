@@ -18,7 +18,7 @@ export function mailLayout(p: {
   /** Small grey lines under the button. */
   footer?: string[];
 }): string {
-  const site = escapeHtml(process.env.SITE_NAME || 'lab2date');
+  const site = escapeHtml(process.env.SITE_NAME || 'Labtodate');
   return `
 <div style="font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:580px;color:#111827;line-height:1.5;">
   <p style="margin:0 0 14px;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#0E4F40;">${site}</p>

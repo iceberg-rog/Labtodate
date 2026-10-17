@@ -3,7 +3,6 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
@@ -37,6 +36,7 @@ export async function run() {
   try {
     renderer = new THREE.WebGLRenderer({ canvas: $('#gl'), antialias: false, powerPreference: 'high-performance' });
     if (!renderer.getContext()) throw new Error('no ctx');
+    renderer.debug.checkShaderErrors = DEBUG;   // (each check is a synchronous query of the GPU process; QA keeps them)
   } catch (e) {
     renderer = null; noGL(); return null;
   }
@@ -48,7 +48,7 @@ export async function run() {
   const cssVar = (n) => { try { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); } catch (e) { return ''; } };
   const SANS = (() => { try { return getComputedStyle(document.body).fontFamily || 'Inter, system-ui, sans-serif'; } catch (e) { return 'Inter, system-ui, sans-serif'; } })();
   const MONO = `${cssVar('--font-mono') || "'JetBrains Mono'"}, ui-monospace, Consolas, monospace`;
-  const WORD = ((document.getElementById('poster') || {}).dataset || {}).word || 'lab2date';
+  const WORD = ((document.getElementById('poster') || {}).dataset || {}).word || 'Labtodate';
   const OUTRO_WORD = (TEXT && TEXT.outro) || (((document.querySelector('.play-word') || {}).dataset || {}).word) || 'SOURCED.';
   // asset URLs come from the page config (hashed files of the hosted build, data: URIs in the single file)
   const ASSET = (k, d) => (CFG.assets && CFG.assets[k]) || d;
@@ -65,6 +65,12 @@ export async function run() {
     try { const gl = renderer.getContext(); const ext = gl.getExtension('WEBGL_debug_renderer_info'); return String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)); } catch (e) { return ''; }
   })();
   const STRONG = /nvidia|geforce|rtx|quadro|radeon (rx|pro)|apple m\d|apple gpu/i.test(GPU) && !/swiftshader|llvmpipe|basic render/i.test(GPU);
+  /* the material tier. MeshPhysicalMaterial with iridescence + clearcoat + sheen (the night pearl) is the costliest
+     program three has: on an integrated GPU under ANGLE / Direct3D 11 each variant takes seconds to translate and link,
+     and its fragments are the heaviest on screen. Phones and integrated GPUs (Intel, AMD APUs, anything not STRONG) get
+     the MeshStandardMaterial versions (the mobile tier's, same colours and env light), discrete GPUs the full pearl.
+     ?lite / ?full3d override it for QA */
+  const LITE = params.has('full3d') ? false : mobile || !STRONG || params.has('lite');
   const BUDGET = mobile ? 1.0e6 : STRONG ? 4.2e6 : 2.0e6;   // drawing-buffer pixels (raised once the scene got cheaper; the governor still steps down if a device can't hold it)
   // Quality headroom: the page starts at BUDGET, and a device that keeps a steady ~60 fps there is stepped up
   // by the governor toward this ceiling (a sharper scene on strong GPUs and high-DPI screens), never past it
@@ -81,7 +87,7 @@ export async function run() {
     logo: mobile ? 9000 : 20000,
     packets: mobile ? 900 : 2200,
     dust: mobile ? 700 : 1600,
-    oct: mobile ? 2 : 3,
+    oct: LITE ? 2 : 3,
   };
 
   renderer.setPixelRatio(Q.dpr);
@@ -103,6 +109,10 @@ export async function run() {
      decoded back to HDR on the GPU. Both are PMREM'd at the same 256 cube size, so the swap only
      changes a uniform and never recompiles a lit material. */
   const pmrem = new THREE.PMREMGenerator(renderer);
+  // (the reflections' cube size. Every bake (PMREM: a 256-sample GGX filter over every mip) is ~1 s of GPU time on an
+  // integrated GPU at 256, during which nothing else is drawn: 128 there, a quarter of the work; every bake of a session
+  // uses the same size, so a swap of light never changes a program)
+  const ENV_SIZE = LITE ? 128 : 256;
   // brand practicals (soft violet/cyan/pink panels) that give the flat shield face its colour sweep
   const PANEL_K = tune('panels', 0.3);
   const SWEEP_K = tune('sweep', 0.5); // strip peak x envMapIntensity 1.7 stays under the bloom threshold (1.0)
@@ -131,7 +141,7 @@ export async function run() {
     const env = new THREE.Scene(); const old = envDark;
     env.add(new THREE.Mesh(new THREE.BoxGeometry(20, 20, 20), new THREE.MeshBasicMaterial({ color: 0x03110e, side: THREE.BackSide })));
     addPanels(env, 1);
-    envDark = pmrem.fromScene(env, 0.03).texture; envOn = true; setEnv();
+    envDark = pmrem.fromScene(env, 0.03, 0.1, 100, { size: ENV_SIZE }).texture; envOn = true; setEnv();
     disposeScene(env); if (old) old.dispose();
   };
   /* the daylight studio (pearl): a lilac-grey floor under a bright pearl room with a crisp horizon, a softbox strip just
@@ -160,7 +170,7 @@ export async function run() {
     panel(0x8be8db, 0.85, 6, -1, 5, 3, 6);
     panel(0xd9f7b0, 0.75, 0, 6, -6, 8, 2);
     panel(0xfbfaf4, 2.4, 2, 8, 2, 4, 1);
-    envLight = pmrem.fromScene(env, 0.02, 0.1, 100, { size: 256 }).texture;
+    envLight = pmrem.fromScene(env, 0.02, 0.1, 100, { size: ENV_SIZE }).texture;
     disposeScene(env);
   }
   /* the daylight pearl's own studio (the games' column, the hero roof): what a pearl shows is what it
@@ -195,7 +205,7 @@ export async function run() {
     soft(0x2fd6c3, 2.1, 7, 0, 2, 8, 11);
     soft(0xd4f56a, 2.3, 0, 4, -7, 13, 8);
     soft(0xffffff, 3.2, -2, 7, 4, 9, 3);
-    envSpine = pmrem.fromScene(env, 0.02, 0.1, 100, { size: 256 }).texture;
+    envSpine = pmrem.fromScene(env, 0.02, 0.1, 100, { size: ENV_SIZE }).texture;
     disposeScene(env);
   }
   // (built only if the studio light below has not landed by the warm-up: it never costs a frame otherwise)
@@ -208,7 +218,7 @@ export async function run() {
     // bake's own kind: the bake itself is then a few draws, not a stall of the main thread while the visitor moves)
     const race = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(r, ms))]);
     const tmp = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: false });
-    const preCompile = (obj, cam) => { const prev0 = renderer.getRenderTarget(); renderer.setRenderTarget(tmp); const w = renderer.compileAsync(obj, cam); renderer.setRenderTarget(prev0); return race(w, 2500); };
+    const preCompile = (obj, cam) => { const prev0 = renderer.getRenderTarget(); renderer.setRenderTarget(tmp); const w = renderer.compileAsync(obj, cam); renderer.setRenderTarget(prev0); return race(w, 20000); };
     src.colorSpace = THREE.NoColorSpace; src.generateMipmaps = false; src.minFilter = THREE.LinearFilter;
     const rt = new THREE.WebGLRenderTarget(src.image.width, src.image.height, { type: THREE.HalfFloatType, depthBuffer: false });
     const quad = new FullScreenQuad(new THREE.ShaderMaterial({
@@ -256,7 +266,7 @@ export async function run() {
     await preCompile(env, new THREE.PerspectiveCamera(90, 1, 0.1, 100)); tmp.dispose();
     if (!live()) return;
     const old = envDark;
-    envDark = pmrem.fromScene(env, 0.02, 0.1, 100, { size: 256 }).texture; envOn = true; setEnv();
+    envDark = pmrem.fromScene(env, 0.02, 0.1, 100, { size: ENV_SIZE }).texture; envOn = true; setEnv();
     if (old) old.dispose();
     disposeScene(env); rt.dispose();
   }
@@ -369,7 +379,7 @@ export async function run() {
   // (edgeOut: each particle's edge measure, 1 within 4 px of the glyphs' outline, else 0: the daylight rim, LOOK_LIGHT)
   function sampleText(text, count, worldW, edgeOut = null) {
     const W = 1400, H = 300; const c = document.createElement('canvas'); c.width = W; c.height = H;
-    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    const g = c.getContext('2d', { willReadFrequently: true }); g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
     g.font = `800 ${Math.round(H * 0.62)}px ${SANS}`;
     const tw = g.measureText(text).width; const fs = Math.min(1, (W * 0.94) / tw);
     g.font = `800 ${Math.round(H * 0.62 * fs)}px ${SANS}`;
@@ -391,7 +401,7 @@ export async function run() {
   // particle targets from any alpha mask drawn by `draw(g, W, H)`; the mask is scaled to `worldW` wide
   // (only where the page's vector symbols cannot be drawn: intro.mjs samples the intro's own lockup)
   function sampleMask(draw, W, H, count, worldW) {
-    const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
+    const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d', { willReadFrequently: true });
     draw(g, W, H);
     const data = g.getImageData(0, 0, W, H).data; const pts = [];
     for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (data[(y * W + x) * 4 + 3] > 128) pts.push(x, y);
@@ -624,7 +634,7 @@ export async function run() {
   // [x, y, r] in the logo's viewBox, + depth (world units): centred on (31.4, 19), y up
   const ATOMS = [[8, 31, 2.4, 0.45], [17, 22, 3.6, -0.32], [27, 11, 6.2, 0], [38, 16, 4.4, 0.38], [47, 24, 3.2, -0.28], [55, 31, 2.2, 0.34]]
     .map(([x, y, r, z]) => new THREE.Vector4(((x - 31.4) / 52) * ROOF_W, (-(y - 19) / 52) * ROOF_W, z, (r / 52) * ROOF_W * 1.06));
-  const roofMat = mobile
+  const roofMat = LITE
     ? new THREE.MeshStandardMaterial({ color: 0xf2fbf6, metalness: 0.6, roughness: 0.12, envMapIntensity: 3.8, emissive: 0x123a30, emissiveIntensity: 1 })
     : new THREE.MeshPhysicalMaterial({ color: 0xe9f6ef, metalness: 0.62, roughness: 0.09, iridescence: 1, iridescenceIOR: 2.2, iridescenceThicknessRange: [300, 1400], clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 3.4, emissive: 0x0a2620, emissiveIntensity: 1, sheen: 1, sheenColor: 0x000000, sheenRoughness: 0.35 });   // (sheen black at night: see spineMat)
   // daylight: a spectral rim light on the pearl (molecule, column): the faces turning away from the viewer catch the
@@ -657,12 +667,14 @@ export async function run() {
   const buildRoof = () => {
     if (HERO !== 'logo' || roofU) return;
     { // the molecule: atoms + bonds, one merged mesh
-      const seg = mobile ? 30 : 56, parts = [];
-      for (const a of ATOMS) { const g = new THREE.SphereGeometry(a.w, seg, Math.round(seg * 0.7)); g.translate(a.x, a.y, a.z); parts.push(g); }
+      // (geodesic spheres, finer for the two big atoms: ~6k triangles for the whole molecule instead of ~26k, the same
+      // silhouette to a fraction of a pixel; all parts non-indexed so they merge)
+      const parts = [];
+      for (const a of ATOMS) { const g = new THREE.IcosahedronGeometry(a.w, a.w > 0.5 ? (LITE ? 4 : 5) : (LITE ? 3 : 4)); g.translate(a.x, a.y, a.z); parts.push(g); }
       const Y = new THREE.Vector3(0, 1, 0), Z = new THREE.Vector3(0, 0, 1);
       const bond = (a, b, rb, off) => {
         const A = new THREE.Vector3(a.x, a.y, a.z), B = new THREE.Vector3(b.x, b.y, b.z), d = B.clone().sub(A), L = d.length();
-        const g = new THREE.CylinderGeometry(rb, rb, L, mobile ? 12 : 22, 1, true);
+        const g = new THREE.CylinderGeometry(rb, rb, L, mobile ? 10 : 14, 1, true).toNonIndexed();
         g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(Y, d.clone().normalize()));
         const mid = A.add(B).multiplyScalar(0.5).addScaledVector(new THREE.Vector3().crossVectors(d, Z).normalize(), off);
         g.translate(mid.x, mid.y, mid.z); parts.push(g);
@@ -717,9 +729,8 @@ export async function run() {
         // position after tau seconds; hot = 1 while riding an atom, then fading as it drips
         // (daylight: spl = 1 for a share of the drops, which splash off the atom instead of riding it, sp = the splash's
         // life, 1 -> 0, or -1 while the drop is not splashing; 0 at night: the same paths as ever)
-        vec3 path(float tau, float X0, float Z, float V, float spl, out float hot, out float sp){
+        vec3 path(float tau, float X0, float Z, float V, float spl, float sHit, vec3 cr, out float hot, out float sp){
           float w = uWind, s = V * tau; hot = 0.; sp = -1.;
-          vec3 cr; float sHit = hitAtoms(X0, Z, w, cr);
           if (s < sHit) return vec3(X0 + w * s, uTop - s, Z);
           float tHit = sHit / V, ts = tau - tHit; vec2 ph = vec2(X0 + w * sHit, uTop - sHit);
           if (spl > .5) {   // a splash: a droplet thrown up and out off the atom, falling back within half a second
@@ -739,8 +750,8 @@ export async function run() {
           return vec3(pe.x + side * spread * tf, pe.y - (V * .25 * tf + 7. * tf * tf), Z + (fract(X0 * 3.1) - .5) * tf * .8);
         }
         // (daylight: a splash off an atom is a small bead thrown up and out, gone in a third of a second)
-        vec3 bead(float tau, float X0, float Z, float V, out float sp){
-          float w = uWind; sp = -1.; vec3 cr; float sHit = hitAtoms(X0, Z, w, cr);
+        vec3 bead(float tau, float X0, float Z, float V, float sHit, out float sp){
+          float w = uWind; sp = -1.;
           float s = V * tau; if (s < sHit) return vec3(X0 + w * s, uTop - s, Z);
           float ts = tau - sHit / V, r1 = fract(X0 * 17.13 + Z * 5.7), r2 = fract(X0 * 9.71 + Z * 13.3);
           sp = 1. - smoothstep(.06, .32, ts);
@@ -752,7 +763,8 @@ export async function run() {
           float cyc = uTime / T + aS.w; float tau = fract(cyc) * T; float id = floor(cyc);
           float X0 = (h1(aS.x * 13.7 + id * 1.31) - .5) * 1.25 * uW - uWind * (uTop - uBot) * .5;
           float spl = step(fract(aS.x * 7.13 + id * .71), uSplash);
-          float hh = 0., ht = 0., sh = 0., st = 0.; vec3 head = path(tau, X0, Z, V, spl, hh, sh); vec3 tail = path(max(tau - .05 * uTail, 0.), X0, Z, V, spl, ht, st);
+          vec3 cr = vec3(0., 0., 1.); float sHit = Z < -1. ? 1e5 : hitAtoms(X0, Z, uWind, cr);
+          float hh = 0., ht = 0., sh = 0., st = 0.; vec3 head = path(tau, X0, Z, V, spl, sHit, cr, hh, sh); vec3 tail = path(max(tau - .05 * uTail, 0.), X0, Z, V, spl, sHit, cr, ht, st);
           if (sh >= 0.) hh = sh * .8;   // (a splash droplet: thin, in the sheet's colour)
           vec4 ch = projectionMatrix * modelViewMatrix * vec4(head, 1.), ct = projectionMatrix * modelViewMatrix * vec4(tail, 1.);
           vec2 sdir = (ch.xy / ch.w - ct.xy / ct.w) * uRes; float sl = length(sdir);
@@ -772,7 +784,7 @@ export async function run() {
             // the screen's x and the depth; riding an atom: thin bright glints; off it: ribbons; a splash: a bead
             float lay = Z < -1. ? 0. : (fract(aS.w * 13.7) < .45 ? 2. : 1.);
             float sp = -1.; vec3 hd = head;
-            if (spl > .5) hd = bead(tau, X0, Z, V, sp);
+            if (spl > .5) hd = bead(tau, X0, Z, V, sHit, sp);
             vec4 hc = projectionMatrix * modelViewMatrix * vec4(hd, 1.);
             if (sp >= 0.) {   // the bead: a round dot of ~3 px round its head
               c = hc; c.xy += vec2(position.x, position.y * 2. - 1.) * 1.6 * 2. / uRes * c.w;
@@ -847,17 +859,17 @@ export async function run() {
     // --- one unit of the chain: an aromatic ring (six atoms, six bonds and the ring of its delocalised electrons) in
     // the vertical plane, two substituents (a bond out to a small atom) and the linker up to the next ring. The units
     // are stacked with a twist of 60 degrees each: from the orbiting camera a turning chain of structural formulas
-    const RR = 0.62, LINK = 0.36, seg = mobile ? 14 : 22, parts = [];
+    const RR = 0.62, LINK = 0.36, parts = [];
     const UY = new THREE.Vector3(0, 1, 0);
     const rod = (a, b, r) => {
-      const d = b.clone().sub(a), g = new THREE.CylinderGeometry(r, r, d.length(), mobile ? 8 : 12, 1, true);
+      const d = b.clone().sub(a), g = new THREE.CylinderGeometry(r, r, d.length(), mobile ? 6 : 8, 1, true).toNonIndexed();
       g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UY, d.clone().normalize()));
       const m = a.clone().add(b).multiplyScalar(0.5); g.translate(m.x, m.y, m.z); parts.push(g);
     };
-    const ball = (p, r) => { const g = new THREE.SphereGeometry(r, seg, Math.round(seg * 0.7)); g.translate(p.x, p.y, p.z); parts.push(g); };
+    const ball = (p, r) => { const g = new THREE.IcosahedronGeometry(r, mobile ? 1 : 2); g.translate(p.x, p.y, p.z); parts.push(g); };
     const V = Array.from({ length: 6 }, (_, k) => { const a = Math.PI / 2 + (k * Math.PI) / 3; return new THREE.Vector3(Math.cos(a) * RR, Math.sin(a) * RR, 0); });
     V.forEach((p, k) => { ball(p, k === 3 ? 0.16 : 0.12); rod(p, V[(k + 1) % 6], 0.05); });
-    { const tg = new THREE.TorusGeometry(RR * 0.6, 0.032, mobile ? 6 : 8, mobile ? 28 : 44); parts.push(tg); }
+    { const tg = new THREE.TorusGeometry(RR * 0.6, 0.032, 6, mobile ? 24 : 32).toNonIndexed(); parts.push(tg); }
     for (const k of [1, 4]) { const out = V[k].clone().normalize().multiplyScalar(RR + 0.42); rod(V[k], out, 0.045); ball(out, 0.1); }
     rod(V[0], new THREE.Vector3(0, RR + LINK, 0), 0.05);   // the linker (the next ring's lowest atom closes it)
     const vg = mergeGeometries(parts.map((g) => { g.deleteAttribute('uv'); return g; }));
@@ -867,7 +879,7 @@ export async function run() {
     const NV = Math.ceil((TOP - BOT) / GAP);
     // (the desktop pearl carries a sheen whose colour is black at night: three's sheen then adds nothing and scales nothing,
     // so the night is the night as ever, and daylight only sets its colour: a theme switch never recompiles)
-    const spineMat = mobile
+    const spineMat = LITE
       ? new THREE.MeshStandardMaterial({ color: 0xd6efe4, metalness: 0.6, roughness: 0.16, envMapIntensity: 3.0, emissive: 0x0a2420, emissiveIntensity: 1 })
       : new THREE.MeshPhysicalMaterial({ color: 0xd6efe4, metalness: 0.58, roughness: 0.11, iridescence: 1, iridescenceIOR: 2.2, iridescenceThicknessRange: [300, 1400], clearcoat: 1, clearcoatRoughness: 0.03, envMapIntensity: 3.4, emissive: 0x0a2420, emissiveIntensity: 1, sheen: 1, sheenColor: 0x000000, sheenRoughness: 0.35 });
     // (daylight: the thin film across the column's curvature, uFilm, laid by the fresnel only (pow(1 - N.V, 1.5)): the
@@ -1023,7 +1035,7 @@ export async function run() {
     const faceGeo = new THREE.PlaneGeometry(CARD_W - 0.02, CARD_H - 0.02, 1, 1);
     GAMES.forEach((game, i) => {
       const tint = new THREE.Color(game.c[0]).lerp(new THREE.Color(0xa9c4c0), 0.72);
-      const slabMat = mobile
+      const slabMat = LITE
         ? new THREE.MeshStandardMaterial({ color: tint, metalness: 0.15, roughness: 0.22, transparent: true, opacity: 0.42, envMapIntensity: 1.5, depthWrite: false })
         : new THREE.MeshPhysicalMaterial({ color: tint, metalness: 0.08, roughness: 0.12, transparent: true, opacity: 0.4, envMapIntensity: 1.8, depthWrite: false });
       slabMat.userData.night = slabMat.color.getHex(); slabMat.userData.day = new THREE.Color(game.c[0]).lerp(new THREE.Color(0xf7faf2), 0.62).getHex();
@@ -1207,7 +1219,7 @@ export async function run() {
   // (daylight, light = true: no mottling and no vignette, the art stays clean: the card's shader keeps the frost to the
   // glass's edges. clear = img is the build's clear daylight cut (game.artLt); a raw image is cover-cropped unfiltered)
   function cardTexture(game, i, img, light = false, clear = false) {
-    const W = mobile ? 768 : 1024, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
+    const W = LITE ? 768 : 1024, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
     const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
     g.fillStyle = game.c[1]; g.fillRect(0, 0, W, H);
     if (!img) {   // no photo: a structural formula sketched in the category's colour
@@ -1256,7 +1268,7 @@ export async function run() {
   /* title layer (transparent): thin mono, letter-spaced, red/cyan fringe like the reference's lens split. Daylight: one
      pass in the page's ink (a colour fringe reads as misregistration on paper; the shader turns it paper-white over video) */
   function titleTexture(game, light = false) {
-    const W = mobile ? 768 : 1024, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
+    const W = LITE ? 768 : 1024, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
     const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d');
     const words = game.name.split(' '); const lines = []; let line = '';
     g.letterSpacing = `${Math.round(4 * u)}px`; g.font = `500 ${Math.round(88 * u)}px ${MONO}`;
@@ -1549,7 +1561,10 @@ export async function run() {
     night: ASSET('globe/night_1k', '/home3d/globe/night_1k.webp'), lights: ASSET('globe/lights_1k', '/home3d/globe/lights_1k.webp'), day: ASSET('globe/day_1k', '/home3d/globe/day_1k.webp'),
     pack: ASSET('globe/pack_1k', '/home3d/globe/pack_1k.jpg'), ...LIGHT_GLOBE(false),
   });
-  const GLOBE_FILES = mobile ? LOW_GLOBE() : {
+  const GLOBE_FILES = mobile ? LOW_GLOBE() : LITE ? {
+    ...LOW_GLOBE(), regionNight: ASSET('globe/region_night', '/home3d/globe/region_night.webp'), regionLights: ASSET('globe/region_lights', '/home3d/globe/region_lights.webp'),
+    regionBox: [-15.0293, 79.9805, 12.0410, 69.9609],
+  } : {
     night: ASSET('globe/night_2k', '/home3d/globe/night_2k.webp'), lights: ASSET('globe/lights_2k', '/home3d/globe/lights_2k.webp'), day: ASSET('globe/day_2k', '/home3d/globe/day_2k.webp'),
     pack: ASSET('globe/pack_1k', '/home3d/globe/pack_1k.jpg'),
     regionNight: ASSET('globe/region_night', '/home3d/globe/region_night.webp'), regionLights: ASSET('globe/region_lights', '/home3d/globe/region_lights.webp'),
@@ -1579,6 +1594,7 @@ export async function run() {
   const globeUploads = [];
   const geoEl = $('#geo'); let geoLabels = [];
   function startGlobe() {
+    if (DEBUG && params.has('noglobe')) return null;   // (QA: the route without its globe)
     if (!globeLoad) globeLoad = loadGlobe();
     return globeLoad;
   }
@@ -1593,7 +1609,7 @@ export async function run() {
       if (globe.anchors && globe.anchors.shelter && geoEl) {   // the hub: a glass chip with the brand mark (crisp at any DPR)
         nodeChip = document.createElement('div'); nodeChip.className = 'geo-node';
         nodeChip.innerHTML = '<i></i><b><svg viewBox="0 0 64 46" aria-hidden="true"><g fill="url(#l2d-mark-grad)"><circle cx="8" cy="31" r="2.4"/><circle cx="17" cy="22" r="3.6"/><circle cx="27" cy="11" r="6.2"/><circle cx="38" cy="16" r="4.4"/><circle cx="47" cy="24" r="3.2"/><circle cx="55" cy="31" r="2.2"/></g></svg><em></em></b>';
-        nodeChip.querySelector('em').textContent = TEXT.geo_node || 'lab2date hub · Netherlands';
+        nodeChip.querySelector('em').textContent = TEXT.geo_node || 'Labtodate hub · Netherlands';
         geoEl.appendChild(nodeChip);
       }
       layoutGlobe();
@@ -1691,7 +1707,7 @@ export async function run() {
   /* ---------- logos: the intro's lockup and the outro.
      The lockup takes the poster's own particles (poster.js -> intro.mjs: the same positions, sizes and colours, so the
      hand-off shows no jump) and is laid out by the same formulas (introLayout); the outro is drawn from Silkscreen. */
-  let logoA = null, logoB = null, logoR = null, builtAspect = 0;
+  let logoA = null, logoB = null, logoR = null, builtAspect = 0, logoBReady = false;
   const PST = window.__l2dPoster;
   const SH = (PST && PST.shapes && PST.shapes()) || (() => { try { return introShapes(mobile); } catch (e) { return null; } })();
   const dropLogo = (l) => {
@@ -1741,7 +1757,6 @@ export async function run() {
   composer.addPass(bloom);
   // phones: bloom is the single biggest frame cost (44 -> 64 fps at 4x CPU when off); HDR emitters stay bright without it
   if (mobile) bloom.enabled = false;
-  composer.addPass(new OutputPass());
   const CA_REST = 0.0005;
   const finalPass = new ShaderPass({
     uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uCA: { value: CA_REST }, uGlitchCA: { value: 0 }, uGrain: { value: 0.045 }, uFlash: { value: 0 }, uRes: { value: new THREE.Vector2(VW(), VH()) }, uLight: { value: 0 } },
@@ -1754,6 +1769,11 @@ export async function run() {
       // (daylight: no resting lens fringe, a third of the transition's: colour fringes read as misregistration on ink)
       void main(){ vec2 c = vUv - .5; float r = length(c); vec2 d = c*(uCA*smoothstep(.55, .85, r)*(1. - uLight) + uGlitchCA*(1. - .7*uLight))*(.6 + r*2.2);
         vec3 col = vec3(texture2D(tDiffuse, vUv + d).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - d).b);
+        // (what the OutputPass did, a full-screen pass of its own until now: tone mapping and the sRGB encode)
+        gl_FragColor = vec4(col, 1.);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+        col = gl_FragColor.rgb;
         if (uLight > .5) col *= mix(vec3(1.), vec3(.955, .975, .95), (1. - smoothstep(1.1, .3, r*1.25)) * .55);   // daylight: the paper, a breath of sage at its corners
         else col *= smoothstep(1.1, .3, r*1.25);
         vec2 fc = gl_FragCoord.xy + fract(uTime*7.)*vec2(91.7, 53.3);
@@ -1949,7 +1969,7 @@ export async function run() {
   const reset = () => { winT = winN = winSlow = winCpu = 0; };
   const tryBloomOff = (avg, now) => { bloomOff = true; bloom.enabled = false; lastChange = now; trial = { bloom: true, avg }; reset(); };
   const guard = (dt, now) => {
-    if (pendingDpr && ((Math.abs(scrollNow() - state.scroll) < 2 && Math.abs(vel) < 0.02) || now - pendingAt > 2500)) { applyDpr(pendingDpr); pendingDpr = 0; lastChange = now; reset(); }
+    if (pendingDpr && ((Math.abs(scrollNow() - state.scroll) < 2 && Math.abs(vel) < 0.02 && stillFrames > 10) || now - pendingAt > 9000)) { applyDpr(pendingDpr); pendingDpr = 0; lastChange = now; reset(); }
     if (dt > 0.25 || document.hidden || boot.up || !full) return;   // tab switches, the boot (both parts): not a measure
     if (now < quietTo) { reset(); return; }
     winT += dt; winN++; winCpu += lastCpu; if (dt > 0.026) winSlow++;
@@ -2103,7 +2123,7 @@ export async function run() {
     }
     logoR.visible = logoA.visible;
     // outro logo
-    if (logoB) logoB.visible = full && near(ST[6]);
+    if (logoB) logoB.visible = full && logoBReady && near(ST[6]);
     if (logoB && logoB.visible) {
       const u = logoB.material.uniforms; u.uTime.value = t;
       u.uAssemble.value = sc.j === 6 ? (sc.i === 6 ? 0.35 + smooth(0, 0.8, L[6]) * 0.65 : sc.t * 0.35) : 0;
@@ -2194,8 +2214,8 @@ export async function run() {
     if (bloom.enabled) bloom.strength = BLOOM_K * lerp(INTRO_BLOOM * smooth(0, 1400, now - wakeAt), 1, smooth(3, 24, Math.abs(camera.position.y - ST[0]))) * (LIGHT ? 0.12 : 1);
     // (the plans station has no 3D of its own: behind its deal only the slow sky shows, drawn at a third of the rate, so the
     // deal's own light (the emblem, the motes) has the GPU; every other station at the full rate)
-    const atPlans = sc.i === 5 && sc.j === 5;
-    if (!atPlans || (plansTick = (plansTick + 1) % 3) === 0) composer.render(dt);
+    const skyOnly = sc.i === sc.j && !logoA.visible && !roof.visible && !tower.visible && !globeHolder.visible && !(logoB && logoB.visible) && Math.abs(vel) < 0.05;
+    if (!skyOnly || (plansTick = (plansTick + 1) % 3) === 0) composer.render(dt);
     lastCpu = performance.now() - now;   // main-thread ms this frame (the governor's CPU/GPU split)
   };
 
@@ -2329,7 +2349,7 @@ export async function run() {
      with nothing being built under it. */
   let otherDone = false;
   const prepOther = async () => {
-    if (otherDone || !full) return; otherDone = true;
+    if (otherDone || !full || LITE) return; otherDone = true;   // (LITE: a theme switch makes what it needs then)
     const to = !LIGHT, k = to ? 1 : 0;
     const calm = async () => {
       if (!live()) return false;
@@ -2369,12 +2389,39 @@ export async function run() {
         only then are the other stations drawn (full): reaching one never compiles or uploads anything. Whatever misses
         its moment (slow line) is swapped in later, compiled and uploaded off screen first; the globe never holds the boot. */
   const until = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(r, ms))]);
+  // (a compile wait ends when the programs are ready, or the page is gone / the context lost; the long cap is only a
+  // last resort for a driver that never reports completion)
+  const ready = (p, ms = 60000) => new Promise((res) => {
+    let iv = 0; const end = () => { clearInterval(iv); res(); };
+    Promise.resolve(p).then(end, end);
+    iv = setInterval(() => { if (!live() || renderer.getContext().isContextLost()) end(); }, 250);
+    setTimeout(end, ms);
+  });
   // every program the scene needs, compiled in parallel (KHR_parallel_shader_compile) for the composer's render-target
   // state, so the driver works off the main thread
-  const compileAll = async (ms) => {
+  // (the programs are linked in parallel off the main thread (KHR_parallel_shader_compile); the first draw that meets
+  // one still linking waits for it on the main thread, which on ANGLE / D3D11 froze the page for seconds. So nothing is
+  // drawn before its program is ready: the boot awaits these, the intro keeps running meanwhile)
+  const startCompile = (root = scene) => {
     const prev = renderer.getRenderTarget(); renderer.setRenderTarget(composer.renderTarget1);
-    const compiled = renderer.compileAsync(scene, camera); renderer.setRenderTarget(prev);
-    await until(compiled, ms);
+    try { return renderer.compileAsync(root, camera, scene); } finally { renderer.setRenderTarget(prev); }
+  };
+  const compileAll = (ms) => ready(startCompile(), ms);
+  // the programs no scene object carries: the post chain (bloom; the final pass, drawn to the screen) and PMREM's own
+  // (the environment bakes), compiled with the intro instead of synchronously by their first use
+  const compileSupport = () => {
+    const geo = new THREE.PlaneGeometry(2, 2), cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1), own = [];
+    const quad = (m) => new THREE.Mesh(geo, m);
+    const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, depthBuffer: false });
+    try { pmrem._setSize(ENV_SIZE); pmrem._allocateTargets().dispose(); } catch (e) { /* internals changed: they compile on first use */ }
+    const offscreen = new THREE.Scene(), onscreen = new THREE.Scene();
+    for (const m of [pmrem._blurMaterial, pmrem._ggxMaterial, bloom.materialHighPassFilter, ...(bloom.separableBlurMaterials || []), bloom.compositeMaterial, bloom.blendMaterial]) if (m) offscreen.add(quad(m));
+    for (const side of [THREE.BackSide, THREE.DoubleSide]) { const m = new THREE.MeshBasicMaterial({ side }); own.push(m); offscreen.add(quad(m)); }   // (the env scenes' boxes and panels)
+    onscreen.add(quad(finalPass.material));
+    const prev = renderer.getRenderTarget(); let a, b;
+    try { renderer.setRenderTarget(rt); a = renderer.compileAsync(offscreen, cam); renderer.setRenderTarget(null); b = renderer.compileAsync(onscreen, cam); }
+    finally { renderer.setRenderTarget(prev); }
+    return Promise.all([a, b]).finally(() => { rt.dispose(); geo.dispose(); own.forEach((m) => m.dispose()); });
   };
 
   /* the handle the shell keeps: dispose() frees the GPU and the DOM the scene made (the listeners go with core's
@@ -2406,7 +2453,7 @@ export async function run() {
   // 1. the intro
   buildIntroLogos();
   camera.position.set(...STN[0].pos); camera.lookAt(...STN[0].look); nebula.position.copy(camera.position);
-  await compileAll(2500);
+  await Promise.all([compileAll(), ready(compileSupport())]);
   if (!live()) { teardown(); return handle; }
   markB('intro-compiled');
   // the poster's entrance (its particles flying in, poster.js) plays out first (main.js normally starts the scene only
@@ -2432,8 +2479,15 @@ export async function run() {
   prefetchGlobe();
   if (!lazyQA && !frugal) requestAnimationFrame(() => setTimeout(startGlobe, 0));
   buildRoof(); markB('roof'); await step();
-  buildTower(); loadArt(); const spineModelLoad = loadSpineModel(); markB('tower'); await step();
-  placeGroups(); await step();
+  buildTower(); markB('tower-built'); loadArt(); const spineModelLoad = loadSpineModel(); markB('tower'); await step();
+  placeGroups(); markB('groups');
+  // (the programs' keys depend on the environment's kind, so it is in place before they compile: the studio light,
+  // which is small and on its way since the start (one bake); the procedural one only if the studio is late)
+  await ready(envReady, 4000); if (!live()) throw ABORT;
+  if (!LIGHT && !envDark) buildNeonEnv();
+  markB('neon');
+  const stationsCompiled = compileAll(); markB('compile-start');
+  await step();
   await until(document.fonts.ready, 1500);
   try { await until(Promise.all([document.fonts.load(`800 40px ${SANS}`), document.fonts.load(`500 40px ${MONO}`)]), 3000); } catch (e) { /* fall back to system fonts */ }
   await until(envReady, 1200); if (!live()) throw ABORT;
@@ -2444,7 +2498,7 @@ export async function run() {
   markB('assets');
   // the globe never holds the boot. If it is fully compiled by now it is warmed here with everything else;
   // if it lands later the frame loop uploads and warms it in small batches
-  if (globeState === 'upload') { globeUploads.splice(0).forEach((tx) => renderer.initTexture(tx)); globeState = 'ready'; mark('ready-boot'); }
+  if (globeState === 'upload' && !LITE) { globeUploads.splice(0).forEach((tx) => renderer.initTexture(tx)); globeState = 'ready'; mark('ready-boot'); }   // (LITE: the frame loop's lazy path, one map per calm frame)
   mark('boot-warm');
   // card faces: what has landed is drawn now (titles need the fonts loaded above), a card per slice
   for (let i = 0; i < cards.length; i++) { setCardTex(i); await step(); }
@@ -2456,9 +2510,9 @@ export async function run() {
   await step();
   if (!envDark) buildNeonEnv();   // the studio light is late: start with the procedural one (same cube size: no recompile when it swaps)
   mark('boot-compile');
-  await compileAll(3000); if (!live()) throw ABORT;
+  await stationsCompiled; await compileAll(); if (!live()) throw ABORT;   // (the second call only waits for anything added since)
   markB('compiled');
-  if (globeState === 'upload') { globeUploads.splice(0).forEach((tx) => renderer.initTexture(tx)); globeState = 'ready'; mark('ready-boot'); }
+  if (globeState === 'upload' && !LITE) { globeUploads.splice(0).forEach((tx) => renderer.initTexture(tx)); globeState = 'ready'; mark('ready-boot'); }
   // every station drawn once off screen, into a small target in the RenderPass's state (the same program variants),
   // so its buffers and textures are uploaded; the intro keeps running on screen between the slices. A globe that is
   // still compiling stays out of this pass (it takes the lazy path in the frame loop instead).
@@ -2483,7 +2537,7 @@ export async function run() {
     await new Promise((r) => (window.requestIdleCallback ? requestIdleCallback(r, { timeout: 2500 }) : setTimeout(r, 60)));
     if (!logoB) {
       buildOutro();
-      if (logoB) { const prev = renderer.getRenderTarget(); renderer.setRenderTarget(composer.renderTarget1); const c = renderer.compileAsync(logoB, camera, scene); renderer.setRenderTarget(prev); await until(c, 4000); }
+      if (logoB) { await ready(startCompile(logoB)); logoBReady = true; }
     }
     await until(envReady, 6000);
     setTimeout(() => { if (live()) document.documentElement.classList.add('gl-settled'); }, 600);
