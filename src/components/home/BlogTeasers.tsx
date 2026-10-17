@@ -14,16 +14,16 @@ export async function BlogTeasers() {
   if (posts.length === 0) return null;
 
   return (
-    <section className="container-px py-24">
+    <section data-hud="NOTES" className="container-px py-24">
       <Reveal>
         <div className="flex items-end justify-between mb-12 gap-6 flex-wrap">
           <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">Field notes</p>
+            <span className="kicker mb-4">Field notes</span>
             <h2 className="text-3xl md:text-5xl font-bold text-foreground max-w-2xl" style={{ letterSpacing: '-0.035em' }}>
               What lab managers wish they knew before buying.
             </h2>
           </div>
-          <Link href="/blog" className="inline-flex items-center gap-2 px-5 py-3 rounded-full border-2 border-foreground/10 text-sm font-semibold text-foreground hover:bg-foreground hover:text-background transition-colors group">
+          <Link href="/blog" className="inline-flex items-center gap-2 px-5 py-3 rounded-full border border-[hsl(var(--teal)/0.24)] bg-[hsl(var(--teal)/0.05)] text-sm font-semibold text-foreground hover:border-primary/60 transition-colors group">
             All articles
             <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
           </Link>
@@ -35,7 +35,7 @@ export async function BlogTeasers() {
           <Reveal key={post.slug} delay={i * 90}>
             <Link
               href={`/blog/${post.slug}`}
-              className="group block rounded-2xl border border-border bg-card overflow-hidden hover:border-primary/30 hover:shadow-[0_20px_50px_-20px_rgba(15,79,64,0.35)] transition-all"
+              className="group glass-panel block rounded-2xl overflow-hidden hover:border-primary/40 transition-all"
             >
               <div className="relative aspect-[16/10] overflow-hidden bg-muted">
                 <ArticleCover

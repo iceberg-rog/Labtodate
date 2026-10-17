@@ -7,6 +7,10 @@ import { cn } from '@/lib/utils';
  *  off, set above a baseline — reads as a chromatogram peak / molecular
  *  scatter over an axis. Wordmark "lab2date" with a small
  *  "MOLECULAR ANALYSIS" tagline lock-up.
+ *
+ *  Dark theme: the mark glows lime → teal (the redesign's accent gradient)
+ *  and the wordmark is set in the foreground colour; light theme keeps the
+ *  forest-green mark.
  */
 export function Logo({
   className,
@@ -27,16 +31,24 @@ export function Logo({
     <div className={cn('inline-flex items-center gap-3', className)}>
       <svg
         viewBox="0 0 64 46"
-        className={cn(mark, 'text-primary')}
+        className={cn(mark, 'text-primary dark:drop-shadow-[0_0_10px_hsl(82_76%_55%/0.35)]')}
         fill="none"
         xmlns="http://www.w3.org/2000/svg"
         aria-label="lab2date"
         role="img"
       >
+        <defs>
+          {/* Identical definition in every instance, so a repeated id is harmless. */}
+          <linearGradient id="l2d-mark-grad" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stopColor="#2fd6c3" />
+            <stop offset="0.55" stopColor="#a4e335" />
+            <stop offset="1" stopColor="#e2ff9c" />
+          </linearGradient>
+        </defs>
         {/* baseline / axis */}
-        <line x1="4" y1="40" x2="34" y2="40" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+        <line x1="4" y1="40" x2="34" y2="40" className="stroke-current dark:[stroke:url(#l2d-mark-grad)]" strokeWidth="2.4" strokeLinecap="round" />
         {/* scatter nodes rising to a peak, then trailing */}
-        <g fill="currentColor">
+        <g className="fill-current dark:[fill:url(#l2d-mark-grad)]">
           <circle cx="8"  cy="31" r="2.4" />
           <circle cx="17" cy="22" r="3.6" />
           <circle cx="27" cy="11" r="6.2" />
@@ -49,14 +61,14 @@ export function Logo({
       {withWordmark && (
         <div className="flex flex-col leading-none">
           <span
-            className={cn(word, 'font-bold text-primary')}
+            className={cn(word, 'font-bold text-primary dark:text-foreground')}
             style={{ letterSpacing: '-0.03em' }}
           >
             lab2date
           </span>
           {withTagline && (
             <span
-              className={cn(tag, 'mt-1 font-semibold uppercase text-primary/55')}
+              className={cn(tag, 'mt-1 font-semibold uppercase text-primary/55 dark:font-mono dark:font-normal dark:text-muted-foreground')}
               style={{ letterSpacing: '0.32em' }}
             >
               Molecular Analysis

@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { LayoutDashboard, ShieldCheck, LogOut, User as UserIcon, Loader2 } from 'lucide-react';
 import { authClient, useSession } from '@/lib/auth-client';
-import { Button } from '@/components/ui/button';
 
 export function HeaderUserMenu() {
   const { data: session, isPending } = useSession();
@@ -35,12 +34,15 @@ export function HeaderUserMenu() {
   if (!session) {
     return (
       <div className="flex items-center gap-2">
-        <Button variant="ghost" asChild className="hidden sm:inline-flex font-medium">
-          <Link href="/auth/sign-in">Sign in</Link>
-        </Button>
-        <Button asChild className="hidden sm:inline-flex rounded-full font-semibold">
-          <Link href="/auth/sign-up">Get started →</Link>
-        </Button>
+        {/* One lime "Sign in" pill (the redesign); account creation is one
+            click further, on the sign-in page and in the phone menu. */}
+        <Link
+          href="/auth/sign-in"
+          className="btn-lime hidden sm:inline-flex h-11 items-center gap-2 rounded-full pl-4 pr-5 text-sm font-semibold"
+        >
+          <UserIcon className="h-4 w-4" strokeWidth={2.2} />
+          Sign in
+        </Link>
       </div>
     );
   }

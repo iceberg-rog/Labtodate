@@ -24,8 +24,11 @@ export function SearchTypeahead({
   autoFocus = false,
   onNavigate,
   onDismiss,
+  size = 'md',
 }: {
   placeholder?: string;
+  /** 'lg' = the big borderless field inside the homepage hero glass bar. */
+  size?: 'md' | 'lg';
   className?: string;
   autoFocus?: boolean;
   /** Called after the user picks a hit or submits a search. */
@@ -120,7 +123,7 @@ export function SearchTypeahead({
   return (
     <div ref={ref} className={`relative ${className}`}>
       <form onSubmit={submit} role="search">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+        <Search className={`absolute top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none ${size === 'lg' ? 'left-4 h-[19px] w-[19px]' : 'left-3.5 h-4 w-4'}`} />
         <input
           type="search"
           name="q"
@@ -141,7 +144,11 @@ export function SearchTypeahead({
           aria-activedescendant={expanded && focusedIdx >= 0 ? `${listId}-${focusedIdx}` : undefined}
           autoFocus={autoFocus}
           autoComplete="off"
-          className="w-full h-10 pl-10 pr-3 rounded-full border border-border bg-foreground/[0.03] text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+          className={
+            size === 'lg'
+              ? 'w-full h-[52px] pl-12 pr-3 rounded-xl border-0 bg-transparent text-[15.5px] placeholder:text-muted-foreground/80 focus:outline-none focus:ring-2 focus:ring-primary/25'
+              : 'w-full h-10 pl-10 pr-3 rounded-full border border-border bg-foreground/[0.03] text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary'
+          }
         />
         {loading && (
           <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground animate-spin" />
@@ -149,7 +156,7 @@ export function SearchTypeahead({
       </form>
 
       {expanded && (
-        <div className="absolute top-12 left-0 right-0 rounded-2xl border border-border bg-card shadow-xl z-50 overflow-hidden">
+        <div className={`absolute left-0 right-0 rounded-2xl border border-border bg-card shadow-xl z-50 overflow-hidden ${size === 'lg' ? 'top-[60px]' : 'top-12'}`}>
           {hits.length === 0 && !loading ? (
             <div className="p-6 text-center text-sm text-muted-foreground" role="status">
               {status === 'busy'

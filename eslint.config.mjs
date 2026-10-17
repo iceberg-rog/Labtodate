@@ -5,7 +5,8 @@ const config = [
   // Global ignores (flat-config: an object with only `ignores`). ESLint 9 does
   // not read .gitignore, so the gitignored backup bundle + relocated legacy
   // migrations must be excluded explicitly or `eslint .` walks into them.
-  { ignores: ['.backups/**', 'prisma/migrations-legacy/**', 'prisma/migrations/**'] },
+  // The homepage's WebGL engine is plain JS ported as is from the Shelter landing (its own conventions).
+  { ignores: ['.backups/**', 'prisma/migrations-legacy/**', 'prisma/migrations/**', 'src/components/home/landing/engine/**'] },
   ...nextVitals,
   ...nextTypescript,
   {
