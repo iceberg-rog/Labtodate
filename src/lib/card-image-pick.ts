@@ -49,9 +49,10 @@ const hostOf = (v: string | undefined): string | null => {
 };
 
 /**
- * The "/media/<bucket>/<key>" path of a photo in our own media store, or null. Only those are ever read: a
- * host-relative /media/ path, or the same path on the site's own origin (BETTER_AUTH_URL, S3_PUBLIC_URL). A supplier
- * URL is never fetched by the server (it is also never picked: the card keeps the caller's fallback for it).
+ * The "/media/<bucket>/products/..." path of a product photo in our own media store, or null. Only those are ever
+ * read: a host-relative path, or the same path on the site's own origin (BETTER_AUTH_URL, S3_PUBLIC_URL), and only in
+ * the bucket's public products/ prefix (never order-proofs/, support-att/ or any other key). A supplier URL is never
+ * fetched by the server (nor picked: the card keeps the caller's fallback for it).
  */
 export function ownMediaPathOf(url: string): string | null {
   let u: URL;
@@ -63,8 +64,9 @@ export function ownMediaPathOf(url: string): string | null {
   const relative = u.host === 'relative.invalid' && url.startsWith('/');
   const own = [process.env.BETTER_AUTH_URL, process.env.NEXT_PUBLIC_BETTER_AUTH_URL, process.env.S3_PUBLIC_URL].map(hostOf);
   if (!relative && !(u.protocol === 'https:' && own.includes(u.host.toLowerCase()))) return null;
-  // (the URL parser has resolved any ".."; what is left must still be inside /media/)
-  return u.pathname.startsWith('/media/') && u.pathname.length > '/media/'.length ? u.pathname : null;
+  // (the URL parser has resolved any ".."; what is left must still be inside the products/ prefix)
+  const prefix = `/media/${process.env.S3_BUCKET || 'lab2date-media'}/products/`;
+  return u.pathname.startsWith(prefix) && u.pathname.length > prefix.length ? u.pathname : null;
 }
 
 // Where the server reads one of our photos: straight from the object store (what the /media/ proxy serves), then
