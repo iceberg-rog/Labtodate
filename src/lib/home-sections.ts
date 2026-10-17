@@ -45,24 +45,24 @@ export const HOME_DEFAULTS: HomeContent = {
   // Terms that match the current HPLC/GC/MS inventory. The home page also
   // hides any chip that would return no results (see src/app/page.tsx).
   popular: ['HPLC', 'Gas Chromatography', 'Mass Spec', 'Autosampler', 'Agilent'],
-  heroBadge: 'Refurbished lab equipment',
+  heroBadge: 'Used laboratory equipment',
   heroTitle: 'The marketplace for',
   heroAccent: 'science.',
   heroSubtitle:
-    'Source refurbished and surplus laboratory equipment — quote, proforma and shipping handled end to end.',
+    'Buy used laboratory equipment online, or request a written quote — every order with a proforma and a VAT invoice.',
   // Counts are computed live from the DB at request time (see src/lib/home-stats.ts)
   // whenever HERO_STATS is unset; these zeros are a type-level fallback only and
   // must never be pre-filled into the editor (saving them used to ship "0 / 0 / 0").
   stats: [
     { value: 0, suffix: '', label: 'instruments listed' },
     { value: 0, suffix: '', label: 'suppliers' },
-    { value: 0, suffix: '', label: 'countries served' },
+    { value: 0, suffix: '', label: 'countries we source from' },
   ],
   testHeading: 'What buyers say.',
   testMeta: '',
   ctaHeading: 'Discontinued. Rare. Out of budget. We try to find it.',
   ctaSubtitle:
-    "Tell us what you need. We'll come back with quotes — typically within a few business days.",
+    'Tell us what you need. We search our supply network and reply with what we find.',
 };
 
 /**

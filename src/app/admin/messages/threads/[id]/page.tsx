@@ -71,7 +71,7 @@ export default async function AdminThreadPage(props: { params: Promise<{ id: str
           )}
         </div>
         <p className="text-[11px] text-muted-foreground mt-2">
-          Read-only. Participants see each other only as “Verified Supplier” / “Buyer”.
+          Read-only. Participants see each other only as “lab2date Supplier” / “lab2date Buyer”.
         </p>
       </div>
 

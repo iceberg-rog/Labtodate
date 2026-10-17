@@ -79,10 +79,12 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
-    # migrate deploy only. Seeding is an explicit operator action (npm run
-    # db:seed:all), never run automatically on boot — it must not touch a
-    # restored production database.
-    command: ["npm", "run", "db:deploy"]
+    # migrate deploy + the idempotent legacy-documents freeze + product photo
+    # URLs of our own store rewritten to host-relative /media/ paths (so an old
+    # IP / domain in stored URLs never hides photos; idempotent). Seeding is an
+    # explicit operator action (npm run db:seed:all), never run automatically
+    # on boot — it must not touch a restored production database.
+    command: ["sh", "-c", "npm run db:deploy && npm run docs:backfill-legacy && npm run media:normalize -- --apply"]
 
   web:
     build:
@@ -94,9 +96,14 @@ services:
     <<: *app-env
     # Cap the container's RAM so a memory spike (e.g. the WASM image optimizer
     # under load) gets the web process OOM-killed + auto-restarted instead of
-    # taking the whole 3.8 GB host — and Postgres — down with it. The heap cap
-    # sits below the container limit so Node GCs rather than getting killed.
-    mem_limit: 1536m
+    # taking the whole 3.8 GB host — and Postgres — down with it. Budget:
+    # Node heap 1024 MB + headless Chromium for the PDF documents (~350–450 MB
+    # resident with 2 concurrent renders) + overhead. The heap cap sits below
+    # the container limit so Node GCs rather than getting killed.
+    mem_limit: 2048m
+    # tini as PID 1: reaps Chromium helper processes (no zombies after a
+    # recycled / crashed browser).
+    init: true
     environment:
       NODE_OPTIONS: "--max-old-space-size=1024"
     ports:
@@ -125,6 +132,8 @@ services:
         fi;
         apk add --no-cache curl >/dev/null 2>&1;
         printf "*/15 * * * * curl -fsS -X POST -H \"X-Cron-Secret: %s\" http://web:3000/api/cron/sla-sweep >> /var/log/cron.log 2>&1\n" "$$CRON_SECRET" > /etc/crontabs/root;
+        printf "*/5 * * * * curl -fsS -X POST -H \"X-Cron-Secret: %s\" http://web:3000/api/cron/security-sweep >> /var/log/cron.log 2>&1\n" "$$CRON_SECRET" >> /etc/crontabs/root;
+        printf "*/15 * * * * curl -fsS -m 900 -X POST -H \"X-Cron-Secret: %s\" http://web:3000/api/cron/supplier-sync >> /var/log/cron.log 2>&1\n" "$$CRON_SECRET" >> /etc/crontabs/root;
         exec crond -f -L /var/log/cron.log;
       '
 

@@ -13,6 +13,8 @@
 
 import { PrismaClient, ProductCondition, ProductMode, ProductStatus } from '@prisma/client';
 
+import { assertDemoSeedAllowed } from './_seed-guard';
+
 const prisma = new PrismaClient();
 
 const SELLER_ID = 'seed_user_admin_curator';
@@ -130,6 +132,7 @@ function slugify(s: string) {
 }
 
 async function main() {
+  await assertDemoSeedAllowed(prisma, 'seed-own-catalogue.ts');
   const preview = process.env.PREVIEW === '1';
   console.log(`⇣ Seeding lab2date own-inventory (${SEEDS.length} products, status=${preview ? 'DRAFT' : 'PUBLISHED'})`);
 

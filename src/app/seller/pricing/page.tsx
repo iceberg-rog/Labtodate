@@ -24,7 +24,7 @@ export default async function SellerPricingPage() {
           <tr><td><strong>Listing fee</strong></td><td>{listingFee}</td></tr>
           <tr><td><strong>Commission</strong></td><td>{commission}% of the final sale price</td></tr>
           <tr><td><strong>Payout</strong></td><td>{payout}</td></tr>
-          <tr><td><strong>Logistics</strong></td><td>Crating, freight &amp; insurance coordinated by {c.site}</td></tr>
+          <tr><td><strong>Logistics</strong></td><td>Agreed per sale</td></tr>
         </tbody>
       </table>
 
@@ -32,7 +32,7 @@ export default async function SellerPricingPage() {
       <ol>
         <li>List your equipment (or submit it via <a href="/sell">Sell equipment</a> for a managed listing).</li>
         <li>We publish it to the marketplace — no listing fee.</li>
-        <li>When it sells, {c.site} handles payment, logistics and buyer protection.</li>
+        <li>When it sells, {c.site} handles the sale with the buyer and collects the payment.</li>
         <li>You receive your payout ({payout}), minus the {commission}% commission.</li>
       </ol>
 
@@ -44,7 +44,7 @@ export default async function SellerPricingPage() {
 
       <h2>Questions?</h2>
       <p>
-        Email <a href={`mailto:${c.email}`}>{c.email}</a> or{' '}
+        Email <a href={c.contactHref}>{c.contactLabel}</a> or{' '}
         {sellerGuide ? (
           <>read the <a href={`/wiki/${sellerGuide.slug}`}>seller guide</a>.</>
         ) : (

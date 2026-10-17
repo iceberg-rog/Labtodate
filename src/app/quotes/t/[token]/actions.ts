@@ -5,8 +5,9 @@ import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins } from '@/lib/observability';
-import { sendEmail } from '@/lib/email';
+import { sendInternalEmail } from '@/lib/email';
 import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
+import { QUOTE_REF } from '@/lib/quotes/offer';
 
 function parseAttachments(v: FormDataEntryValue | null): string[] {
   if (typeof v !== 'string' || !v) return [];
@@ -45,7 +46,7 @@ export async function guestReplyByQuoteToken(formData: FormData): Promise<void> 
   }
 
   const now = new Date();
-  const ref = sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`;
+  const ref = sr.proformaNumber ?? QUOTE_REF(sr.id);
 
   await prisma.quoteMessage.create({
     data: {
@@ -72,12 +73,14 @@ export async function guestReplyByQuoteToken(formData: FormData): Promise<void> 
     },
   });
 
-  const ops = process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
-  await sendEmail({
+  const ops = process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '';
+  // Staff copy — skipped for placeholder inboxes and never fatal: the guest's
+  // reply is already saved.
+  await sendInternalEmail({
     to: ops,
     subject: `[${ref}] Guest reply on a quote`,
     html: `<p>${escapeHtml(sr.buyerName)} (${escapeHtml(sr.buyerEmail)}) replied to quote ${ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
-  });
+  }, 'quotes:guest-reply');
   await notifyAdmins(
     `Guest replied on quote · ${ref}`,
     `${sr.buyerName} replied via magic link.`,

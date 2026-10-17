@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { LayoutDashboard, Package, MessageSquare, Heart, FileText, User as UserIcon, Inbox, Bell, LifeBuoy, Banknote } from 'lucide-react';
+import { LayoutDashboard, Package, MessageSquare, Heart, FileText, User as UserIcon, Inbox, Bell, LifeBuoy, Banknote, ShieldCheck, Mail } from 'lucide-react';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { MobileDrawer } from '@/components/util/MobileDrawer';
@@ -37,6 +37,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <NavLink href="/app/wishlist" icon={Heart} label="Wishlist" />
       <NavLink href="/app/sell-submissions" icon={Banknote} label="My equipment offers" />
       <NavLink href="/app/profile" icon={UserIcon} label="Profile" />
+      <NavLink href="/app/security" icon={ShieldCheck} label="Security" />
+      <NavLink href="/app/email-preferences" icon={Mail} label="E-mail preferences" />
       {(role === 'SELLER' || role === 'ADMIN') && (
         <>
           <div className="pt-4 px-3 pb-2 text-xs uppercase tracking-wider text-muted-foreground font-semibold">Sell</div>

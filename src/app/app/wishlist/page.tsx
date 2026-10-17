@@ -1,10 +1,10 @@
 import Link from 'next/link';
+import { firstPublicImage } from '@/lib/media/public-src';
 import { Heart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ProductCard } from '@/components/marketplace/ProductCard';
-import type { IllustrationName } from '@/components/illustrations/instruments';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +23,8 @@ export default async function WishlistPage() {
           images: true,
           condition: true,
           mode: true,
-          priceCents: true,
+          displayPriceCents: true,
+          vatScheme: true,
           currency: true,
           yearMade: true,
           quantity: true,
@@ -60,12 +61,13 @@ export default async function WishlistPage() {
                 slug: w.product.slug,
                 title: w.product.title,
                 brand: w.product.brand?.name ?? '—',
-                supplier: 'lab2date Verified Supplier',
-                illustration: (w.product.illustration ?? 'balance') as IllustrationName,
-                imageUrl: w.product.images?.[0] ?? null,
+                illustration: w.product.illustration,
+                imageUrl: firstPublicImage(w.product.images),
                 condition: w.product.condition,
                 mode: w.product.mode,
-                priceCents: w.product.priceCents,
+                // The public sell price (null for quote-only / hidden prices).
+                priceCents: w.product.displayPriceCents,
+                vatScheme: w.product.vatScheme,
                 currency: w.product.currency,
                 yearMade: w.product.yearMade,
                 // A saved unit that sold (or was taken off the marketplace)

@@ -4,21 +4,26 @@ import { useState, useEffect, useCallback } from 'react';
 import Image from 'next/image';
 import { X, ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { NoPhoto, type MissingPhotoMode } from '@/components/marketplace/NoPhoto';
 
+/** `images` must already be buyer-facing (our own /media paths only — see
+ *  publicProductImages). With none, the configured no-photo tile is shown. */
 export function ProductGallery({
   images,
-  fallback,
+  photoMode,
+  illustration,
   title,
   conditionLabel,
   mode,
 }: {
   images: string[];
-  fallback: string;
+  photoMode: MissingPhotoMode;
+  illustration?: string | null;
   title: string;
   conditionLabel: string;
   mode: 'BUY_NOW' | 'QUOTE_ONLY' | 'HYBRID';
 }) {
-  const pics = images.length > 0 ? images : [fallback];
+  const pics = images;
   const [active, setActive] = useState(0);
   const [open, setOpen] = useState(false);
 
@@ -39,6 +44,19 @@ export function ProductGallery({
       document.body.style.overflow = '';
     };
   }, [open, next, prev]);
+
+  if (pics.length === 0) {
+    return (
+      <div className="relative aspect-[5/4] w-full rounded-3xl overflow-hidden border border-border bg-card">
+        <NoPhoto mode={photoMode} illustration={illustration} />
+        <div className="absolute top-5 left-5 flex gap-2">
+          <Badge variant="secondary">{conditionLabel}</Badge>
+          {mode === 'BUY_NOW' && <Badge variant="success">Buy now</Badge>}
+          {mode === 'QUOTE_ONLY' && <Badge variant="accent">Quote only</Badge>}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>

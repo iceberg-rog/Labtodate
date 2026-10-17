@@ -13,12 +13,14 @@ import { isBuildPhase } from '@/lib/build-phase';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { type HomeSection, getHomeContent, getHomeSectionOrder, parseHeroStats } from '@/lib/home-sections';
 import { getLiveHeroStats } from '@/lib/home-stats';
+import { getSiteTexts } from '@/lib/catalog/site-texts';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
   await ensureSettingsLoaded();
   const content = getHomeContent();
+  const texts = await getSiteTexts();
 
   // Unless admin typed explicit (parseable) HERO_STATS, show REAL counts so the
   // headline never lies — an unparseable value falls back to live counts too,
@@ -50,7 +52,7 @@ export default async function HomePage() {
     ),
     cta: (
       <Reveal key="cta">
-        <CTASection heading={content.ctaHeading} subtitle={content.ctaSubtitle} />
+        <CTASection heading={content.ctaHeading} subtitle={content.ctaSubtitle} note={texts.sourcingNoObligation} />
       </Reveal>
     ),
   };
@@ -62,8 +64,7 @@ export default async function HomePage() {
     name: process.env.SITE_NAME || 'lab2date',
     url: base,
     logo: process.env.COMPANY_LOGO_URL || undefined,
-    description:
-      'B2B marketplace for refurbished and surplus laboratory & analytical equipment across Europe — HPLC, GC, mass spectrometry and more.',
+    description: texts.metaDescription,
     email: process.env.SUPPORT_EMAIL || undefined,
     address: process.env.COMPANY_ADDRESS
       ? {

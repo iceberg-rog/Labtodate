@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { publicCaseStudyWhere } from '@/lib/catalog/consent';
 import { notFound } from 'next/navigation';
 import { ChevronLeft } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -10,14 +11,15 @@ export const dynamic = 'force-dynamic';
 
 export async function generateMetadata(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
-  const c = await prisma.caseStudy.findUnique({ where: { slug: params.slug } });
+  // Unpublished (or consent-less) case studies leak nothing, not even the title.
+  const c = await prisma.caseStudy.findFirst({ where: { slug: params.slug, ...(await publicCaseStudyWhere()) } });
   return { title: c?.title ?? 'Not found' };
 }
 
 export default async function CaseStudyPage(props: { params: Promise<{ slug: string }> }) {
   const params = await props.params;
-  const c = await prisma.caseStudy.findUnique({ where: { slug: params.slug } });
-  if (!c || c.status !== 'PUBLISHED') notFound();
+  const c = await prisma.caseStudy.findFirst({ where: { slug: params.slug, ...(await publicCaseStudyWhere()) } });
+  if (!c) notFound();
 
   return (
     <article className="container-px py-12 max-w-3xl mx-auto">

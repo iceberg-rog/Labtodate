@@ -442,3 +442,27 @@ the restore of every remaining cart line); both now route through the non-throwi
 Reservation-before-create is itself correct and is **not** changed — it is what stops a
 unique used unit being sold twice (S4). The fix adds the missing compensation, not a
 reordering.
+
+## Addendum 2026-10-02 — Quote → offer → acceptance; server-generated documents
+
+"Send proforma" used to auto-create a PENDING_PAYMENT order and issue the
+proforma the moment staff priced a quote, so the buyer never accepted anything.
+Staff now send an OFFER; the buyer accepts it; acceptance creates the order and
+the proforma. This supersedes the `sendProforma` references in F1 / F11 above
+(the quote-order creation site is now `quotes/actions.acceptOffer`).
+
+| ID | Invariant | Enforced by | Status |
+|---|---|---|---|
+| Q1 | No order and no proforma number exist for a quote until the buyer accepts its offer | `sendOffer` writes only the quote's offer fields (and unlinks a legacy auto-created unpaid order); `acceptOffer` is the only place a quote order is created | ✅ browser-verified (accept-flow-01) |
+| Q2 | One order per quote, even on double click / two tabs / refresh | `acceptOffer`: guarded `RESPONDED→ACCEPTED` claim on the exact offer (price, currency, quotedAt) in the same transaction as the order create; `Order.sourcingRequestId @unique`; the losing request is redirected to the same payment page | ✅ browser-verified (concurrent two-tab confirm) |
+| Q3 | Order total == the offer total the buyer confirmed | `offerTotals()` feeds the offer card, the confirm step and the order; `acceptOffer` refuses when the offer changed since the page was opened (`expectedTotalCents` / `offerVersion`) | ✅ browser-verified (stale tab refused) |
+| Q4 | Price locked after acceptance | `sendOffer` refuses `ACCEPTED` with a readable message (cancel the order + close, then a new quote) | ✅ browser-verified |
+| Q5 | An expired offer cannot be accepted; the sweep never closes an open offer | `acceptOffer` checks `validUntilAt`; `expireProformaTransition` only fires when an unpaid, proof-less order exists (accepted proforma past its due date) | ✅ browser + it-order-atomicity |
+| Q6 | A failed secondary email never turns a completed action into "not sent"; a failed primary email is reported truthfully | `sendInternalEmail` (skips placeholder addresses, never throws) for staff/company copies; `trySendEmail` + `warning` results for the buyer's own email | ✅ browser-verified (550 bounce, placeholder billing copy) |
+| D1 | A proforma / invoice never contains the website's header, menus or footer | one self-contained renderer (`src/lib/documents/render.ts`) → PDF via headless Chromium with JS off and all network blocked; pages only frame the document route | ✅ PDFs text-checked + rendered |
+| D2 | Documents are only served to the order's buyer or an admin with `orders:view` | `src/lib/documents/http.ts` (404 otherwise; sellers never get buyer documents) | ✅ browser-verified |
+
+`validUntilAt` carries two meanings by state: the offer's validity while
+`RESPONDED`, the proforma's payment due date once `ACCEPTED`.
+Legacy auto-accepted quotes are reopened as offers by
+`prisma/migrate-offers-to-acceptance.ts` (dry run by default, `--apply` to write).

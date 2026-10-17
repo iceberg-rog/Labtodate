@@ -2,9 +2,10 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   BadgeCheck, Star, ExternalLink, Sparkles, Package, Cloud, Settings as SettingsIcon,
-  ChevronRight, ShieldCheck, AlertTriangle, Loader2, Ban, Pencil, Trash2,
+  ChevronRight, ShieldCheck, AlertTriangle, Loader2, Ban, Pencil, Trash2, RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +26,7 @@ export interface ShopRow {
   userCount: number;
   importSourceUrl: string | null;
   lastImportedAt: string | null;
+  agreementStatus: 'NONE' | 'SENT' | 'SIGNED' | 'OWN_SHOP' | 'TERMINATED';
   pricingMode: string;
   pricingMarkupBp: number;
   suggestedByAi: boolean;
@@ -150,9 +152,14 @@ function ShopCard({
   let host = '';
   try { if (shop.importSourceUrl) host = new URL(shop.importSourceUrl).hostname.replace(/^www\./, ''); } catch {}
 
-  function toggleVerified(e: React.MouseEvent) {
+  function unverify(e: React.MouseEvent) {
     e.stopPropagation();
-    start(async () => { await setCompanyVerified(shop.slug, !shop.isVerified); router.refresh(); });
+    setActionError(null);
+    start(async () => {
+      const r = await setCompanyVerified(shop.slug, false);
+      if (!r.ok) setActionError(r.message);
+      router.refresh();
+    });
   }
   function toggleFeatured(e: React.MouseEvent) {
     e.stopPropagation();
@@ -208,6 +215,15 @@ function ShopCard({
                   </span>
                 )}
                 <PricingChip mode={shop.pricingMode} bp={shop.pricingMarkupBp} />
+                {shop.importSourceUrl && (shop.agreementStatus === 'SIGNED' || shop.agreementStatus === 'OWN_SHOP') ? (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-foreground/10 text-[9px] font-bold uppercase tracking-wider">
+                    {shop.agreementStatus === 'OWN_SHOP' ? 'Own shop' : 'Agreement signed'}
+                  </span>
+                ) : shop.importSourceUrl ? (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 text-[9px] font-bold uppercase tracking-wider">
+                    No agreement
+                  </span>
+                ) : null}
               </div>
               <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2 flex-wrap">
                 <span>{shop.country ?? '—'}</span>
@@ -234,9 +250,20 @@ function ShopCard({
 
         {/* Action buttons (pointer-events-auto raises above the absolute-positioned hit area) */}
         <div className="relative z-10 mt-3 flex items-center gap-1.5 flex-wrap pointer-events-auto">
-          <Button type="button" variant="outline" size="sm" onClick={toggleVerified} disabled={pending} className="rounded-full text-xs">
-            {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-            {shop.isVerified ? 'Unverify' : 'Verify'}
+          {shop.isVerified ? (
+            <Button type="button" variant="outline" size="sm" onClick={unverify} disabled={pending} className="rounded-full text-xs">
+              {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+              Unverify
+            </Button>
+          ) : (
+            <Button asChild variant="outline" size="sm" className="rounded-full text-xs">
+              <Link href={`/admin/companies/${shop.slug}`} onClick={(e) => e.stopPropagation()}>Verify…</Link>
+            </Button>
+          )}
+          <Button asChild variant="outline" size="sm" className="rounded-full text-xs">
+            <Link href={`/admin/companies/${shop.slug}`} onClick={(e) => e.stopPropagation()}>
+              <RefreshCw className="h-3 w-3" /> Sync &amp; settings
+            </Link>
           </Button>
           <Button type="button" variant="outline" size="sm" onClick={toggleFeatured} disabled={pending} className="rounded-full text-xs">
             <Star className="h-3 w-3" /> {shop.isFeatured ? 'Unfeature' : 'Feature'}

@@ -17,13 +17,14 @@
  *    order — it runs the late-payment anomaly (idempotent refund / critical alert);
  *  - admin single cancel AND bulk cancel route through cancelOrderSaga (no inline
  *    claim + separate restock loop; bulk restocks/notifies only actual winners);
- *  - the orphan sweep enforces a hard TTL floor above Stripe's session lifetime.
+ *  - the due-date sweep (successor of the orphan sweep) only cancels bank-transfer
+ *    orders without a Stripe session, keeps a 25 h floor above Stripe's session
+ *    lifetime, and cancels through cancelAndRestockOrder(requireNoProof).
  *
  * Run: npx tsx scripts/verify-expired-restock-once.ts
  */
 import { readFileSync } from 'node:fs';
 import { cancelOrderSaga } from '../src/lib/orders/stripe-handoff';
-import { orphanSweepTtlMinutes } from '../src/lib/orders/orphan-ttl';
 
 let pass = 0; let fail = 0; const rows: string[] = [];
 const chk = (n: string, ok: boolean, d = '') => { rows.push(`${ok ? 'ok  ' : 'FAIL'}  ${n}${d ? '  ' + d : ''}`); ok ? pass++ : fail++; };
@@ -60,14 +61,10 @@ chk('admin single cancel → cancelOrderSaga; bulk → cancelOrdersBatch; no old
   /winners = orders\.filter\(\(o\) => canceled\.includes/.test(admin));
 
 const sweep = src('src/app/api/cron/sla-sweep/route.ts');
-chk('orphan sweep uses the fail-safe orphanSweepTtlMinutes floor helper',
-  /orphanSweepTtlMinutes\(process\.env\.ORPHAN_ORDER_TTL_MINUTES\)/.test(sweep) && /stripeSessionId: null/.test(sweep));
-// BEHAVIOURAL: fail-safe TTL — floor wins, invalid falls back to default, never NaN
-chk('orphanSweepTtlMinutes · floor/default/invalid (never NaN)',
-  orphanSweepTtlMinutes('10') === 1500 && orphanSweepTtlMinutes('99999') === 99999 &&
-  orphanSweepTtlMinutes(undefined) === 10080 && orphanSweepTtlMinutes('abc') === 10080 &&
-  orphanSweepTtlMinutes('-5') === 10080 && orphanSweepTtlMinutes('0') === 10080 &&
-  Number.isFinite(orphanSweepTtlMinutes('NaN')));
+const dueSweep = src('src/lib/orders/due-sweep.ts');
+chk('due-date sweep: wired into the cron; session-less, proof-less orders only; 25 h floor; cancel via cancelAndRestockOrder(requireNoProof)',
+  /runPaymentDueSweep\(now\)/.test(sweep) && /stripeSessionId: null/.test(dueSweep) && /paymentSubmittedAt: null/.test(dueSweep) &&
+  /CHECKOUT_FLOOR_MS = 25 \* 3600_000/.test(dueSweep) && /cancelAndRestockOrder\(prisma, o\.id, \{ requireNoProof: true, expectedStripeSessionId: null \}\)/.test(dueSweep));
 
 // Safe expire everywhere: cancellation/handoff paths must NOT classify expire
 // errors by message; they go through session-api (retrieve status==='expired').

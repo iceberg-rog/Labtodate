@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { uploadObject, safeKey } from '@/lib/storage/s3';
 import { IMAGE_KINDS, readVerifiedUpload } from '@/lib/storage/file-type';
 import { getServerSession } from '@/lib/auth-server';
+import { ownMediaPath } from '@/lib/media/public-src';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,5 +36,7 @@ export async function POST(req: Request) {
   const { buf, mime, ext } = checked.upload;
   const key = safeKey(ext);
   const { url } = await uploadObject(key, buf, mime);
-  return NextResponse.json({ url, key });
+  // `path`: the host-relative "/media/…" form product photos are stored in, so
+  // a later domain / IP change never hides them (lib/media/public-src.ts).
+  return NextResponse.json({ url, key, path: ownMediaPath(url) });
 }

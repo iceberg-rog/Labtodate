@@ -63,7 +63,7 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [previewProduct, setPreviewProduct] = useState<PreviewProductCard | null>(null);
   const [importing, startImport] = useTransition();
-  const [importMsg, setImportMsg] = useState<{ ok: boolean; message: string } | null>(null);
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; message: string; runId?: string | null } | null>(null);
 
   const loadDb = useCallback(async (pg: number) => {
     if (!shop) return;
@@ -173,7 +173,7 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
   function runImportAll() {
     if (!shop) return;
     setImportMsg(null);
-    if (!confirm(`Import ALL ${liveTotal} products from ${shop.name}? (Existing slugs are upserted.)`)) return;
+    if (!confirm(`Sync ALL ${liveTotal} products from ${shop.name}? Items already imported get this shop's sync policy (price/stock by default), new ones wait for review, items removed at the source are archived. Tip: run a dry run first on the shop's Sync page.`)) return;
     const s = shop;
     startImport(async () => {
       const r = await importShopProducts(s.slug, null);
@@ -350,6 +350,11 @@ export function ShopPreviewDialog({ open, shop, categories = [], onClose }: Prop
                           {importMsg && (
                             <span className={`ml-3 ${importMsg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'} font-semibold`}>
                               {importMsg.ok ? <CheckCircle2 className="h-3.5 w-3.5 inline" /> : <XCircle className="h-3.5 w-3.5 inline" />} {importMsg.message}
+                              {importMsg.runId && shop && (
+                                <Link href={`/admin/companies/${shop.slug}/runs/${importMsg.runId}`} className="ml-2 underline">
+                                  Open report
+                                </Link>
+                              )}
                             </span>
                           )}
                         </p>
@@ -506,7 +511,7 @@ function CardGrid({
             <div className="aspect-[4/3] bg-muted relative overflow-hidden">
               {p.image ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={p.image} alt="" className="w-full h-full object-cover" />
+                <img src={p.image} alt="" referrerPolicy="no-referrer" loading="lazy" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center text-muted-foreground text-xs">no photo</div>
               )}
@@ -641,7 +646,7 @@ function ProductCardPreview({
             <div className="aspect-[4/3] bg-muted relative overflow-hidden">
               {product.image ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={product.image} alt="" className="w-full h-full object-cover" />
+                <img src={product.image} alt="" referrerPolicy="no-referrer" loading="lazy" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full bg-gradient-to-br from-[hsl(82_55%_95%)] to-[hsl(168_30%_94%)] flex items-center justify-center text-muted-foreground text-sm">no photo</div>
               )}

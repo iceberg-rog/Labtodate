@@ -6,6 +6,7 @@ import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
 import { GuestQuoteReplyForm } from './GuestQuoteReplyForm';
+import { QUOTE_REF } from '@/lib/quotes/offer';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Quote request', robots: { index: false } };
@@ -19,7 +20,7 @@ const PRIORITY_ICON: Record<string, JSX.Element> = {
 const CUSTOMER_STATUS_LABEL: Record<string, string> = {
   PENDING: 'Awaiting reply',
   RESPONDED: 'Supplier replied',
-  ACCEPTED: 'Accepted',
+  ACCEPTED: 'Offer accepted',
   DECLINED: 'Declined',
   CLOSED: 'Closed',
 };
@@ -58,7 +59,7 @@ export default async function GuestQuotePage(
         <p className="mt-4 text-muted-foreground">
           For your security, quote magic links are only valid for 14 days. To
           continue the conversation on quote{' '}
-          <span className="font-mono font-semibold">RFQ-{sr.id.slice(-6).toUpperCase()}</span>, email us
+          <span className="font-mono font-semibold">{QUOTE_REF(sr.id)}</span>, email us
           and we&rsquo;ll send a fresh link.
         </p>
         <a
@@ -71,7 +72,7 @@ export default async function GuestQuotePage(
     );
   }
 
-  const ref = sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`;
+  const ref = sr.proformaNumber ?? QUOTE_REF(sr.id);
   const title = sr.product?.title ?? sr.productCategory ?? 'General sourcing request';
 
   return (
@@ -95,14 +96,23 @@ export default async function GuestQuotePage(
         <p className="text-sm text-muted-foreground mt-1">
           From {sr.buyerName} &lt;{sr.buyerEmail}&gt; · opened {sr.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
         </p>
+        {sr.quotedPriceCents != null && sr.status === 'RESPONDED' && (
+          <p className="mt-3 text-sm">
+            <strong>You have an offer.</strong> To accept or decline it,{' '}
+            <a className="font-semibold text-primary underline" href={`/auth/sign-in?redirect=${encodeURIComponent(`/app/quotes/${sr.id}`)}`}>
+              sign in with {sr.buyerEmail}
+            </a>{' '}
+            — accepting creates your order and proforma invoice.
+          </p>
+        )}
         {sr.quotedPriceCents != null && (
           <p className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-accent/10 border border-accent/30 px-3 py-2 text-sm">
             <FileText className="h-4 w-4 text-accent" />
-            <span className="text-muted-foreground">Quoted</span>
+            <span className="text-muted-foreground">{sr.status === 'ACCEPTED' ? 'Accepted offer' : 'Offer'}</span>
             <strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency: sr.quotedCurrency ?? 'EUR' }).format(sr.quotedPriceCents / 100)}</strong>
             {sr.validUntilAt && (
               <span className="text-muted-foreground">
-                {' · valid until '}{new Date(sr.validUntilAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                {' · valid until '}{new Date(sr.validUntilAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}
               </span>
             )}
           </p>

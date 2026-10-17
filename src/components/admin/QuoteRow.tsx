@@ -39,6 +39,16 @@ export type QuoteRowProps = {
   quotedPriceCents: number | null;
   quotedCurrency: string | null;
   proformaNumber: string | null;
+  /** Offer validity (RESPONDED) / proforma due date (ACCEPTED). */
+  validUntilISO: string | null;
+  /** The amount the buyer pays (order total once accepted, else the offer snapshot); null = no offer. */
+  offerTotalCents: number | null;
+  /** The offer's VAT is decided at acceptance — the amount is excl. VAT. */
+  offerTotalExclVat?: boolean;
+  /** A supplier price is waiting for lab2date review. */
+  proposalPending?: boolean;
+  /** Why the deal was lost (decline reason, cancellation). */
+  lostReason?: string | null;
   archived: boolean;
   isRegistered: boolean;
   /** Buyer's prior paid orders count (repeat / new buyer signal). */
@@ -46,6 +56,7 @@ export type QuoteRowProps = {
   buyerLifetimeCents: number;
   /** Linked order if quote was accepted + converted. */
   linkedOrderStatus: string | null;
+  linkedOrderProof?: boolean;
   /** Available admins for transfer popover. */
   admins?: Array<{ id: string; name: string | null; email: string }>;
   // Bulk-mode props
@@ -72,13 +83,15 @@ function initials(name: string, email: string): string {
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   if (diff < 60_000) return 'just now';
-  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m`;
-  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h`;
-  return `${Math.floor(diff / 86400_000)}d`;
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`;
+  return `${Math.floor(diff / 86400_000)}d ago`;
 }
 
-function SlaBadge({ dueAtISO, status, mounted }: { dueAtISO: string | null; status: string; mounted: boolean }) {
-  if (!dueAtISO || ['ACCEPTED','DECLINED','CLOSED'].includes(status)) return null;
+/** The reply SLA only runs while the request waits on lab2date: never on an
+ *  open offer (the buyer decides), an accepted / paid / lost deal. */
+function SlaBadge({ dueAtISO, status, mounted, waitingOnUs }: { dueAtISO: string | null; status: string; mounted: boolean; waitingOnUs: boolean }) {
+  if (!dueAtISO || !waitingOnUs || ['ACCEPTED','DECLINED','CLOSED'].includes(status)) return null;
   if (!mounted) {
     return (
       <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-foreground/[0.04] text-muted-foreground border border-border">
@@ -120,8 +133,10 @@ export function QuoteRow(p: QuoteRowProps) {
     status: p.status,
     lastReplyByStaff: p.lastReplyByStaff,
     proformaNumber: p.proformaNumber,
-    linkedOrder: p.linkedOrderStatus ? { status: p.linkedOrderStatus } : null,
-  });
+    quotedPriceCents: p.quotedPriceCents,
+    validUntilAt: p.validUntilISO,
+    linkedOrder: p.linkedOrderStatus ? { status: p.linkedOrderStatus, paymentSubmittedAt: p.linkedOrderProof ? 'yes' : null } : null,
+  }, 'staff');
   const dt = toneClasses(deal.tone);
 
   // Left stripe color reads priority first, then deal state.
@@ -140,7 +155,8 @@ export function QuoteRow(p: QuoteRowProps) {
   const amountColor =
     deal.state === 'won_paid' ? 'text-emerald-700 dark:text-emerald-300'
       : deal.state.startsWith('won_') ? 'text-purple-700 dark:text-purple-300'
-      : deal.state === 'proforma_sent' ? 'text-sky-700 dark:text-sky-300'
+      : deal.state === 'offer_sent' ? 'text-sky-700 dark:text-sky-300'
+      : deal.state === 'offer_expired' ? 'text-amber-700 dark:text-amber-300'
       : deal.state === 'awaiting_buyer' ? 'text-sky-700 dark:text-sky-300'
       : 'text-foreground';
 
@@ -180,13 +196,23 @@ export function QuoteRow(p: QuoteRowProps) {
                   {pri.icon}{pri.label}
                 </span>
               )}
-              <SlaBadge dueAtISO={p.dueAtISO} status={p.status} mounted={mounted} />
+              <SlaBadge
+                dueAtISO={p.dueAtISO}
+                status={p.status}
+                mounted={mounted}
+                waitingOnUs={!p.linkedOrderStatus && (p.status === 'PENDING' || !p.lastReplyByStaff)}
+              />
+              {p.proposalPending && (
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-900 border border-sky-300 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800">
+                  Supplier price to review
+                </span>
+              )}
               {p.customerType === 'GUEST' && (
                 <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
                   guest
                 </span>
               )}
-              <h3 className="font-bold text-[15px] leading-tight tracking-tight truncate min-w-0 flex-1">
+              <h3 dir="auto" className="font-bold text-[15px] leading-tight tracking-tight truncate min-w-0 flex-1">
                 {p.subject}
               </h3>
             </div>
@@ -197,7 +223,7 @@ export function QuoteRow(p: QuoteRowProps) {
                 <span className="h-6 w-6 rounded-full bg-primary/10 text-primary text-[10px] font-bold inline-flex items-center justify-center">
                   {initials(p.buyerName, p.buyerEmail)}
                 </span>
-                <span className="font-semibold">{p.buyerName}</span>
+                <span dir="auto" className="font-semibold">{p.buyerName}</span>
                 {p.company && (
                   <span className="text-muted-foreground inline-flex items-center gap-1">
                     <Building2 className="h-3 w-3" /> {p.company}
@@ -219,12 +245,12 @@ export function QuoteRow(p: QuoteRowProps) {
               </span>
             </div>
 
-            {/* Row 3: signals (recency · messages · attach · notes · proforma) */}
+            {/* Row 3: signals (recency · messages · attach · notes · proforma once accepted) */}
             <div className="flex items-center gap-3 flex-wrap text-[11px] text-muted-foreground">
               {p.lastReplyAtISO && (
                 <span className="inline-flex items-center gap-1" title="Last activity">
                   <span className={`h-1.5 w-1.5 rounded-full ${p.lastReplyByStaff ? 'bg-sky-500' : 'bg-amber-500'}`} />
-                  {mounted ? timeAgo(p.lastReplyAtISO) : '…'} ago · {p.lastReplyByStaff ? 'staff' : 'buyer'}
+                  {mounted ? timeAgo(p.lastReplyAtISO) : '…'} · {p.lastReplyByStaff ? 'staff' : 'buyer'}
                 </span>
               )}
               <span className="inline-flex items-center gap-1">
@@ -245,17 +271,21 @@ export function QuoteRow(p: QuoteRowProps) {
                   <FileText className="h-3 w-3" /> {p.proformaNumber}
                 </span>
               )}
+              {p.lostReason && (p.status === 'DECLINED' || p.status === 'CLOSED') && (
+                <span className="inline-flex items-center gap-1 italic">{p.lostReason}</span>
+              )}
             </div>
           </div>
 
           {/* RIGHT RAIL — dominant amount + deal state + assignee + actions */}
           <div className="flex flex-col items-end gap-2 self-start">
             {p.quotedPriceCents != null ? (
-              <p className={`text-2xl font-bold tabular-nums tracking-tight leading-none ${amountColor}`}>
-                {fmtMoney(p.quotedPriceCents, p.quotedCurrency ?? 'EUR')}
+              <p className={`text-2xl font-bold tabular-nums tracking-tight leading-none text-right ${amountColor}`}>
+                {fmtMoney(p.offerTotalCents ?? p.quotedPriceCents, p.quotedCurrency ?? 'EUR')}
+                {p.offerTotalExclVat && <span className="block text-[10px] font-normal text-muted-foreground mt-0.5">excl. VAT</span>}
               </p>
             ) : (
-              <p className="text-xs text-muted-foreground italic">no proforma yet</p>
+              <p className="text-xs text-muted-foreground italic">no offer yet</p>
             )}
             <DealStateBadge badge={deal} />
             <div className="flex items-center gap-1.5">

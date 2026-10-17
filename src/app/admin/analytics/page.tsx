@@ -8,7 +8,7 @@ import {
   Wrench,
   LifeBuoy,
 } from 'lucide-react';
-import { requireCapability } from '@/lib/auth-server';
+import { requireCapability, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { OrderStatus, QuoteStatus } from '@prisma/client';
@@ -35,6 +35,9 @@ export default async function AdminAnalyticsPage(
 ) {
   const searchParams = await props.searchParams;
   await requireCapability('analytics:view');
+  // A31: money figures (revenue, AOV, revenue per product) need finance:view;
+  // analytics:view alone (ops, marketing) shows counts and trends only.
+  const canMoney = await hasCapability('finance:view');
   const range = (searchParams.range === '7d' || searchParams.range === '90d' ? searchParams.range : '30d') as Range;
   const { since, days, granularityDays } = bucketsFor(range);
 
@@ -147,7 +150,7 @@ export default async function AdminAnalyticsPage(
       return {
         label: meta?.title ?? '(deleted product)',
         value: units,
-        sub: `${formatPrice(revCents, currency)} revenue`,
+        sub: canMoney ? `${formatPrice(revCents, currency)} revenue` : `${units} sold`,
       };
     })
     .filter((r) => r.value > 0);
@@ -211,9 +214,15 @@ export default async function AdminAnalyticsPage(
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Stat icon={<Banknote className="h-5 w-5" />} label="Revenue all-time (paid+)" value={formatPrice(revenueAll, currency)} sub={`${paidCount} paid orders`} />
-        <Stat icon={<TrendingUp className="h-5 w-5" />} label={`Revenue · last ${days}d`} value={formatPrice(revenueRange, currency)} accent />
-        <Stat icon={<ShoppingCart className="h-5 w-5" />} label="Avg order value" value={formatPrice(aov, currency)} />
+        {canMoney ? (
+          <>
+            <Stat icon={<Banknote className="h-5 w-5" />} label="Revenue all-time (paid+)" value={formatPrice(revenueAll, currency)} sub={`${paidCount} paid orders`} />
+            <Stat icon={<TrendingUp className="h-5 w-5" />} label={`Revenue · last ${days}d`} value={formatPrice(revenueRange, currency)} accent />
+            <Stat icon={<ShoppingCart className="h-5 w-5" />} label="Avg order value" value={formatPrice(aov, currency)} />
+          </>
+        ) : (
+          <Stat icon={<Banknote className="h-5 w-5" />} label="Paid orders (all time)" value={String(paidCount)} sub="Revenue needs the finance:view permission" />
+        )}
         <Stat icon={<Users className="h-5 w-5" />} label={`New users · ${days}d`} value={String(users30)} />
         <Stat icon={<Package className="h-5 w-5" />} label={`Orders · ${days}d`} value={String(orders30Count)} />
         <Stat icon={<Package className="h-5 w-5" />} label="Live listings" value={String(productsLive)} />
@@ -222,6 +231,7 @@ export default async function AdminAnalyticsPage(
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
+        {canMoney && (
         <div className="lg:col-span-2">
           <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-muted-foreground mb-3">
             Revenue trend
@@ -232,6 +242,7 @@ export default async function AdminAnalyticsPage(
             caption={`Paid orders only — totals per ${granularityDays === 1 ? 'day' : 'week'}.`}
           />
         </div>
+        )}
 
         <div>
           <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-muted-foreground mb-3">

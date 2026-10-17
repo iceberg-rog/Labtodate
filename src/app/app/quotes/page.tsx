@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { firstPublicImage } from '@/lib/media/public-src';
 import {
   FileText, ArrowRight, Inbox, MessageSquare, Sparkles, CheckCheck,
   Clock, CreditCard, XCircle, Search,
@@ -10,6 +11,10 @@ import { computeDealState, type DealState } from '@/lib/quotes/deal-state';
 import { InstrumentIllustration, ILLUSTRATIONS, type IllustrationName } from '@/components/illustrations/instruments';
 import { getMarketing } from '@/lib/marketing';
 import { formatPrice } from '@/lib/utils';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { offerAmounts } from '@/lib/quotes/pricing';
+import { documentHref } from '@/lib/documents';
+import { QUOTE_REF } from '@/lib/quotes/offer';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,6 +44,7 @@ type StateVisual = {
   ctaLabel?: string;
   ctaHref?: (q: { id: string; orderNumber: string | null }) => string;
 };
+type CtaArgs = { id: string; orderNumber: string | null };
 const STATE_VISUAL: Record<DealState, StateVisual> = {
   awaiting_supplier: {
     stripe: 'before:bg-amber-400',
@@ -54,21 +60,37 @@ const STATE_VISUAL: Record<DealState, StateVisual> = {
     ctaLabel: 'Open thread',
     ctaHref: (q) => `/app/quotes/${q.id}`,
   },
-  proforma_sent: {
+  offer_sent: {
     stripe: 'before:bg-sky-500',
     badge: 'bg-sky-100 dark:bg-sky-900/40 text-sky-900 dark:text-sky-300 border-sky-200 dark:border-sky-800',
     Icon: Sparkles,
-    label: 'Proforma received · your decision',
-    ctaLabel: 'Complete purchase',
-    ctaHref: (q) => q.orderNumber ? `/app/orders/${q.orderNumber}/payment` : `/app/quotes/${q.id}`,
+    label: 'Offer received · accept or decline',
+    ctaLabel: 'Review offer',
+    ctaHref: (q: CtaArgs) => `/app/quotes/${q.id}`,
+  },
+  offer_expired: {
+    stripe: 'before:bg-amber-400',
+    badge: 'bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+    Icon: Clock,
+    label: 'Offer expired · ask for a new one',
+    ctaLabel: 'Ask for a new offer',
+    ctaHref: (q: CtaArgs) => `/app/quotes/${q.id}`,
   },
   won_payment_pending: {
     stripe: 'before:bg-purple-500',
     badge: 'bg-purple-50 dark:bg-purple-950/40 text-purple-900 dark:text-purple-300 border-purple-200 dark:border-purple-800',
     Icon: CreditCard,
-    label: 'Awaiting your payment',
-    ctaLabel: 'Complete purchase',
-    ctaHref: (q) => q.orderNumber ? `/app/orders/${q.orderNumber}/payment` : `/app/quotes/${q.id}`,
+    label: 'Accepted · awaiting your payment',
+    ctaLabel: 'Go to payment',
+    ctaHref: (q: CtaArgs) => q.orderNumber ? `/app/orders/${q.orderNumber}/payment` : `/app/quotes/${q.id}`,
+  },
+  won_payment_review: {
+    stripe: 'before:bg-purple-400',
+    badge: 'bg-purple-50 dark:bg-purple-950/40 text-purple-900 dark:text-purple-300 border-purple-200 dark:border-purple-800',
+    Icon: Clock,
+    label: 'Accepted · payment being verified',
+    ctaLabel: 'View payment',
+    ctaHref: (q: CtaArgs) => q.orderNumber ? `/app/orders/${q.orderNumber}/payment` : `/app/quotes/${q.id}`,
   },
   won_paid: {
     stripe: 'before:bg-emerald-500',
@@ -123,6 +145,7 @@ function resolveIllustration(category: string | null | undefined): IllustrationN
 export default async function BuyerQuotesPage(props: { searchParams: Promise<{ filter?: string }> }) {
   const searchParams = await props.searchParams;
   const session = await requireSession({ redirectTo: '/app/quotes' });
+  await ensureSettingsLoaded();
   // One turnaround promise site-wide: the admin QUOTE_TURNAROUND setting.
   const turnaround = (await getMarketing()).quoteTurnaround;
   const filter = searchParams.filter ?? 'all';
@@ -145,7 +168,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
   const linked = items.length > 0
     ? await prisma.order.findMany({
         where: { sourcingRequestId: { in: items.map((q) => q.id) } },
-        select: { sourcingRequestId: true, status: true, orderNumber: true },
+        select: { sourcingRequestId: true, status: true, orderNumber: true, paymentSubmittedAt: true, totalCents: true, currency: true },
       })
     : [];
   const linkedByQuote = new Map(linked.map((o) => [o.sourcingRequestId!, o]));
@@ -158,14 +181,23 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
       status: q.status,
       lastReplyByStaff: q.lastReplyByStaff,
       proformaNumber: q.proformaNumber,
-      linkedOrder: lo ? { status: lo.status } : null,
+      quotedPriceCents: q.quotedPriceCents,
+      validUntilAt: q.validUntilAt,
+      linkedOrder: lo ?? null,
       archivedAt: q.archivedAt, // BUG-019: buyer-facing closure for archived RFQs
-    });
-    return { q, deal, orderNumber: lo?.orderNumber ?? null };
+    }, 'buyer');
+    // The amount the buyer pays: the order's total once accepted, else the offer total.
+    const amount = lo && lo.status !== 'CANCELED'
+      ? { cents: lo.totalCents, currency: lo.currency, exclVat: false }
+      : q.quotedPriceCents != null
+        ? { cents: offerAmounts(q).totalCents, currency: q.quotedCurrency ?? 'EUR', exclVat: !offerAmounts(q).vatDecided }
+        : null;
+    return { q, deal, orderNumber: lo && lo.status !== 'CANCELED' ? lo.orderNumber : null, amount };
   });
 
   const isActive = (s: DealState) =>
-    s === 'awaiting_supplier' || s === 'awaiting_buyer' || s === 'proforma_sent' || s === 'won_payment_pending';
+    s === 'awaiting_supplier' || s === 'awaiting_buyer' || s === 'offer_sent' || s === 'offer_expired' ||
+    s === 'won_payment_pending' || s === 'won_payment_review';
   const isWon = (s: DealState) => s === 'won_paid' || s === 'won_no_order';
   const isLost = (s: DealState) => s === 'lost_declined' || s === 'lost_closed';
 
@@ -179,8 +211,8 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
   // Lifetime quoted value across all WON quotes — the buyer's procurement
   // spend through the platform. Same shape as orders' lifetimeCents.
   const lifetimeQuotedCents = enriched
-    .filter((e) => isWon(e.deal.state) && e.q.quotedPriceCents != null)
-    .reduce((s, e) => s + (e.q.quotedPriceCents ?? 0), 0);
+    .filter((e) => isWon(e.deal.state) && e.amount)
+    .reduce((s, e) => s + (e.amount?.cents ?? 0), 0);
 
   const visible = enriched.filter((e) => {
     if (filter === 'all') return true;
@@ -240,7 +272,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
           </div>
           <p className="text-lg font-bold">No quotes yet</p>
           <p className="text-sm text-muted-foreground mt-2 max-w-sm mx-auto">
-            Need a price on a specific instrument? Our team sources it from verified suppliers{turnaround ? `, usually within ${turnaround}` : ''}.
+            Need a price on a specific instrument? Our team sources it from our supply network{turnaround ? `, usually within ${turnaround}` : ''}.
           </p>
           <div className="mt-5 flex gap-3 justify-center flex-wrap">
             <Button asChild className="rounded-full font-semibold"><Link href="/let-us-find-it">Request a quote</Link></Button>
@@ -257,11 +289,11 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
         </div>
       ) : (
         <ul className="space-y-3">
-          {visible.map(({ q, deal, orderNumber }) => {
+          {visible.map(({ q, deal, orderNumber, amount }) => {
             const vis = STATE_VISUAL[deal.state];
             const Icon = vis.Icon;
-            const ref = q.proformaNumber ?? `RFQ-${q.id.slice(-6).toUpperCase()}`;
-            const imgUrl = q.product?.images?.[0] ?? null;
+            const ref = q.proformaNumber ?? QUOTE_REF(q.id);
+            const imgUrl = firstPublicImage(q.product?.images);
             const illust = resolveIllustration(q.product?.illustration ?? q.productCategory);
             const title = q.product?.title ?? q.productCategory ?? 'General sourcing request';
 
@@ -271,11 +303,15 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
             if (deal.state === 'awaiting_supplier') {
               statusLine = `Opened ${smartDate(q.createdAt)} · ${turnaround ? `we aim to reply within ${turnaround}` : 'waiting for the supplier'}`;
             } else if (deal.state === 'awaiting_buyer') {
-              statusLine = `Supplier replied ${smartDate(q.lastReplyAt ?? q.updatedAt)} · they're drafting a formal quote`;
-            } else if (deal.state === 'proforma_sent') {
-              statusLine = `Proforma ${ref} · valid until ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}`;
+              statusLine = `Supplier replied ${smartDate(q.lastReplyAt ?? q.updatedAt)} · read their message`;
+            } else if (deal.state === 'offer_sent') {
+              statusLine = `Offer valid until ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—'} · accept or decline it`;
+            } else if (deal.state === 'offer_expired') {
+              statusLine = `Offer expired ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : ''} · ask the supplier for a new one`;
             } else if (deal.state === 'won_payment_pending') {
-              statusLine = `Order ${orderNumber} · awaiting your bank-transfer receipt`;
+              statusLine = `Order ${orderNumber} · proforma ${ref} · awaiting your bank transfer`;
+            } else if (deal.state === 'won_payment_review') {
+              statusLine = `Order ${orderNumber} · your payment proof is being verified`;
             } else if (deal.state === 'won_paid') {
               statusLine = `Order ${orderNumber} · paid ${smartDate(q.updatedAt)}`;
             } else if (deal.state === 'won_no_order') {
@@ -326,17 +362,18 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
                         {vis.label}
                       </span>
                     </div>
-                    <h3 className="font-bold text-[15px] leading-tight truncate">{title}</h3>
+                    <h3 dir="auto" className="font-bold text-[15px] leading-tight truncate">{title}</h3>
                     <p className="text-xs text-muted-foreground mt-1 truncate">{statusLine}</p>
                   </div>
 
                   <div className="text-right flex flex-col items-end gap-1 flex-shrink-0">
-                    {q.quotedPriceCents != null ? (
+                    {amount ? (
                       <p className="text-lg font-bold tabular-nums leading-none">
-                        {fmtMoney(q.quotedPriceCents, q.quotedCurrency ?? 'EUR')}
+                        {fmtMoney(amount.cents, amount.currency)}
+                        {amount.exclVat && <span className="block text-[10px] font-normal text-muted-foreground mt-0.5">excl. VAT</span>}
                       </p>
                     ) : (
-                      <p className="text-xs text-muted-foreground italic">awaiting quote</p>
+                      <p className="text-xs text-muted-foreground italic">awaiting offer</p>
                     )}
                     <p className="text-[10px] uppercase tracking-wider text-muted-foreground tabular-nums">
                       {new Date(q.updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
@@ -353,13 +390,13 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
                         {vis.ctaLabel} <ArrowRight className="h-3.5 w-3.5" />
                       </Link>
                     )}
-                    {q.proformaNumber && (
-                      <Link
-                        href={`/app/quotes/${q.id}/proforma`}
+                    {q.proformaNumber && orderNumber && (
+                      <a
+                        href={documentHref('proforma', orderNumber, 'pdf')}
                         className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-border text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted"
                       >
-                        <FileText className="h-3.5 w-3.5" /> Proforma
-                      </Link>
+                        <FileText className="h-3.5 w-3.5" /> Proforma PDF
+                      </a>
                     )}
                   </div>
                   <Link

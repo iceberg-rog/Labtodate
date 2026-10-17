@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { getServerSession } from '@/lib/auth-server';
+import { getServerSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { streamSupportAttachment } from '@/lib/storage/s3';
 import { storedFileHeaders } from '@/lib/storage/file-type';
@@ -33,8 +33,6 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ key: str
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
-  const isAdmin = session.user.role === 'ADMIN';
-
   // We don't trust the URL — look the key up in both tables that legitimately
   // store private receipts under this prefix:
   //   1. Order.paymentProofUrl  → buyer uploaded a bank-transfer receipt to PAY us
@@ -60,7 +58,11 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ key: str
     : sellSubmission!.submittedById === session.user.id
       || (sellSubmission!.email?.toLowerCase() === session.user.email?.toLowerCase());
 
-  if (!isAdmin && !isOwner) {
+  // Staff need the permission for the record the receipt belongs to (A31):
+  // payment receipts are financial documents, not for every admin.
+  const staffAllowed =
+    session.user.role === 'ADMIN' && (await hasCapability(order ? 'orders:view' : 'sell:view'));
+  if (!staffAllowed && !isOwner) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 

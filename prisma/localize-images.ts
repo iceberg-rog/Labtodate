@@ -1,110 +1,78 @@
 /**
- * Localize all product images off the source shops (lab2parts.com /
- * lab2.nl) into our own MinIO/R2 storage. After this, lab2date has
- * ZERO live dependency on those sites.
+ * Copy every product photo that is still on a foreign server (supplier site,
+ * CDN) into lab2date's own media store, and tidy own-store URLs to the
+ * host-relative "/media/<bucket>/<key>" form. DRY RUN by default.
  *
- * Idempotent — stable keys (hash of source URL), skips already-local.
+ *   npx tsx prisma/localize-images.ts            # report only
+ *   npx tsx prisma/localize-images.ts --apply    # copy + rewrite Product.images
  *
- *   npx tsx prisma/localize-images.ts
+ * Same code as Admin → Products → "Self-host photos" and the supplier sync
+ * (src/lib/media/localize.ts): key = sha1(source URL), so photos copied by the
+ * earlier version of this script are recognised and not downloaded again.
+ * A photo that cannot be copied stays in the list (hidden from buyers by
+ * src/lib/media/public-src.ts) and is retried on the next run; the supplier's
+ * original URL is kept in Product.sourceImageUrls.
  */
-
-import { createHash } from 'node:crypto';
-import { PrismaClient } from '@prisma/client';
-import { uploadObject, ensureBucket } from '../src/lib/storage/s3';
-
-const prisma = new PrismaClient();
-
-const REMOTE_HOSTS = ['lab2parts.com', 'lab2.nl'];
-const PUBLIC_PREFIX = process.env.S3_PUBLIC_URL || 'http://localhost:9000/lab2date-media';
-const CONCURRENCY = 6;
-
-function isRemote(url: string): boolean {
-  return REMOTE_HOSTS.some((h) => url.includes(h));
-}
-
-function keyFor(url: string): string {
-  const hash = createHash('sha1').update(url).digest('hex').slice(0, 20);
-  const ext = (url.split('?')[0].split('.').pop() ?? 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'jpg';
-  return `products/import/${hash}.${ext}`;
-}
-
-async function localizeOne(url: string): Promise<string | null> {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
-    if (!res.ok) return null;
-    const ct = res.headers.get('content-type') || 'image/jpeg';
-    if (!ct.startsWith('image/')) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 100) return null;
-    const key = keyFor(url);
-    const { url: publicUrl } = await uploadObject(key, buf, ct);
-    return publicUrl;
-  } catch {
-    return null;
-  }
-}
+import { prisma } from '../src/lib/db';
+import { localizeImageList } from '../src/lib/media/localize';
+import { isOwnStoredImage, ownMediaPath, publicProductImages } from '../src/lib/media/public-src';
 
 async function main() {
-  await ensureBucket();
-  console.log('⇣ Localizing product images into own storage…');
-
-  const products = await prisma.product.findMany({
-    where: { images: { isEmpty: false } },
-    select: { id: true, images: true },
+  const apply = process.argv.includes('--apply');
+  const all = await prisma.product.findMany({
+    select: { id: true, slug: true, images: true, sourceImageUrls: true },
+    orderBy: { id: 'asc' },
   });
-  console.log(`  ${products.length} products with images`);
-
-  // Build the unique remote-URL set → resolved local URL (so duplicate
-  // images across products are fetched/uploaded once).
-  const remoteUrls = new Set<string>();
-  for (const p of products) for (const u of p.images) if (isRemote(u)) remoteUrls.add(u);
-  const all = [...remoteUrls];
-  console.log(`  ${all.length} unique remote images to migrate`);
-
-  const resolved = new Map<string, string | null>();
-  let done = 0;
-  for (let i = 0; i < all.length; i += CONCURRENCY) {
-    const batch = all.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(batch.map((u) => localizeOne(u).then((r) => [u, r] as const)));
-    for (const [u, r] of results) resolved.set(u, r);
-    done += batch.length;
-    if (done % 60 === 0 || done >= all.length) console.log(`  ${done}/${all.length} migrated`);
-  }
-
-  // Rewrite each product's images array.
-  let updated = 0;
-  let dropped = 0;
-  for (const p of products) {
-    let changed = false;
-    const next: string[] = [];
-    for (const u of p.images) {
-      if (!isRemote(u)) { next.push(u); continue; }
-      const local = resolved.get(u);
-      if (local) { next.push(local); changed = true; }
-      else { changed = true; dropped++; } // failed → drop, card falls back to placeholder
+  const todo = all.filter((p) => p.images.some((u) => ownMediaPath(u) !== u));
+  const foreign = todo.reduce((n, p) => n + p.images.filter((u) => !isOwnStoredImage(u)).length, 0);
+  console.log(`${all.length} products · ${todo.length} need work · ${foreign} photo(s) on foreign servers`);
+  if (!apply) {
+    const hosts = new Map<string, number>();
+    for (const p of todo) for (const u of p.images) if (!isOwnStoredImage(u)) {
+      let h = 'invalid';
+      try { h = new URL(u).host; } catch { /* keep */ }
+      hosts.set(h, (hosts.get(h) ?? 0) + 1);
     }
-    if (changed) {
+    for (const [h, n] of [...hosts].sort((a, b) => b[1] - a[1])) console.log(`  ${h}: ${n}`);
+    console.log('Dry run — add --apply to copy them.');
+    return;
+  }
+  let downloaded = 0;
+  let hosted = 0;
+  let failed = 0;
+  let done = 0;
+  for (const p of todo) {
+    const remote = p.images.filter((u) => !isOwnStoredImage(u));
+    const loc = await localizeImageList(p.images);
+    downloaded += loc.downloaded;
+    hosted += remote.length - loc.failures.length;
+    failed += loc.failures.length;
+    for (const f of loc.failures) console.warn(`  ! ${p.slug}: ${f.url} — ${f.error}`);
+    if (loc.changed) {
       await prisma.product.update({
         where: { id: p.id },
-        data: { images: next, hasImages: next.length > 0 },
+        data: {
+          images: loc.images,
+          hasImages: publicProductImages(loc.images).length > 0,
+          sourceImageUrls: Array.from(new Set([...p.sourceImageUrls, ...remote])),
+        },
       });
-      updated++;
     }
+    done++;
+    if (done % 50 === 0 || done === todo.length) console.log(`  ${done}/${todo.length} products`);
   }
-
-  const stillRemote = await prisma.product.count({
-    where: { OR: REMOTE_HOSTS.map((h) => ({ images: { has: h } })) },
+  const left = (await prisma.product.findMany({ select: { images: true } })).filter((p) => p.images.some((u) => !isOwnStoredImage(u))).length;
+  console.log(`\nDone: ${hosted} photo(s) now served from our store (${downloaded} downloaded, the rest already stored), ${failed} failed (retried next run), ${left} product(s) still have a foreign photo.`);
+  await prisma.auditLog.create({
+    data: { actorEmail: 'system:cli', action: 'catalog.images.localize', meta: `hosted=${hosted} downloaded=${downloaded} failed=${failed} left=${left}` },
   });
-
-  console.log('\n✅ Done.', {
-    productsUpdated: updated,
-    imagesMigrated: [...resolved.values()].filter(Boolean).length,
-    imagesFailedDropped: dropped,
-    publicPrefix: PUBLIC_PREFIX,
-  });
-  console.log(`   Sanity: products still containing a source-shop string ≈ ${stillRemote} (substring match, expect 0)`);
 }
 
 main()
-  .catch((e) => { console.error('Localize failed:', e); process.exit(1); })
-  .finally(async () => { await prisma.$disconnect(); });
+  .catch((e) => {
+    console.error('Localize failed:', e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

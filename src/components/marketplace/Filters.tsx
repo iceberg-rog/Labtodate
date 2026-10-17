@@ -13,9 +13,15 @@ interface FacetItem {
 export function Filters({
   categories,
   brands,
+  conditions,
+  priceBasis,
 }: {
   categories: FacetItem[];
   brands: FacetItem[];
+  /** Condition codes with the labels the owner set (Admin → Catalog → Conditions & warranty). */
+  conditions: { code: string; label: string }[];
+  /** e.g. "excl. VAT" — the basis prices are shown (and filtered) in. */
+  priceBasis?: string;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -136,12 +142,12 @@ export function Filters({
       </FilterGroup>
 
       <FilterGroup title="Condition">
-        {(['NEW', 'REFURBISHED', 'USED'] as const).map((c) => (
+        {conditions.map((c) => (
           <FilterToggle
-            key={c}
-            active={activeCondition === c}
-            onClick={() => set('condition', c)}
-            label={c.charAt(0) + c.slice(1).toLowerCase()}
+            key={c.code}
+            active={activeCondition === c.code}
+            onClick={() => set('condition', c.code)}
+            label={c.label}
           />
         ))}
       </FilterGroup>
@@ -165,7 +171,7 @@ export function Filters({
         ))}
       </FilterGroup>
 
-      <FilterGroup title="Price (€)">
+      <FilterGroup title={priceBasis ? `Price (€, ${priceBasis})` : 'Price (€)'}>
         <form
           onSubmit={(e) => {
             e.preventDefault();

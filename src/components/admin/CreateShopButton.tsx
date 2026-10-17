@@ -95,7 +95,9 @@ export function CreateShopButton() {
           router.push(`/admin/companies?imported=${ir.imported ?? 0}`);
           return;
         }
-        setError(`Shop created but import failed: ${ir.message}`);
+        // Not imported (e.g. no supplier agreement recorded yet): the shop page
+        // shows why, and holds the agreement form and the dry-run / sync buttons.
+        router.push(`/admin/companies/${r.slug}`);
         return;
       }
       router.push(`/admin/companies?created=${encodeURIComponent(name.trim())}`);
@@ -195,7 +197,7 @@ export function CreateShopButton() {
                             <div className="aspect-[4/3] bg-muted">
                               {p.image && (
                                 // eslint-disable-next-line @next/next/no-img-element
-                                <img src={p.image} alt="" className="w-full h-full object-cover" />
+                                <img src={p.image} alt="" referrerPolicy="no-referrer" loading="lazy" className="w-full h-full object-cover" />
                               )}
                             </div>
                             <div className="p-2 space-y-0.5">

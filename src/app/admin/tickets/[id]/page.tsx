@@ -145,6 +145,10 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
   }
 
   // === Linked-commerce row (auto-detected at submit, operator-overridable) ===
+  // A product question / photo request names the listing it is about.
+  const linkedProduct = t.productId
+    ? await prisma.product.findUnique({ where: { id: t.productId }, select: { slug: true, title: true, status: true, company: { select: { name: true } } } })
+    : null;
   const [linkedOrder, linkedRfq] = await Promise.all([
     t.orderId
       ? prisma.order.findUnique({
@@ -341,6 +345,18 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
            *  order from here even if the auto-detect missed the order number
            *  in the body. */}
           <SidebarCard title="Linked commerce" icon={<ShoppingBag className="h-3.5 w-3.5 text-primary" />}>
+            {linkedProduct && (
+              <div className="space-y-0.5 mb-2" data-testid="ticket-linked-product">
+                <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">About listing</p>
+                <Link href={`/admin/products/${linkedProduct.slug}`} className="text-xs font-semibold text-primary hover:underline break-words">
+                  {linkedProduct.title}
+                </Link>
+                <p className="text-[11px] text-muted-foreground">
+                  {linkedProduct.company?.name ?? 'Own inventory'} · {linkedProduct.status.toLowerCase().replace('_', ' ')} ·{' '}
+                  <Link href={`/marketplace/${linkedProduct.slug}`} className="hover:underline" target="_blank">buyer view</Link>
+                </p>
+              </div>
+            )}
             {!linkedOrder && !linkedRfq && (
               <p className="text-[11px] text-muted-foreground italic">No order or RFQ linked yet.</p>
             )}

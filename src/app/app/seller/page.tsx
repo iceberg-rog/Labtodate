@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { Package, BarChart3, FileText, Plus, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { requireSession } from '@/lib/auth-server';
+import { requireSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import type { OrderStatus } from '@prisma/client';
@@ -19,13 +19,15 @@ export default async function SellerDashboardPage() {
   });
 
   const role = (session.user as { role?: string }).role;
+  // Staff see other people's quotes / offers only with the permission for them (A31).
+  const staffView = role === 'ADMIN' && (await hasCapability('quotes:view'));
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const [productsCount, publishedCount, pendingQuotes, me] = await Promise.all([
     prisma.product.count({ where: { sellerId: session.user.id } }),
     prisma.product.count({ where: { sellerId: session.user.id, status: 'PUBLISHED' } }),
     // Same scope as the quote inbox: admins see every request.
     prisma.sourcingRequest.count({
-      where: { status: 'PENDING', ...(role === 'ADMIN' ? {} : { assignedToId: session.user.id }) },
+      where: { status: 'PENDING', ...(staffView ? {} : { assignedToId: session.user.id }) },
     }),
     prisma.user.findUnique({ where: { id: session.user.id }, select: { companyId: true } }),
   ]);

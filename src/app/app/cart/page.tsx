@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { firstPublicImage } from '@/lib/media/public-src';
 import Image from 'next/image';
 import { redirect } from 'next/navigation';
 import { ShoppingCart, Trash2, ArrowRight } from 'lucide-react';
@@ -7,6 +8,8 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { setCartQty, removeFromCart } from '@/lib/cart/actions';
+import { loadPriceDisplay, sellPriceOf } from '@/lib/pricing/server';
+import { priceParts } from '@/lib/pricing/display';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,13 +26,20 @@ export default async function CartPage(
   const items = await prisma.cartItem.findMany({
     where: { userId: session.user.id },
     orderBy: { createdAt: 'desc' },
-    include: { product: { select: { slug: true, title: true, priceCents: true, currency: true, images: true, status: true, mode: true, quantity: true } } },
+    include: { product: { select: { slug: true, title: true, priceCents: true, currency: true, images: true, status: true, mode: true, quantity: true, priceOnHold: true, vatScheme: true, company: { select: { pricingMode: true, pricingMarkupBp: true } } } } },
   });
+  const display = await loadPriceDisplay();
+  // THE sell price (shop markup applied) — what checkout charges. FORCE_QUOTE /
+  // HIDE_PRICE shops and quote-only items are never orderable from the cart.
+  const sell = new Map(items.map((i) => [i.id, sellPriceOf(i.product)]));
+  const unit = (i: (typeof items)[number]) => sell.get(i.id)?.sellPriceCents ?? 0;
   // Every row is rendered. A row that became unpublished / quote-only /
   // priceless is shown as "no longer available" with a Remove button — hiding
   // it left an invisible row that made cart checkout fail forever.
-  const isListed = (i: (typeof items)[number]) =>
-    i.product.status === 'PUBLISHED' && !!i.product.priceCents && i.product.mode !== 'QUOTE_ONLY';
+  const isListed = (i: (typeof items)[number]) => {
+    const r = sell.get(i.id);
+    return i.product.status === 'PUBLISHED' && !!r && r.sellPriceCents != null && r.mode !== 'QUOTE_ONLY';
+  };
   const valid = items.filter(isListed);
   const unlisted = items.filter((i) => !isListed(i));
   const currency = valid[0]?.product.currency || 'EUR';
@@ -40,7 +50,7 @@ export default async function CartPage(
   const stockBlocked = soldOut.length > 0 || overStock.length > 0 || unlisted.length > 0;
   const maxed = Number(searchParams.maxed);
   const subtotal = valid.reduce(
-    (s, i) => (i.product.quantity <= 0 ? s : s + (i.product.priceCents ?? 0) * i.quantity),
+    (s, i) => (i.product.quantity <= 0 ? s : s + unit(i) * i.quantity),
     0,
   );
 
@@ -119,8 +129,8 @@ export default async function CartPage(
                 // total / remove on a second row. sm+: a single row.
                 <li key={i.id} className={`p-4 grid grid-cols-[64px_1fr] sm:grid-cols-[80px_1fr_auto] gap-x-4 gap-y-3 items-center ${listed ? '' : 'bg-red-50/60 dark:bg-red-950/20'}`}>
                   <div className="relative h-14 w-16 sm:h-16 sm:w-20 rounded-lg overflow-hidden bg-card">
-                    {i.product.images[0] && (
-                      <Image src={i.product.images[0]} alt={i.product.title} fill sizes="80px" className="object-contain p-1.5" />
+                    {firstPublicImage(i.product.images) && (
+                      <Image src={firstPublicImage(i.product.images)!} alt={i.product.title} fill sizes="80px" className="object-contain p-1.5" />
                     )}
                   </div>
                   <div className="min-w-0">
@@ -132,7 +142,7 @@ export default async function CartPage(
                       <span className="font-semibold text-muted-foreground line-clamp-2 break-words">{i.product.title}</span>
                     )}
                     {listed && (
-                      <p className="text-sm text-muted-foreground">{formatPrice(i.product.priceCents ?? 0, currency)} each</p>
+                      <p className="text-sm text-muted-foreground">{(() => { const pp = priceParts(unit(i), display, { scheme: i.product.vatScheme }); return `${formatPrice(pp.primaryCents, currency)} ${pp.primaryLabel} each`; })()}</p>
                     )}
                     {!listed ? (
                       <p className="text-xs font-bold text-red-600 dark:text-red-400 mt-0.5">No longer available — remove this item to continue</p>
@@ -163,7 +173,7 @@ export default async function CartPage(
                         <Button type="submit" variant="outline" size="sm" className="rounded-full">Update</Button>
                       </form>
                     )}
-                    <p className="font-bold data min-w-[5rem] text-right">{buyable ? formatPrice((i.product.priceCents ?? 0) * i.quantity, currency) : '—'}</p>
+                    <p className="font-bold data min-w-[5rem] text-right">{buyable ? formatPrice(priceParts(unit(i) * i.quantity, display, { scheme: i.product.vatScheme }).primaryCents, currency) : '—'}</p>
                     <form action={async () => { 'use server'; await removeFromCart(i.id); }}>
                       <Button type="submit" variant="ghost" size="icon" className="rounded-full text-red-600 dark:text-red-400" aria-label={`Remove ${i.product.title} from cart`}>
                         <Trash2 className="h-4 w-4" />
@@ -176,15 +186,15 @@ export default async function CartPage(
           </ul>
 
           <div className="rounded-2xl border border-border bg-card p-6 space-y-4 lg:sticky lg:top-24">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Subtotal</span>
-              <span className="font-bold data">{formatPrice(subtotal, currency)}</span>
+            <div className="flex justify-between text-sm" data-testid="cart-subtotal">
+              <span className="text-muted-foreground">Subtotal ({display.mode === 'INCL' ? display.labelIncl : display.labelExcl})</span>
+              <span className="font-bold data">{formatPrice(display.mode === 'INCL' ? priceParts(subtotal, display).primaryCents : subtotal, currency)}</span>
             </div>
-            <p className="text-xs text-muted-foreground">Shipping &amp; tax calculated at checkout. Payment is by bank transfer, manually verified by our team.</p>
+            <p className="text-xs text-muted-foreground">Shipping and VAT are calculated at checkout for your delivery country and VAT ID — you see the exact total before you order.</p>
             {stockBlocked || valid.length === 0 ? (
               <>
                 <Button size="lg" disabled className="rounded-2xl font-semibold w-full whitespace-normal h-auto min-h-12 py-3">
-                  Continue to shipping &amp; bank transfer <ArrowRight className="h-4 w-4" />
+                  Continue to checkout <ArrowRight className="h-4 w-4" />
                 </Button>
                 <p className="text-xs font-semibold text-red-600 dark:text-red-400">
                   Adjust or remove the items marked above to continue to checkout.
@@ -193,7 +203,7 @@ export default async function CartPage(
             ) : (
               <Button asChild size="lg" className="rounded-2xl font-semibold w-full whitespace-normal h-auto min-h-12 py-3">
                 <Link href="/checkout/cart">
-                  Continue to shipping &amp; bank transfer <ArrowRight className="h-4 w-4" />
+                  Continue to checkout <ArrowRight className="h-4 w-4" />
                 </Link>
               </Button>
             )}

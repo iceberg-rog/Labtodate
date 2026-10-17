@@ -1,19 +1,21 @@
 import { Suspense } from 'react';
+import { firstPublicImage } from '@/lib/media/public-src';
 import Link from 'next/link';
 import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
 import { listProducts, getCategories, getTopBrands } from '@/lib/marketplace/queries';
-import { getMarketing } from '@/lib/marketing';
+import { loadPriceDisplay } from '@/lib/pricing/server';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import { Filters } from '@/components/marketplace/Filters';
 import { SortDropdown } from '@/components/marketplace/SortDropdown';
 import { Pagination } from '@/components/marketplace/Pagination';
 import type { ProductCondition, ProductMode } from '@prisma/client';
-import type { IllustrationName } from '@/components/illustrations/instruments';
+import { getCatalogPolicy, getConditionGrades } from '@/lib/catalog/policy';
+import { isPlaceholderBrand } from '@/lib/catalog/jsonld';
 
 export const metadata: Metadata = {
   title: 'Marketplace — Browse all instruments',
-  description: 'Browse new and refurbished laboratory instruments — chromatography, mass spectrometry, spectroscopy and more.',
+  description: 'Browse used laboratory instruments — chromatography, mass spectrometry, spectroscopy and more.',
 };
 
 export const dynamic = 'force-dynamic';
@@ -70,10 +72,11 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   // price/page) silently read `undefined` and the page showed all products.
   const sp = parseParams(await searchParams);
   const page = sp.page;
-  const mk = await getMarketing();
 
+  const [display, policy, grades] = await Promise.all([loadPriceDisplay(), getCatalogPolicy(), getConditionGrades()]);
   const [result, categories, brands] = await Promise.all([
     listProducts({
+      display,
       q: sp.q,
       category: sp.category,
       brand: sp.brand,
@@ -85,8 +88,10 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
       page,
     }),
     getCategories(),
-    getTopBrands(12),
+    getTopBrands(13),
   ]);
+  // Placeholder brands ("Other") are not brands: not offered as a filter either.
+  const realBrands = brands.filter((b) => !isPlaceholderBrand(b, policy.placeholderBrands)).slice(0, 12);
 
   // Filters that carry over to pagination and the inline search box.
   const KEPT = ['q', 'category', 'brand', 'condition', 'mode', 'sort', 'minPrice', 'maxPrice'] as const;
@@ -118,7 +123,7 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
           {activeCategoryName ? activeCategoryName : 'All lab instruments'}
         </h1>
         <p className="mt-3 text-muted-foreground max-w-2xl">
-          {result.total.toLocaleString()} listings{mk.inspection ? ` · ${mk.inspection} on every refurbished unit` : ''}
+          {result.total.toLocaleString()} listings
         </p>
 
         {/* Inline search */}
@@ -150,7 +155,9 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
         <Suspense fallback={<div className="lg:sticky lg:top-24 h-10 rounded-lg bg-foreground/5 animate-pulse" />}>
           <Filters
             categories={categories.filter((c) => c._count.products > 0).map((c) => ({ slug: c.slug, name: c.name, count: c._count.products }))}
-            brands={brands.map((b) => ({ slug: b.slug, name: b.name, count: b._count.products }))}
+            brands={realBrands.map((b) => ({ slug: b.slug, name: b.name, count: b._count.products }))}
+            conditions={CONDITIONS.map((c) => ({ code: c, label: grades[c]?.label ?? c }))}
+            priceBasis={display.mode === 'INCL' ? display.labelIncl : display.labelExcl}
           />
         </Suspense>
 
@@ -179,15 +186,16 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
                     slug: p.slug,
                     title: p.title,
                     brand: p.brand?.name ?? '—',
-                    supplier: 'lab2date',
-                    illustration: (p.illustration ?? 'balance') as IllustrationName,
-                    imageUrl: p.images?.[0] ?? null,
+                    illustration: p.illustration,
+                    imageUrl: firstPublicImage(p.images),
                     condition: p.condition,
                     mode: p.mode,
                     priceCents: p.priceCents,
                     currency: p.currency,
                     yearMade: p.yearMade,
+                    vatScheme: p.vatScheme,
                   }}
+                  display={display}
                 />
               ))}
             </div>

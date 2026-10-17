@@ -18,22 +18,38 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { requireCapability } from '@/lib/auth-server';
+import { emailTransportStatus } from '@/lib/email';
+import { hasCapability, requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { adminDetailTitle } from '@/app/admin/admin-title';
 import { formatPrice } from '@/lib/utils';
 import {
   setOrderNotes,
-  setOrderFulfillment,
   setOrderShippingAddress,
   verifyPayment,
   rejectPayment,
-  refundOrder,
-  cancelOrder,
+
 } from '@/app/admin/actions';
 import { BuyerEmailReveal } from '@/components/admin/BuyerEmailReveal';
+import { documentHref } from '@/lib/documents';
+import { getOrderDocuments } from '@/lib/documents/issue';
+import { ensureSettingsLoaded, settingBool } from '@/lib/settings';
+import { OrderDocumentsPanel } from '@/components/documents/OrderDocumentsPanel';
+import { OrderPricingPanel } from '@/components/admin/OrderPricingPanel';
+import { OrderFinancePanel } from '@/components/admin/OrderFinancePanel';
+import { hasPrePaymentHold } from '@/lib/checkout/holds';
+import { countryOptions } from '@/lib/compliance/country';
+import { vatTreatmentLabel } from '@/lib/tax/determine';
 import { OrderActionForm } from '@/components/admin/OrderActionForm';
 import { StickyDetails } from '@/components/admin/StickyDetails';
+import { OrderPaymentPanels } from '@/components/admin/OrderPaymentPanels';
+import { orderDetailsProblems } from '@/lib/orders/details';
+import { orderFulfilmentView } from '@/lib/fulfilment/view';
+import { NextSteps } from '@/components/orders/NextSteps';
+import { AdminShipments } from '@/components/admin/fulfilment/AdminShipments';
+import { AdminCancelCard, AdminMoney } from '@/components/admin/fulfilment/AdminMoney';
+import { AdminReturns } from '@/components/admin/fulfilment/AdminReturns';
+import { requireDetailsBeforePayment, vatIdRule } from '@/lib/quotes/policy';
 import {
   humaniseBuyer,
   proxyProofUrl,
@@ -42,6 +58,7 @@ import {
   STATUS_LABEL,
   STATUS_TONE,
 } from '@/lib/orders/display';
+import { QUOTE_REF } from '@/lib/quotes/offer';
 
 export const dynamic = 'force-dynamic';
 
@@ -129,6 +146,7 @@ function addrFormSeed(a: unknown): Record<'name' | 'phone' | 'line1' | 'line2' |
 export default async function AdminOrderDetailPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   await requireCapability('orders:view');
+  await ensureSettingsLoaded();
 
   const order = await prisma.order.findUnique({
     where: { id: params.id },
@@ -242,20 +260,40 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
 
   // Build a timeline of state-change facts we actually have.
   const events: { label: string; at: Date; icon: React.ReactNode }[] = [];
-  events.push({ label: 'Created (cart submitted)', at: order.createdAt, icon: <Clock className="h-3.5 w-3.5" /> });
+  events.push({ label: order.sourcingRequestId ? 'Created (offer accepted by the buyer)' : 'Created (checkout)', at: order.createdAt, icon: <Clock className="h-3.5 w-3.5" /> });
   if (order.paidAt) events.push({ label: 'Payment received', at: order.paidAt, icon: <CreditCard className="h-3.5 w-3.5" /> });
-  if (order.shippedAt) events.push({ label: 'Marked shipped', at: order.shippedAt, icon: <Truck className="h-3.5 w-3.5" /> });
-  if (order.deliveredAt) events.push({ label: 'Delivered', at: order.deliveredAt, icon: <Package className="h-3.5 w-3.5" /> });
+  const fv = await orderFulfilmentView(order.id);
+  if (!fv) notFound();
+  for (const s of fv.shipments) {
+    if (s.shippedAt) events.push({ label: `Shipment ${s.seq} sent — ${s.carrier ?? 'carrier not set'}${s.trackingNumber ? ` ${s.trackingNumber}` : ''}`, at: s.shippedAt, icon: <Truck className="h-3.5 w-3.5" /> });
+    if (s.deliveredAt) events.push({ label: `Shipment ${s.seq} delivered${s.deliveredBy === 'BUYER' ? ' (confirmed by the buyer)' : ''}`, at: s.deliveredAt, icon: <Package className="h-3.5 w-3.5" /> });
+  }
+  if (!fv.shipments.length && order.shippedAt) events.push({ label: 'Marked shipped', at: order.shippedAt, icon: <Truck className="h-3.5 w-3.5" /> });
+  for (const r of fv.refunds) {
+    events.push({ label: `Refund ${r.amountLabel} recorded (${r.methodLabel})`, at: r.createdAt, icon: <CircleDollarSign className="h-3.5 w-3.5" /> });
+    if (r.sentAt && r.method !== 'STRIPE') events.push({ label: `Refund ${r.amountLabel} sent${r.bankRef ? ` — ref ${r.bankRef}` : ''}`, at: r.sentAt, icon: <CircleDollarSign className="h-3.5 w-3.5" /> });
+  }
+  for (const r of fv.returns) events.push({ label: `${r.rmaNumber} opened — ${r.typeLabel.toLowerCase()} (now: ${r.statusLabel.toLowerCase()})`, at: r.createdAt, icon: <Clock className="h-3.5 w-3.5" /> });
+  if (order.status === 'CANCELED') {
+    const c = auditEvents.find((e) => e.action.startsWith('order.cancel'));
+    events.push({ label: `Canceled${c?.actorEmail ? ` by ${c.actorEmail}` : ''}${c?.meta ? ` — ${c.meta.slice(0, 140)}` : ''}`, at: c?.createdAt ?? order.updatedAt, icon: <Clock className="h-3.5 w-3.5" /> });
+  }
   events.sort((a, b) => a.at.getTime() - b.at.getTime());
+  const canMoney = await hasCapability('orders:refund');
 
   const itemsTotal = order.items.reduce((s, i) => s + i.priceCentsSnapshot * i.quantity, 0);
   const hasCompleteAddress = shippingAddressIsComplete(order.shippingAddress);
   // Address stays editable until the parcel leaves (proforma orders start
   // without one; the buyer form closes at PAID).
-  const canEditAddress = ['PENDING_PAYMENT', 'PAID', 'PROCESSING'].includes(order.status);
+  // Unpaid orders: billing + delivery are edited together in the details card
+  // below (with a proforma revision); after payment only the delivery address.
+  const canEditAddress = ['PAID', 'PROCESSING'].includes(order.status) && fv.shipments.length === 0;
+  const detailsMissing = orderDetailsProblems(order, { vatIdRule: vatIdRule() });
   const addrSeed = addrFormSeed(order.shippingAddress);
-  const canRefund = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status);
-  const canCancel = order.status === 'PENDING_PAYMENT' && !order.paymentSubmittedAt;
+  // One country list everywhere (Settings → Compliance & countries); BLOCK is never offered.
+  const shipCountries = canEditAddress ? await countryOptions() : [];
+  const shippingPending = order.openHolds.includes('SHIPPING_PENDING') || order.holdReason === 'SHIPPING_PENDING';
+  const vatPending = order.vatTreatment === 'REVIEW_REQUIRED';
   const isPaidFamily = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'].includes(order.status);
   const receiptUrl = proxyProofUrl(order.paymentProofUrl);
   const paidByAdmin = order.paidByAdminId
@@ -264,6 +302,9 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
   const verifiedBy = order.paymentVerifiedById
     ? await prisma.user.findUnique({ where: { id: order.paymentVerifiedById }, select: { email: true } })
     : null;
+  const docsForHeader = await getOrderDocuments(order.id);
+  const requireAmountOnVerify = settingBool('PAYMENT_REQUIRE_AMOUNT_ON_VERIFY');
+  const headerHolds = Array.from(new Set([...order.openHolds, ...(order.holdReason ? [order.holdReason] : [])])).filter((h) => h === 'VAT_REVIEW' || h === 'INVOICE_PENDING');
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -293,12 +334,43 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
             <span className={`inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ${TONE_CLASS[tone]}`}>
               {STATUS_LABEL[order.status] ?? order.status.toLowerCase()}
             </span>
+            {order.financialStatus === 'PARTIALLY_REFUNDED' && (
+              <span className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-border bg-muted text-muted-foreground">partly refunded</span>
+            )}
+            {fv.refunds.some((r) => r.status === 'REQUESTED') && (
+              <a href="#money" className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
+                refund to send
+              </a>
+            )}
+            {fv.returns.some((r) => r.open) && (
+              <a href="#returns" className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300">
+                open return
+              </a>
+            )}
+            {headerHolds.map((h) => (
+              <a key={h} href="#invoice-held" className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                {h === 'VAT_REVIEW' ? 'VAT review' : 'invoice not issued'}
+              </a>
+            ))}
+            {order.paymentMethodManual === 'INVOICE' && ['INVOICED_ON_TERMS', 'OVERDUE', 'PARTIALLY_PAID'].includes(order.financialStatus) && (
+              <span className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300">
+                on invoice terms · {order.financialStatus === 'PARTIALLY_PAID' ? 'partly paid' : 'unpaid'}
+              </span>
+            )}
+            {/* Stored PDF of the issued invoice, else the current proforma (unpaid). */}
+            {(docsForHeader.invoice || (order.status === 'PENDING_PAYMENT' && !hasPrePaymentHold(order))) && (
+              <a
+                href={documentHref(docsForHeader.invoice ? 'invoice' : 'proforma', order.orderNumber, 'pdf')}
+                className="inline-flex items-center gap-1 h-7 px-2.5 rounded-full border border-border bg-card text-[11px] font-semibold hover:bg-foreground/5"
+              >
+                <ReceiptText className="h-3 w-3" /> {docsForHeader.invoice ? `Invoice ${docsForHeader.invoice.number}` : 'Proforma PDF'}
+              </a>
+            )}
             <Link
               href={`/admin/orders/${order.id}/invoice`}
-              target="_blank"
-              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-full border border-border bg-card text-[11px] font-semibold hover:bg-foreground/5"
+              className="inline-flex items-center gap-1 h-7 px-2.5 rounded-full text-[11px] font-semibold text-muted-foreground hover:text-foreground"
             >
-              <ReceiptText className="h-3 w-3" /> Invoice
+              Preview
             </Link>
           </div>
         </div>
@@ -306,6 +378,16 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
       <div className="grid lg:grid-cols-[1fr_360px] gap-6 items-start">
         {/* === Left column === */}
         <div className="space-y-5 min-w-0">
+          <NextSteps steps={fv.nextSteps.staff} audience="staff" />
+
+          <OrderPricingPanel orderId={order.id} />
+
+          <OrderDocumentsPanel
+            order={{ id: order.id, orderNumber: order.orderNumber, status: order.status, holdReason: order.holdReason, holdNote: order.holdNote }}
+            audience="admin"
+          />
+
+          <OrderFinancePanel orderId={order.id} />
 
           {/* Items */}
           <section className="rounded-2xl border border-border bg-card overflow-hidden">
@@ -371,14 +453,14 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
             <div className="p-4 border-t border-border bg-foreground/[0.02] space-y-1 text-sm">
               <Row label="Items subtotal" value={formatPrice(itemsTotal, order.currency)} />
               <Row label="Order subtotal (snapshot)" value={formatPrice(order.subtotalCents, order.currency)} muted />
-              {order.shippingCents > 0 && (
-                <Row label="Shipping" value={formatPrice(order.shippingCents, order.currency)} muted />
-              )}
-              {order.taxCents > 0 && (
-                <Row label="Tax" value={formatPrice(order.taxCents, order.currency)} muted />
-              )}
+              <Row label="Shipping" value={shippingPending ? 'to be confirmed' : order.shippingCents > 0 ? formatPrice(order.shippingCents, order.currency) : 'free'} muted />
+              <Row
+                label={`VAT${order.vatTreatment ? ` — ${vatTreatmentLabel(order.vatTreatment)}` : ''}`}
+                value={vatPending ? 'to be confirmed' : formatPrice(order.taxCents, order.currency)}
+                muted
+              />
               <div className="pt-1 border-t border-border" />
-              <Row label="Total" value={formatPrice(order.totalCents, order.currency)} bold />
+              <Row label={shippingPending || vatPending ? 'Total so far' : 'Total'} value={formatPrice(order.totalCents, order.currency)} bold />
             </div>
           </section>
 
@@ -414,7 +496,9 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     {billAddr.lines.map((l, i) => <p key={i} className="text-muted-foreground">{l}</p>)}
                   </address>
                 ) : (
-                  <p className="text-muted-foreground italic text-xs">Not provided (Stripe didn’t return billing).</p>
+                  <p className="text-muted-foreground italic text-xs">
+                    {order.sourcingRequestId || order.status === 'PENDING_PAYMENT' ? 'Not given yet — see “Billing & delivery details”.' : 'No separate billing address: the invoice uses the delivery address.'}
+                  </p>
                 )}
               </div>
             </div>
@@ -438,7 +522,17 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   <AddrField label="City" name="city" defaultValue={addrSeed.city} required />
                   <AddrField label="Postal code" name="postal" defaultValue={addrSeed.postal} required />
                   <AddrField label="State / region" name="state" defaultValue={addrSeed.state} />
-                  <AddrField label="Country (2-letter code)" name="country" defaultValue={addrSeed.country} required maxLength={2} placeholder="NL" />
+                  <label className="block">
+                    <span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">
+                      Country <span className="text-red-600 dark:text-red-400">*</span>
+                    </span>
+                    <select name="country" defaultValue={shipCountries.some((c) => c.code === addrSeed.country) ? addrSeed.country : ''} required className="w-full h-9 px-2 rounded-lg border border-input bg-background text-sm">
+                      <option value="">Choose…</option>
+                      {shipCountries.map((c) => (
+                        <option key={c.code} value={c.code}>{c.name}{c.review ? ' — compliance review' : ''}</option>
+                      ))}
+                    </select>
+                  </label>
                   <div className="sm:col-span-2">
                     <Button type="submit" size="sm" className="rounded-full">
                       <MapPin className="h-3.5 w-3.5" /> Save address
@@ -463,85 +557,13 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
             </div>
           </section>
 
-          {/* === Fulfillment controls — only on shippable orders =========== */}
-          {['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status) && (
-            <section className="rounded-2xl border border-border bg-card overflow-hidden">
-              <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
-                <Truck className="h-4 w-4 text-primary" />
-                <h2 className="text-sm font-bold">Fulfillment</h2>
-              </div>
-              <OrderActionForm
-                action={setOrderFulfillment}
-                className="p-5 grid sm:grid-cols-4 gap-3 items-end text-sm"
-                messageClassName="sm:col-span-4"
-              >
-                <input type="hidden" name="orderId" value={order.id} />
-                <label className="block sm:col-span-1">
-                  <span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">Status</span>
-                  <select
-                    name="status"
-                    defaultValue={order.status}
-                    className="h-9 px-2 rounded-md border border-input bg-background text-xs font-medium w-full"
-                  >
-                    {/* Never offer a move the server will refuse: forward-only (like the
-                        server guard) and, as on the list row, ship/deliver needs an address. */}
-                    {(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const)
-                      .filter((s, i, all) => i >= all.indexOf(order.status as (typeof all)[number]))
-                      .filter((s) => hasCompleteAddress || s === order.status || (s !== 'SHIPPED' && s !== 'DELIVERED'))
-                      .map((s) => (
-                        <option key={s} value={s}>{s.toLowerCase()}</option>
-                      ))}
-                  </select>
-                </label>
-                <label className="block sm:col-span-1">
-                  <span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">Carrier</span>
-                  <select
-                    name="carrier"
-                    defaultValue={order.trackingCarrier ?? ''}
-                    className="h-9 px-2 rounded-md border border-input bg-background text-xs font-medium w-full"
-                  >
-                    <option value="">—</option>
-                    {['DHL', 'UPS', 'FedEx', 'TNT', 'GLS', 'DPD', 'USPS', 'Other'].map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block sm:col-span-1">
-                  <span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">Tracking #</span>
-                  <input
-                    type="text"
-                    name="trackingNumber"
-                    defaultValue={order.trackingNumber ?? ''}
-                    placeholder="1Z…"
-                    className="h-9 px-2 rounded-md border border-input bg-background text-xs font-mono w-full"
-                  />
-                </label>
-                <div className="sm:col-span-1">
-                  <Button type="submit" size="sm" className="w-full rounded-full gap-1.5">
-                    <Truck className="h-3.5 w-3.5" /> Save &amp; notify buyer
-                  </Button>
-                </div>
-                <p className="sm:col-span-4 text-[11px] text-muted-foreground">
-                  {hasCompleteAddress ? (
-                    <>
-                      Entering a tracking number auto-advances status to <strong>Shipped</strong>. Mark{' '}
-                      <strong>Delivered</strong> manually here, or the buyer can confirm receipt from their order page.
-                    </>
-                  ) : (
-                    <span className="text-amber-700 dark:text-amber-300 font-semibold">
-                      No complete shipping address — add it under Addresses above before shipping.
-                    </span>
-                  )}
-                </p>
-              </OrderActionForm>
-              {order.shippedAt && (
-                <div className="px-5 pb-4 text-xs text-muted-foreground">
-                  Shipped {smartDate(order.shippedAt)}
-                  {order.deliveredAt && <> · Delivered {smartDate(order.deliveredAt)}</>}
-                </div>
-              )}
-            </section>
-          )}
+          {/* === Payment-side panels: details, due date, hold, credit terms === */}
+          <OrderPaymentPanels orderId={order.id} />
+
+          {/* === Shipments, returns, money back (lib/fulfilment) ============ */}
+          <AdminShipments v={fv} />
+          <AdminReturns v={fv} canRefund={canMoney} />
+          <AdminMoney v={fv} canRefund={canMoney} />
 
           {/* Payment */}
           <section className="rounded-2xl border border-border bg-card overflow-hidden">
@@ -591,11 +613,14 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 </p>
                 <p className="font-semibold inline-flex items-center gap-1.5">
                   <ShieldCheck className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
-                  {process.env.STRIPE_SECRET_KEY?.startsWith('sk_live_')
-                    ? 'lab2date Stripe account (live mode)'
-                    : process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_')
-                    ? 'lab2date Stripe account (test mode)'
-                    : 'Manual settlement · bank transfer (no Stripe)'}
+                  {/* What THIS order uses — not merely whether Stripe keys exist (card and bank transfer coexist). */}
+                  {order.stripeSessionId || order.stripePaymentIntentId
+                    ? process.env.STRIPE_SECRET_KEY?.startsWith('sk_live_')
+                      ? 'lab2date Stripe account (live mode)'
+                      : 'lab2date Stripe account (test mode)'
+                    : order.amountPaidCents > 0 || order.paymentMethodManual
+                      ? 'Bank account · manual settlement (bank transfer)'
+                      : 'Nothing received yet · bank transfer expected'}
                 </p>
               </div>
               {order.sourcingRequestId && (
@@ -607,8 +632,9 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                       href={`/admin/quotes/${order.sourcingRequestId}`}
                       className="text-primary hover:underline font-mono text-xs"
                     >
-                      {maskId(order.sourcingRequestId)}
+                      {QUOTE_REF(order.sourcingRequestId)}
                     </Link>
+                    {order.proformaNumber && <span className="text-muted-foreground"> · proforma <span className="font-mono">{order.proformaNumber}</span></span>}
                   </p>
                 </div>
               )}
@@ -620,7 +646,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
               to verify or reject. Reads paymentVerificationStatus, payment
               method, note (PO + bank ref), and the proof file. */}
           {order.paymentVerificationStatus === 'AWAITING_VERIFICATION' && (
-            <section className="rounded-2xl border-2 border-amber-300 bg-amber-50/60 dark:bg-amber-950/30 dark:border-amber-800 overflow-hidden">
+            <section id="verify" className="rounded-2xl border-2 border-amber-300 bg-amber-50/60 dark:bg-amber-950/30 dark:border-amber-800 overflow-hidden scroll-mt-32">
               <div className="px-5 py-3 border-b border-amber-200 bg-amber-100/60 dark:border-amber-800 dark:bg-amber-900/40 flex items-center gap-2">
                 <ShieldCheck className="h-4 w-4 text-amber-800 dark:text-amber-300" />
                 <h2 className="text-sm font-bold text-amber-900 dark:text-amber-300">Verify payment</h2>
@@ -673,13 +699,33 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   })()}
                 </dl>
 
+                {requireDetailsBeforePayment() && detailsMissing.length > 0 && (
+                  <p role="alert" className="text-xs font-semibold text-red-800 dark:text-red-300 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">
+                    Billing / delivery details missing ({detailsMissing.join(', ')}). Add them under “Billing & delivery details” before verifying — the invoice and the shipment need them.
+                  </p>
+                )}
                 <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200 dark:border-amber-800">
-                  {/* Verify */}
+                  {/* Verify — with what the bank statement says (amount, value date, reference) */}
                   <OrderActionForm action={verifyPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="block text-[10px] uppercase tracking-wider font-bold text-amber-900/80 dark:text-amber-300 mb-1">Amount received ({order.currency})</span>
+                        <input name="amount" inputMode="decimal" required={requireAmountOnVerify} defaultValue={(Math.max(0, order.totalCents - order.amountPaidCents) / 100).toFixed(2)} className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 text-xs tabular-nums" />
+                      </label>
+                      <label className="block">
+                        <span className="block text-[10px] uppercase tracking-wider font-bold text-amber-900/80 dark:text-amber-300 mb-1">Value date</span>
+                        <input type="date" name="receivedAt" required={requireAmountOnVerify} defaultValue={new Date().toISOString().slice(0, 10)} className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 text-xs" />
+                      </label>
+                      <label className="block col-span-2">
+                        <span className="block text-[10px] uppercase tracking-wider font-bold text-amber-900/80 dark:text-amber-300 mb-1">Bank reference (optional)</span>
+                        <input name="bankRef" maxLength={120} placeholder="As on the bank statement" className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 text-xs" />
+                      </label>
+                    </div>
                     <Button type="submit" size="sm" className="w-full rounded-full bg-emerald-600 hover:bg-emerald-700 text-white">
                       <ShieldCheck className="h-3.5 w-3.5" /> Verify payment
                     </Button>
+                    <p className="text-[11px] text-muted-foreground">Check the bank statement: the invoice prints this value date. Less than the open amount (beyond the tolerance) is booked as a part payment and the buyer is asked for the rest.</p>
                   </OrderActionForm>
                   {/* Reject — reason required */}
                   <OrderActionForm action={rejectPayment} className="space-y-2" announce>
@@ -844,54 +890,15 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
               )}
             </ul>
             <p className="px-4 py-2 text-[10px] text-muted-foreground border-t border-border">
-              In-app delivery is tracked here. Email delivery requires <code>RESEND_API_KEY</code> + verified domain
-              {process.env.RESEND_API_KEY ? ' (configured)' : ' (not configured — emails land in Mailpit dev mailbox only)'}.
+              In-app delivery is tracked here. E-mail goes out via {emailTransportStatus().label}
+              {emailTransportStatus().configured ? '' : ' — nothing is being e-mailed until it is configured in Settings → Email'}.
             </p>
           </section>
         </div>
 
         {/* === Right column === */}
         <aside className="space-y-5">
-          {(canRefund || canCancel) && (
-            <section className="rounded-2xl border border-border bg-card overflow-hidden">
-              <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
-                <CircleDollarSign className="h-4 w-4 text-primary" />
-                <h2 className="text-sm font-bold">Order actions</h2>
-              </div>
-              <div className="p-5 space-y-3 text-sm">
-                {canRefund && (
-                  // announce: the card is gone once the order is refunded.
-                  <OrderActionForm
-                    action={refundOrder}
-                    className="space-y-2"
-                    announce
-                    confirmText={`Refund order ${order.orderNumber} (${formatPrice(order.totalCents, order.currency)})? The order is marked refunded and the buyer is emailed${order.sourcingRequestId ? '' : '; the stock goes back to the catalog'}. This cannot be undone.`}
-                  >
-                    <input type="hidden" name="orderId" value={order.id} />
-                    <Button type="submit" size="sm" variant="outline" className="w-full rounded-full border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40">
-                      Refund order
-                    </Button>
-                    <p className="text-[11px] text-muted-foreground">
-                      {order.stripePaymentIntentId ? 'Refunds the card payment in Stripe.' : 'Records the refund — send the money back by bank transfer.'}
-                    </p>
-                  </OrderActionForm>
-                )}
-                {canCancel && (
-                  <OrderActionForm
-                    action={cancelOrder}
-                    className="space-y-2"
-                    announce
-                    confirmText={`Cancel unpaid order ${order.orderNumber}? The buyer is notified${order.sourcingRequestId ? '' : ' and the reserved stock is released'}.`}
-                  >
-                    <input type="hidden" name="orderId" value={order.id} />
-                    <Button type="submit" size="sm" variant="outline" className="w-full rounded-full border-amber-300 text-amber-800 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/40">
-                      Cancel order
-                    </Button>
-                  </OrderActionForm>
-                )}
-              </div>
-            </section>
-          )}
+          <AdminCancelCard v={fv} canRefund={canMoney} />
           <section className="rounded-2xl border border-border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
               <CircleDollarSign className="h-4 w-4 text-primary" />

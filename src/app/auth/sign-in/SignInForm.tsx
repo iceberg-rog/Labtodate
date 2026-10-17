@@ -8,6 +8,7 @@ import { authClient } from '@/lib/auth-client';
 import { Button } from '@/components/ui/button';
 import { magicLinkTargets, safeRedirect } from '@/lib/safe-redirect';
 import { VerifyEmailStep, sendVerificationCode } from '../VerifyEmailStep';
+import { TwoFactorStep } from './TwoFactorStep';
 
 // ?error= codes this page can receive: from a magic link (better-auth appends
 // them to errorCallbackURL) or from the magic-link guard in src/lib/auth.ts.
@@ -16,6 +17,9 @@ const LINK_ERRORS: Record<string, string> = {
   EXPIRED_TOKEN: 'That sign-in link has expired or was already used. Enter your email below to get a new one.',
   new_user_signup_disabled: 'There’s no lab2date account for that email yet — create one with “Sign up” below.',
   ACCOUNT_SUSPENDED: 'This account is suspended. Contact support if you think this is a mistake.',
+  ACCOUNT_DELETED: 'Your account was deleted. A confirmation was sent to your e-mail address.',
+  MAGIC_LINK_DISABLED:
+    'E-mailed sign-in links are switched off for this account (staff or two-factor sign-in). Sign in with your password and authenticator app.',
 };
 
 export default function SignInPage() {
@@ -26,7 +30,7 @@ export default function SignInPage() {
   // only if it's a same-origin relative path (blocks open-redirect phishing).
   const redirect = safeRedirect(params.get('redirect'));
 
-  const [step, setStep] = useState<'form' | 'verify'>('form');
+  const [step, setStep] = useState<'form' | 'verify' | 'totp'>('form');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState<'password' | 'magic' | null>(null);
@@ -43,7 +47,7 @@ export default function SignInPage() {
     setLoading('password');
     // No callbackURL: we navigate ourselves, and better-auth would reject
     // (403 "Invalid callbackURL") targets it doesn't like.
-    const { error: err } = await authClient.signIn.email({ email, password });
+    const { data, error: err } = await authClient.signIn.email({ email, password });
     if (err?.code === 'EMAIL_NOT_VERIFIED') {
       // Right password, but the address was never confirmed: confirm it now.
       const sendErr = await sendVerificationCode(email);
@@ -55,6 +59,12 @@ export default function SignInPage() {
     setLoading(null);
     if (err) {
       setError(err.message || 'Sign-in failed. Check your email and password.');
+      return;
+    }
+    // Password right; the account uses an authenticator app: ask for the code.
+    if (data && 'twoFactorRedirect' in data && data.twoFactorRedirect) {
+      setPassword('');
+      setStep('totp');
       return;
     }
     router.push(redirect);
@@ -75,6 +85,19 @@ export default function SignInPage() {
       return;
     }
     setMagicSent(true);
+  }
+
+  if (step === 'totp') {
+    return (
+      <TwoFactorStep
+        email={email}
+        redirect={redirect}
+        onBack={() => {
+          setStep('form');
+          setError(null);
+        }}
+      />
+    );
   }
 
   if (step === 'verify') {

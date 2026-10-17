@@ -19,7 +19,11 @@ import {
   Quote,
   Briefcase,
   FlaskConical,
+  ShieldCheck,
 } from 'lucide-react';
+import Link from 'next/link';
+import { emailTransportStatus } from '@/lib/email';
+import { ensureSettingsLoaded } from '@/lib/settings';
 import { requireSession, getAdminCaps } from '@/lib/auth-server';
 import { capsAllow, capsAllowSection } from '@/lib/capabilities';
 import { prisma } from '@/lib/db';
@@ -39,12 +43,21 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   const caps = await getAdminCaps();
   const can = (c: string) => capsAllow(caps, c);
+  // A32: with no real mail transport nothing reaches anyone — say so on every
+  // admin page instead of letting actions report "sent".
+  await ensureSettingsLoaded();
+  const mail = emailTransportStatus();
+  const failedMail24h = mail.configured
+    ? 0
+    : await prisma.emailLog
+        .count({ where: { status: 'not_configured', createdAt: { gte: new Date(Date.now() - 24 * 3600e3) } } })
+        .catch(() => 0);
   const canSection = (s: string) => capsAllowSection(caps, s);
 
   // Live counts for actionable badges so the operator sees what needs work
   // without going to Overview first.
   const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const [pendingApprovals, pendingQuotes, pendingSells, openTickets, errors24h, unreadNotifs] =
+  const [pendingApprovals, pendingQuotes, pendingSells, openTickets, errors24h, unreadNotifs, pendingPrices] =
     await Promise.all([
       prisma.product.count({ where: { status: 'PENDING_REVIEW' } }).catch(() => 0),
       prisma.sourcingRequest.count({ where: { status: 'PENDING' } }).catch(() => 0),
@@ -54,6 +67,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         .catch(() => 0),
       prisma.errorLog.count({ where: { createdAt: { gte: since24h } } }).catch(() => 0),
       prisma.notification.count({ where: { userId: session.user.id, readAt: null } }).catch(() => 0),
+      prisma.product.count({ where: { pendingPriceCents: { not: null } } }).catch(() => 0),
     ]);
 
   // The full nav tree — rendered TWICE: once inside the desktop aside, once
@@ -120,6 +134,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               {can('categories:manage') && (
                 <AdminNavLink href="/admin/categories" icon={<Tag className="h-4 w-4" />} label="Categories" />
               )}
+              {can('products:edit') && (
+                <AdminNavLink href="/admin/catalog/conditions" icon={<Tag className="h-4 w-4" />} label="Conditions & warranty" />
+              )}
+              {can('products:edit') && (
+                <AdminNavLink href="/admin/catalog/price-review" icon={<Tag className="h-4 w-4" />} label="Price review" badge={pendingPrices} />
+              )}
+              {can('products:edit') && (
+                <AdminNavLink href="/admin/catalog/audit" icon={<ShieldCheck className="h-4 w-4" />} label="Catalog audit" />
+              )}
             </NavSection>
           )}
 
@@ -169,6 +192,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               {can('settings:view') && (
                 <AdminNavLink href="/admin/settings" icon={<Settings className="h-4 w-4" />} label="Settings" />
               )}
+              {can('settings:view') && (
+                <AdminNavLink href="/admin/settings/security" icon={<ShieldCheck className="h-4 w-4" />} label="Security" />
+              )}
               {can('analytics:view') && (
                 <AdminNavLink href="/admin/analytics" icon={<TrendingUp className="h-4 w-4" />} label="Analytics" />
               )}
@@ -203,7 +229,32 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           {navTree}
         </aside>
 
-        <main className="p-4 md:p-8 max-w-[1400px] w-full min-w-0">{children}</main>
+        <main className="p-4 md:p-8 max-w-[1400px] w-full min-w-0">
+          {!mail.configured && (
+            <div
+              role="alert"
+              data-testid="email-not-configured"
+              className="mb-6 rounded-2xl border-2 border-red-400 dark:border-red-700 bg-red-50 dark:bg-red-950/50 p-4 text-sm text-red-900 dark:text-red-200"
+            >
+              <p className="font-bold">E-mail is not configured — no e-mails are being sent.</p>
+              <p className="mt-1">
+                Reason: {mail.problem}. Sign-up codes, password resets, offers, proformas and invoices are NOT reaching anyone
+                {failedMail24h ? ` (${failedMail24h} e-mail${failedMail24h === 1 ? '' : 's'} refused in the last 24 hours)` : ''}.
+                {can('settings:view') ? (
+                  <>
+                    {' '}
+                    <Link href="/admin/settings?tab=Email" className="underline font-semibold">
+                      Configure e-mail →
+                    </Link>
+                  </>
+                ) : (
+                  ' Ask a super-admin to configure it.'
+                )}
+              </p>
+            </div>
+          )}
+          {children}
+        </main>
       </div>
       {/* Global toast for new orders / paid / shipping-missing — fires on any
        *  admin route, not just /admin/orders, so an admin on the dashboard

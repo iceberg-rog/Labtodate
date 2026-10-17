@@ -1,171 +1,88 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { Clock, AlertTriangle, Banknote, XCircle, CheckCircle2 } from 'lucide-react';
-import { requireSession } from '@/lib/auth-server';
+import { XCircle, CheckCircle2, FileText } from 'lucide-react';
+import { requireSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { ensureSettingsLoaded } from '@/lib/settings';
-import { renderInvoiceHtml } from '@/lib/invoice';
-import { PrintButton } from '@/components/util/PrintButton';
+import { DocumentViewer } from '@/components/documents/DocumentViewer';
+import { PAID_ORDER_STATES } from '@/lib/quotes/offer';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Proforma invoice' };
 
-// The linked order got past payment (a refund is still "settled" here).
-const SETTLED_STATES: readonly string[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'];
-
+/**
+ * The proforma invoice of a quote. It only exists once the buyer ACCEPTED the
+ * offer (acceptance creates the order + proforma). Before that there is an
+ * offer, not a proforma — this page says so instead of showing a document.
+ * The document itself is the PDF template (download / preview), never the
+ * website page printed.
+ */
 export default async function ProformaPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   const session = await requireSession({ redirectTo: `/app/quotes/${params.id}/proforma` });
-  await ensureSettingsLoaded();
 
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id: params.id },
-    include: { product: { select: { title: true } } },
+    select: { id: true, submittedById: true, buyerEmail: true, status: true, proformaNumber: true },
   });
-  if (!sr || sr.quotedPriceCents == null) notFound();
+  if (!sr) notFound();
 
   const role = (session.user as { role?: string }).role;
-  const allowed =
-    sr.submittedById === session.user.id ||
-    sr.buyerEmail === session.user.email ||
-    role === 'ADMIN' ||
-    sr.assignedToId === session.user.id;
-  if (!allowed) notFound();
+  // Staff see other people's quotes / offers only with the permission for them (A31).
+  const staffView = role === 'ADMIN' && (await hasCapability('quotes:view'));
+  const isBuyer = sr.submittedById === session.user.id || sr.buyerEmail === session.user.email;
+  // Buyer documents carry the buyer's identity: buyer and admins only.
+  if (!isBuyer && !staffView) notFound();
+  const threadHref = staffView && !isBuyer ? `/admin/quotes/${sr.id}` : `/app/quotes/${sr.id}`;
 
-  // Persisted number is the authoritative reference; only fall back when an
-  // older quote was issued before slice B (legacy fallback keeps old proformas
-  // accessible — they don't get a unique persisted number).
-  const number = sr.proformaNumber ?? `PRO-${new Date((sr.quotedAt ?? sr.createdAt)).getFullYear()}-${sr.id.slice(-6).toUpperCase()}`;
-  const issuedAt = sr.proformaIssuedAt ?? sr.quotedAt ?? sr.createdAt;
-  const validUntil = sr.validUntilAt;
-  const isExpired = !!validUntil && validUntil.getTime() < Date.now();
-  // A declined / closed quote (or a canceled order) voids the proforma: it must
-  // not keep reading as a live offer with payment instructions.
-  const linkedOrder = await prisma.order.findUnique({
+  const order = await prisma.order.findUnique({
     where: { sourcingRequestId: sr.id },
-    select: { orderNumber: true, status: true, paymentVerificationStatus: true },
-  });
-  const isVoid =
-    sr.status === 'DECLINED' || sr.status === 'CLOSED' || linkedOrder?.status === 'CANCELED';
-  const voidReason =
-    sr.status === 'DECLINED'
-      ? 'The quote was declined.'
-      : isExpired
-        ? `It expired on ${validUntil.toISOString().slice(0, 10)}.`
-        : sr.status === 'CLOSED'
-          ? 'The quote request was closed without a deal.'
-          : 'Its order was canceled.';
-  // Paid: nothing left to pay, so no validity countdown or payment details.
-  const isSettled = !isVoid && !!linkedOrder && SETTLED_STATES.includes(linkedOrder.status);
-  // Lapsed but the sla-sweep hasn't closed it yet: the receipt upload already
-  // refuses it, so it must not read as payable (no payment instructions). A
-  // receipt already under review is left to the admin, as on the payment page.
-  const proofInReview = linkedOrder?.paymentVerificationStatus === 'AWAITING_VERIFICATION';
-  const isLapsed = isExpired && !isVoid && !isSettled && !proofInReview;
-  const threadHref =
-    role === 'ADMIN'
-      ? `/admin/quotes/${sr.id}`
-      : sr.assignedToId === session.user.id
-        ? `/app/seller/inbox/${sr.id}`
-        : `/app/quotes/${sr.id}`;
-
-  const { html } = renderInvoiceHtml({
-    kind: 'PROFORMA',
-    number,
-    dateISO: issuedAt.toISOString(),
-    currency: sr.quotedCurrency || 'EUR',
-    buyer: { name: sr.buyerName, email: sr.buyerEmail, company: sr.companyName },
-    lines: [
-      {
-        title: sr.product?.title ?? sr.productCategory ?? 'Requested equipment',
-        qty: 1,
-        unitCents: sr.quotedPriceCents,
-      },
-    ],
-    status: validUntil ? `Valid until ${validUntil.toISOString().slice(0, 10)}` : 'Awaiting acceptance',
-    note: sr.quotedNote ?? null,
+    select: { orderNumber: true, status: true, buyerId: true },
   });
 
+  if (!order || !sr.proformaNumber) {
+    return (
+      <div className="container-px py-16 max-w-xl mx-auto text-center">
+        <div className="mx-auto h-12 w-12 rounded-full bg-primary/10 text-primary inline-flex items-center justify-center mb-4">
+          <FileText className="h-6 w-6" />
+        </div>
+        <h1 className="text-2xl font-bold tracking-tight">No proforma invoice yet</h1>
+        <p className="text-muted-foreground mt-3">
+          A proforma invoice is issued when the offer is accepted. Until then you can review the offer
+          — and accept or decline it — on the quote page.
+        </p>
+        <Link href={threadHref} className="mt-6 inline-flex items-center rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold">
+          Open the quote
+        </Link>
+      </div>
+    );
+  }
+
+  const isVoid = order.status === 'CANCELED';
+  const isPaid = PAID_ORDER_STATES.includes(order.status);
   return (
-    <div className="container-px py-10 max-w-3xl mx-auto">
-      {/* === Status header (proforma number + expiry banner) === */}
-      <div className="flex items-start justify-between gap-4 flex-wrap mb-4 print:hidden">
-        <div>
-          <p className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">Proforma invoice</p>
-          <h1 className="text-2xl font-bold font-mono mt-0.5">{number}</h1>
-          <p className="text-xs text-muted-foreground mt-1">Issued {issuedAt.toISOString().slice(0, 10)}</p>
-        </div>
-        <PrintButton />
-      </div>
+    <DocumentViewer
+      kind="proforma"
+      orderNumber={order.orderNumber}
+      title="Proforma invoice"
+      number={sr.proformaNumber}
+      backHref={threadHref}
+      backLabel="Back to the quote"
+    >
       {isVoid && (
-        <div className="rounded-2xl border border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 p-4 mb-5 flex items-start gap-3 text-sm">
+        <div className="rounded-2xl border border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 p-4 mb-4 flex items-start gap-3 text-sm">
           <XCircle className="h-5 w-5 mt-0.5 flex-shrink-0" />
-          <div className="min-w-0">
-            <p className="font-bold">Void — this proforma can no longer be paid.</p>
-            <p className="mt-1">
-              {voidReason}
-              {linkedOrder?.status === 'CANCELED' && <> Order <span className="font-mono">{linkedOrder.orderNumber}</span> was canceled.</>}
-              {' '}Please do not send a transfer for it.
-            </p>
-            <a href={threadHref} className="inline-block mt-2 font-semibold underline print:hidden">
-              Open the quote thread
-            </a>
-          </div>
+          <p><strong>Void — this proforma can no longer be paid.</strong> Order <span className="font-mono">{order.orderNumber}</span> was canceled. Please do not send a transfer for it.</p>
         </div>
       )}
-      {isSettled && linkedOrder && (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 p-3 mb-5 inline-flex items-start gap-2 text-sm print:hidden">
+      {isPaid && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 p-3 mb-4 inline-flex items-start gap-2 text-sm">
           <CheckCircle2 className="h-4 w-4 mt-0.5" />
-          <p className="font-bold">
-            {linkedOrder.status === 'REFUNDED' ? 'Paid and refunded' : 'Paid'} — order{' '}
-            <span className="font-mono">{linkedOrder.orderNumber}</span>
+          <p>
+            <strong>Paid</strong> — order <span className="font-mono">{order.orderNumber}</span>. Your invoice is on the{' '}
+            <Link className="underline font-semibold" href={`/app/orders/${order.orderNumber}/invoice`}>invoice page</Link>.
           </p>
         </div>
       )}
-      {validUntil && !isVoid && !isSettled && (
-        <div
-          className={`rounded-2xl border p-3 mb-5 inline-flex items-start gap-2 text-sm print:hidden ${
-            isExpired
-              ? 'border-red-200 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300'
-              : 'border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
-          }`}
-        >
-          {isExpired ? <AlertTriangle className="h-4 w-4 mt-0.5" /> : <Clock className="h-4 w-4 mt-0.5" />}
-          <div>
-            <p className="font-bold">
-              {isExpired
-                ? `Expired ${validUntil.toISOString().slice(0, 10)}`
-                : `Valid until ${validUntil.toISOString().slice(0, 10)}`}
-            </p>
-            {isLapsed && (
-              <p className="text-xs mt-1">
-                This proforma can no longer be paid — please don’t send a transfer for it.{' '}
-                <a href={threadHref} className="font-semibold underline">Ask us to re-issue it</a> on the quote thread.
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* === Proforma document === */}
-      <div className="rounded-2xl border border-border bg-white p-8 print:border-0 print:p-0">
-        <div dangerouslySetInnerHTML={{ __html: html }} />
-      </div>
-
-      {/* === Payment instructions block (snapshot at issuance time) === */}
-      {sr.paymentInstructionsSnapshot && !isVoid && !isLapsed && !isSettled && (
-        <section className="rounded-2xl border border-border bg-card p-5 mt-6 print:hidden">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-primary inline-flex items-center gap-2 mb-3">
-            <Banknote className="h-4 w-4" /> Payment instructions
-          </h2>
-          <pre className="text-xs font-mono whitespace-pre-wrap bg-foreground/[0.03] border border-border rounded-lg p-3">
-{sr.paymentInstructionsSnapshot}
-          </pre>
-          <p className="text-[11px] text-muted-foreground mt-3">
-            These details were captured when the quote was issued. They stay attached to this proforma
-            even if our banking details change later.
-          </p>
-        </section>
-      )}
-    </div>
+    </DocumentViewer>
   );
 }

@@ -1,7 +1,9 @@
+import { DEFAULT_CLEAN_RULES, hasPriceText, type CleanRules } from '@/lib/catalog/import-rules';
+
 /**
  * Clean-up for listings imported from a supplier's WooCommerce shop.
  *
- * Imported products are sold as "lab2date Verified Supplier" (supplier
+ * Imported products are sold by lab2date as the seller of record (supplier
  * micro-sites are intentionally hidden), so the source shop's own name, its
  * links and its "see our website" sales copy must not reach the product page.
  * Used by the runtime importer and by prisma/clean-imported-branding.ts for
@@ -128,10 +130,8 @@ export function supplierPattern(s: SupplierRef): RegExp {
   return new RegExp(alts.join('|'), 'i');
 }
 
-function blockText(html: string): string {
-  const hrefs = [...html.matchAll(/\bhref\s*=\s*["']([^"']*)["']/gi)].map((m) => m[1]);
-  const text = html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ');
-  return `${text} ${hrefs.join(' ')}`;
+function blockHrefs(html: string): string {
+  return [...html.matchAll(/\bhref\s*=\s*["']([^"']*)["']/gi)].map((m) => m[1]).join(' ');
 }
 
 // An <img> loading from another host ("https://…", "http://…", "//…"): in
@@ -154,39 +154,226 @@ const BLOCK_RE =
 const EMPTY_INNER = String.raw`(?:\s|&nbsp;|&#160;|<br\s*\/?>)*`;
 const EMPTY_P_RE = new RegExp(String.raw`<p\b[^>]*>${EMPTY_INNER}<\/p\s*>`, 'gi');
 const EMPTY_DIV_RE = new RegExp(String.raw`<div\b[^>]*>${EMPTY_INNER}<\/div\s*>`, 'gi');
+const EMPTY_BLOCK_RE = new RegExp(String.raw`<(h[1-6]|li)\b[^>]*>${EMPTY_INNER}<\/\1\s*>`, 'gi');
 
-function cleanSupplierPass(html: string, re: RegExp): string {
-  return html
-    .replace(EXTERNAL_IMG_RE, '')
-    .replace(BLOCK_RE, (block) => (re.test(blockText(block)) ? '' : block))
+function escapeText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Visible text of a block, split into sentences / lines (decoded, trimmed). */
+function segmentsOf(inner: string): string[] {
+  const text = decodeEntities(
+    inner
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/?(?:p|div|li|h[1-6])\b[^>]*>/gi, '\n')
+      .replace(/<[^>]+>/g, ''),
+    ' ',
+  );
+  return text
+    .split(/\n+|(?<=[.!?])\s+(?=[A-Z0-9“"(])/)
+    .map((x) => x.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+/** Why a sentence goes: it names the supplier, makes a claim, states another price, or is a cross-sell tail. */
+export type RemovedReason = 'SUPPLIER' | 'CLAIM' | 'PRICE' | 'CROSS_SELL';
+
+export interface RemovedText {
+  reason: RemovedReason;
+  text: string;
+}
+
+function reasonFor(text: string, supplier: RegExp, rules: CleanRules): RemovedReason | null {
+  if (supplier.test(text)) return 'SUPPLIER';
+  if (rules.stripPrices && hasPriceText(text)) return 'PRICE';
+  if (rules.claims && rules.claims.test(text)) return 'CLAIM';
+  return null;
+}
+
+/**
+ * A claim that is only one item of a comma list inside a technical sentence
+ * ("DEI pulser assembly, 1G, tested, for LC") loses just that item; the
+ * sentence stays. Returns the edited sentence, or null when that is not enough.
+ */
+function dropListClaims(text: string, rules: CleanRules, removed: RemovedText[]): string | null {
+  if (!rules.claims) return null;
+  const claim = rules.claims.source;
+  // "(please ask for official quote)" — a parenthesis that is only a claim.
+  const paren = new RegExp(String.raw`\s*\(([^()]*(?:${claim})[^()]*)\)`, 'gi');
+  // ", tested," — one item of a comma list.
+  const item = new RegExp(String.raw`,\s*((?:${claim})[^,.;:()]{0,20}?)\s*(?=,)`, 'gi');
+  // "… connections and test report" / "… kit + test reports from manufacturer" — the last item of a list.
+  const last = new RegExp(String.raw`(?:,\s*|\s+(?:and|en|\+|&)\s+)((?:${claim})[^,.;:()]{0,30}?)\s*(?=[.;!]?\s*$)`, 'gi');
+  // "Fully Tested Agilent G1311-66530 Mainboard" — a claim word in front of a real
+  // title (a capitalised name or a number follows; never "We do have all …").
+  const lead = new RegExp(String.raw`^\s*((?:fully|full|complete(?:ly)?)?\s*(?:${claim}))\s*[&,:–-]?\s+`, 'i');
+  const hits: string[] = [];
+  const take = (_m: string, c: string) => {
+    hits.push(c.trim());
+    return '';
+  };
+  let edited = text.replace(paren, take).replace(item, take).replace(last, take);
+  const lm = edited.match(lead);
+  // Case-sensitive on purpose: a name or a number must follow, with 3+ words.
+  if (lm && /^[A-Z0-9]\S*(?:\s+\S+){2}/.test(edited.slice(lm[0].length))) {
+    hits.push(lm[1].trim());
+    edited = edited.slice(lm[0].length);
+  }
+  edited = edited.replace(/\s{2,}/g, ' ').trim();
+  if (!hits.length || !edited || rules.claims.test(edited)) return null;
+  for (const h of hits) removed.push({ reason: 'CLAIM', text: h });
+  return edited;
+}
+
+/** Keep, edit or drop one sentence. */
+function filterSegment(seg: string, supplier: RegExp, rules: CleanRules, removed: RemovedText[]): string | null {
+  const why = reasonFor(seg, supplier, rules);
+  if (!why) return seg;
+  if (why === 'CLAIM') {
+    const edited = dropListClaims(seg, rules, removed);
+    if (edited !== null && !reasonFor(edited, supplier, rules)) return edited;
+    // Lines run together without punctuation ("… Part number: G1322-60001 We do
+    // have most other parts …"): a claim that starts a new, capitalised
+    // sentence mid-text takes only the rest of the line with it.
+    if (rules.claims) {
+      const all = new RegExp(rules.claims.source, 'gi');
+      let m: RegExpExecArray | null;
+      while ((m = all.exec(seg))) {
+        if (m.index > 15 && /[A-Z]/.test(seg[m.index]) && /\s/.test(seg[m.index - 1])) {
+          const head = seg.slice(0, m.index).trim();
+          if (head && !reasonFor(head, supplier, rules)) {
+            removed.push({ reason: 'CLAIM', text: seg.slice(m.index).trim() });
+            return head;
+          }
+          break;
+        }
+        if (m[0].length === 0) all.lastIndex++;
+      }
+    }
+  }
+  removed.push({ reason: why, text: seg });
+  return null;
+}
+
+function cleanSupplierPass(html: string, supplier: RegExp, rules: CleanRules, removed: RemovedText[]): string {
+  const tailStart = rules.tails ? new RegExp(String.raw`^\s*(?:${rules.tails.source})`, 'i') : null;
+  let inTail = false;
+  let sawBlock = false;
+  let out = html.replace(EXTERNAL_IMG_RE, '');
+  out = out.replace(BLOCK_RE, (block: string, tag: string | undefined) => {
+    sawBlock = true;
+    const inner = block.replace(/^<[^>]+>/, '').replace(/<\/[a-z0-9]+\s*>$/i, '');
+    const segs = segmentsOf(inner);
+    const all = segs.join(' ');
+    if (inTail || (tailStart && all.length <= 80 && tailStart.test(all))) {
+      // A cross-sell tail ("Also available: …"): this heading and every block after it.
+      inTail = true;
+      if (all) removed.push({ reason: 'CROSS_SELL', text: all });
+      return '';
+    }
+    // A short line that only links to the supplier's own site.
+    if (all.length < 80 && supplier.test(blockHrefs(block))) {
+      if (all) removed.push({ reason: 'SUPPLIER', text: all });
+      return '';
+    }
+    const kept: string[] = [];
+    let changed = false;
+    for (const seg of segs) {
+      const next = filterSegment(seg, supplier, rules, removed);
+      if (next !== seg) changed = true;
+      if (next) kept.push(next);
+    }
+    if (!changed) return block;
+    if (!kept.length) return '';
+    // Only the sentences that go are removed; the rest of the block is kept
+    // as written (its inline formatting is not).
+    const name = (tag ?? 'div').toLowerCase();
+    return `<${name}>${escapeText(kept.join(' '))}</${name}>`;
+  });
+  if (!sawBlock && out.trim()) {
+    // Plain text without paragraph markup: one block.
+    const segs = segmentsOf(out);
+    const kept = segs.map((seg) => filterSegment(seg, supplier, rules, removed));
+    if (kept.some((k, i) => k !== segs[i])) {
+      const text = kept.filter(Boolean).join(' ');
+      out = text ? `<p>${escapeText(text)}</p>` : '';
+    }
+  }
+  return out
     .replace(/<a\b[^>]*>([\s\S]*?)<\/a\s*>/gi, '$1')
     .replace(EMPTY_P_RE, '')
     .replace(EMPTY_DIV_RE, '')
+    .replace(EMPTY_BLOCK_RE, '')
     .replace(/<(ul|ol)\b[^>]*>\s*<\/\1\s*>/gi, '')
     .replace(/\n{2,}/g, '\n')
     .trim();
 }
 
+export interface CleanResult {
+  html: string | null;
+  /** Every sentence that was taken out, and why (run reports, catalog audit). */
+  removed: RemovedText[];
+}
+
 /**
- * Drop paragraphs, headings, list items and single-line <div>s that identify
- * the supplier, remove images hotlinked from another host, unwrap any
- * remaining links (no outbound links on listings), and tidy up the empty
- * paragraphs / divs / lists left behind. Returns null when nothing is left.
- *
- * Runs to a fixed point (removing a block can empty its wrapper), so cleaning
- * already-cleaned HTML returns it unchanged — the cleanup script relies on
- * that to converge.
+ * Clean supplier copy for lab2date's own listing:
+ *  - sentences that name the supplier or send the buyer to its site, supplier
+ *    claims (its warranty, "tested by our engineers", "like new"), and other
+ *    prices ("€ 4,500.00", "Prices from: 17.500 euro") are removed — only
+ *    those sentences: the technical text around them is kept;
+ *  - a cross-sell tail ("Also available: …") goes with everything after it;
+ *  - images hotlinked from another host are removed, links are unwrapped, and
+ *    empty paragraphs / lists are tidied up.
+ * Returns null html when nothing is left. Runs to a fixed point, so cleaning
+ * already-cleaned HTML returns it unchanged (the cleanup script converges).
+ * The claim / tail / price rules come from Settings → Import & suppliers
+ * (lib/catalog/import-settings.ts); the registry defaults apply when none are passed.
  */
-export function cleanSupplierHtml(html: string | null | undefined, s: SupplierRef): string | null {
-  if (!html) return null;
+export function cleanSupplierHtmlDetailed(
+  html: string | null | undefined,
+  s: SupplierRef,
+  rules: CleanRules = DEFAULT_CLEAN_RULES,
+): CleanResult {
+  if (!html) return { html: null, removed: [] };
   const re = supplierPattern(s);
+  const removed: RemovedText[] = [];
   let out = html;
   for (let i = 0; i < 10; i++) {
-    const next = cleanSupplierPass(out, re);
+    const next = cleanSupplierPass(out, re, rules, removed);
     if (next === out) break;
     out = next;
   }
-  return out || null;
+  return { html: out || null, removed };
+}
+
+export function cleanSupplierHtml(html: string | null | undefined, s: SupplierRef, rules: CleanRules = DEFAULT_CLEAN_RULES): string | null {
+  return cleanSupplierHtmlDetailed(html, s, rules).html;
+}
+
+/** The same rules on a plain text (a summary written apart from the description). */
+export function cleanSupplierText(
+  text: string | null | undefined,
+  s: SupplierRef,
+  rules: CleanRules = DEFAULT_CLEAN_RULES,
+): { text: string | null; removed: RemovedText[] } {
+  if (!text) return { text: null, removed: [] };
+  const re = supplierPattern(s);
+  const removed: RemovedText[] = [];
+  // Plain text has no blocks: a cross-sell heading in the middle ("… Also
+  // available: …") still ends the text about this unit.
+  let body = text;
+  if (rules.tails) {
+    const tail = new RegExp(String.raw`(?:^|\s)(?=(?:${rules.tails.source}))`, 'i').exec(body);
+    if (tail) {
+      const cut = body.slice(tail.index).trim();
+      if (cut) removed.push({ reason: 'CROSS_SELL', text: cut });
+      body = body.slice(0, tail.index);
+    }
+  }
+  const kept = segmentsOf(escapeText(body))
+    .map((seg) => filterSegment(seg, re, rules, removed))
+    .filter(Boolean);
+  return { text: kept.join(' ') || null, removed };
 }
 
 /**

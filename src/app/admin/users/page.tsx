@@ -1,4 +1,6 @@
-import { requireCapability, hasCapability } from '@/lib/auth-server';
+import { requireCapability, hasCapability, getAdminCaps } from '@/lib/auth-server';
+import { CAPABILITY_PRESETS, canGrantCapability } from '@/lib/capabilities';
+import { getSecurityPolicy } from '@/lib/security/policy';
 import { prisma } from '@/lib/db';
 import { setUserRole, bulkDeleteUsers, bulkSuspendUsers } from '../actions';
 import { UserRole } from '@prisma/client';
@@ -11,7 +13,11 @@ export const metadata = { title: 'Users' };
 
 async function updateRole(formData: FormData) {
   'use server';
-  return setUserRole(String(formData.get('userId')), formData.get('role') as UserRole);
+  return setUserRole(
+    String(formData.get('userId')),
+    formData.get('role') as UserRole,
+    (formData.get('preset') as string | null) || null,
+  );
 }
 
 const PAGE_SIZE = 50;
@@ -31,8 +37,16 @@ export default async function AdminUsersPage(
   }
 ) {
   const searchParams = await props.searchParams;
-  await requireCapability('users:view');
+  const viewer = await requireCapability('users:view');
   const canManage = await hasCapability('users:manage');
+  const viewerCaps = await getAdminCaps();
+  const policy = await getSecurityPolicy();
+  const canPromote = canManage && (!policy.ONLY_SUPER_ADMIN_CREATES_ADMINS || viewerCaps.includes('*'));
+  const presets = Object.entries(CAPABILITY_PRESETS).map(([key, p]) => ({
+    key,
+    label: p.label,
+    grantable: p.caps.every((c) => canGrantCapability(viewerCaps, c)),
+  }));
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
   // Only real enum values reach Prisma — ?role=FOO used to 500 the page.
@@ -81,7 +95,8 @@ export default async function AdminUsersPage(
     <div className="space-y-6">
       <UserQuickView />
 
-      <div>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
         <h1 className="text-3xl font-bold tracking-tight">Users</h1>
         <p className="text-muted-foreground mt-1">
           {total} account{total === 1 ? '' : 's'}
@@ -89,6 +104,12 @@ export default async function AdminUsersPage(
           {q ? ` · matching “${q}”` : ''}
           {totalPages > 1 ? ` · page ${page}/${totalPages}` : ''}
         </p>
+        </div>
+        {canManage && (
+          <a href="/admin/users/invite" className="inline-flex items-center h-9 px-4 rounded-full border border-border text-sm font-semibold hover:bg-muted">
+            Invite staff
+          </a>
+        )}
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -114,6 +135,9 @@ export default async function AdminUsersPage(
         roleAction={updateRole}
         bulkDelete={bulkDeleteUsers}
         bulkSuspend={bulkSuspendUsers}
+        presets={presets}
+        canPromote={canPromote}
+        viewerId={viewer.user.id}
       />
 
       <AdminPager basePath="/admin/users" page={page} totalPages={totalPages} total={total} q={q} status={roleFilter} />

@@ -1,6 +1,7 @@
 import { Star } from 'lucide-react';
 import { HOME_DEFAULTS } from '@/lib/home-sections';
 import { prisma } from '@/lib/db';
+import { publicTestimonialWhere } from '@/lib/catalog/consent';
 
 export async function Testimonials({
   heading = HOME_DEFAULTS.testHeading,
@@ -12,7 +13,7 @@ export async function Testimonials({
   let list: { quote: string; author: string; role: string | null; company: string | null; rating: number }[] = [];
   try {
     const rows = await prisma.testimonial.findMany({
-      where: { published: true },
+      where: await publicTestimonialWhere(),
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
       take: 6,
     });

@@ -1,3 +1,4 @@
+import { siteTextsFrom } from '@/lib/catalog/site-texts';
 import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import './globals.css';
@@ -34,26 +35,25 @@ const mono = localFont({
 // hard-coded here, so changing the setting never reached <title> / OG tags.
 export async function generateMetadata(): Promise<Metadata> {
   if (!isBuildPhase()) await ensureSettingsLoaded();
-  const site = process.env.SITE_NAME?.trim() || 'lab2date';
+  // Settings → Site texts & pages (SITE_TITLE_SUFFIX / SITE_META_DESCRIPTION):
+  // describe what is really sold — the defaults make no "refurbished" or
+  // geographic claim.
+  const t = siteTextsFrom((k) => process.env[k] ?? '');
+  const site = t.siteName;
   return {
     metadataBase: new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com'),
     title: {
-      default: `${site} — Refurbished & surplus lab equipment marketplace`,
+      default: `${site} — ${t.titleSuffix}`,
       template: `%s · ${site}`,
     },
-    description:
-      'B2B marketplace for laboratory & biotech equipment across Europe — new, refurbished and surplus HPLC, GC, mass spectrometry and analytical instruments, with end-to-end quote, proforma and insured shipping.',
+    description: t.metaDescription,
     keywords: [
-      'refurbished lab equipment',
       'used laboratory instruments',
       'HPLC',
       'gas chromatography',
       'mass spectrometry',
       'analytical instruments',
       'lab equipment marketplace',
-      'laboratory equipment Netherlands',
-      'surplus scientific instruments',
-      'Europe',
     ],
     applicationName: site,
     authors: [{ name: site }],
@@ -65,17 +65,16 @@ export async function generateMetadata(): Promise<Metadata> {
       googleBot: { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1, 'max-video-preview': -1 },
     },
     openGraph: {
-      title: `${site} — Refurbished & surplus lab equipment marketplace`,
-      description:
-        'Source refurbished and surplus laboratory equipment across Europe — quote, proforma and insured shipping handled end to end.',
+      title: `${site} — ${t.titleSuffix}`,
+      description: t.metaDescription,
       type: 'website',
       siteName: site,
       locale: 'en_US',
     },
     twitter: {
       card: 'summary_large_image',
-      title: `${site} — Lab equipment marketplace`,
-      description: 'Refurbished & surplus laboratory equipment for Europe.',
+      title: `${site} — ${t.titleSuffix}`,
+      description: t.metaDescription,
     },
   };
 }

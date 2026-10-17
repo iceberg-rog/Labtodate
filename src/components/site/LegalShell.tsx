@@ -9,10 +9,15 @@ export async function legalContext() {
     country: process.env.COMPANY_COUNTRY || '',
     vat: process.env.COMPANY_VAT || '',
     phone: process.env.COMPANY_PHONE || '',
-    email:
-      process.env.SUPPORT_EMAIL ||
-      process.env.COMPANY_EMAIL ||
-      'support@lab2date.com',
+    email: (process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '').trim(),
+    // Where "contact us" points: the configured address, else the contact page
+    // (never a made-up address — Settings → Brand → Public support email).
+    get contactHref(): string {
+      return this.email ? `mailto:${this.email}` : '/contact';
+    },
+    get contactLabel(): string {
+      return this.email || 'our contact page';
+    },
   };
 }
 

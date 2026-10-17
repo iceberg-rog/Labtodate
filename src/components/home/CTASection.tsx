@@ -6,9 +6,12 @@ import { HOME_DEFAULTS } from '@/lib/home-sections';
 export function CTASection({
   heading = HOME_DEFAULTS.ctaHeading,
   subtitle = HOME_DEFAULTS.ctaSubtitle,
+  note = '',
 }: {
   heading?: string;
   subtitle?: string;
+  /** Settings → Site texts & pages → SOURCING_NO_OBLIGATION_TEXT. */
+  note?: string;
 } = {}) {
   return (
     <section className="container-px py-24">
@@ -66,9 +69,7 @@ export function CTASection({
             >
               <Link href="/contact">Talk to sales</Link>
             </Button>
-            <p className="text-xs text-primary-foreground/60 mt-2 lg:text-right">
-              Free for buyers · No commission until you accept
-            </p>
+            {note && <p className="text-xs text-primary-foreground/60 mt-2 lg:text-right">{note}</p>}
           </div>
         </div>
       </div>

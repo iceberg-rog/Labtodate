@@ -5,6 +5,8 @@ import { prisma } from '@/lib/db';
 import { ProductStatus, Prisma } from '@prisma/client';
 import { ProductBrowser, type ProductRow } from '@/components/admin/ProductQuickEdit';
 import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
+import { SelfHostPhotosButton } from '@/components/admin/SelfHostPhotosButton';
+import { firstPublicImage, isOwnStoredImage } from '@/lib/media/public-src';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Products' };
@@ -100,7 +102,8 @@ export default async function AdminProductsPage(
     quantity: p.quantity,
     seller: { name: p.seller.name, email: p.seller.email },
     shop: p.company ? { name: p.company.name, slug: p.company.slug } : null,
-    image: p.images[0] ?? null,
+    // Our own copy only: the admin list never loads photos from a supplier's server.
+    image: firstPublicImage(p.images),
   }));
 
   const counts: Record<string, number> = {};
@@ -124,8 +127,19 @@ export default async function AdminProductsPage(
     return s ? `/admin/products?${s}` : '/admin/products';
   };
 
+  // Photos still hotlinked from a supplier (hidden from buyers until copied).
+  const photoRows = await prisma.product.findMany({ select: { images: true } });
+  const foreign = photoRows.reduce(
+    (acc, r) => {
+      const n = r.images.filter((u) => !isOwnStoredImage(u)).length;
+      return n ? { products: acc.products + 1, photos: acc.photos + n } : acc;
+    },
+    { products: 0, photos: 0 },
+  );
+
   return (
     <div className="space-y-6">
+      <SelfHostPhotosButton products={foreign.products} photos={foreign.photos} />
       {(searchParams.created || searchParams.deleted || searchParams.archived) && (
         <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm font-medium">
           {searchParams.created

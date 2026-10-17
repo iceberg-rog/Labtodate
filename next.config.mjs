@@ -5,11 +5,16 @@
 // re-baking image URLs. A rewrite lets the Next image optimizer resolve
 // those relative paths against the internal MinIO service, so images are
 // optimized/resized/WebP and cached — fast — while staying host-agnostic.
-const MINIO_INTERNAL = 'http://minio:9000';
+// MEDIA_INTERNAL_ORIGIN overrides it for a non-Docker run (read at build time).
+const MINIO_INTERNAL = process.env.MEDIA_INTERNAL_ORIGIN || 'http://minio:9000';
 
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Document PDFs: puppeteer-core is loaded at runtime from node_modules (not
+  // bundled), and the standalone output traces it in. Next lists it by default
+  // too — explicit here so the PDF path never depends on that default.
+  serverExternalPackages: ['puppeteer-core'],
   experimental: {
     serverActions: {
       // File uploads posted through Server Actions (company logo, payment
@@ -22,20 +27,14 @@ const nextConfig = {
     },
   },
   images: {
-    // optimizer fetches /media/* via the rewrite below (same origin).
-    // For Product.images that point at external suppliers (lab2.nl,
-    // lab2parts.com, plus any future supplier added through the AI shop
-    // suggester or the URL importer) we allow all HTTPS sources — the
-    // optimizer still validates the response is an image, so the risk is
-    // bounded to bandwidth (mitigated by Next's size+count limits and the
-    // per-IP nginx limit on /_next/image).
-    // SECURITY: `http` is intentionally NOT allowed. Plaintext internal
-    // services (169.254.169.254 metadata, db:5432, minio:9000, xray:9443)
-    // all speak http, so an http:** allowlist turned the optimizer into an
-    // SSRF probe into the private network. HTTPS-only closes that.
-    remotePatterns: [
-      { protocol: 'https', hostname: '**' },
-    ],
+    // Product photos are ALWAYS served from our own media store as
+    // host-relative /media/<bucket>/<key> paths (src/lib/media/public-src.ts
+    // normalises every stored URL; foreign URLs are dropped before rendering).
+    // The optimizer fetches them via the rewrite below, so no remote host is
+    // allowed at all: /_next/image can no longer proxy a supplier's site
+    // (which exposed the hidden supplier and broke when its URLs changed) or
+    // be used as an open image proxy. http(s) internal services stay out too.
+    remotePatterns: [],
   },
   async headers() {
     return [

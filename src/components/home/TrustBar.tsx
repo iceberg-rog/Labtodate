@@ -1,20 +1,26 @@
 import { prisma } from '@/lib/db';
+import { LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
+import { isPlaceholderBrand } from '@/lib/catalog/jsonld';
+import { getCatalogPolicy } from '@/lib/catalog/policy';
 
 /**
  * Brand trust bar. Pure typography (no logo files) — Stripe/Linear style.
  * Static (no marquee animation), centered and wrapping responsively.
  */
 export async function TrustBar() {
+  const policy = await getCatalogPolicy();
   const brands = await prisma.brand.findMany({
-    where: { products: { some: { status: 'PUBLISHED' } } },
+    where: { products: { some: LIVE_PRODUCT_WHERE } },
     select: {
       name: true,
-      _count: { select: { products: { where: { status: 'PUBLISHED' } } } },
+      slug: true,
+      _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } },
     },
   });
 
+  // "Other" is an importer placeholder, not a brand anyone makes.
   const top = brands
-    .filter((b) => b._count.products > 0)
+    .filter((b) => b._count.products > 0 && !isPlaceholderBrand(b, policy.placeholderBrands))
     .sort((a, b) => b._count.products - a._count.products)
     .slice(0, 10);
 
@@ -24,7 +30,7 @@ export async function TrustBar() {
     <section className="border-y border-foreground/5 bg-card/40">
       <div className="container-px py-10">
         <p className="text-center text-[10px] font-bold uppercase tracking-[0.32em] text-muted-foreground/70 mb-6">
-          Genuine &amp; compatible parts from
+          Brands in our catalogue
         </p>
         <ul className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3 max-w-5xl mx-auto">
           {top.map((b, i) => (

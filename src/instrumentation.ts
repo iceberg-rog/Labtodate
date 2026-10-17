@@ -27,3 +27,33 @@ export const onRequestError: Instrumentation.onRequestError = async (err, reques
     }
   }
 };
+
+/**
+ * Startup check (once per server start): product photos stored as an absolute
+ * URL of a /media/ store under a host this server does not recognise are
+ * hidden from buyers (src/lib/media/public-src.ts fails closed). Say so loudly
+ * — server log + ErrorLog (Admin → Errors, overview tile) + admin bell —
+ * instead of buyers silently seeing "Photo on request". The fix is
+ * `npm run media:normalize -- --apply` (also part of the deploy setup step).
+ */
+export async function register(): Promise<void> {
+  if (process.env.NEXT_RUNTIME !== 'nodejs' || process.env.NEXT_PHASE === 'phase-production-build') return;
+  const t = setTimeout(async () => {
+    try {
+      const [{ prisma }, { mediaUrlProblems }, { notifyAdmins }] = await Promise.all([
+        import('@/lib/db'),
+        import('@/lib/media/normalize'),
+        import('@/lib/observability'),
+      ]);
+      const r = await mediaUrlProblems(prisma);
+      if (!r.products) return;
+      const message = `STARTUP CHECK: ${r.photos} photo(s) of ${r.products} published product(s) are stored under an unrecognised host (${r.hosts.join(', ')}) and are HIDDEN from buyers. Run: npm run media:normalize -- --apply`;
+      console.error(`[media] ${message}`);
+      await prisma.errorLog.create({ data: { where: 'startup · media URL check', message: message.slice(0, 2000) } });
+      await notifyAdmins('Product photos hidden from buyers', message.slice(0, 400), '/admin/products', 'SYSTEM').catch(() => null);
+    } catch {
+      /* a startup check must never take the server down */
+    }
+  }, 5000);
+  t.unref?.();
+}

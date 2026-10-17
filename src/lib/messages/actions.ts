@@ -9,7 +9,7 @@ import { isDeliverableEmail } from '@/lib/email';
 import { escapeHtml, headerText } from '@/lib/email-html';
 import { notifyUser } from '@/lib/observability';
 import { notifyAndMaybeEmail } from '@/lib/notify-throttled';
-import { submitSourcingRequest } from '@/lib/quotes/actions';
+import { askAboutProduct } from '@/lib/catalog/product-question';
 
 const CreateThreadInput = z.object({
   productSlug: z.string().min(1),
@@ -60,31 +60,11 @@ export async function startThreadWithSeller(
   if (product.sellerId === session.user.id) return { error: "You can't message yourself." };
 
   // Imported listings belong to placeholder seller accounts nobody reads
-  // (e.g. sales@<shop>.import). A thread there is a black hole, so the
-  // question goes to the lab2date team as a quote request on this product —
-  // the mediated flow that emails the intake inbox and the buyer's replies.
+  // (e.g. sales@<shop>.import): lab2date is the seller of record. The question
+  // goes to the lab2date team as a support ticket on this product — never a
+  // quote request (no RFQ stages, no "supplier" wording).
   if (!isDeliverableEmail(product.seller.email)) {
-    let quoteId: string;
-    try {
-      ({ id: quoteId } = await submitSourcingRequest({
-        buyerEmail: session.user.email,
-        buyerName: session.user.name ?? '',
-        description: parsed.initialMessage,
-        productSlug: parsed.productSlug,
-      }));
-    } catch (e) {
-      if (e instanceof z.ZodError) {
-        const field = String(e.issues[0]?.path[0] ?? '');
-        if (field === 'description') return { error: 'Please write at least 20 characters so the team can help.' };
-        if (field === 'buyerName') return { error: 'Your account has no name. Add your name in your profile, then try again.' };
-        return { error: 'Your message could not be sent. Please check it and try again.' };
-      }
-      const msg = e instanceof Error ? e.message : '';
-      if (msg.startsWith('Too many submissions')) return { error: msg };
-      console.error('[messages] product question failed', e);
-      return { error: 'Your message was not sent. Please try again in a minute.' };
-    }
-    redirect(`/app/quotes/${quoteId}`);
+    return askAboutProduct({ productSlug: parsed.productSlug, message: parsed.initialMessage, kind: 'QUESTION' });
   }
 
   // Reuse existing thread between this buyer + seller + product if exists.

@@ -5,7 +5,13 @@ import { Loader2, ArrowRight, User, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { submitSellAndRedirect, type SellInputType } from '@/lib/sell/actions';
 
-export function SellForm() {
+/** `turnaround` = Settings → Acquisitions → Valuation reply time ('' = no promise).
+ *  `conditions` = the condition labels the owner set (Admin → Catalog → Conditions & warranty). */
+export function SellForm({
+  turnaround = '',
+  offerWord = 'valuation',
+  conditions = [['USED', 'Used'], ['REFURBISHED', 'Refurbished'], ['NEW', 'New']],
+}: { turnaround?: string; offerWord?: string; conditions?: ReadonlyArray<readonly [string, string]> } = {}) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [sellerType, setSellerType] = useState<'INDIVIDUAL' | 'COMPANY'>('COMPANY');
@@ -118,7 +124,7 @@ export function SellForm() {
           <Field label="Country" name="country" placeholder="Netherlands" />
         </div>
         {sellerType === 'COMPANY' && (
-          <Field label="Company / Institution" name="companyName" placeholder="Pivot Park B.V." />
+          <Field label="Company / Institution" name="companyName" placeholder="Your organisation" />
         )}
       </div>
 
@@ -140,11 +146,7 @@ export function SellForm() {
           <SelectField
             label="Condition"
             name="condition"
-            options={[
-              ['USED', 'Used — working'],
-              ['REFURBISHED', 'Refurbished'],
-              ['NEW', 'New / unused'],
-            ]}
+            options={conditions.map(([v, l]) => [v, l] as [string, string])}
           />
         </div>
         <div className="grid sm:grid-cols-3 gap-4">
@@ -152,7 +154,7 @@ export function SellForm() {
           <Field label="Quantity" name="quantity" type="number" placeholder="1" defaultValue="1" />
           <Field label="Asking price" name="askingPrice" placeholder="€18,000 or offer" />
         </div>
-        <Field label="Location of the item" name="location" placeholder="Oss, Netherlands" />
+        <Field label="Location of the item" name="location" placeholder="City, country" />
         <Field
           label="Description"
           name="description"
@@ -243,7 +245,7 @@ export function SellForm() {
           )}
         </Button>
         <p className="text-xs text-muted-foreground text-center mt-3">
-          Free valuation · No obligation · We reply within 2 business days
+          Free {offerWord} · No obligation{turnaround ? ` · We reply within ${turnaround}` : ''}
         </p>
       </div>
     </form>

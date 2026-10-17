@@ -47,7 +47,8 @@ const COLUMNS = [
 
 export async function Footer() {
   await ensureSettingsLoaded();
-  const supportEmail = process.env.SUPPORT_EMAIL || 'hello@lab2date.com';
+  // Only a configured address — never a made-up one on a domain we do not own.
+  const supportEmail = (process.env.SUPPORT_EMAIL || '').trim();
   const siteName = process.env.SITE_NAME || 'lab2date';
   const mk = await getMarketing();
   // Legal identity (Settings → Company), same source as the invoices — shown
@@ -85,9 +86,11 @@ export async function Footer() {
                 <Github className="h-5 w-5" />
               </Link>
             )}
+            {supportEmail && (
             <Link href={`mailto:${supportEmail}`} aria-label="Email" className="hover:text-foreground">
               <Mail className="h-5 w-5" />
             </Link>
+            )}
           </div>
         </div>
 
@@ -112,7 +115,7 @@ export async function Footer() {
             <p>© {new Date().getFullYear()} {siteName}. All rights reserved.</p>
             {legalParts.length > 0 && <p>{legalParts.join(' · ')}</p>}
           </div>
-          <p>Made for scientists, by scientists.</p>
+          {mk.footerSignoff && <p>{mk.footerSignoff}</p>}
         </div>
       </div>
     </footer>

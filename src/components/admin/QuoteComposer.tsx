@@ -3,33 +3,43 @@
 import { useState, useRef, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, Send, Lock, Mail, EyeOff, ChevronUp, ChevronDown, Paperclip, X } from 'lucide-react';
-import { replyToQuote, sendProforma } from '@/lib/quotes/actions';
-import { formatPrice } from '@/lib/utils';
+import { replyToQuote, type QuoteActionResult } from '@/lib/quotes/actions';
+import { OfferForm, type OfferFormProps } from '@/components/quotes/OfferForm';
 
-type Mode = 'reply' | 'internal' | 'proforma';
+type Mode = 'reply' | 'internal' | 'offer';
 type Att = { url: string; name: string; type: string };
 
-const MAX_PROFORMA_EUR = 1_000_000;
-
+/**
+ * Admin quote composer: reply to the buyer, internal note, or send / update
+ * the OFFER. Every outcome message is the one the server action returned —
+ * "Offer sent…", "Offer saved, but the email to x could not be delivered…",
+ * or a readable refusal — never a generic "Not sent" for an action that
+ * actually went through.
+ */
 export function QuoteComposer({
   quoteId,
   buyerEmail,
-  canSendProforma,
+  offer,
+  priceLocked,
 }: {
   quoteId: string;
   buyerEmail: string;
-  canSendProforma: boolean;
+  /** Offer composer props; null = the offer tab is hidden. */
+  offer: Omit<OfferFormProps, 'quoteId' | 'onResult'> | null;
+  /** Set once the buyer accepted: why the price can no longer change. */
+  priceLocked?: string | null;
 }) {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>('reply');
   const [open, setOpen] = useState(false);   // start COLLAPSED — workspace is conversation-first
   const [pending, start] = useTransition();
   const [body, setBody] = useState('');
-  const [price, setPrice] = useState('');
-  const [pnote, setPnote] = useState('');
   const [atts, setAtts] = useState<Att[]>([]);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Last outcome — stays visible on the collapsed bar too.
+  const [outcome, setOutcome] = useState<QuoteActionResult | null>(null);
+  const canOffer = !!offer || !!priceLocked;
 
   async function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -55,42 +65,46 @@ export function QuoteComposer({
   function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
+    setOutcome(null);
     start(async () => {
       try {
-        if (mode === 'proforma') {
-          const cents = Math.round(parseFloat(price) * 100);
-          if (!Number.isFinite(cents) || cents <= 0) { setErr('Enter a valid price.'); return; }
-          if (cents > MAX_PROFORMA_EUR * 100) { setErr('Max proforma amount is €1,000,000.'); return; }
-          const r = await sendProforma({
-            sourcingRequestId: quoteId,
-            priceCents: cents,
-            currency: 'EUR',
-            note: pnote.trim() || null,
-          });
-          if (r?.error) { setErr(r.error); return; }
-          setPrice(''); setPnote('');
-        } else {
-          if (body.trim().length < 2) { setErr('Message too short.'); return; }
-          const r = await replyToQuote({
-            sourcingRequestId: quoteId,
-            body: body.trim(),
-            attachments: atts.map((a) => a.url),
-            internal: mode === 'internal',
-          });
-          if (r?.error) { setErr(r.error); return; }
-          setBody(''); setAtts([]);
-        }
+        if (body.trim().length < 2) { setErr('Message too short.'); return; }
+        const internal = mode === 'internal';
+        const r = await replyToQuote({
+          sourcingRequestId: quoteId,
+          body: body.trim(),
+          attachments: atts.map((a) => a.url),
+          internal,
+        });
+        if (r?.error) { setErr(r.error); return; }
+        setBody(''); setAtts([]);
+        setOutcome(r?.warning ? { warning: r.warning } : { notice: internal ? 'Internal note posted.' : `Reply sent to ${buyerEmail}.` });
         setOpen(false);
         router.refresh();
       } catch (e2) {
         if ((e2 as Error)?.message?.includes('NEXT_REDIRECT')) return;
-        setErr('Not sent. Reload the page and try again.');
+        // Only reached when the request itself failed (network / server error).
+        setErr('The request failed before the server answered. Reload the page to check whether your message was saved, then try again.');
       }
     });
   }
 
   const isInternal = mode === 'internal';
-  const isProforma = mode === 'proforma';
+  const isOffer = mode === 'offer';
+  const outcomeBox = outcome && (outcome.error || outcome.warning || outcome.notice) ? (
+    <p
+      role={outcome.error ? 'alert' : 'status'}
+      className={
+        outcome.error
+          ? 'text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2'
+          : outcome.warning
+          ? 'text-xs text-amber-900 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 rounded-md px-3 py-2'
+          : 'text-xs text-emerald-800 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-md px-3 py-2'
+      }
+    >
+      {outcome.error ?? outcome.warning ?? outcome.notice}
+    </p>
+  ) : null;
 
   // COLLAPSED: a calm bar with quick-reply prompts. Click expands the full composer.
   if (!open) {
@@ -107,6 +121,7 @@ export function QuoteComposer({
           <span className="flex-1">Reply to {buyerEmail}…</span>
           <ChevronUp className="h-4 w-4 opacity-50" />
         </button>
+        {outcomeBox && <div className="px-3 pb-2">{outcomeBox}</div>}
         <div className="px-3 pb-3 flex items-center gap-2 flex-wrap">
           <button
             type="button"
@@ -115,13 +130,13 @@ export function QuoteComposer({
           >
             <Lock className="h-3 w-3" /> Internal note
           </button>
-          {canSendProforma && (
+          {canOffer && (
             <button
               type="button"
-              onClick={() => { setMode('proforma'); setOpen(true); }}
+              onClick={() => { setMode('offer'); setOpen(true); }}
               className="inline-flex items-center gap-1 h-7 px-3 rounded-full bg-accent text-accent-foreground text-[11px] font-bold hover:bg-accent/90"
             >
-              <Send className="h-3 w-3" /> Send proforma
+              {priceLocked ? <Lock className="h-3 w-3" /> : <Send className="h-3 w-3" />} {priceLocked ? 'Offer · price locked' : offer?.current ? 'Update offer' : 'Send offer'}
             </button>
           )}
         </div>
@@ -134,16 +149,16 @@ export function QuoteComposer({
       className={
         isInternal
           ? 'rounded-2xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/30 overflow-hidden'
-          : isProforma
+          : isOffer
           ? 'rounded-2xl border-2 border-accent/40 bg-accent/[0.06] overflow-hidden'
           : 'rounded-2xl border-2 border-primary/40 bg-card overflow-hidden'
       }
     >
-      <div className={`grid ${canSendProforma ? 'grid-cols-[1fr_1fr_1fr_auto]' : 'grid-cols-[1fr_1fr_auto]'} border-b border-border`}>
+      <div className={`grid ${canOffer ? 'grid-cols-[1fr_1fr_1fr_auto]' : 'grid-cols-[1fr_1fr_auto]'} border-b border-border`}>
         <ModeTab active={mode === 'reply'} onClick={() => setMode('reply')} tone="primary" icon={<Mail className="h-4 w-4" />} label="Reply to buyer" />
         <ModeTab active={isInternal} onClick={() => setMode('internal')} tone="amber" icon={<Lock className="h-4 w-4" />} label="Internal note" />
-        {canSendProforma && (
-          <ModeTab active={isProforma} onClick={() => setMode('proforma')} tone="accent" icon={<Send className="h-4 w-4" />} label="Proforma" />
+        {canOffer && (
+          <ModeTab active={isOffer} onClick={() => setMode('offer')} tone="accent" icon={priceLocked ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />} label={priceLocked ? 'Offer (locked)' : offer?.current ? 'Update offer' : 'Offer'} />
         )}
         <button
           type="button"
@@ -159,7 +174,7 @@ export function QuoteComposer({
         className={
           isInternal
             ? 'px-5 py-2.5 bg-amber-100/80 dark:bg-amber-900/40 border-b border-amber-200 dark:border-amber-800 inline-flex items-center gap-2 w-full'
-            : isProforma
+            : isOffer
             ? 'px-5 py-2.5 bg-accent/[0.10] border-b border-accent/20 inline-flex items-center gap-2 w-full'
             : 'px-5 py-2.5 bg-primary/5 border-b border-primary/15 inline-flex items-center gap-2 w-full'
         }
@@ -169,8 +184,12 @@ export function QuoteComposer({
             <EyeOff className="h-3.5 w-3.5 text-amber-800 dark:text-amber-300 shrink-0" />
             <p className="text-[11px] font-semibold text-amber-900 dark:text-amber-300">Team-only — never emailed, never shown to {buyerEmail}.</p>
           </>
-        ) : isProforma ? (
-          <p className="text-[11px] font-semibold text-foreground">Sends a formal proforma invoice + payment instructions to {buyerEmail}.</p>
+        ) : isOffer ? (
+          <p className="text-[11px] font-semibold text-foreground">
+            {priceLocked
+              ? 'The buyer accepted this offer — its price can no longer be changed.'
+              : `Sends ${buyerEmail} an offer to accept or decline. The order and the proforma invoice are created only when the buyer accepts.`}
+          </p>
         ) : (
           <>
             <Mail className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -179,46 +198,25 @@ export function QuoteComposer({
         )}
       </div>
 
+      {isOffer ? (
+        <div className="p-5 space-y-3">
+          {priceLocked ? (
+            <>
+              {/* The page may have refreshed into the locked state right as a
+                  price update was refused — keep that answer on screen. */}
+              {outcome?.error && (
+                <p role="alert" className="text-xs text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">{outcome.error}</p>
+              )}
+              <p role="status" className="text-sm rounded-lg border border-border bg-muted px-3 py-2 inline-flex items-start gap-2">
+                <Lock className="h-4 w-4 mt-0.5 shrink-0" /> {priceLocked}
+              </p>
+            </>
+          ) : offer ? (
+            <OfferForm quoteId={quoteId} {...offer} onResult={setOutcome} />
+          ) : null}
+        </div>
+      ) : (
       <form onSubmit={submit} className="p-5 space-y-3">
-        {isProforma ? (
-          <>
-            <label className="block">
-              <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Price (EUR)</span>
-              <div className="flex items-end gap-3 flex-wrap">
-                <input
-                  type="number" min="0.01" max={MAX_PROFORMA_EUR} step="0.01"
-                  value={price} onChange={(e) => setPrice(e.target.value)}
-                  placeholder="18500.00"
-                  required
-                  className="h-10 w-48 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-                />
-                {(() => {
-                  const cents = Math.round(parseFloat(price || '0') * 100);
-                  return Number.isFinite(cents) && cents > 0 ? (
-                    <div className="rounded-lg bg-accent/[0.10] border border-accent/30 px-3 py-1.5 text-xs">
-                      <span className="text-muted-foreground">Buyer will see </span>
-                      <strong className="tabular-nums">
-                        {formatPrice(cents, 'EUR')}
-                      </strong>
-                    </div>
-                  ) : null;
-                })()}
-              </div>
-            </label>
-            <label className="block">
-              <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Note (optional)</span>
-              <textarea
-                value={pnote} onChange={(e) => setPnote(e.target.value.slice(0, 1500))}
-                rows={3}
-                placeholder="Lead time, condition, what's included, payment terms…"
-                className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-                maxLength={1500}
-              />
-              <div className="text-right text-[10px] text-muted-foreground mt-1 tabular-nums">{pnote.length} / 1500</div>
-            </label>
-          </>
-        ) : (
-          <>
             {atts.length > 0 && (
               <div className="flex gap-2 flex-wrap">
                 {atts.map((a, i) => (
@@ -235,7 +233,7 @@ export function QuoteComposer({
             <textarea
               value={body} onChange={(e) => setBody(e.target.value.slice(0, 4000))}
               rows={4} required minLength={2}
-              maxLength={4000}
+              maxLength={4000} dir="auto"
               placeholder={isInternal ? 'Add an internal note — triage, hand-off, mention a teammate…' : 'Write a reply the buyer will see…'}
               className={
                 isInternal
@@ -246,14 +244,11 @@ export function QuoteComposer({
             <div className="text-right text-[10px] text-muted-foreground tabular-nums">
               <span className={body.length > 3800 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}>{body.length} / 4000</span>
             </div>
-          </>
-        )}
 
         {err && <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">{err}</p>}
 
         <div className="flex items-center gap-2 flex-wrap">
-          {!isProforma && (
-            <label
+          <label
               className="flex-shrink-0 h-10 w-10 rounded-lg border border-input bg-background flex items-center justify-center cursor-pointer hover:bg-muted"
               title="Attach image or PDF"
             >
@@ -267,7 +262,6 @@ export function QuoteComposer({
                 disabled={uploading || atts.length >= 5}
               />
             </label>
-          )}
           <span className="flex-1" />
           <button
             type="submit"
@@ -275,18 +269,16 @@ export function QuoteComposer({
             className={
               isInternal
                 ? 'rounded-full bg-amber-500 hover:bg-amber-600 text-amber-950 px-6 h-10 text-sm font-bold disabled:opacity-60 inline-flex items-center gap-2 shadow-sm'
-                : isProforma
-                ? 'rounded-full bg-accent text-accent-foreground hover:bg-accent/90 px-6 h-10 text-sm font-bold disabled:opacity-60 inline-flex items-center gap-2 shadow-sm'
                 : 'rounded-full bg-primary hover:bg-primary/90 text-primary-foreground px-6 h-10 text-sm font-bold disabled:opacity-60 inline-flex items-center gap-2 shadow-sm'
             }
           >
             {pending ? <Loader2 className="h-4 w-4 animate-spin" />
               : isInternal ? <><Lock className="h-4 w-4" /> Post internal note</>
-              : isProforma ? <><Send className="h-4 w-4" /> Send proforma</>
               : <><Send className="h-4 w-4" /> Send reply</>}
           </button>
         </div>
       </form>
+      )}
     </section>
   );
 }

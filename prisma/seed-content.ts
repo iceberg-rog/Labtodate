@@ -5,6 +5,8 @@
 
 import { PrismaClient } from '@prisma/client';
 
+import { assertDemoSeedAllowed } from './_seed-guard';
+
 const prisma = new PrismaClient();
 
 const ADMIN_ID = 'seed_user_admin';
@@ -356,6 +358,7 @@ const FACILITIES = [
 ];
 
 async function main() {
+  await assertDemoSeedAllowed(prisma, 'seed-content.ts');
   console.log('🌱 Seeding content (blog + wiki + case studies + facilities)...');
 
   for (const post of BLOG_POSTS) {

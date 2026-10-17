@@ -1,16 +1,75 @@
 import { Tag, Banknote, Truck, ShieldCheck, Clock, Search, FileCheck2, Handshake } from 'lucide-react';
 import { SellForm } from './SellForm';
-import { getMarketing } from '@/lib/marketing';
+import { getCatalogPolicy, getConditionGrades, type CatalogPolicy } from '@/lib/catalog/policy';
 
 export const metadata = {
   title: 'Sell your lab equipment',
   description:
-    'Sell surplus, refurbished or decommissioned laboratory and analytical equipment. We come back with a valuation; we handle shipping and payment.',
+    'Sell surplus, refurbished or decommissioned laboratory and analytical equipment. Submit it and our acquisitions team comes back with a valuation.',
 };
 export const dynamic = 'force-dynamic';
 
+/**
+ * Every promise on this page follows the acquisition process the site really
+ * runs (Settings → Acquisitions): who ships the unit, and when the seller is
+ * paid. The defaults match the seller dashboard flow: we buy outright, the
+ * seller ships to our warehouse, we pay after it arrives and passes our check.
+ */
+function sellCopy(p: CatalogPolicy) {
+  const outright = p.sellAcquisitionModel === 'OUTRIGHT_PURCHASE';
+  const weCollect = p.sellLogisticsMode === 'WE_ARRANGE_PICKUP';
+  const turnaround = p.sellValuationTurnaround;
+  return {
+    stats: [
+      { value: outright ? 'Offer' : '0%', label: outright ? 'A firm price for your unit' : 'Listing fees' },
+      weCollect
+        ? { value: 'Collected', label: 'We arrange the pickup' }
+        : { value: 'You ship', label: 'To our warehouse, address on acceptance' },
+      { value: 'One', label: 'Accountable counterparty' },
+    ],
+    bullets: [
+      {
+        icon: Banknote,
+        title: outright ? 'A firm offer, no fees' : 'Valuation, no listing fees',
+        body: outright
+          ? 'We make you an offer for the unit based on what it can realistically sell for. No fees are deducted.'
+          : 'We come back with a number based on what the unit can realistically sell for.',
+      },
+      weCollect
+        ? { icon: Truck, title: 'We arrange collection', body: 'Crating, freight and insurance are arranged by us; the costs are agreed in the offer.' }
+        : {
+            icon: Truck,
+            title: 'You ship it to us',
+            body: 'Once you accept our offer, we send you our warehouse address. You ship the unit with a carrier of your choice and share the tracking number.',
+          },
+      outright
+        ? { icon: ShieldCheck, title: 'Paid after our check', body: 'We pay by bank transfer once the unit has arrived and passed our check against your description.' }
+        : { icon: ShieldCheck, title: 'Paid after the sale', body: 'You get paid once the buyer confirms the unit as described.' },
+    ],
+    steps: [
+      { icon: FileCheck2, title: 'Submit your equipment', body: 'Tell us what you have — the form on the right takes a few minutes.' },
+      {
+        icon: Search,
+        title: outright ? 'Our offer' : 'Free valuation',
+        body: `Our acquisitions team replies${turnaround ? ` within ${turnaround}` : ''} with ${outright ? 'an offer' : 'a market-based valuation'}.`,
+      },
+      outright
+        ? { icon: Handshake, title: 'Accept and share bank details', body: 'Accept the offer in your dashboard and tell us where to send the payment.' }
+        : { icon: Handshake, title: 'We match a buyer', body: 'We route your item and negotiate on agreed terms.' },
+      {
+        icon: Clock,
+        title: weCollect ? 'Collection & payment' : 'Ship & get paid',
+        body: outright
+          ? `${weCollect ? 'We collect the unit' : 'You ship the unit to our warehouse'}; we pay after it arrives and passes our check.`
+          : `${weCollect ? 'We collect the unit' : 'You ship the unit'}; you get paid once the buyer confirms receipt.`,
+      },
+    ],
+  };
+}
+
 export default async function SellPage() {
-  const mk = await getMarketing();
+  const [policy, grades] = await Promise.all([getCatalogPolicy(), getConditionGrades()]);
+  const copy = sellCopy(policy);
   return (
     <div>
       {/* Hero */}
@@ -18,7 +77,7 @@ export default async function SellPage() {
         <div className="container-px py-14 md:py-20 max-w-6xl mx-auto">
           <div className="inline-flex items-center gap-2 rounded-full bg-accent/15 border border-accent/30 px-3 py-1 text-xs font-bold text-primary mb-5">
             <Tag className="h-3.5 w-3.5" />
-            Sell to lab2date
+            Sell to {policy.siteName}
           </div>
           <h1
             className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground leading-[1.05] max-w-3xl"
@@ -29,14 +88,14 @@ export default async function SellPage() {
           </h1>
           <p className="mt-6 text-lg text-muted-foreground leading-relaxed max-w-2xl">
             Whether you&apos;re an individual, a lab, a dealer, or an institution clearing a facility —
-            submit your equipment and our acquisitions team comes back with a valuation. No listing
-            fees, no guesswork.
+            submit your equipment and our acquisitions team comes back with{' '}
+            {policy.sellAcquisitionModel === 'OUTRIGHT_PURCHASE' ? 'an offer' : 'a valuation'}.
           </p>
 
           <div className="mt-10 grid grid-cols-2 lg:grid-cols-3 gap-px rounded-2xl overflow-hidden border border-border bg-border">
-            <Stat value="0%" label="Listing fees" />
-            <Stat value="Global" label="Logistics handled for you" />
-            <Stat value="One" label="Accountable counterparty" />
+            {copy.stats.map((st) => (
+              <Stat key={st.label} value={st.value} label={st.label} />
+            ))}
           </div>
         </div>
       </section>
@@ -50,9 +109,9 @@ export default async function SellPage() {
                 Why sell through us
               </h2>
               <ul className="mt-6 space-y-5">
-                <Bullet icon={Banknote} title="Valuation, no listing fees" body="We come back with a number based on what the unit can realistically sell for." />
-                <Bullet icon={Truck} title="We handle logistics" body="Crating, freight, insurance and customs — coordinated for you." />
-                <Bullet icon={ShieldCheck} title="Payment after receipt" body="You get paid once the buyer confirms the unit as described." />
+                {copy.bullets.map((b) => (
+                  <Bullet key={b.title} icon={b.icon} title={b.title} body={b.body} />
+                ))}
               </ul>
             </div>
 
@@ -61,10 +120,9 @@ export default async function SellPage() {
                 How it works
               </h2>
               <ol className="mt-6 space-y-5">
-                <Step n={1} icon={FileCheck2} title="Submit your equipment" body="Tell us what you have — the form on the right takes a few minutes." />
-                <Step n={2} icon={Search} title="Free valuation" body="Our acquisitions team replies within 2 business days with a market-based valuation." />
-                <Step n={3} icon={Handshake} title="We match a buyer" body="We route your item and negotiate on agreed terms." />
-                <Step n={4} icon={Clock} title="Ship & get paid" body="We coordinate logistics; you get paid once the buyer confirms receipt." />
+                {copy.steps.map((st, i) => (
+                  <Step key={st.title} n={i + 1} icon={st.icon} title={st.title} body={st.body} />
+                ))}
               </ol>
             </div>
 
@@ -76,7 +134,11 @@ export default async function SellPage() {
           </div>
 
           <div>
-            <SellForm />
+            <SellForm
+              turnaround={policy.sellValuationTurnaround}
+              offerWord={policy.sellAcquisitionModel === 'OUTRIGHT_PURCHASE' ? 'offer' : 'valuation'}
+              conditions={(['USED', 'REFURBISHED', 'NEW'] as const).map((c) => [c, grades[c].label])}
+            />
           </div>
         </div>
       </section>

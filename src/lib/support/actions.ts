@@ -7,28 +7,18 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
-import { sendEmail } from '@/lib/email';
+import { sendInternalEmail, trySendEmail } from '@/lib/email';
 import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
+import { computeDueAt } from '@/lib/support/statuses';
 
 // ────────────────────────────────────────────────────────────────────────────
 //   Slice A helpers — priority + SLA + linked-commerce auto-detection
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * SLA tier defaults (hours). Customer-configurable later via Settings, but
- * these are the baked defaults that drive `dueAt` + the "overdue" badge.
- * URGENT / VIP share the same tightest tier (2h response).
- */
-const SLA_HOURS: Record<string, number> = {
-  URGENT: 2,
-  VIP: 2,
-  HIGH: 8,
-  NORMAL: 24,
-  LOW: 72,
-};
+// SLA tiers + due date: src/lib/support/statuses.ts (shared with product questions).
 
 /** Cents threshold (lifetime paid value) above which a buyer is auto-VIP. */
 const VIP_LIFETIME_CENTS = 50_000_00; // €50,000
@@ -82,10 +72,6 @@ async function computeInitialPriority(opts: {
 }
 
 /** dueAt = createdAt + hours(priority). */
-function computeDueAt(createdAt: Date, priority: string): Date {
-  const h = SLA_HOURS[priority] ?? SLA_HOURS.NORMAL;
-  return new Date(createdAt.getTime() + h * 3600e3);
-}
 
 /** Find a linked Order via order-number mention in the body/subject. */
 async function detectLinkedOrder(opts: {
@@ -225,7 +211,9 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
   // (verified) address — otherwise anyone could use this form to make
   // lab2date send their own text to any inbox. The team copy below has it all.
   const echo = !!session && p.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
-  await sendEmail({
+  // The ticket is saved: emails below are reported/logged, never thrown (a
+  // thrown error here made customers resubmit and create duplicate tickets).
+  await trySendEmail({
     to: p.email,
     subject: `[${ticket.ref}] We received your request`,
     html: `
@@ -243,14 +231,14 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
         ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t contact ${escapeHtml(site)} support, you can ignore this email.</p>`}
         <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
       </div>`,
-  });
+  }, 'support:ack');
 
   const ops =
     process.env.SUPPORT_INTAKE_EMAIL ||
     process.env.SUPPORT_EMAIL ||
     process.env.COMPANY_EMAIL ||
-    'support@lab2date.com';
-  await sendEmail({
+    '';
+  await sendInternalEmail({
     to: ops,
     subject: `New support ticket ${ticket.ref}: ${headerText(p.subject, 160)}`,
     html: `
@@ -261,7 +249,7 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
         <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(p.body)}</blockquote>
         <p style="color:#888;font-size:12px;">Ref ${ticket.ref}</p>
       </div>`,
-  });
+  }, 'support:intake');
 
   if (session?.user.id) {
     await prisma.notification.create({
@@ -332,7 +320,7 @@ function parseAttachments(v: FormDataEntryValue | null): string[] {
   }
 }
 
-export async function replyTicket(formData: FormData) {
+export async function replyTicket(formData: FormData): Promise<{ warning?: string } | undefined> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/tickets' });
   await requireCapability('tickets:reply', { redirectTo: '/admin/tickets' });
   await ensureSettingsLoaded();
@@ -376,12 +364,13 @@ export async function replyTicket(formData: FormData) {
   // Email — only on customer-facing replies. Internal notes stay in the
   // admin UI. The "reply to this email" line is dead weight until slice D
   // (inbound parsing); the magic link line is the actionable one for guests.
+  let warning: string | undefined;
   if (!isInternalNote) {
     const site = process.env.SITE_NAME || 'lab2date';
     const continueLine = t.accessToken
       ? `<p style="margin-top:18px;"><a href="${process.env.BETTER_AUTH_URL ?? ''}/support/t/${t.accessToken}" style="background:#0E4F40;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Open ticket ${t.ref}</a></p>`
       : `<p style="margin-top:18px;"><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/support" style="background:#0E4F40;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Open ticket ${t.ref}</a></p>`;
-    await sendEmail({
+    const sent = await trySendEmail({
       to: t.email,
       subject: `[${t.ref}] Reply from ${site} support`,
       html: `
@@ -391,7 +380,8 @@ export async function replyTicket(formData: FormData) {
           ${continueLine}
           <p style="color:#888;font-size:12px;margin-top:18px;">Ref ${t.ref} · ${escapeHtml(site)}</p>
         </div>`,
-    });
+    }, 'support:reply');
+    if (!sent.ok) warning = `Reply saved and visible in the customer's ticket, but the email to ${t.email} could not be delivered (${sent.error}).`;
 
     if (t.submittedById) {
       await prisma.notification.create({
@@ -412,6 +402,7 @@ export async function replyTicket(formData: FormData) {
   revalidatePath(`/admin/tickets/${ticketId}`);
   revalidatePath('/app/notifications');
   revalidatePath('/app/support');
+  return warning ? { warning } : undefined;
 }
 
 export async function customerReplyTicket(formData: FormData) {
@@ -447,12 +438,12 @@ export async function customerReplyTicket(formData: FormData) {
   });
 
   const ops =
-    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
-  await sendEmail({
+    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '';
+  await sendInternalEmail({
     to: ops,
     subject: `[${t.ref}] Customer reply: ${headerText(t.subject, 160)}`,
     html: `<p>${escapeHtml(session.user.name)} replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
-  });
+  }, 'support:customer-reply');
 
   await notifyAdmins(
     `Customer replied · ${t.ref}`,
@@ -780,7 +771,7 @@ export async function reissueGuestMagicLink(
 
   const site = process.env.SITE_NAME || 'lab2date';
   const href = `${process.env.BETTER_AUTH_URL ?? ''}/support/t/${newToken}`;
-  await sendEmail({
+  const sent = await trySendEmail({
     to: t.email,
     subject: `[${t.ref}] New link to view your ticket`,
     html: `
@@ -795,9 +786,11 @@ export async function reissueGuestMagicLink(
         <p style="color:#888;font-size:11px;">This link is valid for 14 days. Keep it private.</p>
         <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
       </div>`,
-  });
+  }, 'support:magiclink');
 
   await audit('ticket.magiclink.reissue', t.ref, `by ${session.user.email}`);
   revalidatePath(`/admin/tickets/${id}`);
-  return { ok: true, message: `New link emailed to ${t.email}.` };
+  return sent.ok
+    ? { ok: true, message: `New link emailed to ${t.email}.` }
+    : { ok: true, message: `New link created (the old one no longer works), but the email to ${t.email} could not be delivered (${sent.error}).` };
 }

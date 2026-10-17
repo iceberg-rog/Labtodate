@@ -17,3 +17,8 @@ tsconfig.tsbuildinfo
 prisma/migrations/dev
 /uploads
 .backups/
+
+# Backup secrets on the server (docs/BACKUPS.md)
+/backup.env
+/backup.key
+/backups/

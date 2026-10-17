@@ -8,14 +8,15 @@
 
 import { prisma } from '@/lib/db';
 import { productTextWhere } from '@/lib/search/where';
-import type { IllustrationName } from '@/components/illustrations/instruments';
+import { firstPublicImage } from '@/lib/media/public-src';
 
 export interface SearchHit {
   slug: string;
   title: string;
   brand: string | null;
   category: string;
-  illustration: IllustrationName;
+  /** Our own photo of the unit ("/media/…"), or null — never a generic drawing. */
+  image: string | null;
   priceCents: number | null;
   currency: string;
   condition: string;
@@ -39,12 +40,13 @@ class PostgresSearchProvider implements SearchProvider {
         ...productTextWhere(q),
       },
       take: limit,
-      orderBy: [{ priceCents: 'asc' }],
+      // A08: only the PUBLIC sell price (null for quote-only / hidden prices).
+      orderBy: [{ displayPriceCents: { sort: 'asc', nulls: 'last' } }],
       select: {
         slug: true,
         title: true,
-        illustration: true,
-        priceCents: true,
+        images: true,
+        displayPriceCents: true,
         currency: true,
         condition: true,
         brand: { select: { name: true } },
@@ -57,8 +59,8 @@ class PostgresSearchProvider implements SearchProvider {
       title: r.title,
       brand: r.brand?.name ?? null,
       category: r.category.name,
-      illustration: (r.illustration ?? 'balance') as IllustrationName,
-      priceCents: r.priceCents,
+      image: firstPublicImage(r.images),
+      priceCents: r.displayPriceCents,
       currency: r.currency,
       condition: r.condition,
     }));

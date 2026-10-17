@@ -1,5 +1,6 @@
 'use server';
 
+import { publicProductImages } from '@/lib/media/public-src';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
@@ -128,6 +129,8 @@ export async function createProduct(input: ProductInputType): Promise<ProductAct
       yearMade: parsed.yearMade,
       illustration: parsed.illustration,
       images: parsed.images,
+      // Ranks like admin listings with photos (marketplace sorts by hasImages).
+      hasImages: publicProductImages(parsed.images).length > 0,
       specs: Object.keys(parsed.specs).length ? (parsed.specs as Prisma.InputJsonValue) : Prisma.JsonNull,
       categoryId: parsed.categoryId,
       brandId: parsed.brandId || null,
@@ -187,6 +190,8 @@ export async function updateProduct(slug: string, input: ProductInputType): Prom
       yearMade: parsed.yearMade,
       illustration: parsed.illustration,
       images: parsed.images,
+      // Ranks like admin listings with photos (marketplace sorts by hasImages).
+      hasImages: publicProductImages(parsed.images).length > 0,
       specs: Object.keys(parsed.specs).length ? (parsed.specs as Prisma.InputJsonValue) : Prisma.JsonNull,
       categoryId: parsed.categoryId,
       brandId: parsed.brandId || null,

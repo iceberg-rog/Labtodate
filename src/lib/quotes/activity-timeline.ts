@@ -17,6 +17,8 @@ export type TimelineEvent = {
     | 'staff_reply'
     | 'buyer_reply'
     | 'internal_note'
+    | 'offer_sent'
+    | 'offer_valid_until'
     | 'proforma_sent'
     | 'proforma_valid_until'
     | 'sla_breached'
@@ -43,6 +45,9 @@ export async function buildActivityTimeline(quoteId: string): Promise<TimelineEv
       proformaNumber: true,
       proformaIssuedAt: true,
       validUntilAt: true,
+      quotedAt: true,
+      quotedPriceCents: true,
+      quotedCurrency: true,
       slaBreachAt: true,
       accessTokenIssuedAt: true,
       assignedTo: { select: { name: true, email: true } },
@@ -96,27 +101,34 @@ export async function buildActivityTimeline(quoteId: string): Promise<TimelineEv
     }
   }
 
+  if (sr.quotedAt && sr.quotedPriceCents != null) {
+    ev.push({
+      at: sr.quotedAt,
+      kind: 'offer_sent',
+      title: `Offer sent: ${(sr.quotedPriceCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })} ${sr.quotedCurrency ?? 'EUR'}`,
+    });
+  }
   if (sr.proformaIssuedAt) {
     ev.push({
       at: sr.proformaIssuedAt,
       kind: 'proforma_sent',
-      title: `Proforma ${sr.proformaNumber ?? ''} issued`.trim(),
+      title: `Offer accepted · proforma ${sr.proformaNumber ?? ''} issued`.trim(),
     });
   }
-  if (sr.validUntilAt && sr.proformaIssuedAt) {
+  if (sr.validUntilAt && sr.quotedPriceCents != null && (sr.status === 'RESPONDED' || sr.status === 'ACCEPTED')) {
     ev.push({
       at: sr.validUntilAt,
-      kind: 'proforma_valid_until',
-      title: `Proforma valid until`,
+      kind: sr.status === 'ACCEPTED' ? 'proforma_valid_until' : 'offer_valid_until',
+      title: `${sr.status === 'ACCEPTED' ? 'Proforma payment due' : 'Offer valid until'} ${sr.validUntilAt.toISOString().slice(0, 10)}`,
     });
   }
   if (sr.slaBreachAt) {
     ev.push({ at: sr.slaBreachAt, kind: 'sla_breached', title: 'SLA breached' });
   }
-  if (sr.status === 'ACCEPTED') {
-    ev.push({ at: sr.updatedAt, kind: 'accepted', title: 'Buyer accepted the quote' });
+  if (sr.status === 'ACCEPTED' && !sr.proformaIssuedAt) {
+    ev.push({ at: sr.updatedAt, kind: 'accepted', title: 'Buyer accepted the offer' });
   } else if (sr.status === 'DECLINED') {
-    ev.push({ at: sr.updatedAt, kind: 'declined', title: 'Buyer declined the quote' });
+    ev.push({ at: sr.updatedAt, kind: 'declined', title: 'Buyer declined the offer' });
   } else if (sr.status === 'CLOSED') {
     ev.push({ at: sr.updatedAt, kind: 'closed', title: 'Quote closed' });
   }

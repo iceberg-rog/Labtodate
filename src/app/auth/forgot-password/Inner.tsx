@@ -20,10 +20,16 @@ export default function ForgotPasswordInner() {
       // Better-Auth: requests a reset email if the account exists. The
       // response is intentionally generic — we always render the same success
       // screen so account enumeration is impossible.
-      await authClient.requestPasswordReset({
+      const { error: err } = await authClient.requestPasswordReset({
         email,
         redirectTo: '/auth/reset-password',
       });
+      // Mail not configured / refused / rate-limited: say so instead of
+      // "check your e-mail". (Unknown addresses still get the same success.)
+      if (err && [429, 502, 503].includes(err.status) && err.message) {
+        setError(err.message);
+        return;
+      }
       setSent(true);
     } catch {
       // Same generic success to avoid leaking which emails are registered.

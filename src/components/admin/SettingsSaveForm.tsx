@@ -1,10 +1,11 @@
 'use client';
 
-import { startTransition, useActionState, useEffect, useRef } from 'react';
-import { Save, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import { startTransition, useActionState, useEffect, useRef, useState } from 'react';
+import { Save, Loader2, CheckCircle2, XCircle, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { confirmStepUp } from '@/app/auth/step-up/actions';
 
-type Result = { ok: boolean; message: string } | null;
+type Result = { ok: boolean; message: string; stepUp?: true; method?: 'totp' | 'password' } | null;
 
 /**
  * Wraps a settings tab's form. Uses useActionState so the save happens in place
@@ -31,6 +32,12 @@ export function SettingsSaveForm({
 }) {
   const formRef = useRef<HTMLFormElement>(null);
   const [state, formAction, pending] = useActionState(action, null);
+  // Bank / company / e-mail settings ask for a fresh authenticator code first
+  // (Settings → Security). Confirm here, then the same form is submitted again.
+  const [code, setCode] = useState('');
+  const [stepErr, setStepErr] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const needsStepUp = !!state?.stepUp && !pending;
 
   useEffect(() => {
     if (!state?.ok || !formRef.current) return;
@@ -59,7 +66,44 @@ export function SettingsSaveForm({
           {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
           {pending ? 'Saving…' : `Save ${group}`}
         </Button>
-        {state && !pending && (
+        {needsStepUp && (
+          <span className="flex items-center gap-2 flex-wrap rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            <span className="font-semibold">{state?.message}</span>
+            <input
+              aria-label={state?.method === 'password' ? 'Password' : 'Authenticator code'}
+              type={state?.method === 'password' ? 'password' : 'text'}
+              inputMode={state?.method === 'password' ? undefined : 'numeric'}
+              autoComplete={state?.method === 'password' ? 'current-password' : 'one-time-code'}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder={state?.method === 'password' ? 'Password' : '6-digit code'}
+              className="h-8 w-36 px-2 rounded-md border border-input bg-background"
+            />
+            <Button
+              type="button"
+              size="sm"
+              disabled={confirming || !code.trim()}
+              onClick={async () => {
+                setConfirming(true);
+                setStepErr(null);
+                const r = await confirmStepUp(code).catch(() => ({ ok: false, message: 'Could not check the code.' }));
+                setConfirming(false);
+                if (!r.ok) {
+                  setStepErr(r.message);
+                  return;
+                }
+                setCode('');
+                formRef.current?.requestSubmit();
+              }}
+              className="rounded-full h-8"
+            >
+              {confirming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null} Confirm &amp; save
+            </Button>
+            {stepErr && <span role="alert" className="text-red-600 dark:text-red-400 font-semibold">{stepErr}</span>}
+          </span>
+        )}
+        {state && !pending && !needsStepUp && (
           <span
             className={`inline-flex items-center gap-1.5 text-xs font-semibold ${
               state.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'

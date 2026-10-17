@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { getServerSession } from '@/lib/auth-server';
+import { getServerSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { streamSupportAttachment } from '@/lib/storage/s3';
 import { storedFileHeaders } from '@/lib/storage/file-type';
@@ -11,7 +11,8 @@ export const dynamic = 'force-dynamic';
  * Auth-gated proxy for ticket attachments stored under `support-att/*`.
  *
  * Allowed callers:
- *   - Admin role (any tickets:view-capable user)
+ *   - Staff with view rights on the parent record (tickets:view /
+ *     quotes:view / sell:view / messages:view)
  *   - The buyer who submitted the ticket containing this attachment
  *     (matched by submittedById OR ticket.email == session.user.email)
  *   - An anonymous request that passes `?t=<accessToken>` matching the GUEST
@@ -40,7 +41,8 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
   const session = await getServerSession();
   const userId = session?.user.id ?? null;
   const userEmail = session?.user.email ?? null;
-  const isAdmin = session?.user.role === 'ADMIN';
+  // Staff need view rights on the parent record (A31), not just the admin role.
+  const staffCan = async (cap: string) => session?.user.role === 'ADMIN' && (await hasCapability(cap));
   const queryToken = req.nextUrl.searchParams.get('t');
 
   type OwnerCtx = {
@@ -100,7 +102,7 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
     const c = chatMsg.conversation;
     const guestCookie = req.cookies.get('lab2_asst_g')?.value ?? null;
     const ownsChat = c.userId ? c.userId === userId : !!c.guestToken && c.guestToken === guestCookie;
-    if (!isAdmin && !ownsChat) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    if (!ownsChat && !(await staffCan('messages:view'))) return NextResponse.json({ error: 'not found' }, { status: 404 });
     return streamAttachment(key);
   }
 
@@ -137,7 +139,10 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
       (!!owner.contactEmail && !!userEmail && owner.contactEmail.toLowerCase() === userEmail.toLowerCase()));
   const isAssignedSeller = !!userId && !!owner.assignedToId && owner.assignedToId === userId;
 
-  let allowed = isAdmin || isBuyer || isAssignedSeller;
+  let allowed =
+    isBuyer ||
+    isAssignedSeller ||
+    (await staffCan(ticketMsg?.ticket ? 'tickets:view' : quoteMsg?.sourcingRequest ? 'quotes:view' : 'sell:view'));
 
   if (!allowed && queryToken && owner.accessToken && queryToken === owner.accessToken) {
     const exp = owner.accessTokenExpiresAt;

@@ -8,12 +8,14 @@ import { createCaseStudy, deleteCaseStudy, toggleCaseStudy, updateCaseStudy } fr
 import { CaseStudyPreviewButton } from '@/components/admin/CaseStudyPreview';
 import { AdminActionForm } from '@/components/admin/AdminActionForm';
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
+import { getCatalogPolicy } from '@/lib/catalog/policy';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Case studies' };
 
 export default async function AdminCaseStudiesPage() {
   await requireCapability('content:cms');
+  const { requireConsentToPublish } = await getCatalogPolicy();
   const list = await prisma.caseStudy.findMany({ orderBy: { createdAt: 'desc' } });
 
   return (
@@ -33,6 +35,9 @@ export default async function AdminCaseStudiesPage() {
             A longer success story used to convince a hesitant buyer. Each study has a customer (e.g. “Acme Biotech”),
             an outcome metric (e.g. “40% lower capex”), a short excerpt that appears on the listing card, and a body
             text rendered on its own page (blank lines start a new paragraph). Click <em>Preview</em> on any row to see how it will render before publishing.
+            {requireConsentToPublish
+              ? ' It goes live only once you record that the customer approved it (who and when) — Settings → Catalog & claims.'
+              : ' Consent recording is switched OFF in Settings → Catalog & claims.'}
           </p>
           <Link
             href="/case-studies"
@@ -68,6 +73,14 @@ export default async function AdminCaseStudiesPage() {
           <label className="text-sm font-medium">Body</label>
           <textarea name="body" rows={6} className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="Full case study text" />
         </div>
+        <fieldset className="rounded-xl border border-border p-3 space-y-2">
+              <legend className="px-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">Consent to be quoted</legend>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <input name="consentBy" defaultValue={''} aria-label="Approved by" placeholder="Approved by (name)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentAt" type="date" defaultValue={''} aria-label="Approved on" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentNote" defaultValue={''} aria-label="How" placeholder="How (e.g. email of 2 Oct, filed in …)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+              </div>
+            </fieldset>
         <Button type="submit" className="rounded-full font-semibold">
           <Plus className="h-4 w-4" /> Add case study
         </Button>
@@ -95,6 +108,11 @@ export default async function AdminCaseStudiesPage() {
                     “{c.excerpt}”
                   </p>
                 )}
+                <p className={`text-[11px] mt-1 ${c.consentAt && c.consentBy ? 'text-muted-foreground' : 'text-amber-700 dark:text-amber-400 font-semibold'}`}>
+                  {c.consentAt && c.consentBy
+                    ? `Consent: ${c.consentBy}, ${c.consentAt.toLocaleDateString('en-GB')}${c.consentNote ? ` (${c.consentNote})` : ''}`
+                    : 'No consent recorded'}
+                </p>
               </div>
               <Badge variant={published ? 'success' : 'secondary'}>
                 {published ? 'published' : 'draft'}
@@ -111,12 +129,12 @@ export default async function AdminCaseStudiesPage() {
                   published,
                 }}
               />
-              <form action={toggleCaseStudy.bind(null, c.id, !published)}>
+              <AdminActionForm action={toggleCaseStudy.bind(null, c.id, !published)}>
                 <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium">
                   {published ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                   {published ? 'Unpublish' : 'Publish'}
                 </Button>
-              </form>
+              </AdminActionForm>
               <form action={deleteCaseStudy.bind(null, c.id)}>
                 <ConfirmSubmitButton
                   message={`Delete the case study "${c.title || c.slug}"? This cannot be undone.`}
@@ -129,7 +147,7 @@ export default async function AdminCaseStudiesPage() {
               </form>
               <details className="basis-full">
                 <summary className="cursor-pointer select-none w-fit text-xs font-semibold text-primary hover:underline">Edit</summary>
-                <form action={updateCaseStudy.bind(null, c.id)} className="mt-3 space-y-3">
+                <AdminActionForm action={updateCaseStudy.bind(null, c.id)} className="mt-3 space-y-3">
                   <div className="grid sm:grid-cols-3 gap-3">
                     <input name="title" required defaultValue={c.title} aria-label="Title" placeholder="Title" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
                     <input name="customer" defaultValue={c.customer} aria-label="Customer" placeholder="Customer" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
@@ -137,10 +155,18 @@ export default async function AdminCaseStudiesPage() {
                   </div>
                   <textarea name="excerpt" rows={2} defaultValue={c.excerpt ?? ''} aria-label="Excerpt" placeholder="Excerpt" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
                   <textarea name="body" rows={6} defaultValue={c.body ?? ''} aria-label="Body" placeholder="Body" className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                  <fieldset className="rounded-xl border border-border p-3 space-y-2">
+              <legend className="px-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">Consent to be quoted</legend>
+              <div className="grid sm:grid-cols-3 gap-3">
+                <input name="consentBy" defaultValue={c.consentBy ?? ''} aria-label="Approved by" placeholder="Approved by (name)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentAt" type="date" defaultValue={c.consentAt ? c.consentAt.toISOString().slice(0, 10) : ''} aria-label="Approved on" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+                <input name="consentNote" defaultValue={c.consentNote ?? ''} aria-label="How" placeholder="How (e.g. email of 2 Oct, filed in …)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" />
+              </div>
+            </fieldset>
                   <Button type="submit" size="sm" className="rounded-full font-semibold">
                     <Save className="h-3.5 w-3.5" /> Save changes
                   </Button>
-                </form>
+                </AdminActionForm>
               </details>
             </li>
           );

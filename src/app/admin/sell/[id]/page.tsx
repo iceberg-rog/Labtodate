@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import {
   ChevronLeft, Check, X, Mail, Phone, Building2, MapPin, Package,
   Banknote, FileText, Hourglass, ImageIcon, ExternalLink, ShieldCheck,
@@ -17,7 +17,12 @@ import {
   uploadReceiptAndComplete,
   acceptSellSubmissionAtPrice,
   declineSellSubmission,
+  reviewBankDetailsChange,
 } from '@/lib/sell/actions';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { isValidIban } from '@/lib/settings/defs';
+import { acqCallbackRequired } from '@/lib/fulfilment/policy';
+import { maskIban } from '@/lib/sell/stages';
 import { ReplyForm } from '@/components/util/ReplyForm';
 import { SubmitWithConfirm } from '@/components/util/SubmitWithConfirm';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
@@ -49,12 +54,28 @@ function smartDate(d: Date | null | undefined): string {
 // accept needs the agreed price, decline emails the seller.
 async function closeAction(formData: FormData): Promise<void> {
   'use server';
-  await setSellStatus(String(formData.get('id') ?? ''), 'CLOSED');
+  const id = String(formData.get('id') ?? '');
+  const r = await setSellStatus(id, 'CLOSED');
+  if (!r.ok) redirect(`/admin/sell/${id}?err=state`);
 }
 
 const ERRORS: Record<string, string> = {
   price: 'Enter the agreed payout price (above 0, at most 10,000,000) to accept.',
   state: 'This offer is no longer open — it was already declined, closed, or its payout has started.',
+  stage: 'That step does not fit the deal’s current stage (another tab or colleague moved it) — nothing was changed. The page shows the current stage.',
+  'bank-decided': 'This bank-account change was already decided — nothing was changed.',
+  'bank-note': 'Write a short note on how you verified (or why you reject) the change — at least 5 characters.',
+  'bank-callback': 'Tick that you confirmed the new account by phone with the seller (on a number you already had) — Settings → Acquisitions requires it.',
+  'bank-missing': 'The seller has not given a payout bank account yet — the payout can not be completed.',
+  'bank-pending': 'A change of the payout bank account is waiting for review — approve or reject it first. No payout until then.',
+  receipt: 'Attach the transfer receipt (JPG, PNG, WEBP or PDF, max 8 MB).',
+};
+
+const NOTICES: Record<string, string> = {
+  received: 'Package recorded as received — the seller was emailed.',
+  completed: 'Acquisition completed — the seller was emailed with the receipt.',
+  'bank-approved': 'The new payout account is approved and in use — the seller was told.',
+  'bank-rejected': 'The bank-account change was rejected; the previous account stays in use — the seller was told.',
 };
 
 /** Suggested agreed price: the latest offer we sent, else the asking price when
@@ -68,10 +89,12 @@ function suggestedPrice(latestOfferCents: number | null, askingPrice: string | n
 
 export default async function AdminSellDetailPage(props: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ err?: string }>;
+  searchParams: Promise<{ err?: string; ok?: string }>;
 }) {
   const params = await props.params;
-  const errorMsg = ERRORS[(await props.searchParams).err ?? ''] ?? null;
+  const sp = await props.searchParams;
+  const errorMsg = ERRORS[sp.err ?? ''] ?? null;
+  const noticeMsg = NOTICES[sp.ok ?? ''] ?? null;
   await requireCapability('sell:view');
   await getServerSession();
 
@@ -82,9 +105,13 @@ export default async function AdminSellDetailPage(props: {
         orderBy: { createdAt: 'asc' },
       },
       submittedBy: { select: { id: true, name: true, email: true, createdAt: true } },
+      bankChanges: { orderBy: { createdAt: 'desc' } },
     },
   });
   if (!sub) notFound();
+  await ensureSettingsLoaded();
+  const pendingBank = sub.bankChanges.find((c) => c.status === 'PENDING_REVIEW') ?? null;
+  const callbackRequired = acqCallbackRequired();
 
   const lastReplyByStaff = [...sub.messages].reverse().find(() => true)?.fromStaff ?? false;
   const deal = computeSellState({
@@ -128,9 +155,40 @@ export default async function AdminSellDetailPage(props: {
         <ChevronLeft className="h-4 w-4" /> Back to acquisitions
       </Link>
       {errorMsg && (
-        <div className="rounded-xl border border-red-300 bg-red-50 dark:bg-red-950/40 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-300">
+        <div role="alert" className="rounded-xl border border-red-300 bg-red-50 dark:bg-red-950/40 dark:border-red-800 px-4 py-3 text-sm text-red-800 dark:text-red-300">
           {errorMsg}
         </div>
+      )}
+      {noticeMsg && !errorMsg && (
+        <div role="status" className="rounded-xl border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 dark:border-emerald-800 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-300">
+          {noticeMsg}
+        </div>
+      )}
+      {pendingBank && (
+        <section className="rounded-2xl border-2 border-red-300 bg-red-50/70 dark:bg-red-950/30 dark:border-red-800 p-5 space-y-3" data-testid="bank-change-review">
+          <p className="text-sm font-bold text-red-900 dark:text-red-300 inline-flex items-center gap-1.5">
+            <Banknote className="h-4 w-4" /> Payout account change requested — payout blocked until you decide
+          </p>
+          <p className="text-xs text-red-900/90 dark:text-red-300/90">
+            Requested {smartDate(pendingBank.createdAt)} by {pendingBank.requestedByEmail ?? 'the seller'} at stage “{(pendingBank.stageAtRequest ?? '').toLowerCase().replace(/_/g, ' ')}”. A changed payout account just before payment is the classic invoice-fraud pattern: call the seller back on a phone number you already had (not one from this request) before approving.
+          </p>
+          <div className="grid sm:grid-cols-2 gap-3 text-xs">
+            <BankBox title="Current account" v={pendingBank.oldValue} />
+            <BankBox title="Requested account" v={pendingBank.newValue} flags={[pendingBank.ibanValid ? 'IBAN check OK' : 'IBAN NOT valid / not an IBAN', pendingBank.holderMatches ? 'holder matches the seller' : 'holder does NOT match the seller name']} />
+          </div>
+          <form action={reviewBankDetailsChange} className="space-y-2">
+            <input type="hidden" name="changeId" value={pendingBank.id} />
+            <label className="flex items-start gap-2 text-xs">
+              <input type="checkbox" name="callback" className="mt-0.5 h-4 w-4 accent-primary" />
+              <span>I confirmed this new account by phone with the seller, on a number we already had.{callbackRequired ? ' (required to approve)' : ''}</span>
+            </label>
+            <input name="note" required minLength={5} maxLength={500} placeholder="How it was verified / why it is rejected (kept in the history)" className="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs" />
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" name="decision" value="approve" size="sm" className="rounded-full bg-emerald-700 hover:bg-emerald-800 text-white">Approve the new account</Button>
+              <Button type="submit" name="decision" value="reject" size="sm" variant="outline" className="rounded-full border-red-300 text-red-800 dark:border-red-800 dark:text-red-300">Reject — keep the current account</Button>
+            </div>
+          </form>
+        </section>
       )}
       {acceptedWithoutPrice && (
         <div className="rounded-xl border-2 border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 px-4 py-3 text-sm text-amber-900 dark:text-amber-300">
@@ -337,7 +395,15 @@ export default async function AdminSellDetailPage(props: {
                 <p className="text-sm text-muted-foreground">Waiting for seller to submit bank-payout details.</p>
               )}
               {sub.acquisitionStage === 'AWAITING_SHIPPING' && (
-                <p className="text-sm text-muted-foreground">Bank details received. Waiting for seller to ship + enter tracking.</p>
+                <>
+                  <p className="text-sm text-muted-foreground">Bank details received. Waiting for the seller to ship and enter tracking.</p>
+                  <form action={markAcquisitionReceived}>
+                    <input type="hidden" name="submissionId" value={sub.id} />
+                    <SubmitWithConfirm confirmMessage="The seller has not entered tracking yet. Record the package as received anyway?" variant="outline" size="sm" className="rounded-full font-semibold border-amber-300 text-amber-900 dark:text-amber-300 dark:border-amber-800">
+                      Package arrived without tracking — mark received
+                    </SubmitWithConfirm>
+                  </form>
+                </>
               )}
               {sub.acquisitionStage === 'IN_TRANSIT' && (
                 <>
@@ -360,6 +426,11 @@ export default async function AdminSellDetailPage(props: {
                   <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/40 dark:border-amber-800 p-3 text-sm">
                     Package received {smartDate(sub.receivedAt)}. Run QC, then complete with payment receipt below.
                   </div>
+                  {pendingBank && (
+                    <p role="alert" className="rounded-xl border border-red-300 bg-red-50 dark:bg-red-950/40 dark:border-red-800 p-3 text-sm text-red-800 dark:text-red-300">
+                      Payout blocked: a change of the payout bank account is waiting for review (top of the page).
+                    </p>
+                  )}
                   <form action={uploadReceiptAndComplete} encType="multipart/form-data" className="space-y-3 pt-2">
                     <input type="hidden" name="submissionId" value={sub.id} />
                     <label className="block">
@@ -530,7 +601,7 @@ export default async function AdminSellDetailPage(props: {
                 <ul className="text-xs space-y-1.5 break-all">
                   <li><span className="text-muted-foreground">Holder · </span><strong>{b.holder}</strong></li>
                   {b.bankName && <li><span className="text-muted-foreground">Bank · </span>{b.bankName}</li>}
-                  <li><span className="text-muted-foreground">IBAN · </span><strong className="font-mono">{b.iban}</strong></li>
+                  <li><span className="text-muted-foreground">IBAN · </span><strong className="font-mono">{b.iban}</strong> {isValidIban(b.iban) ? <span className="text-emerald-700 dark:text-emerald-300">(check OK)</span> : <span className="text-red-700 dark:text-red-300 font-bold">(not a valid IBAN — verify by hand)</span>}</li>
                   {b.swift && <li><span className="text-muted-foreground">SWIFT · </span><span className="font-mono">{b.swift}</span></li>}
                   {b.country && <li><span className="text-muted-foreground">Country · </span>{b.country}</li>}
                   {b.notes && <li className="pt-1.5 border-t mt-1.5 text-muted-foreground italic">{b.notes}</li>}
@@ -538,6 +609,29 @@ export default async function AdminSellDetailPage(props: {
               </SidebarCard>
             );
           })()}
+
+          {sub.bankChanges.length > 0 && (
+            <SidebarCard title="Payout account history" icon={<Banknote className="h-3.5 w-3.5 text-primary" />}>
+              <ul className="text-xs space-y-2" data-testid="bank-history">
+                {sub.bankChanges.map((c) => {
+                  const nv = (c.newValue ?? {}) as Record<string, string>;
+                  return (
+                    <li key={c.id} className="border-b border-border/60 pb-1.5 last:border-0">
+                      <p className="font-semibold">
+                        {c.status === 'APPLIED' ? (c.reviewedAt ? 'Approved change' : 'Given / changed') : c.status === 'PENDING_REVIEW' ? 'Waiting for review' : 'Rejected change'}
+                        {' · '}<span className="font-mono">{maskIban(nv.iban ?? '')}</span>
+                      </p>
+                      <p className="text-muted-foreground">
+                        {smartDate(c.createdAt)} · stage {(c.stageAtRequest ?? '—').toLowerCase().replace(/_/g, ' ')}{c.holderMatches ? '' : ' · holder ≠ seller'}{c.ibanValid ? '' : ' · IBAN not valid'}
+                        {c.reviewedAt ? ` · decided ${smartDate(c.reviewedAt)}${c.callbackConfirmed ? ' (call-back confirmed)' : ''}` : ''}
+                      </p>
+                      {c.reviewNote && <p className="italic text-muted-foreground">“{c.reviewNote}”</p>}
+                    </li>
+                  );
+                })}
+              </ul>
+            </SidebarCard>
+          )}
 
           {/* SHIPPING TRACKING */}
           {sub.sellerShippingTracking && (
@@ -565,6 +659,20 @@ export default async function AdminSellDetailPage(props: {
           <p className="text-[10px] font-mono text-muted-foreground px-3">id: {sub.id}</p>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function BankBox({ title, v, flags }: { title: string; v: unknown; flags?: string[] }) {
+  const b = (v && typeof v === 'object' ? v : {}) as Record<string, string>;
+  return (
+    <div className="rounded-xl border border-border bg-card p-3 space-y-1 break-all">
+      <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">{title}</p>
+      <p><span className="text-muted-foreground">Holder · </span><strong dir="auto">{b.holder || '—'}</strong></p>
+      <p><span className="text-muted-foreground">IBAN · </span><strong className="font-mono">{b.iban || '—'}</strong></p>
+      {b.swift && <p><span className="text-muted-foreground">SWIFT · </span><span className="font-mono">{b.swift}</span></p>}
+      {b.bankName && <p><span className="text-muted-foreground">Bank · </span>{b.bankName}</p>}
+      {flags?.map((f) => <p key={f} className={/NOT/.test(f) ? 'text-red-700 dark:text-red-300 font-semibold' : 'text-emerald-700 dark:text-emerald-300'}>{f}</p>)}
     </div>
   );
 }
