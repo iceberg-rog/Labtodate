@@ -4,6 +4,7 @@ import { Linkedin, Twitter, Github, Mail } from 'lucide-react';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getMarketing } from '@/lib/marketing';
 import { legalIdentity } from '@/lib/brand/identity';
+import { siteBrand } from '@/lib/brand/site-logo';
 import { FooterWord } from '@/components/site/FooterWord';
 
 const COLUMNS = [
@@ -52,6 +53,7 @@ export async function Footer() {
   // the e-mails and invoices — legal fields shown only when filled in, and
   // only a real support address (never a placeholder on a domain we don't own).
   const id = legalIdentity();
+  const brand = siteBrand();
   const supportEmail = id.supportEmail;
   const siteName = id.siteName;
   const mk = await getMarketing();
@@ -68,7 +70,7 @@ export async function Footer() {
         <div className="sfoot-grid">
           <div className="space-y-4">
             <Link href="/" aria-label={`${siteName} home`} className="inline-block">
-              <Logo name={siteName} logoUrl={id.logoUrl} />
+              <Logo name={siteName} logoUrl={brand.logoUrl} logoOnLight={brand.logoOnLight} />
             </Link>
             <p className="text-sm text-muted-foreground max-w-xs">{mk.footerTagline}</p>
             <div className="sfoot-social">

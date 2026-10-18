@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mailCooldownNotice, noteMailRequest, secondsSinceMailRequest, waitText } from './auth-mail-notice';
+import { heldBackNotice, mailCooldownNotice, noteMailRequest, secondsSinceMailRequest, waitText } from './auth-mail-notice';
 
 test('waitText words the per-address wait', () => {
   assert.equal(waitText(60), 'a minute');
@@ -18,8 +18,10 @@ test('no wait configured: no cooldown sentence', () => {
 
 test('first request: the true, enumeration-safe sentence with the wait', () => {
   const s = mailCooldownNotice(60, null) ?? '';
-  assert.match(s, /less than a minute ago\? Then no new e-mail was sent: check that e-mail, or try again in 60 s\./);
-  assert.doesNotMatch(s, /account/);
+  // "no new link": a sign-in notice (no account …) is not held back, so an
+  // e-mail may still have gone out.
+  assert.match(s, /less than a minute ago\? Then no new link was sent: check that e-mail, or try again in 60 s\./);
+  assert.doesNotMatch(s, /account|no new e-mail/);
   assert.match(mailCooldownNotice(60, null, 'code') ?? '', /a code in it still works\), or ask for a new code in 60 s/);
   // A request older than the wait counts as a first one.
   assert.equal(mailCooldownNotice(60, 75), mailCooldownNotice(60, null));
@@ -28,9 +30,17 @@ test('first request: the true, enumeration-safe sentence with the wait', () => {
 test('a second request inside the wait gets the time left', () => {
   const s = mailCooldownNotice(60, 12.4) ?? '';
   assert.match(s, /12 s ago/);
-  assert.match(s, /at most one every minute, so no new e-mail was sent/);
+  assert.match(s, /at most one sign-in link, code or reset link every minute, so no new link was sent: check that e-mail/);
   assert.match(s, /try again in 48 s\./);
-  assert.match(mailCooldownNotice(90, 30, 'code') ?? '', /every 90 seconds.*the code from your first request still works, or ask for a new code in 60 s/);
+  assert.match(mailCooldownNotice(90, 30, 'code') ?? '', /every 90 seconds, so no new code was sent: use that e-mail \(a code in it still works\), or ask for a new code in 60 s/);
+});
+
+test('heldBackNotice: only for a request inside the wait (the resend button keeps its own text otherwise)', () => {
+  assert.equal(heldBackNotice(60, null, 'code'), null);
+  assert.equal(heldBackNotice(60, 60, 'code'), null);
+  assert.equal(heldBackNotice(0, 5, 'code'), null);
+  assert.equal(heldBackNotice(60, 20, 'code'), mailCooldownNotice(60, 20, 'code'));
+  assert.match(heldBackNotice(60, 20, 'code') ?? '', /20 s ago.*no new code was sent.*ask for a new code in 40 s\./);
 });
 
 test('noteMailRequest remembers per address and does not restart the wait inside it', () => {

@@ -733,7 +733,11 @@ export const auth = betterAuth({
             footer: ["If you didn't request this, you can safely ignore the e-mail."],
             text: `There's no ${site} account for this address. Create one at ${SITE_URL}/auth/sign-up\n\nIf you didn't request this, ignore the e-mail.`,
           }));
-          await sendEmail({ to: email, trigger: 'auth.notice', ...mail });
+          // Like every sign-in notice it sends the reader on to another e-mail
+          // (here the sign-up code): it must not start the per-address wait
+          // that would silently hold that one back. The daily and hourly
+          // limits still count it.
+          await sendEmail({ to: email, trigger: 'auth.notice', skipCooldown: true, ...mail });
           return;
         }
         if (await magicLinkRefused(exists)) {
@@ -751,7 +755,8 @@ export const auth = betterAuth({
             footer: ["If you didn't ask for this, you can ignore this e-mail — nothing has changed."],
             text: `For your security this ${site} account signs in with its password and an authenticator code only, so no sign-in link was sent. Sign in: ${SITE_URL}/auth/sign-in — Forgot password: ${SITE_URL}/auth/forgot-password\n\nIf you didn't ask for this, ignore this e-mail.`,
           }));
-          await sendEmail({ to: email, trigger: 'auth.notice', ...mail });
+          // Links to Forgot password: no per-address wait (see the notice above).
+          await sendEmail({ to: email, trigger: 'auth.notice', skipCooldown: true, ...mail });
           return;
         }
         const note = !exists.emailVerified && (await hasPassword(exists.id)) ? PASSWORD_REMOVAL_NOTE : null;
@@ -796,7 +801,8 @@ export const auth = betterAuth({
               footer: ["If this wasn't you, you can safely ignore this e-mail — nothing has changed."],
               text: `This address already has a ${site} account. Sign in at ${SITE_URL}/auth/sign-in or reset your password at ${SITE_URL}/auth/forgot-password.\n\nIf this wasn't you, ignore this e-mail — nothing has changed.`,
             }));
-            await sendEmail({ to: email, trigger: 'auth.notice', ...mail });
+            // Links to the password reset: no per-address wait that would hold that link back.
+            await sendEmail({ to: email, trigger: 'auth.notice', skipCooldown: true, ...mail });
             return;
           }
         }

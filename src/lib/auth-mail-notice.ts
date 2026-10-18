@@ -21,23 +21,41 @@ function everyText(sec: number): string {
   return sec === 60 ? 'every minute' : sec === 3600 ? 'every hour' : `every ${waitText(sec)}`;
 }
 
+type MailKind = 'link' | 'code';
+
+// What the wait holds back is the link or code. The sign-in notices (no
+// account, already registered, …) are not held back, so an address without
+// an account may get a second notice: the texts say "no new link / code".
+const wording = (kind: MailKind) =>
+  kind === 'code'
+    ? { what: 'code', use: 'use that e-mail (a code in it still works)', retry: 'ask for a new code' }
+    : { what: 'link', use: 'check that e-mail', retry: 'try again' };
+
+/**
+ * The sentence for a request this tab made inside the wait (`sinceLastSec`
+ * seconds after the previous one to the same address), with the exact time
+ * left; null when the request was not inside the wait (or no wait is set).
+ */
+export function heldBackNotice(cooldownSec: number, sinceLastSec: number | null, kind: MailKind = 'link'): string | null {
+  if (!(cooldownSec > 0) || sinceLastSec === null || !(sinceLastSec >= 0 && sinceLastSec < cooldownSec)) return null;
+  const { what, use, retry } = wording(kind);
+  const left = Math.max(1, Math.ceil(cooldownSec - sinceLastSec));
+  return `You asked for an e-mail to this address ${Math.max(1, Math.floor(sinceLastSec))} s ago, and we send at most one sign-in link, code or reset link ${everyText(cooldownSec)}, so no new ${what} was sent: ${use}, or ${retry} in ${left} s.`;
+}
+
 /**
  * The cooldown sentence under "check your e-mail". `sinceLastSec`: how long
  * ago this browser asked for an e-mail to the same address (null = not known),
  * so a second request inside the wait gets the exact time left. `kind`
- * 'code': the sign-up code screen, where an earlier code keeps working
+ * 'code': the code screens, where an earlier code keeps working
  * (src/lib/auth.ts makes no new code inside the wait).
  */
-export function mailCooldownNotice(cooldownSec: number, sinceLastSec: number | null, kind: 'link' | 'code' = 'link'): string | null {
+export function mailCooldownNotice(cooldownSec: number, sinceLastSec: number | null, kind: MailKind = 'link'): string | null {
   if (!(cooldownSec > 0)) return null;
-  const retry = kind === 'code' ? 'ask for a new code' : 'try again';
-  if (sinceLastSec !== null && sinceLastSec >= 0 && sinceLastSec < cooldownSec) {
-    const left = Math.max(1, Math.ceil(cooldownSec - sinceLastSec));
-    const use = kind === 'code' ? 'the code from your first request still works' : 'use the one from your first request';
-    return `You asked for an e-mail to this address ${Math.max(1, Math.floor(sinceLastSec))} s ago, and we send at most one ${everyText(cooldownSec)}, so no new e-mail was sent: ${use}, or ${retry} in ${left} s.`;
-  }
-  const use = kind === 'code' ? 'use that e-mail (a code in it still works)' : 'check that e-mail';
-  return `Asked for a sign-in link, code or reset link for this address less than ${waitText(cooldownSec)} ago? Then no new e-mail was sent: ${use}, or ${retry} in ${cooldownSec} s.`;
+  const held = heldBackNotice(cooldownSec, sinceLastSec, kind);
+  if (held) return held;
+  const { what, use, retry } = wording(kind);
+  return `Asked for a sign-in link, code or reset link for this address less than ${waitText(cooldownSec)} ago? Then no new ${what} was sent: ${use}, or ${retry} in ${cooldownSec} s.`;
 }
 
 const lastRequest = new Map<string, number>();

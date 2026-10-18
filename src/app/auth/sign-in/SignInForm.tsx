@@ -166,6 +166,7 @@ export default function SignInPage({
         }
         captcha={flags.verify_email}
         sendFirst
+        mailCooldownSec={mailCooldownSec}
         onBack={() => {
           setStep('form');
           setError(null);

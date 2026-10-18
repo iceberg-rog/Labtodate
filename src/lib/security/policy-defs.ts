@@ -243,7 +243,7 @@ export const POLICY_DEFS: readonly PolicyDef[] = [
   {
     key: 'MAIL_ADDRESS_COOLDOWN_SEC', group: 'mailguard', type: 'int', default: 60, min: 0, max: 86400, unit: 'seconds',
     label: 'Wait at least this long between two such e-mails to one address',
-    hint: 'Codes, sign-in links, reset links, “no account yet” notices and guest-form confirmations. The visitor is told how long to wait (except on “Forgot password”, which never says whether an account exists). 0 = no wait.',
+    hint: 'Codes, sign-in links, reset links and guest-form confirmations. Sign-in notices (no account yet, already registered, sign-in paused, sign-in links switched off) neither wait nor start the wait, because each sends the reader on to a code or reset link that must not be held back; they still count toward the daily and hourly limits. The visitor is told how long to wait (except on “Forgot password”, which never says whether an account exists). 0 = no wait.',
   },
   {
     key: 'MAIL_ADDRESS_MAX_PER_DAY', group: 'mailguard', type: 'int', default: 8, min: 1, max: 1000, unit: 'e-mails / 24 h',

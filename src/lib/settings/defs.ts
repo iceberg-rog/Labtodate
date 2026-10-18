@@ -278,8 +278,8 @@ const DEFS: DefInput[] = [
   { key: 'COMPANY_EMAIL', label: 'Billing email', group: 'Company', type: 'email', verify: 'email', effect: 'new-documents',
     hint: 'Accounts contact printed on documents; also receives a copy of every invoice and proforma email.' },
   { key: 'COMPANY_WEBSITE', label: 'Website', group: 'Company', type: 'string', effect: 'new-documents', hint: 'e.g. labtodate.com.' },
-  { key: 'COMPANY_LOGO_URL', label: 'Company logo URL', group: 'Company', type: 'image', verify: 'image', effect: 'new-documents',
-    hint: 'Auto-filled when you upload a logo (Logo tab). Shown right away in the site header and footer, the admin top bar and every e-mail (empty = the built-in mark and the site name). Embedded in documents at issue time, so issued documents keep the logo they were issued with.' },
+  { key: 'COMPANY_LOGO_URL', label: 'Company logo URL', group: 'Company', type: 'image', verify: 'image', effect: 'immediate',
+    hint: 'Auto-filled when you upload a logo (Logo tab). Made for white: printed on proformas, invoices and credit notes and shown above every e-mail. The website is dark, so its header and footer, the sign-in screens and the admin top bar show this logo on a white tile, unless “Website logo (dark background)” (Brand) is set. Empty = the built-in mark and the site name. Site and e-mails change right away; documents embed the logo when they are issued, so issued documents keep the logo they were issued with.' },
 
   // ── Tax & VAT ──
   { key: 'TAX_HOME_COUNTRY', label: 'VAT home country', group: 'Tax & VAT', type: 'country', default: 'NL', sensitive: true, effect: 'new-documents',
@@ -720,6 +720,8 @@ const DEFS: DefInput[] = [
     hint: 'Your brand as customers read it: the sender name of every e-mail, browser-tab titles and link previews, the footer, the legal pages and the account name in authenticator apps. Empty = “Labtodate”. The registered company name is set under Company.' },
   { key: 'SUPPORT_EMAIL', label: 'Public support email', group: 'Brand', type: 'email', verify: 'email',
     hint: 'Shown in the footer “contact us” link and at the bottom of every customer e-mail. While “Replies to customer e-mails go to” (Email) is empty, customer replies go here.' },
+  { key: 'COMPANY_LOGO_DARK_URL', label: 'Website logo (dark background)', group: 'Brand', type: 'image', verify: 'image', optional: true, preview: '/',
+    hint: 'A light version of your logo (white or light lettering, transparent PNG or WEBP) as a link or site path, for the dark website: its header and footer, the sign-in screens and the admin top bar show it as it is. Empty = the logo from the Logo tab on a white tile (or, without one, the built-in mark and the site name). E-mails and documents always use the Logo tab logo.' },
   { key: 'EMAIL_BRAND_COLOR', label: 'E-mail brand colour', group: 'Brand', type: 'string', default: DEFAULT_BRAND_COLOR, validate: brandColorProblem,
     hint: 'Colour of the headings, links and button in every customer e-mail, as # and six hex digits (e.g. #0E4F40). The button text is white, so the colour must be dark enough to read it on. The logo uploaded on the Logo tab sits above every e-mail; without one the site name is shown there.' },
 

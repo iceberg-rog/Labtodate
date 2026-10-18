@@ -6,9 +6,11 @@ import { UploadedLogo } from './UploadedLogo';
 const UPLOADED_BOX = { sm: { width: 150, height: 32 }, md: { width: 190, height: 40 }, lg: { width: 230, height: 48 } } as const;
 
 /**
- * The site logo. With a logo uploaded in Admin → Settings → Logo
- * (COMPANY_LOGO_URL, passed in as `logoUrl`) that image, with the site name as
- * its alt text; without one — or when it fails to load — the built-in lock-up:
+ * The site logo. With a logo set in Admin → Settings (passed in as `logoUrl`
+ * by siteBrand(), src/lib/brand/site-logo.ts) that image, with the site name
+ * as its alt text — on a white tile when it is the document logo, made for
+ * white (`logoOnLight`); without one — or when it fails to load — the
+ * built-in lock-up:
  *
  *  A cluster of nodes of varying size rising to a peak then trailing
  *  off, set above a baseline — reads as a chromatogram peak / molecular
@@ -26,6 +28,7 @@ export function Logo({
   size = 'md',
   name,
   logoUrl,
+  logoOnLight = false,
   priority = false,
 }: {
   className?: string;
@@ -34,8 +37,10 @@ export function Logo({
   size?: 'sm' | 'md' | 'lg';
   /** The brand (SITE_NAME): wordmark, and the alt text of an uploaded logo. */
   name: string;
-  /** The uploaded logo (COMPANY_LOGO_URL); empty = the built-in lock-up. */
+  /** The logo to show (SiteBrand.logoUrl); empty = the built-in lock-up. */
   logoUrl?: string | null;
+  /** The logo is made for a light background: set it on a white tile on the dark site. */
+  logoOnLight?: boolean;
   /** Above the fold (the header): fetch the uploaded logo first. */
   priority?: boolean;
 }) {
@@ -97,5 +102,5 @@ export function Logo({
 
   const src = logoUrl?.trim();
   if (!src) return lockup;
-  return <UploadedLogo src={src} alt={name} {...UPLOADED_BOX[size]} priority={priority} className={className} fallback={lockup} />;
+  return <UploadedLogo src={src} alt={name} {...UPLOADED_BOX[size]} onLight={logoOnLight} priority={priority} className={className} fallback={lockup} />;
 }

@@ -88,16 +88,36 @@ async function alertHourlyCap(policy: SecurityPolicy, sample: string): Promise<v
   );
 }
 
+/** The counters behind the limits (rate_limit_bucket); tests pass an in-memory store. */
+export interface MailCounterStore {
+  peek(key: string): Promise<{ count: number; resetAt: Date | null }>;
+  hit(key: string, windowMs: number): Promise<{ count: number; resetAt: Date | null }>;
+}
+const bucketStore: MailCounterStore = { peek: peekBucket, hit: hitBucket };
+
+export interface GuardOptions {
+  /** false: only look, e.g. before an endpoint creates a code that the guard would then hold back. */
+  count?: boolean;
+  /**
+   * Leave the per-address wait out: neither checked nor started. For notices
+   * nobody asked for that send the owner on to a reset link, sign-in or
+   * sign-up code right away (sign-in paused, already registered, links off,
+   * no account): the wait they started held that next e-mail back. The daily,
+   * per-domain and hourly limits still apply and count them.
+   */
+  skipCooldown?: boolean;
+  counters?: MailCounterStore;
+}
+
 /**
  * May an e-mail with this trigger go to `to` now? Counts it when it may
- * (`count: false` only looks, e.g. before an endpoint creates a code that
- * the guard would then hold back). Never throws.
+ * (see {@link GuardOptions}). Never throws.
  */
 export async function guardOutgoing(
   to: string,
   trigger: EmailTrigger,
   policyIn?: SecurityPolicy,
-  { count = true }: { count?: boolean } = {},
+  { count = true, skipCooldown = false, counters = bucketStore }: GuardOptions = {},
 ): Promise<GuardResult> {
   if (bypassesGuards(trigger)) return { ok: true };
   const policy = policyIn ?? (await getSecurityPolicy());
@@ -120,8 +140,14 @@ export async function guardOutgoing(
 
   const domain = emailDomain(addr);
   const keys = { cooldown: mailKeys.cooldown(addr), day: mailKeys.day(addr), domain: mailKeys.domain(domain), hour: mailKeys.hour() };
+  const useCooldown = policy.MAIL_ADDRESS_COOLDOWN_SEC > 0 && !skipCooldown;
   try {
-    const [c, d, dm, h] = await Promise.all([peekBucket(keys.cooldown), peekBucket(keys.day), peekBucket(keys.domain), peekBucket(keys.hour)]);
+    const [c, d, dm, h] = await Promise.all([
+      useCooldown ? counters.peek(keys.cooldown) : Promise.resolve({ count: 0, resetAt: null }),
+      counters.peek(keys.day),
+      counters.peek(keys.domain),
+      counters.peek(keys.hour),
+    ]);
     const before: LimitCounts = { cooldown: c.count, day: d.count, domain: dm.count, hour: h.count };
     const resets = { cooldown: c.resetAt, day: d.resetAt, domain: dm.resetAt, hour: h.resetAt };
     let reached: LimitKind | null = limitReached(before, policy, domain);
@@ -129,10 +155,10 @@ export async function guardOutgoing(
       // Count it, then re-check the atomic counts: two requests racing past
       // the peek both count, and the one over the limit is refused.
       const [hc, hd, hdm, hh] = await Promise.all([
-        policy.MAIL_ADDRESS_COOLDOWN_SEC > 0 ? hitBucket(keys.cooldown, policy.MAIL_ADDRESS_COOLDOWN_SEC * 1000) : Promise.resolve({ count: 1, resetAt: new Date() }),
-        hitBucket(keys.day, DAY),
-        hitBucket(keys.domain, HOUR),
-        hitBucket(keys.hour, HOUR),
+        useCooldown ? counters.hit(keys.cooldown, policy.MAIL_ADDRESS_COOLDOWN_SEC * 1000) : Promise.resolve({ count: 1, resetAt: new Date() }),
+        counters.hit(keys.day, DAY),
+        counters.hit(keys.domain, HOUR),
+        counters.hit(keys.hour, HOUR),
       ]);
       const after: LimitCounts = { cooldown: hc.count - 1, day: hd.count - 1, domain: hdm.count - 1, hour: hh.count - 1 };
       reached = limitReached(after, policy, domain);

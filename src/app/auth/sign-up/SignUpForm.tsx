@@ -118,6 +118,9 @@ export default function SignUpPage({
           </>
         }
         initialError={codeError}
+        mailCooldownSec={mailCooldownSec}
+        // A registered address gets the sign-in instructions again, not a code.
+        resentText={`A new code is on its way to ${email} (or, if this address already has a ${site} account, the sign-in instructions again). Nothing after a minute? Check your spam folder.`}
         onBack={() => {
           setStep('form');
           setError(null);

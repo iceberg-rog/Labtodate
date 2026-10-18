@@ -8,6 +8,7 @@ import { authClient } from '@/lib/auth-client';
 import { AdminNotificationBell } from './AdminNotificationBell';
 import { EmailText } from '@/components/util/EmailText';
 import { Logo } from '@/components/site/Logo';
+import type { SiteBrand } from '@/lib/brand/site-logo';
 
 /** The admin top bar's client part; `AdminTopBar` (./AdminTopBar.tsx) passes the live brand in. */
 export function AdminTopBarClient({
@@ -17,8 +18,8 @@ export function AdminTopBarClient({
 }: {
   email: string;
   unreadCount: number;
-  /** SITE_NAME and the uploaded logo (COMPANY_LOGO_URL, '' = the built-in mark). */
-  brand: { name: string; logoUrl: string };
+  /** SITE_NAME and the website logo (siteBrand(); logoUrl '' = the built-in mark). */
+  brand: SiteBrand;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
@@ -38,7 +39,7 @@ export function AdminTopBarClient({
     <header className="sticky top-0 z-30 border-b border-border bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
       <div className="px-4 sm:px-6 h-14 flex items-center gap-4">
         <Link href="/admin" className="flex min-w-0 items-center gap-2 group" aria-label={`${brand.name} admin`}>
-          <Logo name={brand.name} logoUrl={brand.logoUrl} size="sm" withTagline={false} priority />
+          <Logo name={brand.name} logoUrl={brand.logoUrl} logoOnLight={brand.logoOnLight} size="sm" withTagline={false} priority />
           <span className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider">
             <ShieldCheck className="h-3 w-3" /> <span className="hidden sm:inline">Admin</span>
           </span>

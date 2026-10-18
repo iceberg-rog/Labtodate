@@ -8,6 +8,7 @@ import { authErrorMessage } from '@/lib/auth-rules';
 import { Button } from '@/components/ui/button';
 import { TwoFactorStep } from './sign-in/TwoFactorStep';
 import { CAPTCHA_NOT_SOLVED, useCaptcha, type Captcha } from '@/components/security/Captcha';
+import { heldBackNotice, noteMailRequest } from '@/lib/auth-mail-notice';
 
 const OTP_LEN = 5;
 
@@ -61,6 +62,8 @@ export function VerifyEmailStep({
   backLabel,
   captcha: captchaOn,
   sendFirst = false,
+  mailCooldownSec = 0,
+  resentText,
 }: {
   email: string;
   password: string;
@@ -76,6 +79,10 @@ export function VerifyEmailStep({
   captcha: boolean;
   /** Send the first code from here (sign-in of an unverified account), after the bot check. */
   sendFirst?: boolean;
+  /** The e-mail guard's per-address wait (Settings → Security); 0 = not known. */
+  mailCooldownSec?: number;
+  /** Shown after "Resend code" when a new code may be on its way (default: says it is). */
+  resentText?: string;
 }) {
   const router = useRouter();
   const [digits, setDigits] = useState<string[]>(Array(OTP_LEN).fill(''));
@@ -95,6 +102,11 @@ export function VerifyEmailStep({
     boxes.current[0]?.focus();
   }, []);
 
+  // Inside the per-address wait the server makes no new code and answers like
+  // a sent one (saying so would tell anyone which addresses have an account):
+  // a request this tab made inside it gets the true text. Remembers the request.
+  const heldBack = () => heldBackNotice(mailCooldownSec, noteMailRequest(email, mailCooldownSec), 'code');
+
   // Sign-in of an unverified account: the code is sent from this screen, once
   // the bot check (if on) has been solved.
   useEffect(() => {
@@ -104,7 +116,10 @@ export function VerifyEmailStep({
       const err = await sendWithCheck(email, captcha);
       setSending(false);
       if (err) setError(err);
+      else setNotice(heldBack());
     })();
+    // heldBack only reads props that are fixed for this screen
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sendFirst, email, captcha]);
 
   async function handleVerify(e?: React.FormEvent) {
@@ -175,9 +190,10 @@ export function VerifyEmailStep({
     else {
       // The server doesn't say when a new code was held back (one was sent to
       // this address moments ago): that would tell anyone which addresses
-      // have an account.
-      setNotice(`A new code is on its way to ${email}. Nothing after a minute? Check your spam folder.`);
-      setDigits(Array(OTP_LEN).fill(''));
+      // have an account. Pressed inside the wait, the earlier code still works.
+      const held = heldBack();
+      setNotice(held ?? resentText ?? `A new code is on its way to ${email}. Nothing after a minute? Check your spam folder.`);
+      if (!held) setDigits(Array(OTP_LEN).fill(''));
       boxes.current[0]?.focus();
     }
   }

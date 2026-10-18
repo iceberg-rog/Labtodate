@@ -107,8 +107,9 @@ async function notifyLockout(email: string, block: SignInBlock, ip: string) {
       // Caused by whoever typed the wrong passwords, not by the owner.
       trigger: 'auth.notice',
       // It tells the owner to ask for a reset link right away: it must not
-      // start the per-address wait that would silently hold that link back.
-      countAgainstLimits: false,
+      // start the per-address wait that would silently hold that link back
+      // (the daily and hourly limits still count it).
+      skipCooldown: true,
       ...mail,
     }).catch(() => {});
   }

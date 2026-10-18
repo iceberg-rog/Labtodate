@@ -218,6 +218,19 @@ test('branded e-mails: Reply-To is applied, the brand colour is checked for read
   assert.match(settingDef('COMPANY_LOGO_URL')?.hint ?? '', /e-mail/);
 });
 
+test('logos: the document logo says where it shows; the dark website can have its own', () => {
+  const doc = settingDef('COMPANY_LOGO_URL');
+  assert.equal(doc?.effect, 'immediate'); // site and e-mails change at once (documents freeze it at issue — said in the hint)
+  assert.match(doc?.hint ?? '', /white tile/);
+  assert.match(doc?.hint ?? '', /issued documents keep/);
+  const dark = settingDef('COMPANY_LOGO_DARK_URL');
+  assert.equal(dark?.group, 'Brand');
+  assert.equal(dark?.type, 'image');
+  assert.equal(dark?.optional, true);
+  assert.equal(v('COMPANY_LOGO_DARK_URL', '/media/lab2date-media/products/branding/logo-light.png'), null);
+  assert.match(v('COMPANY_LOGO_DARK_URL', 'logo.png') ?? '', /valid URL/);
+});
+
 test('domain lists spread into the registry (support, homepage)', async () => {
   const { SUPPORT_SETTING_DEFS } = await import('../support/settings-defs');
   const { HOME_SETTING_DEFS } = await import('../home/settings-defs');

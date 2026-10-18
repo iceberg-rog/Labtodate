@@ -10,6 +10,7 @@ import { HeaderUserMenu } from '@/components/site/HeaderUserMenu';
 import { SearchTypeahead } from '@/components/site/SearchTypeahead';
 import { CartCountBadge } from '@/components/site/CartCountBadge';
 import { useSession } from '@/lib/auth-client';
+import type { SiteBrand } from '@/lib/brand/site-logo';
 
 // `primary` links show inline in the glass pill from xl; the rest only from
 // 2xl, where the whole row fits without wrapping. Below 2xl the menu button
@@ -45,8 +46,8 @@ export function HeaderBar({
   brand,
 }: {
   searchPlaceholder?: string;
-  /** SITE_NAME and the uploaded logo (COMPANY_LOGO_URL, '' = the built-in mark). */
-  brand: { name: string; logoUrl: string };
+  /** SITE_NAME and the website logo (siteBrand(); logoUrl '' = the built-in mark). */
+  brand: SiteBrand;
 }) {
   const [open, setOpen] = useState(false);
   // On md+ the search opens as a full-width row under the header: squeezed
@@ -65,17 +66,19 @@ export function HeaderBar({
 
   return (
     <header className="sticky top-0 z-40">
-      {/* Phones and tablets: a solid bar — under the fade, scrolled text ran
-          through the logo and tagline (QA at 390 px). */}
-      <div aria-hidden className="absolute inset-0 -z-10 border-b border-border/60 bg-background lg:hidden" />
-      {/* Desktop: fades the page out under the floating chrome instead of a hard bar. */}
+      {/* Desktop: fades the page out under the floating chrome instead of a hard bar.
+          Keep it the header's first child: landing.css drops its blur over the live
+          canvas through `body > header > div[aria-hidden]:first-child`. */}
       <div
         aria-hidden
         className="absolute inset-0 -z-10 hidden lg:block bg-gradient-to-b from-background/90 via-background/70 to-background/0 backdrop-blur-[6px] [mask-image:linear-gradient(to_bottom,black_60%,transparent)]"
       />
+      {/* Phones and tablets: a solid bar — under the fade, scrolled text ran
+          through the logo and tagline (QA at 390 px). */}
+      <div aria-hidden className="absolute inset-0 -z-10 border-b border-border/60 bg-background lg:hidden" />
       <div className="container-px flex h-[76px] items-center gap-4">
         <Link href="/" className="flex-shrink-0" aria-label={`${brand.name} home`}>
-          <Logo name={brand.name} logoUrl={brand.logoUrl} priority />
+          <Logo name={brand.name} logoUrl={brand.logoUrl} logoOnLight={brand.logoOnLight} priority />
         </Link>
 
         <div className="ml-auto flex items-center gap-2">

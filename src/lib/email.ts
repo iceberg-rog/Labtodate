@@ -46,12 +46,13 @@ interface SendEmailParams {
    */
   trigger?: EmailTrigger;
   /**
-   * false: check the per-address / domain / hourly limits but don't count
-   * this e-mail against them. For notices nobody asked for (the sign-in pause
-   * notice) that tell the owner to request a reset link right away: they must
-   * not start the per-address wait that would hold that link back.
+   * true: the per-address wait neither holds this e-mail back nor starts
+   * with it; the daily, per-domain and hourly limits still apply and count
+   * it. For notices nobody asked for that send the owner on to a reset link,
+   * code or sign-in right away (sign-in paused, already registered, …): the
+   * wait would silently hold that next e-mail back.
    */
-  countAgainstLimits?: boolean;
+  skipCooldown?: boolean;
 }
 
 /**
@@ -332,7 +333,7 @@ export async function sendEmail({
   replyTo,
   headers,
   trigger = 'transactional',
-  countAgainstLimits = true,
+  skipCooldown = false,
 }: SendEmailParams): Promise<void> {
   await ensureSettingsLoaded();
   const status = emailTransportStatus();
@@ -340,7 +341,7 @@ export async function sendEmail({
   // Blocked / throw-away domains, suppressed addresses and the limits on
   // e-mails visitors can trigger: refused before anything reaches the mail
   // server, and logged like a failed send so the trail stays complete.
-  const guard = await guardOutgoing(to, trigger, undefined, { count: countAgainstLimits });
+  const guard = await guardOutgoing(to, trigger, undefined, { skipCooldown });
   if (!guard.ok) {
     try {
       await prisma.emailLog.create({
