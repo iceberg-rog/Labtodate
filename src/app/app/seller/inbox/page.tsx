@@ -6,17 +6,20 @@ import { computeDealState } from '@/lib/quotes/deal-state';
 import { DealStateBadge } from '@/components/quotes/DealStateBadge';
 import { sellerSeesSellPrice } from '@/lib/quotes/policy';
 import { ensureSettingsLoaded } from '@/lib/settings';
+import { siteName } from '@/lib/brand/identity';
 import { formatPrice } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Quote inbox' };
 
-export default async function SellerInboxPage() {
+export default async function SellerInboxPage(props: { searchParams: Promise<{ flash?: string }> }) {
+  const sp = await props.searchParams;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller/inbox' });
   const role = (session.user as { role?: string }).role;
   // Staff see other people's quotes / offers only with the permission for them (A31).
   const staffView = role === 'ADMIN' && (await hasCapability('quotes:view'));
   await ensureSettingsLoaded();
+  const brand = siteName();
 
   const items = await prisma.sourcingRequest.findMany({
     where: staffView ? {} : { assignedToId: session.user.id },
@@ -50,6 +53,12 @@ export default async function SellerInboxPage() {
         </p>
       </div>
 
+      {sp.flash === 'handed-back' && (
+        <p role="status" className="rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 px-4 py-3 text-sm">
+          You declined to quote: the request went back to the {brand} team with your reason. The buyer was not notified.
+        </p>
+      )}
+
       {items.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <FileText className="h-8 w-8 mx-auto text-muted-foreground mb-3" />
@@ -62,10 +71,10 @@ export default async function SellerInboxPage() {
             <li key={q.id}>
               <Link href={`/app/seller/inbox/${q.id}`} className="p-5 flex items-center gap-4 hover:bg-foreground/5 transition-colors">
                 <div className="flex-1 min-w-0">
-                  {/* Sellers never see who the buyer is — lab2date mediates (same
-                      rule as the detail page). Admins see the real buyer. */}
+                  {/* Sellers never see who the buyer is — we mediate (same rule
+                      as the detail page). Admins see the real buyer. */}
                   <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1 truncate">
-                    {staffView ? `${q.buyerName} · ${q.buyerEmail}` : 'lab2date Buyer'}
+                    {staffView ? `${q.buyerName} · ${q.buyerEmail}` : 'Buyer'}
                   </p>
                   <p dir="auto" className="font-semibold truncate">
                     {q.product?.title ?? q.productCategory ?? 'General sourcing request'}
@@ -85,7 +94,7 @@ export default async function SellerInboxPage() {
                       linkedOrder: orderByQuote.get(q.id) ?? null,
                     }, 'staff')}
                   />
-                  {/* Suppliers see their own proposal, not lab2date's buyer price (SELLER_SEES_SELL_PRICE). */}
+                  {/* Suppliers see their own proposal, not our buyer price (SELLER_SEES_SELL_PRICE). */}
                   {staffView || sellerSeesSellPrice()
                     ? q.quotedPriceCents != null && <p className="text-sm font-bold tabular-nums">{formatPrice(q.offerTotalCents ?? q.offerSubtotalCents ?? q.quotedPriceCents, q.quotedCurrency ?? 'EUR')}{q.offerTotalCents == null ? ' excl. VAT' : ''}</p>
                     : q.sellerProposalCents != null && <p className="text-sm font-bold tabular-nums">Your price {formatPrice(q.sellerProposalCents, q.sellerProposalCurrency ?? 'EUR')}</p>}

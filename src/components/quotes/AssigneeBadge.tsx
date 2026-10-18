@@ -25,6 +25,7 @@ function initials(name: string | null, email: string): string {
  *   - `block`:   detail-hero context — INLINE ownership pill + visible
  *     action buttons (Take over / Transfer ▾). No surprise overlay on the
  *     hero stepper because actions are part of the document flow.
+ * Without the assign permission (quotes:assign) only the owner is shown.
  */
 export function AssigneeBadge({
   quoteId,
@@ -32,12 +33,15 @@ export function AssigneeBadge({
   myUserId,
   admins,
   variant = 'compact',
+  canAssign = true,
 }: {
   quoteId: string;
   assignee: { id: string; name: string | null; email: string } | null;
   myUserId: string | null;
   admins: Array<{ id: string; name: string | null; email: string }>;
   variant?: 'compact' | 'block';
+  /** quotes:assign — claim / take over / transfer. */
+  canAssign?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -79,6 +83,13 @@ export function AssigneeBadge({
 
   // ─────────────────────────────── compact (row) ────────────────────────────────
   if (variant === 'compact') {
+    if (!assignee && !canAssign) {
+      return (
+        <span className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full border border-amber-300 bg-amber-50 text-amber-900 text-[10px] font-bold dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300" title="Unassigned">
+          <UserPlus className="h-3 w-3" /> Unassigned
+        </span>
+      );
+    }
     if (!assignee) {
       return (
         <button
@@ -148,6 +159,7 @@ export function AssigneeBadge({
       </div>
 
       {/* Action row — always visible, no overlay required */}
+      {canAssign && (
       <div className="flex items-center gap-1.5 flex-wrap justify-end">
         {!isMine && (
           <button
@@ -173,10 +185,11 @@ export function AssigneeBadge({
           <ChevronDown className={`h-3 w-3 transition-transform ${transferOpen ? 'rotate-180' : ''}`} />
         </button>
       </div>
+      )}
 
       {/* Inline transfer menu — appears under the action row in normal flow,
           not as an overlay. No risk of covering the funnel stepper. */}
-      {transferOpen && (
+      {canAssign && transferOpen && (
         <div className="w-full max-w-[260px] rounded-xl border border-border bg-card shadow-sm p-2">
           <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground px-1 pb-1">
             Transfer to

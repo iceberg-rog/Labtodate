@@ -3,11 +3,11 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Loader2, Send, Check, X, ShieldCheck, MessageCircle, FileText, Clock, Sparkles,
+  Loader2, Send, Check, X, ShieldCheck, MessageCircle, FileText, Clock, Sparkles, LifeBuoy,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { replyToQuote, setQuoteStatus } from '@/lib/quotes/actions';
+import { handBackQuote, replyToQuote } from '@/lib/quotes/actions';
 import { DealStepper } from '@/components/quotes/DealStepper';
 import { DealStateBadge as DealPill } from '@/components/quotes/DealStateBadge';
 import { OfferForm, type OfferFormProps } from '@/components/quotes/OfferForm';
@@ -21,16 +21,20 @@ interface Message {
   authorName: string | null;
   authorEmail: string | null;
   isMine: boolean;
-  /** Written by lab2date staff or the assigned seller (drives the shield styling). */
+  /** Written by our side — staff or the assigned seller (drives the shield styling). */
   fromStaff?: boolean;
   /** Team-only note — only ever passed to admin viewers. */
   isInternalNote?: boolean;
   /** Auth-gated /api/support-attachment URLs. */
   attachments?: string[];
+  /** Original file names, index-aligned with `attachments`. */
+  attachmentNames?: string[];
 }
 
 interface Props {
   sourcingRequestId: string;
+  /** The site name (siteName()) — our side of the conversation. */
+  brand: string;
   buyerName: string;
   buyerEmail: string;
   description: string;
@@ -49,8 +53,12 @@ interface Props {
   /** Seller (assigned supplier) offer composer; null/undefined = hidden.
    *  Accept/decline live in the OfferCard above the thread, not here. */
   offerForm?: Omit<OfferFormProps, 'quoteId' | 'onResult'> | null;
-  /** Supplier may close the request (only while no offer is accepted). */
-  canClose?: boolean;
+  /** The assigned supplier may decline to quote and hand the request back to
+   *  the team (only while it is open). The buyer's request stays open. */
+  canHandBack?: boolean;
+  /** Buyer view once the order shipped / was delivered: questions go to
+   *  support about that order, not into the quote conversation. */
+  supportOrderNumber?: string | null;
 }
 
 const MAX_REPLY_LEN = 4000;
@@ -65,7 +73,9 @@ export function QuoteThread(p: Props) {
   // Outcome of a successful status change (e.g. "Order … was canceled") — the
   // reply form that shows `error` is gone once the request is closed.
   const [notice, setNotice] = useState<string | null>(null);
-  const [confirmClose, setConfirmClose] = useState(false);
+  const [handBackOpen, setHandBackOpen] = useState(false);
+  const [handBackReason, setHandBackReason] = useState('');
+  const [handBackError, setHandBackError] = useState<string | null>(null);
 
   function send(e: React.FormEvent) {
     e.preventDefault();
@@ -89,26 +99,28 @@ export function QuoteThread(p: Props) {
     });
   }
 
-  // Closing ends the deal for good (a closed quote's offer can no longer be
-  // accepted) and cancels an unpaid order if one exists — same confirm as the
-  // admin "Close (no deal)".
-  function closeRequest() {
-    setConfirmClose(false);
-    setError(null);
-    setWarning(null);
-    setNotice(null);
+  // A supplier never closes the buyer's request: declining to quote hands it
+  // back to the team with the reason (the buyer is not told; the team finds
+  // another supplier or closes it). The request then leaves this inbox.
+  function handBack() {
+    setHandBackError(null);
+    const why = handBackReason.trim();
+    if (why.length < 4) {
+      setHandBackError('Tell us why you can not quote (at least 4 characters).');
+      return;
+    }
     startTransition(async () => {
       try {
-        const r = await setQuoteStatus(p.sourcingRequestId, 'CLOSED');
+        const r = await handBackQuote(p.sourcingRequestId, why);
         if (r?.error) {
-          setError(r.error);
+          setHandBackError(r.error);
           return;
         }
-        if (r?.warning) setWarning(r.warning);
-        if (r?.notice) setNotice(r.notice);
-        router.refresh();
+        setHandBackOpen(false);
+        setNotice(r?.notice ?? `Handed back to the ${p.brand} team.`);
+        router.replace('/app/seller/inbox?flash=handed-back');
       } catch {
-        setError('That did not work. Reload the page and try again.');
+        setHandBackError('That did not work. Reload the page and try again.');
       }
     });
   }
@@ -179,7 +191,7 @@ export function QuoteThread(p: Props) {
         </div>
         <div className="p-5 space-y-4 bg-foreground/[0.02] max-h-[680px] overflow-y-auto">
           {p.messages.length === 0 ? (
-            <EmptyConversation status={p.status} viewerRole={p.viewerRole} />
+            <EmptyConversation status={p.status} viewerRole={p.viewerRole} brand={p.brand} />
           ) : (
             p.messages.map((m) => <MessageBubble key={m.id} m={m} buyerName={p.buyerName} />)
           )}
@@ -196,7 +208,7 @@ export function QuoteThread(p: Props) {
             </p>
             <p className="text-xs text-muted-foreground">
               {p.offerForm.mode === 'SELLER'
-                ? 'lab2date turns your price into the offer the buyer sees. The order is created only when the buyer accepts it.'
+                ? `${p.brand} turns your price into the offer the buyer sees. The order is created only when the buyer accepts it.`
                 : 'The buyer reviews the offer and accepts or declines it. The order and the proforma invoice are created only when they accept.'}
             </p>
           </div>
@@ -205,22 +217,41 @@ export function QuoteThread(p: Props) {
       )}
 
       {/* ───────────────── Reply box ───────────────── */}
-      {p.status !== 'CLOSED' && p.status !== 'DECLINED' && (
+      {p.supportOrderNumber && p.viewerRole === 'BUYER' ? (
+        // The order shipped: questions about it (delivery, documents, a
+        // return) go to support with the order number, not to this quote.
+        <div className="rounded-2xl border border-border bg-card p-4 text-sm flex items-start gap-3 flex-wrap" data-testid="quote-support-link">
+          <LifeBuoy className="h-5 w-5 mt-0.5 flex-shrink-0 text-primary" />
+          <p className="flex-1 min-w-[12rem]">This deal is now order <span className="font-mono font-semibold">{p.supportOrderNumber}</span>. For a question about the delivery, the documents or a return, contact our support team.</p>
+          <a
+            href={`/support?order=${encodeURIComponent(p.supportOrderNumber)}`}
+            className="inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:bg-primary/90"
+          >
+            Contact support about this order
+          </a>
+        </div>
+      ) : p.status !== 'CLOSED' && p.status !== 'DECLINED' && (
         <form onSubmit={send} className="rounded-2xl border border-border bg-card p-4 space-y-3 focus-within:border-primary/50 focus-within:shadow-sm transition">
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value.slice(0, MAX_REPLY_LEN))}
             rows={4}
-            placeholder={p.viewerRole === 'SELLER' ? 'Ask the buyer a question or explain your offer…' : 'Ask the supplier a question…'}
+            placeholder={p.viewerRole === 'SELLER' ? 'Ask the buyer a question or explain your offer…' : `Ask ${p.brand} a question…`}
             dir="auto"
             className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary resize-y"
             required
             minLength={2}
             maxLength={MAX_REPLY_LEN}
           />
-          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>{p.viewerRole === 'BUYER' ? 'Replies are emailed to the supplier.' : 'Replies are emailed to the buyer.'}</span>
-            <span className={body.length > MAX_REPLY_LEN - 200 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}>
+          <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+            <span>
+              {p.viewerRole === 'BUYER'
+                ? `Your message goes to the ${p.brand} team.`
+                : p.viewerRole === 'SELLER'
+                  ? `Your reply goes to the buyer through ${p.brand}.`
+                  : 'Replies are emailed to the buyer.'}
+            </span>
+            <span className={`tabular-nums flex-shrink-0 ${body.length > MAX_REPLY_LEN - 200 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}`}>
               {body.length} / {MAX_REPLY_LEN}
             </span>
           </div>
@@ -231,20 +262,37 @@ export function QuoteThread(p: Props) {
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               Send reply
             </Button>
-            {/* The supplier can close a request that is not accepted yet — behind an in-page confirm. */}
-            {p.viewerRole === 'SELLER' && p.canClose !== false && !confirmClose && (
-              <Button type="button" variant="ghost" onClick={() => setConfirmClose(true)} className="rounded-full font-medium" disabled={pending}>
-                Close request
+            {p.viewerRole === 'SELLER' && p.canHandBack && !handBackOpen && (
+              <Button type="button" variant="ghost" onClick={() => { setHandBackError(null); setHandBackOpen(true); }} className="rounded-full font-medium" disabled={pending}>
+                Decline to quote (hand back)
               </Button>
             )}
           </div>
-          {confirmClose && (
-            <div role="alertdialog" aria-label="Close the request" className="rounded-xl border-2 border-red-300 dark:border-red-800 p-3 space-y-2">
-              <p className="text-sm font-bold">Close this request without a deal?</p>
-              <p className="text-xs text-muted-foreground">The open offer is withdrawn, the buyer and the lab2date team are notified, and the request can not be reopened.</p>
+          {handBackOpen && (
+            <div role="alertdialog" aria-label="Decline to quote" className="rounded-xl border-2 border-red-300 dark:border-red-800 p-3 space-y-2" data-testid="handback-dialog">
+              <p className="text-sm font-bold">Decline to quote this request?</p>
+              <p className="text-xs text-muted-foreground">
+                The request goes back to the {p.brand} team with your reason and leaves your inbox. The buyer is not told — the team finds another supplier or answers the buyer.
+              </p>
+              <label className="block">
+                <span className="block text-xs font-semibold mb-1">Reason <span className="font-normal text-muted-foreground">(required — the {p.brand} team reads it, the buyer does not)</span></span>
+                <textarea
+                  value={handBackReason}
+                  onChange={(e) => setHandBackReason(e.target.value.slice(0, 1000))}
+                  rows={2}
+                  dir="auto"
+                  required
+                  minLength={4}
+                  placeholder="e.g. the unit is no longer available, we can not ship to that country…"
+                  className="w-full px-3 py-2 rounded-lg border border-input bg-background text-sm"
+                />
+              </label>
+              {handBackError && <p role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2 dark:text-red-300 dark:bg-red-950/40 dark:border-red-800">{handBackError}</p>}
               <div className="flex gap-2 flex-wrap">
-                <Button type="button" size="sm" onClick={closeRequest} disabled={pending} className="rounded-full bg-red-700 hover:bg-red-800 text-white">Close the request</Button>
-                <Button type="button" size="sm" variant="outline" onClick={() => setConfirmClose(false)} disabled={pending} className="rounded-full">Keep it open</Button>
+                <Button type="button" size="sm" onClick={handBack} disabled={pending || handBackReason.trim().length < 4} className="rounded-full bg-red-700 hover:bg-red-800 text-white">
+                  {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Hand the request back
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => setHandBackOpen(false)} disabled={pending} className="rounded-full">Keep it</Button>
               </div>
             </div>
           )}
@@ -300,8 +348,8 @@ function Meta({ label, value }: { label: string; value: string }) {
 type PillMap = Record<Props['status'], { variant: 'success' | 'warning' | 'accent' | 'secondary'; label: string }>;
 
 const BUYER_PILLS: PillMap = {
-  PENDING:   { variant: 'warning',   label: 'Waiting for supplier' },
-  RESPONDED: { variant: 'accent',    label: 'Supplier replied — your move' },
+  PENDING:   { variant: 'warning',   label: 'Waiting for our reply' },
+  RESPONDED: { variant: 'accent',    label: 'Reply received — your move' },
   ACCEPTED:  { variant: 'success',   label: 'Accepted' },
   DECLINED:  { variant: 'secondary', label: 'Declined' },
   CLOSED:    { variant: 'secondary', label: 'Closed' },
@@ -319,7 +367,7 @@ const SUPPLIER_PILLS: PillMap = {
 // RESPONDED only says the supplier answered at some point. When the buyer
 // wrote last, the next move is the supplier's.
 const BUYER_FOLLOWED_UP: Record<Props['viewerRole'], PillMap['RESPONDED']> = {
-  BUYER:  { variant: 'warning', label: 'Waiting for supplier' },
+  BUYER:  { variant: 'warning', label: 'Waiting for our reply' },
   SELLER: { variant: 'warning', label: 'Buyer replied — your move' },
   ADMIN:  { variant: 'warning', label: 'Buyer replied — your move' },
 };
@@ -366,8 +414,8 @@ function Avatar({ name, mine, supplier }: { name: string | null; mine: boolean; 
 }
 
 function MessageBubble({ m, buyerName }: { m: Message; buyerName: string }) {
-  // Shield styling marks the lab2date side (staff or the assigned seller), from
-  // the message's own flag — never from the display name.
+  // Shield styling marks our side (staff or the assigned seller), from the
+  // message's own flag — never from the display name.
   const isSupplier = !m.isMine && !!m.fromStaff;
   const ts = new Date(m.createdAt);
   if (m.isInternalNote) {
@@ -378,7 +426,7 @@ function MessageBubble({ m, buyerName }: { m: Message; buyerName: string }) {
           {ts.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
         </p>
         <p dir="auto" className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">{m.body}</p>
-        <MessageAttachments urls={m.attachments ?? []} />
+        <MessageAttachments urls={m.attachments ?? []} names={m.attachmentNames} />
       </div>
     );
   }
@@ -403,14 +451,14 @@ function MessageBubble({ m, buyerName }: { m: Message; buyerName: string }) {
           }`}
         >
           {m.body}
-          <MessageAttachments urls={m.attachments ?? []} />
+          <MessageAttachments urls={m.attachments ?? []} names={m.attachmentNames} />
         </div>
       </div>
     </div>
   );
 }
 
-function EmptyConversation({ status, viewerRole }: { status: Props['status']; viewerRole: Props['viewerRole'] }) {
+function EmptyConversation({ status, viewerRole, brand }: { status: Props['status']; viewerRole: Props['viewerRole']; brand: string }) {
   const forBuyer = viewerRole === 'BUYER';
   return (
     <div className="text-center py-10">
@@ -421,14 +469,14 @@ function EmptyConversation({ status, viewerRole }: { status: Props['status']; vi
         {status !== 'PENDING'
           ? 'The conversation will appear here'
           : forBuyer
-            ? 'Your request is with the supplier'
+            ? `Your request is with ${brand}`
             : 'New request — nothing sent yet'}
       </p>
       <p className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">
         {status !== 'PENDING'
           ? 'Once either side sends a message it\'ll show up here in real time.'
           : forBuyer
-            ? 'You\'ll get an email + notification as soon as the supplier replies or sends you an offer.'
+            ? 'You\'ll get an email + notification as soon as we reply or send you an offer.'
             : 'Reply with questions or send an offer below. The buyer is emailed as soon as you respond.'}
       </p>
     </div>

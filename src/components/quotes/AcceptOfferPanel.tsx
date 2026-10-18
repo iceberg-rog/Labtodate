@@ -41,6 +41,11 @@ export function AcceptOfferPanel(p: {
   const [terms, setTerms] = useState(false);
   const [save, setSave] = useState(true);
   const money = (c: number) => formatPrice(c, p.currency);
+  // The VAT needs our decision first (VIES unavailable, VAT ID of another
+  // company …): read defensively — not every server version sends it.
+  const vatReview = (preview as (AcceptancePreview & { vatReview?: string | null }) | null)?.vatReview ?? null;
+  // Nothing is payable yet while a check is open: no "payable within" promise.
+  const onReview = !!preview?.complianceReview || !!vatReview;
 
   function readDetails(): Record<string, string> {
     const fd = new FormData(formRef.current!);
@@ -117,7 +122,7 @@ export function AcceptOfferPanel(p: {
       {step === 'confirm' && preview && (
         <div className="space-y-3" data-testid="accept-confirm">
           <p className="font-bold">Accept the offer — step 2 of 2: confirm</p>
-          <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-1 text-sm max-w-md">
+          <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 sm:gap-x-6 gap-y-1 text-sm max-w-md">
             <dt className="text-muted-foreground">{preview.qty > 1 ? `Price (${preview.qty} × ${money(preview.unitCents)})` : 'Price'}</dt>
             <dd className="text-right tabular-nums">{money(preview.goodsCents)}</dd>
             {preview.shippingCents > 0 && (<><dt className="text-muted-foreground">Freight / shipping</dt><dd className="text-right tabular-nums">{money(preview.shippingCents)}</dd></>)}
@@ -136,14 +141,26 @@ export function AcceptOfferPanel(p: {
             </p>
           )}
           {preview.complianceReview && (
-            <p className="text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 px-3 py-2 inline-flex gap-2">
+            <p className="text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 px-3 py-2 flex gap-2 [overflow-wrap:anywhere]" data-testid="accept-compliance-review">
               <AlertTriangle className="h-4 w-4 flex-shrink-0" />
               <span>{preview.complianceReview} Your order is created, but please do not pay until we confirm — we email you.</span>
             </p>
           )}
-          <p className="text-sm">
-            Accepting creates your <strong>order</strong> and a <strong>proforma invoice</strong> for <strong>{money(preview.totalCents)}</strong>, payable by bank transfer within <strong>{preview.dueDays} days</strong>. We email you the proforma (PDF) and take you to the payment page.
-          </p>
+          {vatReview && (
+            <p className="text-xs rounded-lg border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 px-3 py-2 flex gap-2 [overflow-wrap:anywhere]" data-testid="accept-vat-review">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+              <span>{vatReview}</span>
+            </p>
+          )}
+          {onReview ? (
+            <p className="text-sm" data-testid="accept-on-review">
+              Accepting creates your <strong>order</strong> for <strong>{money(preview.totalCents)}</strong>. Nothing is payable yet: we email you as soon as our check is done.
+            </p>
+          ) : (
+            <p className="text-sm">
+              Accepting creates your <strong>order</strong> and a <strong>proforma invoice</strong> for <strong>{money(preview.totalCents)}</strong>, payable by bank transfer within <strong>{preview.dueDays} days</strong>. We email you the proforma (PDF) and take you to the payment page.
+            </p>
+          )}
           {p.requireTerms && (
             <label className="flex items-start gap-2 text-sm cursor-pointer">
               <input type="checkbox" checked={terms} onChange={(e) => setTerms(e.target.checked)} className="mt-1 h-4 w-4" data-testid="accept-terms" />

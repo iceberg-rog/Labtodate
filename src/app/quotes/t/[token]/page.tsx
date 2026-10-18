@@ -4,7 +4,11 @@ import {
 } from 'lucide-react';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
+import { siteName } from '@/lib/brand/identity';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
+import { messageAuthorLabel } from '@/components/quotes/quote-view';
+import { offerAmounts } from '@/lib/quotes/pricing';
+import { formatPrice } from '@/lib/utils';
 import { GuestQuoteReplyForm } from './GuestQuoteReplyForm';
 import { QUOTE_REF } from '@/lib/quotes/offer';
 
@@ -19,7 +23,7 @@ const PRIORITY_ICON: Record<string, JSX.Element> = {
 
 const CUSTOMER_STATUS_LABEL: Record<string, string> = {
   PENDING: 'Awaiting reply',
-  RESPONDED: 'Supplier replied',
+  RESPONDED: 'Replied',
   ACCEPTED: 'Offer accepted',
   DECLINED: 'Declined',
   CLOSED: 'Closed',
@@ -34,6 +38,7 @@ export default async function GuestQuotePage(
   const searchParams = await props.searchParams;
   const params = await props.params;
   await ensureSettingsLoaded();
+  const brand = siteName();
   if (!params.token || params.token.length < 16) notFound();
 
   const sr = await prisma.sourcingRequest.findUnique({
@@ -43,6 +48,7 @@ export default async function GuestQuotePage(
       messages: {
         where: { isInternalNote: false }, // never expose admin/seller chatter to guests
         orderBy: { createdAt: 'asc' },
+        include: { author: { select: { id: true, role: true } } },
       },
     },
   });
@@ -74,6 +80,8 @@ export default async function GuestQuotePage(
 
   const ref = sr.proformaNumber ?? QUOTE_REF(sr.id);
   const title = sr.product?.title ?? sr.productCategory ?? 'General sourcing request';
+  // The amount the offer card and the mail show: the total, or "excl. VAT" while the VAT waits for acceptance.
+  const shown = sr.quotedPriceCents != null ? offerAmounts(sr) : null;
 
   return (
     <div className="container-px py-10 max-w-3xl mx-auto">
@@ -89,11 +97,11 @@ export default async function GuestQuotePage(
             </span>
           )}
           <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-full bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
-            {CUSTOMER_STATUS_LABEL[sr.status] ?? sr.status.toLowerCase().replace(/_/g, ' ')}
+            {sr.status === 'RESPONDED' ? `${brand} replied` : CUSTOMER_STATUS_LABEL[sr.status] ?? sr.status.toLowerCase().replace(/_/g, ' ')}
           </span>
         </div>
-        <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
-        <p className="text-sm text-muted-foreground mt-1">
+        <h1 dir="auto" className="text-2xl font-bold tracking-tight [overflow-wrap:anywhere]">{title}</h1>
+        <p className="text-sm text-muted-foreground mt-1 [overflow-wrap:anywhere]">
           From {sr.buyerName} &lt;{sr.buyerEmail}&gt; · opened {sr.createdAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
         </p>
         {sr.quotedPriceCents != null && sr.status === 'RESPONDED' && (
@@ -105,11 +113,11 @@ export default async function GuestQuotePage(
             — accepting creates your order and proforma invoice.
           </p>
         )}
-        {sr.quotedPriceCents != null && (
-          <p className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-accent/10 border border-accent/30 px-3 py-2 text-sm">
+        {shown && (
+          <p className="mt-3 inline-flex items-center gap-1.5 flex-wrap rounded-lg bg-accent/10 border border-accent/30 px-3 py-2 text-sm">
             <FileText className="h-4 w-4 text-accent" />
             <span className="text-muted-foreground">{sr.status === 'ACCEPTED' ? 'Accepted offer' : 'Offer'}</span>
-            <strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency: sr.quotedCurrency ?? 'EUR' }).format(sr.quotedPriceCents / 100)}</strong>
+            <strong>{formatPrice(shown.totalCents, sr.quotedCurrency ?? 'EUR')}{shown.vatDecided ? '' : ' excl. VAT'}</strong>
             {sr.validUntilAt && (
               <span className="text-muted-foreground">
                 {' · valid until '}{new Date(sr.validUntilAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}
@@ -136,7 +144,7 @@ export default async function GuestQuotePage(
               <p className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1">
                 {sr.buyerName} · {sr.createdAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </p>
-              <p className="whitespace-pre-wrap leading-relaxed">{sr.description}</p>
+              <p dir="auto" className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">{sr.description}</p>
             </div>
           </li>
           {sr.messages.map((m) => (
@@ -149,11 +157,12 @@ export default async function GuestQuotePage(
                 }`}
               >
                 <p className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1">
-                  {m.fromStaff ? 'Support' : sr.buyerName} ·{' '}
+                  {/* Our side by brand, a supplier as "Supplier" — never a person's name. */}
+                  {m.fromStaff ? messageAuthorLabel(m, { kind: 'BUYER', userId: '', brand }) : sr.buyerName} ·{' '}
                   {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                 </p>
-                <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
-                <MessageAttachments urls={m.attachments} guestToken={params.token} />
+                <p dir="auto" className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">{m.body}</p>
+                <MessageAttachments urls={m.attachments} names={m.attachmentNames} guestToken={params.token} />
               </div>
             </li>
           ))}

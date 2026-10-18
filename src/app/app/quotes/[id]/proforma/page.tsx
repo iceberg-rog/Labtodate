@@ -4,7 +4,9 @@ import { XCircle, CheckCircle2, FileText } from 'lucide-react';
 import { requireSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { DocumentViewer } from '@/components/documents/DocumentViewer';
-import { PAID_ORDER_STATES } from '@/lib/quotes/offer';
+import { PAID_ORDER_STATES, offerPhase } from '@/lib/quotes/offer';
+import { quotationPath } from '@/lib/documents/quotation';
+import { showsQuotationPdf } from '@/components/quotes/quote-view';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Proforma invoice' };
@@ -12,7 +14,9 @@ export const metadata = { title: 'Proforma invoice' };
 /**
  * The proforma invoice of a quote. It only exists once the buyer ACCEPTED the
  * offer (acceptance creates the order + proforma). Before that there is an
- * offer, not a proforma — this page says so instead of showing a document.
+ * offer, not a proforma — this page says so (and links the quotation PDF of
+ * a live offer, the document for a purchase order, once that PDF is served)
+ * instead of showing one.
  * The document itself is the PDF template (download / preview), never the
  * website page printed.
  */
@@ -22,7 +26,7 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
 
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id: params.id },
-    select: { id: true, submittedById: true, buyerEmail: true, status: true, proformaNumber: true },
+    select: { id: true, submittedById: true, buyerEmail: true, status: true, proformaNumber: true, offerRevision: true, quotedPriceCents: true, validUntilAt: true },
   });
   if (!sr) notFound();
 
@@ -36,7 +40,13 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
 
   const order = await prisma.order.findUnique({
     where: { sourcingRequestId: sr.id },
-    select: { orderNumber: true, status: true, buyerId: true },
+    select: { orderNumber: true, status: true, buyerId: true, paymentSubmittedAt: true },
+  });
+  // The quotation PDF of a live (or accepted) offer, once its route is served.
+  const showQuotation = showsQuotationPdf({
+    offerRevision: sr.offerRevision,
+    phase: offerPhase(sr, order),
+    viewer: isBuyer ? 'buyer' : 'staff',
   });
 
   if (!order || !sr.proformaNumber) {
@@ -50,9 +60,16 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
           A proforma invoice is issued when the offer is accepted. Until then you can review the offer
           — and accept or decline it — on the quote page.
         </p>
-        <Link href={threadHref} className="mt-6 inline-flex items-center rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold">
-          Open the quote
-        </Link>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
+          <Link href={threadHref} className="inline-flex items-center rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold">
+            Open the quote
+          </Link>
+          {showQuotation && (
+            <a href={quotationPath(sr.id, sr.offerRevision)} className="inline-flex items-center gap-1.5 rounded-full border border-border bg-background px-5 py-2.5 text-sm font-semibold hover:bg-foreground/5">
+              <FileText className="h-4 w-4" /> Download quotation (PDF)
+            </a>
+          )}
+        </div>
       </div>
     );
   }
