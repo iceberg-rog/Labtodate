@@ -302,7 +302,7 @@ export async function updateProduct(slug: string, input: ProductInputType): Prom
     slug,
     `${access.asStaff ? 'staff edit of another supplier’s listing · ' : ''}${changed.length ? `changed: ${changed.join(', ')}` : 'no change'}${outcome === 'review' ? ' · back to review' : outcome === 'flagged' ? ' · stays live, flagged for a check' : ''}`,
   );
-  const who = access.asStaff ? actor.email : 'The supplier';
+  const who = actor.email;
   if (outcome === 'review') {
     await notifyModerators(
       'Live listing changed — needs re-review',

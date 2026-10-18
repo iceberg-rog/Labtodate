@@ -753,7 +753,7 @@ const DEFS: DefInput[] = [
     hint: 'Applies to quote threads and “Message seller” conversations between a buyer and a supplier. Removed details show as “[contact details removed]”. Messages written by your own staff are never changed.' },
   { key: 'SELLER_DISPATCH_TEXT', label: 'Sold-unit notice — what the supplier does next', group: 'Suppliers', type: 'text', multiline: true,
     default: 'Keep the unit reserved for this order and get it ready for dispatch. We contact you with the pick-up or delivery details.',
-    hint: 'Sent to a supplier (e-mail and notification) when a unit it supplies has been paid, under the unit and its agreed supplier price. Say what really happens next under your supplier agreements: who collects or ships the unit, and where to. The buyer’s name and our sell price are never included. How suppliers are paid (the text above) is added to the “delivered” notice and shown on the supplier’s Payouts page.' },
+    hint: 'Sent to a supplier (e-mail and notification) when a unit it supplies has been paid, under the unit and its agreed supplier price. Say what really happens next under your supplier agreements: who collects or ships the unit, and where to. The buyer’s name and our sell price are never included. “Supplier programme — how suppliers are paid” is added to the “delivered” notice and shown on the supplier’s Payouts page.' },
 
   // ── Acquisitions ──
   { key: 'COMPANY_RECEIVING_ADDRESS', label: 'Receiving warehouse address', group: 'Acquisitions', type: 'text', multiline: true,
