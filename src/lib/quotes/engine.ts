@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db';
-import { buyerVatExplanation, determineVat, type VatDecision, type VatLineInput } from '@/lib/tax/determine';
+import { buyerVatExplanation, buyerVatLabel, determineVat, type VatDecision, type VatLineInput } from '@/lib/tax/determine';
 import { loadCountryFacts, loadTaxSettings } from '@/lib/tax/settings';
 import { checkVatId, storedVatIdCheck, type VatIdCheckResult } from '@/lib/tax/vies';
 import { parseVatId } from '@/lib/tax/vatid';
@@ -7,7 +7,7 @@ import { checkCountry, type CountryDecision } from '@/lib/compliance/country';
 import type { OrderDetails } from '@/lib/orders/details';
 import type { OfferVatBasis } from './pricing';
 
-export { buyerVatLabel, vatRowTitle } from '@/lib/tax/determine';
+export { buyerVatLabel, buyerVatRow, orderBuyerVatRow, vatRowTitle } from '@/lib/tax/determine';
 
 /**
  * Server-internal VAT decisions for quote offers and quote orders. NOT a
@@ -18,7 +18,8 @@ export { buyerVatLabel, vatRowTitle } from '@/lib/tax/determine';
  * settings of Admin → Settings → Tax & VAT, the CountryPolicy table and a VIES
  * check of the buyer's VAT ID (cached; never inside a DB transaction). The
  * VIES name is compared with the buyer's legal name. Buyers read
- * vatExplanation() / buyerVatLabel() / vatRowTitle(); staff read
+ * vatExplanation() / buyerVatLabel() / vatRowTitle() (buyerVatRow() /
+ * orderBuyerVatRow() once stored) and vatReviewRefusal(); staff read
  * vatStaffExplanation().
  */
 
@@ -166,6 +167,8 @@ export async function offerVatAtSend(
       reasons: d.reasons,
       legalText: d.legalText,
       shippingRateBp: d.shippingRateBp,
+      // What the buyer reads on the offer after a refresh (the mail shows the same).
+      buyerLabel: buyerVatLabel(d),
     },
     decision: d,
     vatId: out.vatId,
@@ -175,6 +178,28 @@ export async function offerVatAtSend(
 /** Plain-language VAT explanation for the BUYER ("Delivery in NL: VAT 21%.") — never the staff reasons. */
 export function vatExplanation(d: VatDecision): string {
   return buyerVatExplanation(d);
+}
+
+/**
+ * The buyer's message when acceptance stops on a VAT the rules can not decide
+ * yet (reviewRequired): the buyer-safe cause, then the step that can help —
+ * "try again later" only when VIES did not answer, "remove the VAT ID" only
+ * when the billing country does not require one, "check the VAT ID / company
+ * name" for a VAT ID VIES registers to another company.
+ */
+export function vatReviewRefusal(d: VatDecision, opts: { hasVatId: boolean; vatIdOptional: boolean }): string {
+  const why = vatExplanation(d);
+  const dropId = opts.hasVatId && opts.vatIdOptional ? ', or remove the VAT ID to accept with VAT charged' : '';
+  switch (d.reviewCause) {
+    case 'VAT_ID_NAME_MISMATCH':
+      return `${why} Check the VAT ID and the company name in your billing details, or write to us in the conversation below — our team has been notified.`;
+    case 'VIES_UNAVAILABLE':
+      return `${why} Please try again later — our team has been notified${dropId}.`;
+    case 'NO_COUNTRY':
+      return `${why} Enter the delivery country in the details above.`;
+    default:
+      return `${why} Our team has been notified and will confirm the VAT with you in the conversation below${dropId}.`;
+  }
 }
 
 /** The engine's reasons, for staff (admin composer, notes, alerts). */

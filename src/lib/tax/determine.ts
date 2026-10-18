@@ -139,7 +139,18 @@ export interface VatDecision {
   buyerReasons?: string[];
   /** Buyer-facing name of the treatment (absent → buyerTreatmentLabel). */
   buyerLabel?: string;
+  /** Why staff must decide (reviewRequired only): picks the buyer's next step. */
+  reviewCause?: VatReviewCause | null;
 }
+
+/**
+ * What a review decision waits for. NO_COUNTRY: no delivery / billing country;
+ * VIES_UNAVAILABLE: VIES did not answer (retrying can help); VAT_ID_NOT_CHECKED:
+ * the VAT ID was not checked (VIES checks off); VAT_ID_NAME_MISMATCH: VIES
+ * registers the VAT ID to another company (retrying never helps);
+ * NO_DESTINATION_RATE: OSS without a rate for the destination.
+ */
+export type VatReviewCause = 'NO_COUNTRY' | 'VIES_UNAVAILABLE' | 'VAT_ID_NOT_CHECKED' | 'VAT_ID_NAME_MISMATCH' | 'NO_DESTINATION_RATE';
 
 const PCT = (bp: number) => `${(bp / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
 
@@ -171,6 +182,7 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
   let buyerMain = '';
   let buyerLabel: string | null = null;
   let buyerBlock: string | null = null;
+  let reviewCause: VatReviewCause = 'NO_COUNTRY';
   const home = s.homeCountry.toUpperCase();
   const dest = (ctx.shipToCountry || ctx.billingCountry || '').toUpperCase() || null;
   if (!ctx.shipToCountry && ctx.billingCountry) {
@@ -224,7 +236,8 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
           // A valid VAT ID of ANOTHER company gives no right to 0%: staff check first.
           Object.assign(main, { treatment: 'REVIEW_REQUIRED', review: true });
           reasons.push(`VAT ID belongs to ${id.name}: VIES registers ${id.vatId} to “${id.name}”, not to the billing name “${legal}” — VAT review required before 0% (confirm the buyer may use this VAT ID, or ask for the right one).`);
-          buyerMain = `We need to check your VAT ID ${id.vatId}: the EU VIES register lists it for “${id.name}”, not for “${legal}”. We confirm the VAT before asking for payment.`;
+          reviewCause = 'VAT_ID_NAME_MISMATCH';
+          buyerMain = `The EU VIES register lists VAT ID ${id.vatId} for “${id.name}”, not for “${legal}”, so it can not give the intra-EU 0% rate without a check.`;
         } else {
           Object.assign(main, { treatment: 'EU_ICS_ZERO', rateBp: 0, legal: 'ICS', vatIdRequired: true, review: false });
           reasons.push(`Intra-EU supply to a business with VIES-valid VAT ID ${id.vatId}${id.consultationNumber ? ` (VIES consultation ${id.consultationNumber})` : ''}: 0%.`);
@@ -247,6 +260,7 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
         const buyerWhy = id.status === 'UNAVAILABLE'
           ? `We could not check your VAT ID ${id.vatId} with the EU VIES service right now`
           : `Your VAT ID ${id.vatId} is not confirmed yet`;
+        reviewCause = id.status === 'UNAVAILABLE' ? 'VIES_UNAVAILABLE' : 'VAT_ID_NOT_CHECKED';
         if (s.viesDownPolicy === 'CHARGE_HOME_VAT') {
           Object.assign(main, { treatment: 'EU_B2C_HOME', rateBp: s.standardRateBp, review: false });
           reasons.push(`${why} for ${id.vatId}: home VAT ${PCT(s.standardRateBp)} charged (policy) — can be credited once VIES confirms the ID.`);
@@ -255,11 +269,11 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
         } else if (s.viesDownPolicy === 'BLOCK') {
           Object.assign(main, { treatment: 'REVIEW_REQUIRED', blocked: true, review: true });
           reasons.push(`${why} for ${id.vatId}: sale blocked until VIES answers (policy).`);
-          buyerMain = `${buyerWhy}, so the order cannot be placed yet. Please try again later.`;
+          buyerMain = `${buyerWhy}, so it can not be used for an order yet.${id.status === 'UNAVAILABLE' ? ' Please try again later.' : ''}`;
         } else {
           Object.assign(main, { treatment: 'REVIEW_REQUIRED', review: true });
           reasons.push(`${why} for ${id.vatId}: VAT review required before invoicing (policy).`);
-          buyerMain = `${buyerWhy}. We confirm the VAT before asking for payment.`;
+          buyerMain = `${buyerWhy}.`;
         }
       }
     }
@@ -270,7 +284,8 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
         if (r == null) {
           Object.assign(main, { treatment: 'REVIEW_REQUIRED', review: true });
           reasons.push(`OSS is on but no VAT rate is configured for ${dest}.`);
-          buyerMain = `We confirm the VAT for delivery to ${dest} before asking for payment.`;
+          reviewCause = 'NO_DESTINATION_RATE';
+          buyerMain = `The VAT rate for delivery to ${dest} has to be confirmed by our team.`;
         } else {
           Object.assign(main, { treatment: 'EU_B2C_OSS', rateBp: r, legal: 'OSS', review: false });
           reasons.push(`EU buyer without a valid VAT ID, OSS: ${dest} rate ${PCT(r)}.`);
@@ -393,6 +408,7 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
     reasons,
     buyerReasons: buyerReasons.filter(Boolean),
     buyerLabel: finalBuyerLabel,
+    reviewCause: main.review ? reviewCause : null,
   };
 }
 
@@ -435,6 +451,80 @@ export function vatRowTitle(d: Pick<VatDecision, 'lines' | 'rateBp' | 'treatment
   const rates = [...new Set(taxed.map((l) => l.rateBp))];
   if (rates.length > 1) return 'VAT';
   return `VAT ${PCT(rates[0])}${taxed.every((l) => l.lineType === 'SHIPPING') ? ' on freight' : ''}`;
+}
+
+/** What an offer / order stores about its VAT (enough to show the buyer the same row again). */
+export interface StoredVat {
+  treatment: VatTreatmentCode | string | null | undefined;
+  /** Goods rate (offerVatRateBp / Order.vatRateBp). */
+  rateBp: number | null | undefined;
+  /** Freight rate (offerTerms.vatBasis.shippingRateBp / Order.shippingVatRateBp); null = not recorded. */
+  shippingRateBp?: number | null;
+  shippingCents?: number | null;
+  taxCents: number | null | undefined;
+  /** buyerVatLabel() recorded with the decision; else rebuilt from the treatment. */
+  buyerLabel?: string | null;
+  /** The buyer gave a VAT ID (only used when no label was recorded). */
+  hasVatId?: boolean;
+}
+
+/**
+ * The buyer's VAT row rebuilt from stored fields: the same title as
+ * vatRowTitle() ("VAT 21% on freight" when only the freight is taxed; plain
+ * "VAT" when a rate is not recorded — never "VAT 0%" next to an amount) and
+ * the buyer label (recorded, else buyerTreatmentLabel()).
+ */
+export function buyerVatRow(s: StoredVat): { title: string; label: string } {
+  const label = s.buyerLabel
+    || (s.treatment === 'EU_B2C_HOME' && s.hasVatId === false ? 'Standard rate (no EU VAT ID)' : buyerTreatmentLabel(s.treatment));
+  if (s.treatment === 'REVIEW_REQUIRED') return { title: 'VAT', label };
+  const margin = s.treatment === 'MARGIN_SCHEME';
+  const goodsBp = margin ? 0 : s.rateBp ?? null;
+  const freightBp = (s.shippingCents ?? 0) > 0 ? s.shippingRateBp ?? null : null;
+  if (!s.taxCents) return { title: margin || goodsBp == null ? 'VAT' : `VAT ${PCT(goodsBp)}`, label };
+  if (goodsBp == null) return { title: 'VAT', label };
+  if (goodsBp === 0) return { title: freightBp ? `VAT ${PCT(freightBp)} on freight` : 'VAT', label };
+  if (freightBp && freightBp !== goodsBp) return { title: 'VAT', label };
+  return { title: `VAT ${PCT(goodsBp)}`, label };
+}
+
+/** The buyer texts recorded on an order at its VAT decision (Order.pricingSnapshot.buyerVat). */
+export interface RecordedBuyerVat {
+  treatment: string;
+  /** Order.vatDecidedAt of that decision (ISO): a later re-decision makes the texts stale. */
+  decidedAt: string;
+  label: string;
+  title: string;
+}
+
+/**
+ * The buyer's VAT row of an order (order page, payment page, quote card). The
+ * label recorded at the decision is used only while that decision stands
+ * (same treatment and vatDecidedAt — staff re-deciding the VAT makes it stale);
+ * otherwise the row is rebuilt from the order's fields.
+ */
+export function orderBuyerVatRow(o: {
+  vatTreatment?: string | null;
+  vatRateBp?: number | null;
+  shippingVatRateBp?: number | null;
+  shippingCents?: number | null;
+  taxCents?: number | null;
+  buyerVatId?: string | null;
+  vatDecidedAt?: Date | string | null;
+  pricingSnapshot?: unknown;
+}): { title: string; label: string } {
+  const snap = o.pricingSnapshot && typeof o.pricingSnapshot === 'object' ? (o.pricingSnapshot as { buyerVat?: Partial<RecordedBuyerVat> }).buyerVat : undefined;
+  const decidedAt = o.vatDecidedAt ? new Date(o.vatDecidedAt).toISOString() : null;
+  const recorded = snap && typeof snap.label === 'string' && snap.treatment === o.vatTreatment && !!decidedAt && snap.decidedAt === decidedAt ? snap.label : null;
+  return buyerVatRow({
+    treatment: o.vatTreatment,
+    rateBp: o.vatRateBp,
+    shippingRateBp: o.shippingVatRateBp,
+    shippingCents: o.shippingCents,
+    taxCents: o.taxCents,
+    buyerLabel: recorded,
+    hasVatId: !!o.buyerVatId,
+  });
 }
 
 // ── VIES name vs the buyer's legal name ──

@@ -25,7 +25,7 @@ import { documentAttachment, issueProforma, markDocumentSent, voidProformas } fr
 import { quoteDeletionBlockers } from '@/lib/documents/retention';
 import { QUOTE_REF, offerMaxCents, endOfDayUtc, fmtDay, isoDay, offerPhase, quoteRef, PAID_ORDER_STATES } from '@/lib/quotes/offer';
 import type { VatTreatmentCode } from '@/lib/tax/determine';
-import { billingAddressJson, parseDetailsInput, shippingAddressJson, type DetailsFieldErrors, type OrderDetails } from '@/lib/orders/details';
+import { billingAddressJson, parseDetailsInput, shippingAddressJson, vatIdRequiredFor, type DetailsFieldErrors, type OrderDetails } from '@/lib/orders/details';
 import {
   autoArchiveOnClose, declineReasons, offerCurrencies, offerDefaults, offerIncoterms, openOfferHoldDays, quoteSlaHours,
   requireTermsAcceptance, sellerMarkupBp, sellerOffersRequireApproval, sellerPriceRounding, sellerSeesSellPrice, stockReserveOn, termsOfSaleUrl, vatIdRule,
@@ -33,7 +33,7 @@ import {
 import {
   applyMarkup, daysFrom, fillPaymentTermsText, incotermLabel, offerAmounts, parseOfferTerms, pctLabel, type OfferTerms,
 } from '@/lib/quotes/pricing';
-import { buyerVatLabel, decideVatForDetails, offerVatAtSend, offerVatLines, vatExplanation, vatRowTitle } from '@/lib/quotes/engine';
+import { buyerVatLabel, decideVatForDetails, offerVatAtSend, offerVatLines, vatExplanation, vatReviewRefusal, vatRowTitle } from '@/lib/quotes/engine';
 import { holdUnitForQuote, releaseQuoteHold, unitAvailability } from '@/lib/quotes/stock';
 import { mailLayout, mailTable } from '@/lib/quotes/mail';
 
@@ -1078,8 +1078,9 @@ async function prepareAcceptance(
     }
   }
   const d = vat.decision;
+  // The buyer reads the buyer-safe explanation; staff get the engine's reasons.
   if (d.blocked) {
-    return { ok: false, result: { error: `This sale is not possible with these details: ${d.reasons.join(' ')}` } };
+    return { ok: false, result: { error: `This offer can not be accepted with these details: ${vatExplanation(d)}` } };
   }
   if (d.reviewRequired) {
     await notifyAdmins(
@@ -1091,7 +1092,7 @@ async function prepareAcceptance(
     return {
       ok: false,
       result: {
-        error: `We could not determine the VAT for these details right now: ${d.reasons.join(' ')} Please try again later — our team has been notified${details.billing.vatId ? ', or remove the VAT ID to accept with VAT charged' : ''}.`,
+        error: vatReviewRefusal(d, { hasVatId: !!details.billing.vatId, vatIdOptional: !vatIdRequiredFor(vatIdRule(), details.billing.country) }),
       },
     };
   }
@@ -1206,6 +1207,8 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
     // where the invoice goes, the buyer's PO (also printed on the documents).
     shippingVatRateBp: preview.shippingCents > 0 ? r.prep.shippingRateBp : null,
     shippingTaxed: preview.shippingCents > 0 && r.prep.shippingRateBp > 0,
+    // The buyer's VAT texts of this decision (orderBuyerVatRow: order, payment and quote pages).
+    pricingSnapshot: { v: 1, at: now.toISOString(), source: 'QUOTE', buyerVat: { treatment: preview.vatTreatment, decidedAt: now.toISOString(), label: preview.vatLabel, title: preview.vatRowLabel } } as Prisma.InputJsonValue,
     customerType: 'BUSINESS' as const,
     invoiceEmail: details.billing.invoiceEmail,
     poNumber: details.billing.poNumber,

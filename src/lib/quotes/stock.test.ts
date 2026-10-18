@@ -1,7 +1,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Prisma } from '@prisma/client';
-import { holdLapsedNotice, holdUnitForQuote, sellQuoteUnit, takeQuoteUnit } from './stock';
+import { holdLapseNeedsNotice, holdLapsedNotice, holdUnitForQuote, sellQuoteUnit, takeQuoteUnit } from './stock';
 import { reserveStock } from '@/lib/stock/reserve';
 
 // An in-memory transaction client with the StockReservation / Product calls
@@ -162,7 +162,7 @@ test('reserveStock reports the size change of an existing hold', async () => {
 test('lapsed hold notice: the buyer is told the unit is back on sale and the offer is still valid', () => {
   const n = holdLapsedNotice({
     quoteId: 'cm123456abcdef', buyerName: 'Dr <Lab>', item: 'Agilent 1260 HPLC', qty: 1,
-    expiredAt: new Date('2026-10-20T10:00:00Z'), validUntilAt: new Date('2026-10-28T23:59:59Z'), now: new Date('2026-10-20T10:05:00Z'),
+    expiredAt: new Date('2026-10-20T10:00:00Z'), validUntilAt: new Date('2026-10-28T23:59:59Z'),
   });
   assert.match(n.subject, /The reservation for your offer has ended/);
   const html = n.html('https://example.test/app/quotes/x');
@@ -172,16 +172,23 @@ test('lapsed hold notice: the buyer is told the unit is back on sale and the off
   assert.match(n.buyerNote, /valid until 28 Oct 2026/);
   assert.match(n.staffBody({ ok: true }), /buyer was e-mailed; the offer stays valid/);
   assert.match(n.staffBody({ ok: false, error: '550 rejected' }), /NOT reached by e-mail \(550 rejected\)/);
+  const many = holdLapsedNotice({ quoteId: 'cm1', buyerName: 'B', item: 'Centrifuge', qty: 2, expiredAt: new Date('2026-10-20T10:00:00Z'), validUntilAt: null });
+  assert.match(many.html('https://example.test/q'), /2 units of/);
+  assert.match(many.buyerNote, /Your offer stays open while/);
 });
 
-test('lapsed hold notice when the offer itself expired: ask for a new offer', () => {
-  const n = holdLapsedNotice({
-    quoteId: 'cm123456abcdef', buyerName: 'B', item: 'Centrifuge', qty: 2,
-    expiredAt: new Date('2026-10-28T23:59:59Z'), validUntilAt: new Date('2026-10-28T23:59:59Z'), now: new Date('2026-10-29T01:00:00Z'),
-  });
-  const html = n.html('https://example.test/q');
-  assert.match(html, /2 units of/);
-  assert.match(html, /expired on 28 Oct 2026/);
-  assert.match(html, /Ask for a new offer/);
-  assert.doesNotMatch(n.buyerNote, /valid until/);
+test('a lapsed hold is announced only while its offer is still valid', () => {
+  const until = new Date('2026-10-28T23:59:59Z');
+  const open = { status: 'RESPONDED', archivedAt: null, validUntilAt: until };
+  // RESERVATION_HOLD_DAYS shorter than the validity: the hold ends first → notice.
+  assert.equal(holdLapseNeedsNotice(open, new Date('2026-10-20T10:05:00Z')), true);
+  // Default (no RESERVATION_HOLD_DAYS): hold expiry = validUntil, so the sweep sees an
+  // expired offer — the offer-expiry handling covers it, no second notice.
+  assert.equal(holdLapseNeedsNotice(open, new Date(until.getTime() + 60_000)), false);
+  assert.equal(holdLapseNeedsNotice(open, until), false, 'expired at the very moment of validUntil');
+  // No longer an open offer: its own ending already told everyone.
+  assert.equal(holdLapseNeedsNotice({ ...open, status: 'ACCEPTED' }, new Date('2026-10-20T10:05:00Z')), false);
+  assert.equal(holdLapseNeedsNotice({ ...open, archivedAt: new Date('2026-10-19T00:00:00Z') }, new Date('2026-10-20T10:05:00Z')), false);
+  // An offer without a validity date stays open.
+  assert.equal(holdLapseNeedsNotice({ ...open, validUntilAt: null }, new Date('2026-10-20T10:05:00Z')), true);
 });

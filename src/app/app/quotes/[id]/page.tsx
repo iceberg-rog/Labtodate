@@ -72,6 +72,8 @@ export default async function BuyerQuoteDetailPage(
       id: true, orderNumber: true, status: true, paymentSubmittedAt: true, paymentVerificationStatus: true,
       subtotalCents: true, shippingCents: true, taxCents: true, totalCents: true, currency: true,
       vatTreatment: true, vatRateBp: true, dueAt: true, financialStatus: true,
+      // The buyer's VAT row (freight rate, buyer label recorded at acceptance).
+      shippingVatRateBp: true, buyerVatId: true, vatDecidedAt: true, pricingSnapshot: true,
       items: { select: { quantity: true, priceCentsSnapshot: true }, take: 1 },
       documents: { where: { kind: 'INVOICE' }, select: { number: true }, take: 1 },
     },

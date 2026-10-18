@@ -227,29 +227,53 @@ export interface SyncOptions {
 /** Orders whose units are no longer committed (stock was released). */
 const RELEASED_ORDER_STATES: OrderStatus[] = ['CANCELED', 'REFUNDED'];
 
+/** Active (not released, not consumed) holds of one listing. */
+export interface HeldUnits {
+  /** Holds no live order counts (an open offer, a cart, a hold left on a canceled order). */
+  noOrder: number;
+  /** Holds of a live order not paid yet (an accepted quote, a checkout awaiting payment) — its OrderItem counts them too. */
+  liveOrder: number;
+}
+
+/** Sums active holds per listing (pure; `orderStatus` null = no order). */
+export function heldUnitsByProduct(holds: Array<{ productId: string; qty: number; orderStatus: OrderStatus | null }>): Map<string, HeldUnits> {
+  const out = new Map<string, HeldUnits>();
+  for (const h of holds) {
+    const cur = out.get(h.productId) ?? { noOrder: 0, liveOrder: 0 };
+    if (h.orderStatus && !RELEASED_ORDER_STATES.includes(h.orderStatus)) cur.liveOrder += h.qty;
+    else cur.noOrder += h.qty;
+    out.set(h.productId, cur);
+  }
+  return out;
+}
+
 /**
  * What the stock plan subtracts from the source quantity of one listing (D32):
- *  - units sold here (OrderItems of live orders) — only with SUBTRACT_LOCAL_SALES
- *    (with SOURCE_IS_TRUTH the supplier updates its stock after our orders);
- *  - units HELD here that no order counts yet (an open offer's reservation) —
- *    in both modes: the supplier cannot know about them, and raising the
- *    quantity over a hold would sell the unit twice.
- * An as-is shop with such holds is therefore planned as "source minus held".
+ *  - SUBTRACT_LOCAL_SALES: units sold here (OrderItems of live orders, which
+ *    include the holds of unpaid orders) + holds no order counts yet;
+ *  - SOURCE_IS_TRUTH: every active hold (open offers, accepted but unpaid
+ *    quotes, checkouts awaiting payment) — the supplier only learns about a
+ *    sale after the payment, and raising the quantity over a hold would sell
+ *    the unit twice. A paid order's hold is consumed: the source is the truth
+ *    again. An as-is shop with holds is therefore planned as "source minus held".
  */
 export function syncStockInputs(
   mode: ShopSyncPolicy['syncStockMode'],
   soldUnits: number,
-  heldUnits: number,
+  held: HeldUnits,
 ): { committedUnits: number; syncStockMode: ShopSyncPolicy['syncStockMode'] } {
-  if (mode === 'SUBTRACT_LOCAL_SALES') return { committedUnits: soldUnits + heldUnits, syncStockMode: mode };
-  return heldUnits > 0 ? { committedUnits: heldUnits, syncStockMode: 'SUBTRACT_LOCAL_SALES' } : { committedUnits: soldUnits, syncStockMode: mode };
+  if (mode === 'SUBTRACT_LOCAL_SALES') return { committedUnits: soldUnits + held.noOrder, syncStockMode: mode };
+  const all = held.noOrder + held.liveOrder;
+  return all > 0 ? { committedUnits: all, syncStockMode: 'SUBTRACT_LOCAL_SALES' } : { committedUnits: soldUnits, syncStockMode: mode };
 }
 
 /** The plan's "held at 0" note, worded for what the units really are (sold vs reserved). */
-function heldAtZeroNote(mode: ShopSyncPolicy['syncStockMode'], soldUnits: number, heldUnits: number): string {
+function heldAtZeroNote(mode: ShopSyncPolicy['syncStockMode'], soldUnits: number, held: HeldUnits): string {
+  const subtract = mode === 'SUBTRACT_LOCAL_SALES';
   const parts = [
-    mode === 'SUBTRACT_LOCAL_SALES' && soldUnits > 0 ? `${soldUnits} unit(s) already sold on lab2date` : '',
-    heldUnits > 0 ? `${heldUnits} unit(s) reserved for an open offer` : '',
+    subtract && soldUnits > 0 ? `${soldUnits} unit(s) already sold on lab2date` : '',
+    held.noOrder > 0 ? `${held.noOrder} unit(s) reserved for an open offer` : '',
+    !subtract && held.liveOrder > 0 ? `${held.liveOrder} unit(s) reserved for an order awaiting payment` : '',
   ].filter(Boolean);
   return `In stock at the source, but held at 0: ${parts.join(' and ')}.`;
 }
@@ -324,7 +348,7 @@ export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
       },
     });
     const committed = new Map<string, number>();
-    const heldOpen = new Map<string, number>();
+    let held = new Map<string, HeldUnits>();
     if (locals.length) {
       const ids = locals.map((l) => l.id);
       const rows = await prisma.orderItem.groupBy({
@@ -333,16 +357,12 @@ export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
         _sum: { quantity: true },
       });
       for (const r of rows) if (r.productId) committed.set(r.productId, r._sum.quantity ?? 0);
-      // Active holds no live order counts yet (an open offer; a hold of a live
-      // order is already counted through its OrderItem above).
+      // Active holds, split by whether a live order already counts them (syncStockInputs).
       const holds = await prisma.stockReservation.findMany({
         where: { productId: { in: ids }, releasedAt: null, consumedAt: null },
         select: { productId: true, qty: true, order: { select: { status: true } } },
       });
-      for (const h of holds) {
-        if (h.order && !RELEASED_ORDER_STATES.includes(h.order.status)) continue;
-        heldOpen.set(h.productId, (heldOpen.get(h.productId) ?? 0) + h.qty);
-      }
+      held = heldUnitsByProduct(holds.map((h) => ({ productId: h.productId, qty: h.qty, orderStatus: h.order?.status ?? null })));
     }
     const byExternal = new Map(locals.filter((l) => l.externalSource === 'woo' && l.externalId).map((l) => [l.externalId!, l]));
     const legacyBySlug = new Map(locals.filter((l) => !l.externalId).map((l) => [l.slug, l]));
@@ -371,11 +391,11 @@ export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
         if (local) {
           matched.add(local.id);
           const sold = committed.get(local.id) ?? 0;
-          const heldHere = heldOpen.get(local.id) ?? 0;
+          const heldHere = held.get(local.id) ?? { noOrder: 0, liveOrder: 0 };
           const stock = syncStockInputs(policy.syncStockMode, sold, heldHere);
           const state: LocalState = { ...local, committedUnits: stock.committedUnits };
           const plan = planExisting(state, src, { ...policy, syncStockMode: stock.syncStockMode }, { adopt, review, now });
-          if (heldHere > 0) plan.notes = plan.notes.map((n) => (n.startsWith('In stock at the source, but held at 0:') ? heldAtZeroNote(policy.syncStockMode, sold, heldHere) : n));
+          if (heldHere.noOrder + heldHere.liveOrder > 0) plan.notes = plan.notes.map((n) => (n.startsWith('In stock at the source, but held at 0:') ? heldAtZeroNote(policy.syncStockMode, sold, heldHere) : n));
           const data: Prisma.ProductUpdateInput = { ...plan.data };
           // Product.sourceUrl is unique: never take it from another listing.
           if (typeof plan.data.sourceUrl === 'string') {

@@ -22,8 +22,7 @@ import {
   autoCancelUnpaid, buyerCanCancelUnpaid, cancelReasons, paymentGraceDays, paymentTermDays, requireDetailsBeforePayment, vatIdRule, verifyTurnaround,
 } from '@/lib/quotes/policy';
 import { creditStatusFor } from '@/lib/credit/terms';
-import { pctLabel } from '@/lib/quotes/pricing';
-import { vatTreatmentLabel } from '@/lib/tax/determine';
+import { orderBuyerVatRow } from '@/lib/tax/determine';
 import { buyerSubmitPaymentProof } from './actions';
 import { ProofFileInput } from './ProofFileInput';
 import { buyerHoldMessages, hasPrePaymentHold } from '@/lib/checkout/holds';
@@ -177,6 +176,8 @@ export default async function PaymentWorkspacePage({
   const turnaround = verifyTurnaround();
   const bank = pf?.bank ?? null;
   const money = (c: number) => formatPrice(c, order.currency);
+  // The buyer's wording of the VAT row ("VAT 21% on freight · Margin scheme — VAT included in the price").
+  const vatRow = orderBuyerVatRow(order);
 
   return (
     <div className="container-px py-10 max-w-3xl mx-auto min-w-0">
@@ -517,7 +518,7 @@ export default async function PaymentWorkspacePage({
         <dl className="border-t border-border pt-3 mt-3 space-y-1 text-sm">
           {order.shippingCents > 0 && <Row label="Freight / shipping" value={money(order.shippingCents)} />}
           <Row
-            label={order.vatTreatment && order.vatTreatment !== 'LEGACY_UNSPECIFIED' && order.vatRateBp != null ? `VAT ${pctLabel(order.vatRateBp)} — ${vatTreatmentLabel(order.vatTreatment)}` : 'VAT'}
+            label={!order.vatTreatment || order.vatTreatment === 'LEGACY_UNSPECIFIED' ? 'VAT' : order.vatTreatment === 'REVIEW_REQUIRED' ? 'VAT (to be confirmed)' : `${vatRow.title} · ${vatRow.label}`}
             value={money(order.taxCents)}
           />
           <div className="flex items-center justify-between text-base font-bold pt-1">

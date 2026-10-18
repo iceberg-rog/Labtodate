@@ -1,6 +1,6 @@
 import type { OfferCardProps } from '@/components/quotes/OfferCard';
 import type { OfferFormProps } from '@/components/quotes/OfferForm';
-import { vatTreatmentLabel } from '@/lib/tax/determine';
+import { buyerVatRow, orderBuyerVatRow, vatTreatmentLabel } from '@/lib/tax/determine';
 import { formatPrice } from '@/lib/utils';
 import { isoDay, offerPhase, PAID_ORDER_STATES, offerMaxCents } from './offer';
 import { daysFrom, incotermLabel, offerAmounts, parseOfferTerms, pctLabel } from './pricing';
@@ -47,6 +47,11 @@ export type OrderForOffer = {
   currency?: string;
   vatTreatment?: string | null;
   vatRateBp?: number | null;
+  /** For the buyer's VAT row (freight rate, recorded buyer label — orderBuyerVatRow). */
+  shippingVatRateBp?: number | null;
+  buyerVatId?: string | null;
+  vatDecidedAt?: Date | null;
+  pricingSnapshot?: unknown;
   dueAt?: Date | null;
   financialStatus?: string | null;
   items?: Array<{ quantity: number; priceCentsSnapshot: number }>;
@@ -79,6 +84,15 @@ export function offerCardProps(
   const accepted = phase === 'accepted' && !!order && order.totalCents != null && order.subtotalCents != null;
   const legacyVat = accepted && (!order?.vatTreatment || order.vatTreatment === 'LEGACY_UNSPECIFIED');
   const currency = (accepted && order?.currency) || sr.quotedCurrency || 'EUR';
+  // The VAT row as the buyer read it (title "VAT 21% on freight", buyer label);
+  // staff keep the treatment's own name next to it.
+  const orderRow = accepted && order && !legacyVat ? orderBuyerVatRow(order) : null;
+  const offerRow = snap.vatDecided
+    ? buyerVatRow({
+        treatment: snap.vatTreatment, rateBp: snap.vatRateBp, shippingRateBp: terms?.vatBasis.shippingRateBp, shippingCents: snap.shippingCents,
+        taxCents: snap.vatCents, buyerLabel: terms?.vatBasis.buyerLabel, hasVatId: !!terms?.vatBasis.vatId,
+      })
+    : null;
 
   const amounts: OfferCardProps['amounts'] = accepted && order
     ? {
@@ -91,7 +105,8 @@ export function offerCardProps(
         // Never derived back from cents (a 21.01% rate does not exist).
         vatRateBp: legacyVat ? null : order.vatRateBp ?? null,
         vatCents: order.taxCents ?? 0,
-        vatLabel: legacyVat ? 'as charged (priced before the VAT rules)' : vatTreatmentLabel(order.vatTreatment),
+        vatLabel: legacyVat ? 'as charged (priced before the VAT rules)' : viewer === 'BUYER' && orderRow ? orderRow.label : vatTreatmentLabel(order.vatTreatment),
+        vatRowLabel: orderRow?.title ?? null,
         totalCents: order.totalCents ?? 0,
         vatNote: null,
       }
@@ -104,7 +119,8 @@ export function offerCardProps(
         vatDecided: snap.vatDecided,
         vatRateBp: snap.vatRateBp,
         vatCents: snap.vatCents,
-        vatLabel: snap.vatTreatmentLabel,
+        vatLabel: viewer === 'BUYER' && offerRow ? offerRow.label : snap.vatTreatmentLabel,
+        vatRowLabel: offerRow?.title ?? null,
         totalCents: snap.totalCents,
         vatNote: snap.vatDecided
           ? `${viewer === 'BUYER' ? 'Based on your billing details' : 'Based on the buyer’s billing details'}${terms?.vatBasis.country ? ` (${terms.vatBasis.country}${terms.vatBasis.vatId ? `, VAT ID ${terms.vatBasis.vatId}` : ''})` : ''} — confirmed when ${viewer === 'BUYER' ? 'you accept' : 'the buyer accepts'}.${terms?.vatBasis.legalText ? ` ${terms.vatBasis.legalText}` : ''}`

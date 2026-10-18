@@ -15,7 +15,7 @@ import { getOrderDocuments } from '@/lib/documents/issue';
 import { OrderDocumentsPanel } from '@/components/documents/OrderDocumentsPanel';
 import { buyerHoldMessages, hasPrePaymentHold } from '@/lib/checkout/holds';
 import { countryOptions } from '@/lib/compliance/country';
-import { vatTreatmentWithRate } from '@/lib/tax/determine';
+import { orderBuyerVatRow } from '@/lib/tax/determine';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { addressLines, orderDetailsProblems } from '@/lib/orders/details';
 import { effectiveDueDate, fmtDueDate } from '@/lib/orders/payment-due';
@@ -132,6 +132,8 @@ export default async function OrderDetailPage({
   const holdMsgs = held || order.openHolds.length ? await buyerHoldMessages(order) : [];
   const shippingPending = order.openHolds.includes('SHIPPING_PENDING');
   const vatPending = order.vatTreatment === 'REVIEW_REQUIRED';
+  // The buyer's wording ("VAT 21% on freight · Margin scheme — VAT included in the price"), not the staff label.
+  const vatRow = orderBuyerVatRow(order);
   const countries = needsAddress ? await countryOptions() : [];
   const ADDR_MSG: Record<string, string> = {
     missing: 'Please fill in recipient name, phone, address line 1, city, postal code and the country.',
@@ -426,7 +428,7 @@ export default async function OrderDetailPage({
         <Row label="Subtotal (excl. VAT)" value={formatPrice(order.subtotalCents, order.currency)} />
         <Row label="Shipping" value={shippingPending ? 'to be confirmed' : order.shippingCents ? formatPrice(order.shippingCents, order.currency) : 'free'} />
         <Row
-          label={`VAT${order.vatTreatment && !vatPending && order.vatTreatment !== 'LEGACY_UNSPECIFIED' ? ` — ${vatTreatmentWithRate(order.vatTreatment, order.vatRateBp)}` : ''}`}
+          label={order.vatTreatment && !vatPending && order.vatTreatment !== 'LEGACY_UNSPECIFIED' ? `${vatRow.title} · ${vatRow.label}` : 'VAT'}
           value={vatPending ? 'to be confirmed' : formatPrice(order.taxCents, order.currency)}
         />
         <div className="pt-2 border-t mt-2">

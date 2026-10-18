@@ -15,7 +15,8 @@ import { mailLayout, siteBase } from './mail';
  *  - reserved when the offer is sent / accepted / paid (STOCK_RESERVE_ON);
  *    a revised offer quantity resizes the hold;
  *  - released exactly once on decline, close, expiry, buyer or staff cancel
- *    (an expired open-offer hold tells the buyer and the assignee);
+ *    (a hold that lapses while its offer is still valid tells the buyer and
+ *    the assignee);
  *  - consumed (sold, no restock) when the payment is verified / approved on
  *    terms — decided by the hold's state, not by the current setting, so a
  *    paid order takes its unit exactly once even if STOCK_RESERVE_ON changed
@@ -171,13 +172,12 @@ export function holdLapsedNotice(p: {
   qty: number;
   expiredAt: Date;
   validUntilAt: Date | null;
-  now: Date;
 }): { subject: string; html: (buyerLink: string) => string; buyerNote: string; staffBody: (mail: { ok: boolean; error?: string }) => string } {
   const ref = QUOTE_REF(p.quoteId);
   const many = p.qty > 1;
   const units = many ? `${p.qty} units` : 'the unit';
-  const offerOpen = !!p.validUntilAt && p.validUntilAt.getTime() > p.now.getTime();
   const until = p.validUntilAt ? fmtDay(p.validUntilAt) : null;
+  const stays = until ? `stays valid until ${until}` : 'stays open';
   return {
     subject: `[${ref}] The reservation for your offer has ended — ${headerText(p.item, 80)}`,
     html: (buyerLink) => mailLayout({
@@ -185,26 +185,40 @@ export function holdLapsedNotice(p: {
       body: [
         `Hi <span dir="auto">${escapeHtml(p.buyerName)}</span>,`,
         `We had reserved ${units} of <strong dir="auto">${escapeHtml(p.item)}</strong> for your offer ${ref} until ${escapeHtml(fmtDay(p.expiredAt))}. That reservation has ended: ${many ? 'the units are' : 'the unit is'} back on sale, and another buyer can now order ${many ? 'them' : 'it'}.`,
-        offerOpen
-          ? `Your offer itself stays valid until ${escapeHtml(until)}. You can still accept it while the unit is in stock, or reply to us if you need more time.`
-          : `Your offer expired on ${escapeHtml(until ?? fmtDay(p.expiredAt))}. If you still need the item, ask us for a new offer.`,
+        `Your offer itself ${escapeHtml(stays)}. You can still accept it while the unit is in stock, or reply to us if you need more time.`,
       ],
-      cta: { href: buyerLink, label: offerOpen ? 'Review the offer' : 'Ask for a new offer' },
+      cta: { href: buyerLink, label: 'Review the offer' },
       footer: [`Reference ${ref}`],
     }),
-    buyerNote: `"${p.item}" is no longer reserved for you and is back on sale.${offerOpen ? ` Your offer stays valid until ${until} while the unit is in stock.` : ''}`,
+    buyerNote: `"${p.item}" is no longer reserved for you and is back on sale. Your offer ${stays} while the unit is in stock.`,
     staffBody: (mail) =>
-      `The stock reservation for this open offer ended on ${fmtDay(p.expiredAt)}: ${units} of "${p.item}" ${many ? 'are' : 'is'} back on sale. The buyer was ${mail.ok ? 'e-mailed' : `NOT reached by e-mail (${mail.error ?? 'unknown error'})`}${offerOpen ? `; the offer stays valid until ${until}` : '; the offer has expired'}. Follow up: send an updated offer to reserve the unit again, or close the quote.`,
+      `The stock reservation for this open offer ended on ${fmtDay(p.expiredAt)}: ${units} of "${p.item}" ${many ? 'are' : 'is'} back on sale. The buyer was ${mail.ok ? 'e-mailed' : `NOT reached by e-mail (${mail.error ?? 'unknown error'})`}; the offer ${stays}. Follow up: send an updated offer to reserve the unit again, or close the quote.`,
   };
 }
 
 /**
- * An open offer's hold lapsed (releaseExpiredReservations, OFFER_SENT): the
- * unit is back on sale. The buyer — whose offer may still say "valid until …"
- * — is mailed and notified, the assignee (else the admins) too, and the quote
- * is flagged for follow-up: an internal note and dueAt = now (top of the SLA
- * queue). Quotes that are no longer open are skipped: their own ending (decline,
- * close, acceptance) already told everyone. Never throws.
+ * Does a lapsed hold need its own notice? Only while the offer is still open
+ * (sent, not archived, validity not passed). A hold that ends together with
+ * its offer — the default: no RESERVATION_HOLD_DAYS, so the hold runs until
+ * the offer's validity — is covered by the offer's own expiry handling (the
+ * buyer's expiry reminders, OFFER_EXPIRED_STAFF_ALERT): no second notice.
+ */
+export function holdLapseNeedsNotice(
+  sr: { status: string; archivedAt: Date | null; validUntilAt: Date | null },
+  now: Date,
+): boolean {
+  if (sr.status !== 'RESPONDED' || sr.archivedAt) return false;
+  return !sr.validUntilAt || sr.validUntilAt.getTime() > now.getTime();
+}
+
+/**
+ * An open offer's hold lapsed (releaseExpiredReservations, OFFER_SENT) while
+ * the offer itself is still valid (holdLapseNeedsNotice): the unit is back on
+ * sale. The buyer — whose offer still says "valid until …" — is mailed and
+ * notified, the assignee (else the admins) too, and the quote is flagged for
+ * follow-up: an internal note and dueAt = now (top of the SLA queue). Quotes
+ * that are no longer open are skipped: their own ending (decline, close,
+ * acceptance, expiry) already told everyone. Never throws.
  */
 export async function notifyQuoteHoldLapsed(h: { quoteId: string; qty: number; expiredAt: Date }, now = new Date()): Promise<void> {
   try {
@@ -217,7 +231,7 @@ export async function notifyQuoteHoldLapsed(h: { quoteId: string; qty: number; e
         product: { select: { title: true } },
       },
     });
-    if (!sr || sr.status !== 'RESPONDED' || sr.archivedAt) return;
+    if (!sr || !holdLapseNeedsNotice(sr, now)) return;
     // Dynamic: mail transport + notifications are not needed by the stock core (and its unit tests).
     const [{ trySendEmail, sendInternalEmail, isDeliverableEmail }, { notifyUser, notifyAdmins }] = await Promise.all([
       import('@/lib/email'),
@@ -226,7 +240,7 @@ export async function notifyQuoteHoldLapsed(h: { quoteId: string; qty: number; e
     const ref = QUOTE_REF(sr.id);
     const notice = holdLapsedNotice({
       quoteId: sr.id, buyerName: sr.buyerName, item: sr.product?.title ?? sr.productCategory ?? 'the requested equipment',
-      qty: h.qty, expiredAt: h.expiredAt, validUntilAt: sr.validUntilAt, now,
+      qty: h.qty, expiredAt: h.expiredAt, validUntilAt: sr.validUntilAt,
     });
     const buyerLink = sr.submittedById || !sr.accessToken ? `${siteBase()}/app/quotes/${sr.id}` : `${siteBase()}/quotes/t/${sr.accessToken}`;
     const sent = await trySendEmail({ to: sr.buyerEmail, subject: notice.subject, html: notice.html(buyerLink) }, 'quotes:hold-lapsed');

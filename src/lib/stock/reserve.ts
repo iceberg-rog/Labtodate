@@ -17,8 +17,9 @@ import { ensureSettingsLoaded, settingInt, settingIntOrNull } from '@/lib/settin
  *                        back — double clicks / overlapping sweeps restock once.
  *  - consumeReservation() the units were sold (payment / dispatch): the hold
  *                        ends without restock.
- *  - releaseExpiredReservations() for the sweep cron; the buyer of a lapsed
- *                        quote hold is told (lib/quotes/stock.ts).
+ *  - releaseExpiredReservations() for the sweep cron; the buyer of a quote
+ *                        hold that lapses before its offer does is told
+ *                        (lib/quotes/stock.ts).
  */
 
 type Db = Prisma.TransactionClient;

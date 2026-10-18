@@ -19,8 +19,10 @@ export interface OfferCardAmounts {
   vatDecided: boolean;
   vatRateBp: number | null;
   vatCents: number | null;
-  /** "Domestic (standard rate)", "Intra-EU supply, 0% (reverse charge)" … */
+  /** "Standard rate", "Intra-EU supply, 0% (reverse charge)" … (the buyer's wording for the buyer). */
   vatLabel: string | null;
+  /** Title of the VAT row ("VAT 21%", "VAT 21% on freight"); absent → "VAT <rate>". */
+  vatRowLabel?: string | null;
   /** Gross when VAT is decided, else the net total. */
   totalCents: number;
   /** Why the VAT is what it is / when it will be decided. */
@@ -143,7 +145,7 @@ export function OfferCard(p: OfferCardProps) {
           )}
           {a.vatDecided ? (
             <>
-              <dt className="text-muted-foreground">VAT {pct(a.vatRateBp)}{a.vatLabel ? <span className="block text-[11px]">{a.vatLabel}</span> : null}</dt>
+              <dt className="text-muted-foreground">{a.vatRowLabel ?? `VAT ${pct(a.vatRateBp)}`}{a.vatLabel ? <span className="block text-[11px]">{a.vatLabel}</span> : null}</dt>
               <dd className="text-right tabular-nums">{money(a.vatCents ?? 0)}</dd>
             </>
           ) : (

@@ -51,6 +51,8 @@ export interface OfferVatBasis {
   reasons: string[];
   legalText: string | null;
   shippingRateBp: number | null;
+  /** DECIDED: the treatment as the buyer reads it (buyerVatLabel); null on older offers. */
+  buyerLabel?: string | null;
 }
 
 /** offerTerms JSON (v1) — frozen with the offer. */
@@ -94,6 +96,7 @@ export function parseOfferTerms(raw: unknown): OfferTerms | null {
       reasons: Array.isArray(vb.reasons) ? vb.reasons.filter((r): r is string => typeof r === 'string') : [],
       legalText: str(vb.legalText),
       shippingRateBp: num(vb.shippingRateBp),
+      buyerLabel: str(vb.buyerLabel),
     },
     previous: prev ? { totalCents: num(prev.totalCents), netCents: num(prev.netCents) ?? 0, currency: str(prev.currency) ?? 'EUR' } : null,
   };

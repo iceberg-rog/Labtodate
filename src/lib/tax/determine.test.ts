@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buyerVatExplanation, buyerVatLabel, compareCompanyNames, companyNameTokens, determineVat, taxOn, vatInMargin, vatRowTitle,
+  buyerVatExplanation, buyerVatLabel, buyerVatRow, compareCompanyNames, companyNameTokens, determineVat, orderBuyerVatRow, taxOn, vatInMargin, vatRowTitle,
   type TaxSettings, type CountryFacts, type VatContext, type VatIdEvidence,
 } from './determine';
 import { parseVatId, vatIdLooksValid, viesPrefixFor } from './vatid';
@@ -212,8 +212,9 @@ test('a VIES-valid VAT ID of ANOTHER company: review, not 0% ("VAT ID belongs to
   assert.equal(d.reviewRequired, true);
   assert.equal(d.taxCents, 0);
   assert.match(d.reasons.join(' '), /VAT ID belongs to NV Anheuser-Busch InBev/);
-  assert.match(buyerVatExplanation(d), /lists it for “NV Anheuser-Busch InBev”, not for “G4 Brussels Research Lab NV”/);
-  assert.doesNotMatch(buyerVatExplanation(d), /policy|review required/i);
+  assert.match(buyerVatExplanation(d), /lists VAT ID BE0417497106 for “NV Anheuser-Busch InBev”, not for “G4 Brussels Research Lab NV”/);
+  assert.doesNotMatch(buyerVatExplanation(d), /policy|review required|try again/i);
+  assert.equal(d.reviewCause, 'VAT_ID_NAME_MISMATCH', 'retrying never helps: the buyer is not told to try again later');
 });
 
 test('the same company under its legal form / spelling still gets 0%', () => {
@@ -304,4 +305,76 @@ test('VAT row title: one rate, freight only, nothing taxed', () => {
   assert.equal(vatRowTitle(exportFreight), 'VAT 21% on freight');
   const marginOnly = determineVat(ctx({ lines: [{ netCents: 50_000, lineType: 'GOODS', scheme: 'MARGIN', purchaseCostCents: 1 }] }), S({ marginSchemeEnabled: true }), countries);
   assert.equal(vatRowTitle(marginOnly), 'VAT');
+});
+
+test('review decisions say why (the next step for the buyer depends on it); others have no cause', () => {
+  const vies = (status: VatIdEvidence['status'], st: Partial<TaxSettings> = {}) =>
+    determineVat(ctx({ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', status) }), S(st), countries);
+  assert.equal(vies('UNAVAILABLE').reviewCause, 'VIES_UNAVAILABLE');
+  assert.equal(vies('NOT_CHECKED').reviewCause, 'VAT_ID_NOT_CHECKED');
+  const blocked = vies('UNAVAILABLE', { viesDownPolicy: 'BLOCK' });
+  assert.equal(blocked.blocked, true);
+  assert.equal(blocked.reviewCause, 'VIES_UNAVAILABLE');
+  assert.match(buyerVatExplanation(blocked), /Please try again later/);
+  assert.doesNotMatch(buyerVatExplanation(vies('NOT_CHECKED', { viesDownPolicy: 'BLOCK' })), /try again/, 'not checked: waiting does not help');
+  assert.equal(determineVat(ctx({ shipToCountry: null, billingCountry: null }), S(), countries).reviewCause, 'NO_COUNTRY');
+  const noRate: CountryFacts = { isEu: (c) => c in EU || c === 'XX', standardRateBp: (c) => EU[c] ?? null };
+  assert.equal(determineVat(ctx({ shipToCountry: 'XX', billingCountry: 'XX', customerKind: 'CONSUMER' }), S({ salesMode: 'B2B_AND_B2C', euB2cMode: 'OSS' }), noRate).reviewCause, 'NO_DESTINATION_RATE');
+  assert.equal(vies('VALID').reviewCause, null);
+  assert.equal(determineVat(ctx(), S(), countries).reviewCause, null);
+  // Cause only: the context (acceptance refusal, VAT hold) adds the next step.
+  assert.doesNotMatch(buyerVatExplanation(vies('UNAVAILABLE')), /before asking for payment|try again/);
+});
+
+// ── the buyer's VAT row rebuilt from stored fields ──
+
+test('a stored offer / order shows the same VAT row as the decision did', () => {
+  const margin = [{ netCents: 50_000, lineType: 'GOODS' as const, scheme: 'MARGIN' as const, purchaseCostCents: 42_000 }, { netCents: 15_000, lineType: 'SHIPPING' as const }];
+  const cases: Array<[Partial<VatContext>, Partial<TaxSettings>]> = [
+    [{}, {}],
+    [{ lines: margin }, { marginSchemeEnabled: true }],
+    [{ shipToCountry: 'US', billingCountry: 'US' }, {}],
+    [{ shipToCountry: 'US', billingCountry: 'US' }, { shippingFollowsMain: false }],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'VALID') }, {}],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'UNAVAILABLE') }, { viesDownPolicy: 'CHARGE_HOME_VAT' }],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'INVALID') }, {}],
+    [{ shipToCountry: 'DE', billingCountry: 'DE' }, {}],
+    [{ shipToCountry: 'FR', billingCountry: 'FR', customerKind: 'CONSUMER' }, { salesMode: 'B2B_AND_B2C', euB2cMode: 'OSS' }],
+    [{ lines: [{ netCents: 100_000, lineType: 'GOODS' }] }, {}],
+  ];
+  for (const [c, st] of cases) {
+    const d = determineVat(ctx(c), S(st), countries);
+    const shipping = d.lines.filter((l) => l.lineType === 'SHIPPING').reduce((a, l) => a + l.netCents, 0);
+    const stored = { treatment: d.treatment, rateBp: d.rateBp, shippingRateBp: d.shippingRateBp, shippingCents: shipping, taxCents: d.taxCents };
+    const row = buyerVatRow({ ...stored, buyerLabel: buyerVatLabel(d) });
+    assert.deepEqual(row, { title: vatRowTitle(d), label: buyerVatLabel(d) }, JSON.stringify(c));
+  }
+});
+
+test('margin item with freight after a refresh: "VAT 21% on freight", never "VAT 0%" next to an amount', () => {
+  const row = buyerVatRow({ treatment: 'MARGIN_SCHEME', rateBp: 0, shippingRateBp: 2100, shippingCents: 15_000, taxCents: 3_150 });
+  assert.deepEqual(row, { title: 'VAT 21% on freight', label: 'Margin scheme — VAT included in the price' });
+  // Freight rate not recorded (legacy offer): a plain "VAT", not a false rate.
+  assert.equal(buyerVatRow({ treatment: 'MARGIN_SCHEME', rateBp: 0, shippingCents: 15_000, taxCents: 3_150 }).title, 'VAT');
+  assert.equal(buyerVatRow({ treatment: 'DOMESTIC_STANDARD', rateBp: null, taxCents: 2_100 }).title, 'VAT');
+  assert.equal(buyerVatRow({ treatment: 'EU_ICS_ZERO', rateBp: 0, shippingRateBp: 0, shippingCents: 5_000, taxCents: 0 }).title, 'VAT 0%');
+  assert.equal(buyerVatRow({ treatment: 'REVIEW_REQUIRED', rateBp: 0, taxCents: 0 }).title, 'VAT');
+  // No label recorded: buyer wording from the treatment, never the staff label.
+  assert.equal(buyerVatRow({ treatment: 'EU_B2C_HOME', rateBp: 2100, taxCents: 1, hasVatId: false }).label, 'Standard rate (no EU VAT ID)');
+  assert.equal(buyerVatRow({ treatment: 'EU_B2C_HOME', rateBp: 2100, taxCents: 1, hasVatId: true }).label, 'Standard rate');
+});
+
+test('order row: the recorded buyer label is used only while that VAT decision stands', () => {
+  const decidedAt = new Date('2026-10-18T09:00:00Z');
+  const order = {
+    vatTreatment: 'EU_B2C_HOME', vatRateBp: 2100, shippingVatRateBp: 2100, shippingCents: 5_000, taxCents: 22_050, buyerVatId: 'DE123456789', vatDecidedAt: decidedAt,
+    pricingSnapshot: { buyerVat: { treatment: 'EU_B2C_HOME', decidedAt: decidedAt.toISOString(), label: 'Home VAT (VAT ID not yet confirmed — credited later)', title: 'VAT 21%' } },
+  };
+  assert.deepEqual(orderBuyerVatRow(order), { title: 'VAT 21%', label: 'Home VAT (VAT ID not yet confirmed — credited later)' });
+  // Staff re-decided the VAT (VIES confirmed → 0%): the old label would be false.
+  const redecided = { ...order, vatTreatment: 'EU_ICS_ZERO', vatRateBp: 0, shippingVatRateBp: 0, taxCents: 0, vatDecidedAt: new Date('2026-10-20T09:00:00Z') };
+  assert.deepEqual(orderBuyerVatRow(redecided), { title: 'VAT 0%', label: 'Intra-EU supply, 0% (reverse charge)' });
+  assert.equal(orderBuyerVatRow({ ...order, vatDecidedAt: new Date('2026-10-20T09:00:00Z') }).label, 'Standard rate', 'same treatment, later decision');
+  // A checkout order (no recorded buyer texts).
+  assert.equal(orderBuyerVatRow({ ...order, pricingSnapshot: { vat: { label: 'EU buyer without VAT ID (home rate)' } } }).label, 'Standard rate');
 });
