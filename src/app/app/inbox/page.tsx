@@ -3,21 +3,33 @@ import { MessageSquare, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { ensureSettingsLoaded, settingEnum } from '@/lib/settings';
+import { siteName } from '@/lib/brand/identity';
+import { deliveryState, mediationMode, messageText, visibleToParticipant } from '@/lib/messages/mediation';
+import { mediationNotice, participantLabels } from '@/lib/messages/view';
 
 export const dynamic = 'force-dynamic';
 
 export default async function InboxPage() {
   const session = await requireSession({ redirectTo: '/app/inbox' });
+  await ensureSettingsLoaded();
   const userId = session.user.id;
+  const site = siteName();
+  const labels = participantLabels(site);
 
   const threads = await prisma.messageThread.findMany({
     where: { OR: [{ buyerId: userId }, { sellerId: userId }] },
     orderBy: { lastMessageAt: 'desc' },
-    include: {
-      buyer: { select: { id: true, name: true, email: true } },
-      seller: { select: { id: true, name: true, email: true } },
+    select: {
+      id: true, buyerId: true,
       product: { select: { title: true, slug: true } },
-      messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { body: true, authorId: true, readAt: true, createdAt: true } },
+      messages: {
+        // The other side's messages waiting for staff review are not previewed.
+        where: visibleToParticipant(userId),
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        select: { body: true, authorId: true, readAt: true, createdAt: true, author: { select: { role: true } } },
+      },
     },
   });
 
@@ -25,7 +37,10 @@ export default async function InboxPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Inbox</h1>
-        <p className="text-muted-foreground mt-1">Your buyer-seller conversations.</p>
+        <p className="text-muted-foreground mt-1">Your buyer-supplier conversations.</p>
+        <p className="text-xs text-muted-foreground mt-2 max-w-2xl">
+          {mediationNotice(mediationMode(settingEnum('MESSAGE_MEDIATION_MODE')), site, 'inbox')}
+        </p>
       </div>
 
       {threads.length === 0 ? (
@@ -42,15 +57,18 @@ export default async function InboxPage() {
           {threads.map((t) => {
             const isBuyer = t.buyerId === userId;
             // Identity is never exposed: a buyer only ever sees
-            // "lab2date Supplier"; a seller only "lab2date Buyer".
-            const otherName = isBuyer ? 'lab2date Supplier' : 'lab2date Buyer';
+            // "<Site> Supplier"; a seller only "<Site> Buyer".
+            const otherName = isBuyer ? labels.supplier : labels.buyer;
             const last = t.messages[0];
-            const unread = last && last.authorId !== userId && !last.readAt;
+            const mine = last?.authorId === userId;
+            const unread = last && !mine && !last.readAt;
+            const state = last ? deliveryState(last.body) : 'DELIVERED';
+            const from = !last ? '' : mine ? 'You: ' : last.author.role === 'ADMIN' ? `${labels.team}: ` : '';
             return (
               <li key={t.id}>
                 <Link href={`/app/inbox/${t.id}`} className="flex items-center gap-4 p-5 hover:bg-foreground/5 transition-colors">
-                  <div className="h-12 w-12 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center flex-shrink-0">
-                    {isBuyer ? 'L2' : 'B'}
+                  <div className="h-12 w-12 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center flex-shrink-0" aria-hidden="true">
+                    {isBuyer ? 'S' : 'B'}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
@@ -68,8 +86,9 @@ export default async function InboxPage() {
                     )}
                     {last && (
                       <p className={`text-sm truncate mt-1 ${unread ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
-                        {last.authorId === userId ? 'You: ' : ''}
-                        {last.body}
+                        {from}
+                        {messageText(last.body)}
+                        {state === 'HELD' ? ' (waiting for review)' : state === 'WITHHELD' ? ' (not delivered)' : ''}
                       </p>
                     )}
                   </div>

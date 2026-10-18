@@ -744,13 +744,15 @@ const DEFS: DefInput[] = [
     hint: 'First part of /seller/pricing. Describe the real deal — by default a supplier receives their own price and never sees your sell price (Quotes & offers → “Suppliers see the buyer price”). “## ” starts a heading, an empty line a new paragraph.' + tokensHint(SELLER_TERMS_TOKENS) },
   { key: 'SELLER_PAYOUT_TERMS_TEXT', label: 'Supplier programme — how suppliers are paid', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_PAYOUT_TERMS_TEXT, pending: 'the supplier programme page (PKG-12)',
     hint: 'Payout part of /seller/pricing: when and how a supplier is paid for a sold unit. Only state terms your supplier agreements really contain.' + tokensHint(SELLER_TERMS_TOKENS) },
-  { key: 'MESSAGE_MEDIATION_MODE', label: 'Messages between buyers and suppliers', group: 'Suppliers', type: 'enum', default: 'MASK_CONTACTS', sensitive: true, pending: 'buyer–supplier message mediation (PKG-01, PKG-16)',
+  { key: 'MESSAGE_MEDIATION_MODE', label: 'Messages between buyers and suppliers', group: 'Suppliers', type: 'enum', default: 'MASK_CONTACTS', sensitive: true, pending: 'mediation of quote threads (PKG-01)',
     options: [
       { value: 'MASK_CONTACTS', label: 'Remove contact details (e-mail addresses, phone numbers, links, IBANs) and notify staff (recommended)' },
-      { value: 'STAFF_REVIEW', label: 'Staff release every supplier message before the buyer sees it' },
+      { value: 'STAFF_REVIEW', label: 'Staff release every supplier message before the buyer sees it (buyer messages: contact details removed)' },
       { value: 'OFF', label: 'Deliver messages as written (buyers and suppliers can deal around you)' },
     ],
     hint: 'Applies to quote threads and “Message seller” conversations between a buyer and a supplier. Removed details show as “[contact details removed]”. Messages written by your own staff are never changed.' },
+  { key: 'MESSAGE_RATE_LIMIT', label: 'Messages per account per hour', group: 'Suppliers', type: 'int', default: '30', min: 5, max: 1000,
+    hint: 'How many “Message seller” messages (new conversations and replies together) one buyer or supplier account may send per hour. Above it the sender is asked to wait a few minutes, so nobody can flood your team or a supplier.' },
 
   // ── Acquisitions ──
   { key: 'COMPANY_RECEIVING_ADDRESS', label: 'Receiving warehouse address', group: 'Acquisitions', type: 'text', multiline: true,

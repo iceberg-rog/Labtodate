@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/db';
+import { deliveryState, messageText, visibleToParticipant } from '@/lib/messages/mediation';
 
 /**
  * GDPR art. 15 / 20 export (A18): everything held about the signed-in person,
@@ -67,7 +68,7 @@ export async function buildPersonalDataExport(userId: string) {
       }),
       prisma.messageThread.findMany({
         where: { OR: [{ buyerId: userId }, { sellerId: userId }] },
-        include: { product: { select: { title: true, slug: true } }, messages: { orderBy: { createdAt: 'asc' } } },
+        include: { product: { select: { title: true, slug: true } }, messages: { where: visibleToParticipant(userId), orderBy: { createdAt: 'asc' } } },
         orderBy: { createdAt: 'asc' },
       }),
       prisma.assistantConversation.findMany({
@@ -156,7 +157,7 @@ export async function buildPersonalDataExport(userId: string) {
       product: t.product,
       yourRole: t.buyerId === userId ? 'buyer' : 'supplier',
       createdAt: t.createdAt,
-      messages: t.messages.map((m) => ({ from: m.authorId === userId ? 'you' : 'the other party', body: m.body, createdAt: m.createdAt, readAt: m.readAt })),
+      messages: t.messages.map((m) => ({ from: m.authorId === userId ? 'you' : 'the other party', body: messageText(m.body), delivery: deliveryState(m.body).toLowerCase(), createdAt: m.createdAt, readAt: m.readAt })),
     })),
     assistantChats: chats.map((c) => ({
       subject: c.subject,
