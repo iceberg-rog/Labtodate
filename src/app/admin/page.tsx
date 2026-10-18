@@ -17,6 +17,8 @@ import {
   Target,
   Percent,
   Undo2,
+  PackageCheck,
+  PackageX,
 } from 'lucide-react';
 import { requireSession, getAdminCaps } from '@/lib/auth-server';
 import { capsAllow } from '@/lib/capabilities';
@@ -27,6 +29,14 @@ import { formatPrice } from '@/lib/utils';
 import { OrderStatus } from '@prisma/client';
 import { LineChart } from '@/components/admin/Charts';
 import { BulkShipButton } from '@/components/admin/BulkShipButton';
+import {
+  averageSale,
+  formatByCurrency,
+  loadRevenueEvents,
+  revenueByCurrency,
+  revenueSeries,
+  SOLD_ORDER_STATUSES,
+} from '@/lib/reports/revenue';
 
 export const dynamic = 'force-dynamic';
 // The layout's "%s · Admin" template only applies to child segments, so this
@@ -34,7 +44,6 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: { absolute: 'Overview · Admin' } };
 export const revalidate = 30;
 
-const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 const FULFIL_PENDING: OrderStatus[] = ['PAID', 'PROCESSING'];
 const DAY = 864e5;
 const FULFIL_SLA_HOURS = 48;
@@ -101,6 +110,9 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
     quotesOpenAll,
     quotesAllWindow,
     shippedAnalytics,
+    revenueEvents,
+    lastCopyCount,
+    soldOutCount,
   ] = await Promise.all([
     prisma.order.findMany({
       where: { status: { in: FULFIL_PENDING } },
@@ -149,7 +161,7 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
     }),
     prisma.order.findMany({
       where: { createdAt: { gte: since30 } },
-      select: { totalCents: true, status: true, createdAt: true, currency: true },
+      select: { createdAt: true },
     }),
     prisma.errorLog.count({ where: { createdAt: { gte: since24h } } }),
     prisma.errorLog.findMany({
@@ -168,6 +180,10 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
       where: { shippedAt: { not: null }, createdAt: { gte: since30 } },
       select: { createdAt: true, shippedAt: true },
     }),
+    // Revenue (lib/reports/revenue): per currency, excl. VAT, net of credit notes, by sale date.
+    canMoney ? loadRevenueEvents(since30) : Promise.resolve([]),
+    prisma.product.count({ where: { status: 'PUBLISHED', quantity: 1 } }),
+    prisma.product.count({ where: { quantity: 0 } }),
   ]);
 
   const usersThisWeek = await prisma.user.count({ where: { createdAt: { gte: since7 } } });
@@ -191,35 +207,48 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
     return !last || !last.fromStaff;
   });
 
-  // Bucket revenue + order counts into daily points for the sparkline.
+  // Order counts (placed) per day for the 7d tiles.
   const days = 30;
-  const rev: number[] = new Array(days).fill(0);
   const ord: number[] = new Array(days).fill(0);
-  let nonZeroRevDays = 0;
   for (const o of rangeOrders) {
     const age = Math.floor((now - o.createdAt.getTime()) / DAY);
     const i = days - 1 - age;
     if (i < 0 || i >= days) continue;
-    if (PAID.includes(o.status)) rev[i] += o.totalCents;
     ord[i] += 1;
   }
-  for (const v of rev) if (v > 0) nonZeroRevDays++;
-  const sparkRevenue = rev.map((v, i) => ({
-    label: i === 0 || i === days - 1 ? `-${days - 1 - i}d` : '',
-    value: v,
-  }));
-  const revenue7 = rev.slice(-7).reduce((s, v) => s + v, 0);
-  const revenuePrior7 = rev.slice(-14, -7).reduce((s, v) => s + v, 0);
-  const revenue30 = rev.reduce((s, v) => s + v, 0);
   const orders7 = ord.slice(-7).reduce((s, v) => s + v, 0);
   const ordersPrior7 = ord.slice(-14, -7).reduce((s, v) => s + v, 0);
-  const currency = rangeOrders[0]?.currency ?? 'EUR';
 
-  // AOV (paid+ orders, last 7d)
-  const paidLast7 = rangeOrders.filter(
-    (o) => PAID.includes(o.status) && o.createdAt >= since7,
-  );
-  const aov7 = paidLast7.length === 0 ? 0 : Math.round(paidLast7.reduce((s, o) => s + o.totalCents, 0) / paidLast7.length);
+  // Revenue per currency (never added across currencies), excl. VAT, net of
+  // credit notes, dated by the sale; the largest currency leads the deltas.
+  const revenue30 = revenueByCurrency(revenueEvents);
+  const revenue7 = revenueByCurrency(revenueEvents, { from: since7 });
+  const revenuePrior7 = revenueByCurrency(revenueEvents, { from: since14, to: since7 });
+  const mainCurrency = revenue30[0]?.currency ?? 'EUR';
+  const centsIn = (rows: typeof revenue30, c: string) => rows.find((r) => r.currency === c)?.cents ?? 0;
+  const revSeries = revenue30.map((r) => {
+    const series = revenueSeries(revenueEvents, { currency: r.currency, now, buckets: days, bucketMs: DAY });
+    return {
+      currency: r.currency,
+      nonZeroDays: series.filter((v) => v !== 0).length,
+      data: series.map((v, i) => ({ label: i === 0 || i === days - 1 ? `-${days - 1 - i}d` : '', value: v })),
+    };
+  });
+  const sparkRevenue = revSeries.find((s) => s.currency === mainCurrency);
+  const nonZeroRevDays = sparkRevenue?.nonZeroDays ?? 0;
+  const revenue7Text = formatByCurrency(revenue7, formatPrice(0, mainCurrency));
+  const revenue30Text = formatByCurrency(revenue30, formatPrice(0, mainCurrency));
+  // AOV: average sale (excl. VAT, before credits) of the last 7 days, per currency.
+  const aov7 = averageSale(revenue7);
+  const sales7 = revenue7.reduce((s, r) => s + r.sales, 0);
+  // Units sold in 30 days: the Sold register's "Last 30 days" view.
+  const saleIds30 = [...new Set(revenueEvents.filter((e) => e.kind === 'SALE').map((e) => e.orderId))];
+  const sold30 = canMoney
+    ? (await prisma.orderItem.aggregate({
+        _sum: { quantity: true },
+        where: { lineType: 'GOODS', orderId: { in: saleIds30 }, order: { status: { in: [...SOLD_ORDER_STATUSES] } } },
+      }))._sum.quantity ?? 0
+    : 0;
 
   // Fulfilment SLA: orders shipped within 48h of creation, over last 30d.
   const slaTotal = shippedAnalytics.length;
@@ -331,17 +360,19 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
       cap: 'products:view',
       icon: <Boxes className="h-4 w-4" />,
       label: 'Last-copy stock',
-      value: lastCopyStock.length,
+      value: lastCopyCount,
       href: '/admin/products?status=PUBLISHED&qty=lastcopy',
-      tone: lastCopyStock.length > 0 ? 'amber' : 'neutral',
-      sub: lastCopyStock.length > 0 ? 'qty = 1' : 'no critical items',
+      tone: lastCopyCount > 0 ? 'amber' : 'neutral',
+      sub: lastCopyCount > 0 ? 'qty = 1' : 'no critical items',
     },
   ].filter((t) => can(t.cap));
 
   const actionTiles = tiles.filter((t) => t.value > 0);
   const clearTiles = tiles.filter((t) => t.value === 0);
 
-  const dRev7 = delta(revenue7, revenuePrior7);
+  const dRev7 = delta(centsIn(revenue7, mainCurrency), centsIn(revenuePrior7, mainCurrency));
+  // With several currencies the delta is the leading currency's: say which.
+  const dRevOf = revenue30.length > 1 ? ` (${mainCurrency})` : '';
   const dOrd7 = delta(orders7, ordersPrior7);
   const dUsers7 = delta(usersThisWeek, usersPriorWeek);
 
@@ -415,7 +446,7 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
                   value={orders7}
                   href="/admin/orders"
                   tone="emerald"
-                  sub={canMoney ? `${formatPrice(revenue7, currency)} · ${dRev7.sign}${dRev7.pct} rev` : 'placed in the last 7 days'}
+                  sub={canMoney ? `${revenue7Text} excl. VAT · ${dRev7.sign}${dRev7.pct} rev${dRevOf}` : 'placed in the last 7 days'}
                 />
               )}
             </div>
@@ -429,7 +460,7 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
               <p className="text-lg font-bold text-emerald-900 dark:text-emerald-300">Inbox clean · nothing waiting on you</p>
               <p className="text-sm text-emerald-800 dark:text-emerald-300 mt-0.5">
                 Nothing waiting in the sections you can see.
-                {canOrders && <> Last 7d: {orders7} orders{canMoney && <> · {formatPrice(revenue7, currency)} ({dRev7.sign}{dRev7.pct} vs prior)</>}.</>}
+                {canOrders && <> Last 7d: {orders7} orders{canMoney && <> · {revenue7Text} excl. VAT ({dRev7.sign}{dRev7.pct}{dRevOf} vs prior)</>}.</>}
               </p>
             </div>
           </div>
@@ -460,9 +491,10 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
           {canMoney && (
             <Kpi
               icon={<Banknote className="h-4 w-4" />}
-              label="Revenue"
-              value={formatPrice(revenue7, currency)}
+              label="Revenue excl. VAT"
+              value={revenue7Text}
               delta={dRev7}
+              footnote={`net of credit notes${dRevOf ? ` · change in ${mainCurrency}` : ''}`}
             />
           )}
           {canOrders && (
@@ -494,17 +526,35 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
           {canMoney && (
           <Kpi
             icon={<TrendingUp className="h-4 w-4" />}
-            label="Avg order value"
-            value={aov7 === 0 ? '—' : formatPrice(aov7, currency)}
-            footnote={paidLast7.length === 0 ? 'no paid orders this week' : `from ${paidLast7.length} paid order${paidLast7.length === 1 ? '' : 's'}`}
+            label="Avg sale excl. VAT"
+            value={aov7.length === 0 ? '—' : formatByCurrency(aov7)}
+            footnote={sales7 === 0 ? 'no sales this week' : `from ${sales7} sale${sales7 === 1 ? '' : 's'}`}
+          />
+          )}
+          {canMoney && (
+          <Kpi
+            icon={<PackageCheck className="h-4 w-4" />}
+            label="Units sold · 30d"
+            value={String(sold30)}
+            footnote="sales history →"
+            href="/admin/sold?period=30d"
           />
           )}
           <Kpi
             icon={<Package className="h-4 w-4" />}
             label="Live listings"
             value={String(catalogLive)}
-            footnote={`${lastCopyStock.length} last-copy`}
+            footnote={`${lastCopyCount} last-copy`}
           />
+          {can('products:view') && (
+          <Kpi
+            icon={<PackageX className="h-4 w-4" />}
+            label="Sold out (qty 0)"
+            value={String(soldOutCount)}
+            footnote="listings →"
+            href="/admin/products?qty=oos"
+          />
+          )}
           {canQuotes && (
           <Kpi
             icon={<FileText className="h-4 w-4" />}
@@ -531,29 +581,35 @@ export default async function AdminDashboardPage(props: { searchParams?: Promise
         <div>
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-xs uppercase tracking-[0.18em] font-bold text-muted-foreground inline-flex items-center gap-1.5">
-              <TrendingUp className="h-3.5 w-3.5" /> Revenue · last 30 days
+              <TrendingUp className="h-3.5 w-3.5" /> Revenue excl. VAT · last 30 days
             </h2>
             <Link href="/admin/analytics" className="text-xs font-semibold text-primary hover:underline">
               Full analytics →
             </Link>
           </div>
-          {nonZeroRevDays < 3 ? (
+          {nonZeroRevDays < 3 || !sparkRevenue ? (
             <div className="rounded-2xl border-2 border-dashed border-border bg-card p-6 text-center">
               <p className="text-sm font-semibold">Not enough revenue history for a trend yet</p>
               <p className="text-xs text-muted-foreground mt-1">
-                {`Only ${nonZeroRevDays} day${nonZeroRevDays === 1 ? '' : 's'} with paid orders in the last 30. Chart appears once ≥3 days have revenue.`}
+                {`Only ${nonZeroRevDays} day${nonZeroRevDays === 1 ? '' : 's'} with sales or credit notes in the last 30. Chart appears once ≥3 days have revenue.`}
               </p>
               <p className="text-xs text-muted-foreground mt-2 tabular-nums">
-                Window total: <strong className="text-foreground">{formatPrice(revenue30, currency)}</strong>
+                Window total: <strong className="text-foreground">{revenue30Text}</strong> excl. VAT, net of credit notes
               </p>
             </div>
           ) : (
-            <LineChart
-              data={sparkRevenue}
-              height={140}
-              yFormat={(n) => formatPrice(n, currency)}
-              caption={`${formatPrice(revenue30, currency)} total · ${formatPrice(revenue7, currency)} last 7d (${dRev7.sign}${dRev7.pct} vs prior)`}
-            />
+            <div className="space-y-3">
+              {/* One chart per currency: amounts in different currencies are never added up. */}
+              {revSeries.map((s) => (
+                <LineChart
+                  key={s.currency}
+                  data={s.data}
+                  height={140}
+                  yFormat={(n) => formatPrice(n, s.currency)}
+                  caption={`${s.currency}: ${formatPrice(centsIn(revenue30, s.currency), s.currency)} total · ${formatPrice(centsIn(revenue7, s.currency), s.currency)} last 7d${s.currency === mainCurrency ? ` (${dRev7.sign}${dRev7.pct} vs prior)` : ''} · excl. VAT, net of credit notes`}
+                />
+              ))}
+            </div>
           )}
         </div>
         )}
@@ -803,6 +859,7 @@ function Kpi({
   delta: d,
   footnote,
   tone,
+  href,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -810,6 +867,8 @@ function Kpi({
   delta?: { sign: '+' | '−' | '·'; pct: string; tone: 'good' | 'bad' | 'flat' };
   footnote?: string;
   tone?: 'good' | 'bad' | 'flat';
+  /** Makes the whole card a link (drill-down list). */
+  href?: string;
 }) {
   const accent =
     (d?.tone ?? tone) === 'good'
@@ -817,8 +876,8 @@ function Kpi({
       : (d?.tone ?? tone) === 'bad'
         ? 'text-red-700 dark:text-red-300'
         : 'text-foreground';
-  return (
-    <div className="rounded-2xl border border-border bg-card p-4">
+  const body = (
+    <>
       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold text-muted-foreground">
         {icon} {label}
       </div>
@@ -833,7 +892,14 @@ function Kpi({
         )}
         {footnote && <p className="text-[11px] text-muted-foreground truncate">{footnote}</p>}
       </div>
-    </div>
+    </>
+  );
+  return href ? (
+    <Link href={href} className="block rounded-2xl border border-border bg-card p-4 transition-shadow hover:shadow-md hover:bg-foreground/[0.02]">
+      {body}
+    </Link>
+  ) : (
+    <div className="rounded-2xl border border-border bg-card p-4">{body}</div>
   );
 }
 

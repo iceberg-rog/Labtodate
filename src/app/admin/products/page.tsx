@@ -1,12 +1,15 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { requireCapability } from '@/lib/auth-server';
+import { requireCapability, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ProductStatus, Prisma } from '@prisma/client';
 import { ProductBrowser, type ProductRow } from '@/components/admin/ProductQuickEdit';
 import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
 import { SelfHostPhotosButton } from '@/components/admin/SelfHostPhotosButton';
 import { firstPublicImage, isOwnStoredImage } from '@/lib/media/public-src';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { siteName } from '@/lib/brand/identity';
+import { SOLD_ORDER_STATUSES } from '@/lib/reports/revenue';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Products' };
@@ -20,6 +23,10 @@ export default async function AdminProductsPage(
 ) {
   const searchParams = await props.searchParams;
   await requireCapability('products:view');
+  await ensureSettingsLoaded();
+  const brand = siteName();
+  // The Sold register is a finance page (prices, buyers, margins).
+  const canSold = await hasCapability('finance:view');
 
   // Unknown values (e.g. ?status=BOGUS) are ignored instead of reaching Prisma.
   const status = (Object.values(ProductStatus) as string[]).includes(searchParams.status ?? '')
@@ -62,7 +69,7 @@ export default async function AdminProductsPage(
       : {}),
   };
 
-  const [total, products, categories, statusCounts, shopCounts, ownCount] = await Promise.all([
+  const [total, products, categories, statusCounts, shopCounts, ownCount, soldOutCount, soldUnits] = await Promise.all([
     prisma.product.count({ where }),
     prisma.product.findMany({
       where,
@@ -86,6 +93,11 @@ export default async function AdminProductsPage(
       select: { slug: true, name: true, _count: { select: { products: true } } },
     }),
     prisma.product.count({ where: { companyId: null } }),
+    prisma.product.count({ where: { quantity: 0 } }),
+    // Units on orders that are paid or later (the Sold register's default view).
+    canSold
+      ? prisma.orderItem.aggregate({ _sum: { quantity: true }, where: { lineType: 'GOODS', order: { status: { in: [...SOLD_ORDER_STATUSES] } } } })
+      : null,
   ]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -157,7 +169,7 @@ export default async function AdminProductsPage(
             {status ? ` · ${status.replace('_', ' ').toLowerCase()}` : ''}
             {qtyFilter === 'lastcopy' ? ' · last-copy (qty = 1)' : qtyFilter === 'oos' ? ' · sold out' : ''}
             {categorySlug ? ` · ${categories.find((c) => c.slug === categorySlug)?.name ?? categorySlug}` : ''}
-            {shopSlug === 'own' ? ' · lab2date own inventory' : shopSlug ? ` · ${shopCounts.find((s) => s.slug === shopSlug)?.name ?? shopSlug}` : ''}
+            {shopSlug === 'own' ? ` · ${brand} own inventory` : shopSlug ? ` · ${shopCounts.find((s) => s.slug === shopSlug)?.name ?? shopSlug}` : ''}
             {q ? ` · matching “${q}”` : ''}
             {totalPages > 1 ? ` · page ${page}/${totalPages}` : ''}
           </p>
@@ -178,12 +190,17 @@ export default async function AdminProductsPage(
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <CountPill label="Total" value={products.length === 0 && Object.keys(counts).length === 0 ? '0' : String(Object.values(counts).reduce((a, b) => a + b, 0))} href={baseHref({ status: '' })} active={!status} />
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
+        <CountPill label="Total" value={products.length === 0 && Object.keys(counts).length === 0 ? '0' : String(Object.values(counts).reduce((a, b) => a + b, 0))} href={baseHref({ status: '', qty: '' })} active={!status && !qtyFilter} />
         <CountPill label="Pending review" value={String(counts['PENDING_REVIEW'] ?? 0)} href={baseHref({ status: 'PENDING_REVIEW' })} active={status === 'PENDING_REVIEW'} accent="amber" />
         <CountPill label="Published" value={String(counts['PUBLISHED'] ?? 0)} href={baseHref({ status: 'PUBLISHED' })} active={status === 'PUBLISHED'} accent="emerald" />
         <CountPill label="Draft" value={String(counts['DRAFT'] ?? 0)} href={baseHref({ status: 'DRAFT' })} active={status === 'DRAFT'} />
         <CountPill label="Archived" value={String(counts['ARCHIVED'] ?? 0)} href={baseHref({ status: 'ARCHIVED' })} active={status === 'ARCHIVED'} />
+        <CountPill label="Sold out (qty 0)" value={String(soldOutCount)} href={baseHref({ status: '', qty: 'oos' })} active={!status && qtyFilter === 'oos'} />
+        {soldUnits && (
+          // Units sold open the Sold register (dates, buyer, price, order, invoice).
+          <CountPill label="Sold (units)" value={String(soldUnits._sum.quantity ?? 0)} href="/admin/sold" active={false} accent="emerald" />
+        )}
       </div>
 
       <AdminSearch basePath="/admin/products" q={q} status={status} params={filterParams} placeholder="Search title, brand, category, slug, seller…" />
@@ -205,7 +222,7 @@ export default async function AdminProductsPage(
               shopSlug === 'own' ? 'bg-primary text-primary-foreground' : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 ring-1 ring-emerald-200 dark:ring-emerald-800'
             }`}
           >
-            ★ lab2date own <span className="opacity-60 ml-1 tabular-nums">{ownCount}</span>
+            ★ {brand} own <span className="opacity-60 ml-1 tabular-nums">{ownCount}</span>
           </Link>
           {shopCounts.filter((s) => s._count.products > 0).map((s) => (
             <Link
