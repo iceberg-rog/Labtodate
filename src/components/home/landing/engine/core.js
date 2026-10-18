@@ -69,7 +69,9 @@ export function scramble(el, text) {
   tick();
 }
 
-export const state = { mx: 0, my: 0, tmx: 0, tmy: 0, scroll: 0, active: -1, game: -1, pointer: false, story: null };
+// active: the DOM index of the station on screen; kind: which station that is (STATION_KINDS index, what the scene's
+// world is laid out by)
+export const state = { mx: 0, my: 0, tmx: 0, tmy: 0, scroll: 0, active: -1, kind: -1, game: -1, pointer: false, story: null };
 // set by the scene: the glitch a card plays when the list moves to it
 export const hooks = { cardGlitch: null };
 
@@ -131,6 +133,17 @@ export function computeScroll(s) {
 
 /* station indices by kind (the admin may switch stations off: the scene and the DOM look them up by id) */
 export const IDX = { intro: -1, hero: -1, categories: -1, suppliers: -1, process: -1, ways: -1, cta: -1 };
+/* the seven stations in the order the 3D world is laid out (scene.js ST / STN: intro at the top, the outro at the
+   bottom), and for each DOM section the kind it shows. Admin → Homepage may hide stations or reorder them; the scene
+   works in kinds (kindScroll), so the camera flies to wherever the next station shown lives. */
+export const STATION_KINDS = ['intro', 'hero', 'categories', 'suppliers', 'process', 'ways', 'cta'];
+export let KIND = [];
+/** computeScroll() in the scene's terms: stations i / j as kinds, local[] indexed by kind (0 for a station not shown). */
+export function kindScroll(sc) {
+  const local = STATION_KINDS.map(() => 0);
+  sc.local.forEach((v, d) => { const k = KIND[d]; if (k >= 0) local[k] = v; });
+  return { i: KIND[sc.i] ?? sc.i, j: KIND[sc.j] ?? sc.j, t: sc.t, local };
+}
 
 /* DOM side of the scroll (works with or without WebGL) */
 let hudSec = null, posterEl = null, posterO = -1, gpI = null, gpName = null, wkOpen = null, wkOpenName = null;
@@ -139,12 +152,12 @@ export function updateDom(sc, real = sc) {
   if (posterEl && IDX.intro >= 0) { const o = Math.round((1 - smooth(0.06, 0.55, sc.local[IDX.intro] || 0)) * 100) / 100; if (o !== posterO) { posterO = o; posterEl.style.setProperty('--poster-o', o); } }
   const active = real.t < 0.5 ? real.i : real.j;
   if (active !== state.active) {
-    state.active = active;
+    state.active = active; state.kind = KIND[active] ?? active;
     sections.forEach((el, k) => el.classList.toggle('on', k === active));
     railBtns.forEach((b, k) => b.classList.toggle('on', k === active));
     if (hudSec) hudSec.textContent = `SEC ${pad(active + 1)} // ${SEC_NAMES[active] || ''}`;
     document.documentElement.classList.toggle('at-end', active === sections.length - 1);
-    document.documentElement.classList.toggle('past-hero', active >= 2);
+    document.documentElement.classList.toggle('past-hero', IDX.hero >= 0 ? active > IDX.hero : active >= 1);
   }
   // categories panel
   if (GAMES.length && IDX.categories >= 0) {
@@ -165,9 +178,10 @@ function showGame(i) {
   if (!g) return;
   if (gpI) gpI.textContent = pad(i + 1);
   if (gpName) scramble(gpName, g.name);
-  if (wkOpen && g.slug) wkOpen.setAttribute('href', `/marketplace?category=${encodeURIComponent(g.slug)}`);
+  // (#wk-open is a plain <a>: the href set here is the one a click follows)
+  if (wkOpen && (g.href || g.slug)) wkOpen.setAttribute('href', g.href || `/marketplace?category=${encodeURIComponent(g.slug)}`);
   if (wkOpenName) wkOpenName.textContent = g.name;
-  $$('#game-list button').forEach((b, k) => { b.classList.toggle('on', k === i); b.toggleAttribute('aria-current', k === i); });
+  $$('#game-list [data-i]').forEach((b, k) => { b.classList.toggle('on', k === i); if (k === i) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current'); });
   if (hooks.cardGlitch) hooks.cardGlitch(i);
 }
 
@@ -188,9 +202,10 @@ export function initCore(config) {
   railBtns = $$('.lnd-rail button');
   SEC_NAMES = sections.map((s) => s.dataset.name || '');
   for (const k of Object.keys(IDX)) IDX[k] = sections.findIndex((s) => s.dataset.station === k);
+  KIND = sections.map((s) => STATION_KINDS.indexOf(s.dataset.station));
   hudSec = $('#lnd-sec'); posterEl = document.getElementById('poster'); posterO = -1;
   gpI = $('#gp-i'); gpName = $('#gp-name'); wkOpen = $('#wk-open'); wkOpenName = $('#wk-open-name');
-  Object.assign(state, { mx: 0, my: 0, tmx: 0, tmy: 0, scroll: window.scrollY, active: -1, game: -1, pointer: false, story: null });
+  Object.assign(state, { mx: 0, my: 0, tmx: 0, tmy: 0, scroll: window.scrollY, active: -1, kind: -1, game: -1, pointer: false, story: null });
   hooks.cardGlitch = null;
   boot.up = true; boot.sceneLoop = false; boot.disposed = false;
   domLoopOn = false;
@@ -205,6 +220,6 @@ export function disposeCore() {
   boot.disposed = true;
   for (const f of offs.splice(0)) { try { f(); } catch (e) { /* already gone */ } }
   const cl = document.documentElement.classList;
-  for (const c of ['gl-ready', 'gl-full', 'gl-settled', 'gl-gone', 'gl-exiting', 'gl-lost', 'no-webgl', 'at-end', 'past-hero', 'in-foot', 'touring', 'poster-off', 'poster-gone', 'poster-reveal', 'poster-lt', 'cursor', 'can-hover', 'is-landing', 'below-ready', 'poster-drawn']) cl.remove(c);
+  for (const c of ['gl-ready', 'gl-full', 'gl-settled', 'gl-gone', 'gl-exiting', 'gl-lost', 'no-webgl', 'at-end', 'past-hero', 'in-foot', 'touring', 'poster-off', 'poster-gone', 'poster-reveal', 'poster-lt', 'cursor', 'can-hover', 'is-landing', 'below-ready', 'poster-drawn', 'card-hot']) cl.remove(c);
   document.documentElement.style.removeProperty('--gl-exit');
 }

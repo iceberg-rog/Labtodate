@@ -47,7 +47,8 @@ const CYAN = 0x2fd6c3;    // (lab2date: teal)
 // planet's on-screen size); the label hangs off that end, on the side the leader points to. Leaders steer
 // the text off the city-light carpet onto dark water: FRA out over the North Sea, IST onto the Aegean,
 // DXB onto the Gulf of Oman. prio = which label survives a collision.
-const HUB0 = { lat: 52.37, lon: 4.9, label: 'Labtodate hub' };
+// (only a fallback: the page always passes the hub — Admin → Homepage, else the site name at the company's city)
+const HUB0 = { lat: 52.06, lon: 4.49, label: '' };
 const LANES0 = [['NYC', 40.71, -74.0], ['GRU', -23.55, -46.63], ['MAD', 40.42, -3.7], ['STO', 59.33, 18.07], ['IST', 41.01, 28.97], ['CAI', 30.04, 31.24], ['DXB', 25.2, 55.27], ['BOM', 19.08, 72.88], ['JNB', -26.2, 28.05]].map(([label, lat, lon]) => ({ label, lat, lon }));
 const CITIES = [];   // (the original's comet routes: not built)
 const FACE = { lat: 26, lon: 4 };   // the whole network: the Americas' east coast to India, Scandinavia to South Africa

@@ -4,8 +4,17 @@ import { Badge } from '@/components/ui/badge';
 import { prisma } from '@/lib/db';
 import { ArticleCover } from '@/components/content/ArticleCover';
 import { Reveal } from '@/components/motion/Reveal';
+import { homeField } from '@/lib/home-sections';
 
-export async function BlogTeasers() {
+const def = (k: string) => homeField(k)!.default;
+
+/** Extra module “Blog teasers”: the three newest published articles; texts and button from Admin → Homepage. */
+export async function BlogTeasers({
+  kicker = def('HOME_BLOG_KICKER'),
+  title = def('HOME_BLOG_TITLE'),
+  button = ['All articles', '/blog'],
+  readTime = def('HOME_BLOG_READ'),
+}: { kicker?: string; title?: string; button?: [string, string]; readTime?: string } = {}) {
   const posts = await prisma.blogPost.findMany({
     where: { status: 'PUBLISHED' },
     orderBy: { publishedAt: 'desc' },
@@ -14,17 +23,17 @@ export async function BlogTeasers() {
   if (posts.length === 0) return null;
 
   return (
-    <section data-hud="NOTES" className="container-px py-24">
+    <section id="blog" data-hud="NOTES" className="container-px py-24">
       <Reveal>
         <div className="flex items-end justify-between mb-12 gap-6 flex-wrap">
           <div>
-            <span className="kicker mb-4">Field notes</span>
+            {kicker && <span className="kicker mb-4">{kicker}</span>}
             <h2 className="text-3xl md:text-5xl font-bold text-foreground max-w-2xl" style={{ letterSpacing: '-0.035em' }}>
-              What lab managers wish they knew before buying.
+              {title}
             </h2>
           </div>
-          <Link href="/blog" className="inline-flex items-center gap-2 px-5 py-3 rounded-full border border-[hsl(var(--teal)/0.24)] bg-[hsl(var(--teal)/0.05)] text-sm font-semibold text-foreground hover:border-primary/60 transition-colors group">
-            All articles
+          <Link href={button[1]} className="inline-flex items-center gap-2 px-5 py-3 rounded-full border border-[hsl(var(--teal)/0.24)] bg-[hsl(var(--teal)/0.05)] text-sm font-semibold text-foreground hover:border-primary/60 transition-colors group">
+            {button[0]}
             <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
           </Link>
         </div>
@@ -68,7 +77,7 @@ export async function BlogTeasers() {
                     </time>
                   )}
                   <span className="inline-flex items-center gap-1.5 font-medium">
-                    <Clock className="h-3 w-3" /> {post.readMinutes} min read
+                    <Clock className="h-3 w-3" /> {readTime.replaceAll('{N}', String(post.readMinutes))}
                   </span>
                 </div>
               </div>

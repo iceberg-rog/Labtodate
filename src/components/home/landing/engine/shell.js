@@ -23,7 +23,16 @@ export function startLanding(config) {
     const k = clamp(i, 0, GAMES.length - 1); const m = metrics[IDX.categories];
     window.scrollTo({ top: m.a + (m.b - m.a) * (k / Math.max(1, GAMES.length - 1)), behavior: reduced ? 'auto' : 'smooth' });
   };
-  if (list) on(list, 'click', (e) => { const b = e.target.closest('button[data-i]'); if (b) goGame(+b.dataset.i); });
+  // every item is a link to its category (a click opens it); moving through the list with the keyboard turns the
+  // cards to the item in focus, and a click on a card the scene shows behind the one in focus brings that one forward
+  if (list) {
+    on(list, 'focusin', (e) => {
+      const a = e.target.closest && e.target.closest('[data-i]'); if (!a) return;
+      let kb = true; try { kb = a.matches(':focus-visible'); } catch (err) { /* old engines: always follow */ }
+      if (kb) goGame(+a.dataset.i);
+    });
+  }
+  on(document, 'l2d:pick-game', (e) => goGame(+(e.detail && e.detail.index)));
   const prev = $('#wk-prev'), next = $('#wk-next');
   if (prev) on(prev, 'click', () => goGame(state.game - 1));
   if (next) on(next, 'click', () => goGame(state.game + 1));
@@ -51,15 +60,18 @@ export function startLanding(config) {
   /* ---------------------------------------------------------------- the buying panel demo (the app station)
      A replica of the lab2date buying panel: a quote moves from request to shipment while a ghost cursor accepts the
      offer. Plays by itself while on screen; the first real touch or click inside it stops the ghost. Sample data
-     (the note under it says so). */
+     (the note under it says so). The statuses and pop-up messages are the timeline's data-label / data-toast
+     (Admin → Homepage), so the demo tells the same, real order as the steps it lights. */
   const demo = (() => {
     const root = $('#app-demo'); if (!root) return null;
     const q = (x) => root.querySelector(x), qa = (x) => [...root.querySelectorAll(x)];
     const status = q('#ad-status'), offer = q('#ad-offer'), accept = q('#ad-accept'), toastEl = q('#ad-toast'), cursor = q('#ad-cursor');
     const steps = qa('#ad-timeline li');
-    const LABEL = ['Requested', 'Offer received', 'Accepted', 'Paid', 'Shipped'];
+    if (steps.length < 5 || !status || !offer || !accept || !toastEl || !cursor) return null;
+    const LABEL = steps.map((li) => li.dataset.label || '');
+    const TOAST = steps.map((li) => li.dataset.toast || '');
     const sleep = (ms) => new Promise((r) => later(r, ms));
-    const toast = (t) => { toastEl.textContent = t; toastEl.classList.add('on'); clearTimeout(toast.k); toast.k = later(() => toastEl.classList.remove('on'), 1700); };
+    const toast = (t) => { if (!t) return; toastEl.textContent = t; toastEl.classList.add('on'); clearTimeout(toast.k); toast.k = later(() => toastEl.classList.remove('on'), 1700); };
     const setStep = (k) => {
       steps.forEach((li, i) => { li.classList.toggle('done', i < k || (k === 4 && i === 4)); li.classList.toggle('now', i === k && k < 4); });
       status.textContent = LABEL[k];
@@ -80,11 +92,11 @@ export function startLanding(config) {
         while (!took && !stopped) {
           if (!visible || document.hidden) { await sleep(400); continue; }
           setStep(0); await sleep(1400); guard();
-          setStep(1); toast('Offer received — proforma attached'); await sleep(1500); guard();
+          setStep(1); toast(TOAST[1]); await sleep(1500); guard();
           await moveTo(accept); accept.classList.add('press'); await sleep(260); accept.classList.remove('press'); guard();
-          setStep(2); toast('Offer accepted'); cursor.classList.remove('on'); await sleep(1600); guard();
-          setStep(3); toast('Proforma paid — VAT invoice issued'); await sleep(1700); guard();
-          setStep(4); toast('Shipped'); await sleep(2600); guard();
+          setStep(2); toast(TOAST[2]); cursor.classList.remove('on'); await sleep(1600); guard();
+          setStep(3); toast(TOAST[3]); await sleep(1700); guard();
+          setStep(4); toast(TOAST[4]); await sleep(2600); guard();
         }
       } catch (e) { if (e !== STOP) throw e; }
       cursor.classList.remove('on'); running = false;
@@ -92,7 +104,7 @@ export function startLanding(config) {
     const takeOver = (e) => { if (e.isTrusted && !took) { took = true; cursor.classList.remove('on'); } };
     on(root, 'pointerdown', takeOver, true); on(root, 'keydown', takeOver, true);
     // the visitor can play it too
-    on(accept, 'click', () => { setStep(2); toast('Offer accepted'); });
+    on(accept, 'click', () => { setStep(2); toast(TOAST[2]); });
     if (!reduced) {
       on(root, 'pointermove', (e) => {
         if (e.pointerType === 'touch') return; const r = root.getBoundingClientRect();
@@ -151,14 +163,16 @@ export function startLanding(config) {
     const fill = bar.querySelector('.tb-fill');
     const at = (sec, p) => () => { const mm = metrics[sec]; return mm ? mm.a + (mm.b - mm.a) * p : 0; };
     const G = Math.max(1, GAMES.length - 1);
+    // (in the order the stations are shown: Admin → Homepage may reorder them; the last stop holds)
     const STEPS = [
-      IDX.hero >= 0 && { to: at(IDX.hero, 0.3), go: 2.8, stay: 4.4 },
-      IDX.categories >= 0 && { to: at(IDX.categories, 0), go: 2.4, stay: 3.6 },
-      ...(IDX.categories >= 0 ? [Math.round(G / 2), G].filter((k) => k > 0).map((k) => ({ to: at(IDX.categories, k / G), go: 1.9, stay: 3.4 })) : []),
-      IDX.suppliers >= 0 && { to: at(IDX.suppliers, 0.3), go: 2.6, stay: 4.5 },
-      IDX.process >= 0 && { to: at(IDX.process, 0.4), go: 2.6, stay: 9 },
-      IDX.ways >= 0 && { to: at(IDX.ways, 0.35), go: 2.6, stay: 0 },
-    ].filter(Boolean);
+      IDX.hero >= 0 && { sec: IDX.hero, to: at(IDX.hero, 0.3), go: 2.8, stay: 4.4 },
+      IDX.categories >= 0 && { sec: IDX.categories, to: at(IDX.categories, 0), go: 2.4, stay: 3.6 },
+      ...(IDX.categories >= 0 ? [Math.round(G / 2), G].filter((k) => k > 0).map((k) => ({ sec: IDX.categories, to: at(IDX.categories, k / G), go: 1.9, stay: 3.4 })) : []),
+      IDX.suppliers >= 0 && { sec: IDX.suppliers, to: at(IDX.suppliers, 0.3), go: 2.6, stay: 4.5 },
+      IDX.process >= 0 && { sec: IDX.process, to: at(IDX.process, 0.4), go: 2.6, stay: 9 },
+      IDX.ways >= 0 && { sec: IDX.ways, to: at(IDX.ways, 0.35), go: 2.6, stay: 2 },
+    ].filter(Boolean).sort((a, b) => a.sec - b.sec);
+    if (STEPS.length) STEPS[STEPS.length - 1].stay = 0;
     if (!STEPS.length) return null;
     const TOTAL = STEPS.reduce((k, st) => k + st.go + st.stay, 0);
     let running = false, idx = 0, t0 = 0, y0 = 0, done = 0, lastY = -1, raf = 0;
@@ -211,18 +225,33 @@ export function startLanding(config) {
     return { start, stop };
   })();
 
-  /* ---------------------------------------------------------------- refresh opens at the top; in-page links and the rail */
+  /* ---------------------------------------------------------------- refresh opens at the top (or at the station a link
+     names: /#categories from the footer, /#testimonials from the admin); in-page links and the rail */
   if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
   onCleanup(() => { if ('scrollRestoration' in history) history.scrollRestoration = 'auto'; });
-  const goSection = (el) => window.scrollTo({ top: el.offsetTop + (el.dataset.station === 'categories' ? 2 : 0), behavior: reduced ? 'auto' : 'smooth' });
+  const topOf = (el) => el.getBoundingClientRect().top + window.scrollY + (el.dataset.station === 'categories' ? 2 : 0);
+  const goSection = (el, instant = false) => window.scrollTo({ top: topOf(el), behavior: reduced || instant ? 'auto' : 'smooth' });
   on(document, 'click', (e) => {
     const a = e.target.closest && e.target.closest('.lnd a[href^="#"]'); if (!a || e.defaultPrevented) return;
     const id = a.getAttribute('href').slice(1); e.preventDefault();
     const el = id && document.getElementById(id); if (el) goSection(el);
   });
   if (!params.has('s')) {
-    if (location.hash) history.replaceState(history.state, '', location.pathname + location.search);
-    window.scrollTo(0, 0);
+    let id = ''; try { id = decodeURIComponent(location.hash.slice(1)); } catch (err) { /* malformed hash */ }
+    const target = id ? document.getElementById(id) : null;
+    if (target && target.closest('.lnd')) {
+      // a known station or module: open there, and again once fonts and images have settled the layout (unless the
+      // visitor has scrolled meanwhile)
+      goSection(target, true);
+      let at = window.scrollY;
+      const settle = () => { if (stopped || Math.abs(window.scrollY - at) > 4) return; measure(); goSection(target, true); at = window.scrollY; };
+      if (document.fonts) document.fonts.ready.then(settle);
+      on(window, 'load', settle, { once: true });
+      later(settle, 600);
+    } else {
+      if (location.hash) history.replaceState(history.state, '', location.pathname + location.search);
+      window.scrollTo(0, 0);
+    }
   }
   railBtns.forEach((b) => on(b, 'click', () => { const s = document.getElementById(b.dataset.go); if (s) goSection(s); }));
 

@@ -60,8 +60,9 @@ export type SettingGroup = (typeof SETTING_GROUPS)[number];
  * are still registered below — one typed list, one Change history — but are
  * saved only through the owner's action:
  *   Security → saveSecurityPolicy (security:manage + a fresh authenticator code).
+ *   Homepage → Admin → Homepage (draft, preview, publish; src/app/admin/homepage/actions.ts).
  */
-export const PANEL_GROUPS: readonly SettingGroup[] = ['Security'];
+export const PANEL_GROUPS: readonly SettingGroup[] = ['Security', 'Homepage'];
 
 export type SettingType =
   | 'string'   // one line of text
@@ -739,7 +740,7 @@ const DEFS: DefInput[] = [
     hint: 'The /legal/privacy page. Name every provider that processes customer data for you (e-mail, hosting and storage, VAT checks, payments, carriers) and keep it true when you add one. {MARKETING_BASIS} says who gets offer e-mails and why, following Security → “E-mail offers to existing customers … (soft opt-in)”; {CARD_PAYMENTS} names the card payment provider while card payment is offered (Payments & credit terms), else it is left out; {TEAM_NOTIFICATIONS} names the chat services (Slack, Discord, Telegram) that active Webhooks post staff notices with customer names to, else it is left out. “## ” starts a heading, an empty line a new paragraph, [text](/path) is a link.' + tokensHint(PRIVACY_POLICY_TOKENS) },
   { key: 'COOKIE_POLICY_TEXT', label: 'Cookie policy', group: 'Site texts & pages', type: 'text', multiline: true, default: DEFAULT_COOKIE_POLICY_TEXT, preview: '/legal/cookies',
     hint: 'The /legal/cookies page. List every cookie the site sets; analytics or marketing cookies would also need a consent banner. {CARD_PAYMENT_COOKIES} mentions the cookies of the card payment page while card payment is offered. “## ” starts a heading, an empty line a new paragraph, [text](/path) is a link.' + tokensHint(COOKIE_POLICY_TOKENS) },
-  { key: 'SOCIAL_LINKS', label: 'Company profiles on other sites', group: 'Site texts & pages', type: 'list', optional: true, validate: httpsLinksProblem, pending: 'the homepage company data for search engines (PKG-13)',
+  { key: 'SOCIAL_LINKS', label: 'Company profiles on other sites', group: 'Site texts & pages', type: 'list', optional: true, validate: httpsLinksProblem,
     hint: 'Full https:// links of your own company pages (LinkedIn, YouTube, X …), comma-separated. Search engines are told these profiles belong to your company. Empty = none.' },
   { key: 'OG_DEFAULT_IMAGE_URL', label: 'Link-preview image', group: 'Site texts & pages', type: 'image', verify: 'image', optional: true, pending: 'the link-preview update (PKG-14)',
     hint: 'Picture shown when a page without its own image is shared (chat apps, social media, search previews); 1200 × 630 px works everywhere. Empty = no preview picture.' },

@@ -452,6 +452,14 @@ export default async function AdminSettingsPage(props: { searchParams?: Promise<
       <SecurityPolicyForm fields={buildPolicyFields(securityPolicy)} canEdit={canManageSecurity} action={saveSecurityPolicy} />
     </div>
   );
+  // Homepage: edited on Admin → Homepage (draft, preview, publish); its changes are listed under Change history.
+  panels['Homepage'] = (
+    <p className="text-sm leading-relaxed text-muted-foreground bg-foreground/[0.02] border border-border rounded-xl p-4" data-tool="homepage-link">
+      The homepage’s stations, categories, listings and texts are edited in{' '}
+      <Link href="/admin/homepage" className="underline font-semibold">Admin → Homepage</Link>, with a draft preview before they go live.
+      Published changes are listed under Change history and can be reverted there.
+    </p>
+  );
   for (const g of groups) {
     if (PANEL_GROUPS.includes(g)) continue;
     const conn = TAB_CONNECTION[g];

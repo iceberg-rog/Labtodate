@@ -2,12 +2,14 @@ import { prisma } from '@/lib/db';
 import { LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
 import { isPlaceholderBrand } from '@/lib/catalog/jsonld';
 import { getCatalogPolicy } from '@/lib/catalog/policy';
+import { homeField } from '@/lib/home-sections';
 
 /**
  * Brand trust bar. Pure typography (no logo files) — Stripe/Linear style.
- * Static (no marquee animation), centered and wrapping responsively.
+ * Static (no marquee animation), centered and wrapping responsively. The label
+ * comes from Admin → Homepage.
  */
-export async function TrustBar() {
+export async function TrustBar({ label = homeField('HOME_TRUST_LABEL')!.default }: { label?: string } = {}) {
   const policy = await getCatalogPolicy();
   const brands = await prisma.brand.findMany({
     where: { products: { some: LIVE_PRODUCT_WHERE } },
@@ -27,9 +29,9 @@ export async function TrustBar() {
   if (top.length === 0) return null;
 
   return (
-    <section data-hud="BRANDS" className="border-y border-[hsl(var(--teal)/0.1)] bg-[hsl(var(--teal)/0.025)]">
+    <section id="brands" data-hud="BRANDS" className="border-y border-[hsl(var(--teal)/0.1)] bg-[hsl(var(--teal)/0.025)]">
       <div className="container-px py-10">
-        <p className="hud-label mb-6 text-center">Brands in our catalogue</p>
+        <p className="hud-label mb-6 text-center">{label}</p>
         <ul className="flex flex-wrap items-center justify-center gap-x-8 gap-y-3 max-w-5xl mx-auto">
           {top.map((b, i) => (
             <li key={b.name} className="inline-flex items-center gap-3">

@@ -1,175 +1,110 @@
-import { Save } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { Clock } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
-import { ensureSettingsLoaded } from '@/lib/settings';
-import { saveHomepage } from '../actions';
-import {
-  HOME_EXTRAS,
-  HOME_SECTION_LABEL,
-  HOME_STATIONS,
-  HOME_TEXT_FIELDS,
-  type HomeExtra,
-  type TextGroup,
-  getHomeContent,
-  getHomeSectionOrder,
-  isStation,
-  parseHeroStats,
-} from '@/lib/home-sections';
-import { getLiveHeroStats } from '@/lib/home-stats';
-import { HomepageReorder, HomepagePreview, type ModuleRow } from '@/components/admin/HomepageReorder';
-import { AdminActionForm, AdminActionStatus } from '@/components/admin/AdminActionForm';
+import { prisma } from '@/lib/db';
+import { ensureSettingsLoaded, invalidateSettingsCache, listSettingChanges, normaliseInput, settingDef } from '@/lib/settings';
+import { HOME_KEYS, draftRead, envRead, isHomeKey, homeValue } from '@/lib/home-sections';
+import { LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
+import { getStationCategories } from '@/lib/home-landing-data';
+import { homeEditorValues, homeLiveVersion, readHomeDraft } from '@/lib/home/draft';
+import { encodeHomeVersion } from '@/lib/home/editor-version';
+import { siteName } from '@/lib/brand/identity';
+import { SettingRevertButton } from '@/components/admin/SettingRevertButton';
+import { HomepageEditor } from './HomepageEditor';
+import { revertHomepageChange } from './actions';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Homepage' };
 
+const fmtWhen = (d: Date) => d.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
 export default async function AdminHomepagePage() {
   await requireCapability('content:cms');
+  // The version first, then the values it stands for (fresh from the database,
+  // not the few-seconds settings cache): a change in between makes the version
+  // older than the values, so a save is refused rather than undoing it.
+  const liveVersion = await homeLiveVersion();
+  invalidateSettingsCache();
   await ensureSettingsLoaded();
 
-  const extras = getHomeSectionOrder().filter((k): k is HomeExtra => !isStation(k));
-  const hc = getHomeContent();
-  const popular = hc.popular.join(', ');
-  // Only explicit admin stats are pre-filled. When unset the box stays EMPTY
-  // (= live counts) — pre-filling the zero placeholders made every unrelated
-  // save ship "0 instruments listed" to the live hero.
-  const customStats = parseHeroStats(process.env.HERO_STATS);
-  const statsText = customStats ? customStats.map((s) => `${s.value}|${s.suffix}|${s.label}`).join('\n') : '';
-  const live = customStats ? null : await getLiveHeroStats().catch(() => null);
+  const draft = await readHomeDraft();
+  const version = encodeHomeVersion({ live: liveVersion, draft: draft?.savedAt ?? '' });
+  const live = homeEditorValues(envRead);
+  const values = draft ? homeEditorValues(draftRead(draft.values)) : live;
+  const norm = (k: string, v: string) => {
+    const d = settingDef(k);
+    return (d ? normaliseInput(d, v) : v) || homeValue(() => '', k);
+  };
+  const changed = draft ? HOME_KEYS.filter((k) => norm(k, values[k] ?? '') !== norm(k, live[k] ?? '')) : [];
 
-  const rows: ModuleRow[] = [
-    ...extras.map((k) => ({ key: k, label: HOME_SECTION_LABEL[k], enabled: true })),
-    ...HOME_EXTRAS.filter((k) => !extras.includes(k)).map((k) => ({ key: k, label: HOME_SECTION_LABEL[k], enabled: false })),
-  ];
-  const GROUPS: { id: TextGroup; title: string; note?: string }[] = [
-    { id: 'intro', title: 'Station 1 — Intro' },
-    { id: 'categories', title: 'Station 3 — Instruments', note: 'The cards and the list are the live categories with their real photos and counts.' },
-    { id: 'route', title: 'Station 4 — Route (globe)' },
-    { id: 'demo', title: 'Station 5 — Buying demo', note: 'The panel shows a real live listing as sample data, and says so.' },
-    { id: 'ways', title: 'Station 6 — Ways to buy' },
-    { id: 'cta', title: 'Station 7 — Call to action' },
-  ];
-  const textField = (f: (typeof HOME_TEXT_FIELDS)[number]) => (
-    <label key={f.key} className="block">
-      <span className="block text-sm font-semibold mb-1.5">{f.label}</span>
-      {f.multiline ? (
-        <textarea name={f.field} defaultValue={String(hc[f.field] ?? '')} rows={4} className={field} />
-      ) : (
-        <input name={f.field} defaultValue={String(hc[f.field] ?? '')} className={`${field} h-10`} />
-      )}
-      {f.hint && <span className="text-xs text-muted-foreground">{f.hint}</span>}
-    </label>
-  );
-
-  const field =
-    'w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary';
+  const [cats, products, auto, history] = await Promise.all([
+    prisma.category.findMany({
+      orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      select: { slug: true, name: true, icon: true, imageUrl: true, showOnHome: true, _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } } },
+    }),
+    prisma.product.findMany({ where: LIVE_PRODUCT_WHERE, orderBy: { createdAt: 'desc' }, take: 3000, select: { slug: true, title: true } }),
+    getStationCategories([], Number(live.HOME_CAT_MAX) || 9, { photos: false }).catch(() => []),
+    listSettingChanges({ take: 400 }),
+  ]);
+  const homeHistory = history.filter((h) => isHomeKey(h.key)).slice(0, 50);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Homepage</h1>
-        <p className="text-muted-foreground mt-1">
-          The homepage is seven 3D stations in a fixed order (every text below is editable), then any extra modules you switch on. Preview the change live on the right.
+        <p className="text-muted-foreground mt-1 max-w-3xl">
+          Choose which 3D stations show and in what order, the categories and listings they show, and every text, button and link on them.
+          Save a draft to see it in the preview, then publish it. Category names, icons and pictures are edited in Admin → Categories.
         </p>
       </div>
 
-      <div className="grid xl:grid-cols-[1fr_640px] gap-6 items-start">
-        <AdminActionForm action={saveHomepage} className="space-y-6 min-w-0" statusInChildren>
-          <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
-            <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Stations &amp; extra modules</h2>
-            <ol className="grid sm:grid-cols-2 gap-1.5 text-xs text-muted-foreground">
-              {HOME_STATIONS.map((k) => <li key={k} className="rounded-lg border border-border px-3 py-2">{HOME_SECTION_LABEL[k]}</li>)}
-            </ol>
-            <p className="text-xs text-muted-foreground">
-              The stations always show, in this order (the 3D story is built on it). Below them you can add extra modules:
-              drag to order, toggle the pill to show or hide.
-            </p>
-            <HomepageReorder initial={rows} />
-          </section>
+      <HomepageEditor
+        key={version}
+        version={version}
+        values={values}
+        changed={changed}
+        draft={draft ? { token: draft.token, savedAt: draft.savedAt, by: draft.by } : null}
+        categories={cats.map((c) => ({ slug: c.slug, name: c.name, icon: c.icon, live: c._count.products, hasImage: !!c.imageUrl, showOnHome: c.showOnHome }))}
+        products={products}
+        autoCategories={auto.map((c) => c.name)}
+        siteName={siteName()}
+      />
 
-          <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
-            <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Station 2 — Hero</h2>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">Badge</span>
-              <input name="heroBadge" defaultValue={hc.heroBadge} className={`${field} h-10`} />
-            </label>
-            <div className="grid sm:grid-cols-[2fr_1fr] gap-3">
-              <label className="block">
-                <span className="block text-sm font-semibold mb-1.5">Title</span>
-                <input name="heroTitle" defaultValue={hc.heroTitle} className={`${field} h-10`} />
-              </label>
-              <label className="block">
-                <span className="block text-sm font-semibold mb-1.5">Accent word</span>
-                <input name="heroAccent" defaultValue={hc.heroAccent} className={`${field} h-10`} />
-              </label>
-            </div>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">Subtitle</span>
-              <textarea name="heroSubtitle" defaultValue={hc.heroSubtitle} rows={2} className={field} />
-            </label>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">Stats</span>
-              <textarea
-                name="heroStats"
-                defaultValue={statsText}
-                rows={3}
-                placeholder="Empty = live counts from the catalogue"
-                className={field}
-              />
-              <span className="text-xs text-muted-foreground">
-                One per line — <code>value|suffix|label</code> (e.g. <code>12400|+|instruments listed</code>).
-                Leave empty to show live counts
-                {live ? <> (now: {live.map((s) => `${s.value} ${s.label}`).join(' · ')})</> : null}.
-              </span>
-            </label>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">“Popular:” quick links</span>
-              <input name="popular" defaultValue={popular} className={`${field} h-10`} />
-              <span className="text-xs text-muted-foreground">
-                Comma-separated. Each becomes a search link in the hero.
-              </span>
-            </label>
-          </section>
-
-          <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
-            <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Call to action &amp; testimonials</h2>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">Testimonials heading</span>
-              <input name="testHeading" defaultValue={hc.testHeading} className={`${field} h-10`} />
-            </label>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">Testimonials meta line</span>
-              <input name="testMeta" defaultValue={hc.testMeta} className={`${field} h-10`} />
-            </label>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">CTA heading</span>
-              <input name="ctaHeading" defaultValue={hc.ctaHeading} className={`${field} h-10`} />
-            </label>
-            <label className="block">
-              <span className="block text-sm font-semibold mb-1.5">CTA subtitle</span>
-              <textarea name="ctaSubtitle" defaultValue={hc.ctaSubtitle} rows={2} className={field} />
-            </label>
-          </section>
-
-          {GROUPS.map((g) => (
-            <section key={g.id} className="rounded-2xl border border-border bg-card p-6 space-y-4">
-              <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">{g.title}</h2>
-              {g.note && <p className="text-xs text-muted-foreground">{g.note}</p>}
-              {HOME_TEXT_FIELDS.filter((f) => f.group === g.id).map(textField)}
-            </section>
-          ))}
-
-          <div className="sticky bottom-3 z-10 flex items-center gap-3 bg-background/95 backdrop-blur p-3 rounded-2xl border border-border shadow-sm">
-            <Button type="submit" size="lg" className="rounded-2xl font-semibold">
-              <Save className="h-4 w-4" /> Save homepage
-            </Button>
-            <AdminActionStatus />
+      <section className="rounded-2xl border border-border bg-card p-6 space-y-3" data-tool="homepage-history">
+        <div className="flex items-center gap-2">
+          <Clock className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Change history</h2>
+        </div>
+        <p className="text-xs text-muted-foreground">Every published homepage change, newest first. “Revert” puts the old value back on the live homepage — itself recorded as a new change.</p>
+        {homeHistory.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No homepage changes published yet.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+                  <th className="py-1.5 pr-3">When</th><th className="py-1.5 pr-3">Field</th><th className="py-1.5 pr-3">From</th><th className="py-1.5 pr-3">To</th><th className="py-1.5 pr-3">By</th><th className="py-1.5"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {homeHistory.map((h) => (
+                  <tr key={h.id} className="border-t border-border align-top" data-change={h.key}>
+                    <td className="py-2 pr-3 whitespace-nowrap text-xs">{fmtWhen(h.createdAt)}</td>
+                    <td className="py-2 pr-3"><span className="font-semibold">{h.label}</span>{h.source !== 'ADMIN' && <span className="block text-[11px] text-muted-foreground">{h.source.toLowerCase()}</span>}</td>
+                    <td className="py-2 pr-3 text-xs font-mono max-w-64 break-words whitespace-pre-wrap">{h.oldValue ?? <span className="text-muted-foreground">(default)</span>}</td>
+                    <td className="py-2 pr-3 text-xs font-mono max-w-64 break-words whitespace-pre-wrap">{h.newValue ?? <span className="text-muted-foreground">(default)</span>}</td>
+                    <td className="py-2 pr-3 text-xs">{h.actorEmail ?? '—'}</td>
+                    <td className="py-2">
+                      {h.revertable && (
+                        <SettingRevertButton action={revertHomepageChange} changeId={h.id} confirmText={`Put “${h.label}” back to ${h.oldValue ? `“${h.oldValue.slice(0, 80)}”` : 'its default'} on the live homepage?`} />
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-        </AdminActionForm>
-
-        <aside className="xl:sticky xl:top-20 min-w-0">
-          <HomepagePreview />
-        </aside>
-      </div>
+        )}
+      </section>
     </div>
   );
 }

@@ -1,45 +1,60 @@
 import Link from 'next/link';
-import { firstPublicImage } from '@/lib/media/public-src';
 import { ArrowRight } from 'lucide-react';
-import { listProducts } from '@/lib/marketplace/queries';
 import { ProductCard } from '@/components/marketplace/ProductCard';
-import { getMarketing } from '@/lib/marketing';
+import type { FeaturedProduct } from '@/lib/home-landing-data';
 
-export async function FeaturedProducts() {
-  const { items } = await listProducts({ pageSize: 8, sort: 'newest' });
-  const mk = await getMarketing();
-
+/**
+ * Extra module “Featured products”: the live listings picked in Admin →
+ * Homepage (in that order), else the eight newest — loaded by the page
+ * (getFeaturedProducts). Every card opens its listing; the texts and the
+ * button come from Admin → Homepage.
+ */
+export function FeaturedProducts({
+  products,
+  listings,
+  kicker,
+  title,
+  button,
+}: {
+  products: FeaturedProduct[];
+  listings: number;
+  kicker: string;
+  title: string;
+  button: [string, string];
+}) {
+  if (products.length === 0) return null;
+  const [label, href] = button;
   return (
-    <section data-hud="LATEST" className="container-px py-24">
+    <section id="featured" data-hud="LATEST" className="container-px py-24">
       <div className="flex items-end justify-between mb-12 gap-6 flex-wrap">
         <div>
-          <span className="kicker mb-4">Latest listings</span>
+          {kicker && <span className="kicker mb-4">{kicker}</span>}
           <h2
             className="text-3xl md:text-5xl font-bold text-foreground max-w-2xl"
             style={{ letterSpacing: '-0.035em' }}
           >
-            Recently added equipment.
+            {title}
           </h2>
         </div>
         <Link
-          href="/marketplace"
+          href={href}
           className="inline-flex items-center gap-2 px-5 py-3 rounded-full border border-[hsl(var(--teal)/0.24)] bg-[hsl(var(--teal)/0.05)] text-sm font-semibold text-foreground hover:border-primary/60 transition-colors group"
         >
-          Browse all {mk.listings}
+          {label.replaceAll('{N}', listings.toLocaleString('en-US'))}
           <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
         </Link>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {items.map((p) => (
+        {products.map((p) => (
           <ProductCard
             key={p.slug}
             p={{
               slug: p.slug,
               title: p.title,
-              brand: p.brand?.name ?? '—',
+              brand: p.brand,
               illustration: p.illustration,
-              imageUrl: firstPublicImage(p.images),
+              imageUrl: p.imageUrl,
               condition: p.condition,
               mode: p.mode,
               priceCents: p.priceCents,

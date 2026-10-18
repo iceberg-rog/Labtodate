@@ -2,6 +2,8 @@
 export interface LandingGame {
   name: string;
   slug: string;
+  /** where the card and its list item lead (the category page, or the listing chosen in Admin → Homepage) */
+  href: string;
   /** [accent, card background] */
   c: [string, string];
   /** the line above the title on the card (leading brands) */
