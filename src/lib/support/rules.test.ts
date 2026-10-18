@@ -9,6 +9,7 @@ import {
   initialPriority,
   isAwaitingSupport,
   keywordMatcher,
+  linkRotationData,
   localClock,
   maskEmail,
   mentionedOrderNumbers,
@@ -125,6 +126,21 @@ test('customerReplyRule: spam never, resolved / closed reopen within the period'
   assert.equal(customerReplyRule({ status: 'CLOSED', updatedAt: new Date(now.getTime() - 15 * day) }, 14, now).canReply, false);
   assert.deepEqual(customerReplyRule({ status: 'WAITING_ON_CUSTOMER', updatedAt: now, archivedAt: now }, 14, now), { canReply: true, reopens: true, reopenUntil: null });
   assert.deepEqual(customerReplyRule({ status: 'OPEN', updatedAt: now, archivedAt: null }, 14, now), { canReply: true, reopens: false, reopenUntil: null });
+});
+
+test('a new guest link never reopens an expired reopen window', () => {
+  const day = 86400e3;
+  const closedAt = new Date('2026-10-01T12:00:00Z');
+  const ticket = { status: 'CLOSED', updatedAt: closedAt, archivedAt: null };
+  // Day 15: the window (14 days) is over; the guest asks for a new link.
+  const now = new Date(closedAt.getTime() + 15 * day);
+  const data = linkRotationData(ticket, { token: 'tok', issuedAt: now, expiresAt: new Date(now.getTime() + 30 * day) });
+  assert.deepEqual(data, { accessToken: 'tok', accessTokenIssuedAt: now, accessTokenExpiresAt: new Date(now.getTime() + 30 * day), updatedAt: closedAt });
+  // Prisma sets an @updatedAt field to now unless the update gives a value.
+  const after = { ...ticket, ...data, updatedAt: data.updatedAt ?? now };
+  const rule = customerReplyRule(after, 14, now);
+  assert.equal(rule.canReply, false);
+  assert.equal(rule.reopenUntil!.toISOString(), '2026-10-15T12:00:00.000Z');
 });
 
 test('SLA after a customer message: restart when the ball was with the customer, keep a running deadline', () => {

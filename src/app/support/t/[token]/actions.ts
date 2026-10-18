@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit } from '@/lib/observability';
 import { trySendEmail } from '@/lib/email';
-import { parseAttachmentList, maskEmail } from '@/lib/support/rules';
+import { linkRotationData, parseAttachmentList, maskEmail } from '@/lib/support/rules';
 import { magicLinkExpiry, replyRateLimit, supportLimit, SupportLimitError, ticketRateLimit } from '@/lib/support/policy';
 import { customerReplyRefusal, makeAccessToken, recordCustomerReply, ticketLink } from '@/lib/support/tickets';
 import { freshLinkMail } from '@/lib/support/mail';
@@ -66,7 +66,7 @@ export async function requestFreshTicketLink(formData: FormData): Promise<{ ok: 
   if (token.length < 16) return { ok: false, message: 'This link is not valid.' };
   const t = await prisma.supportTicket.findUnique({
     where: { accessToken: token },
-    select: { id: true, ref: true, name: true, email: true, customerType: true, accessTokenExpiresAt: true },
+    select: { id: true, ref: true, name: true, email: true, customerType: true, accessTokenExpiresAt: true, updatedAt: true },
   });
   if (!t || t.customerType !== 'GUEST') return { ok: false, message: 'This link is not valid.' };
   if (!t.accessTokenExpiresAt || t.accessTokenExpiresAt.getTime() > Date.now()) {
@@ -100,10 +100,20 @@ export async function requestFreshTicketLink(formData: FormData): Promise<{ ok: 
   if (!sent.ok) {
     return { ok: false, message: 'We could not send the e-mail just now. Please try again in a few minutes.' };
   }
-  await prisma.supportTicket.update({
-    where: { id: t.id },
-    data: { accessToken: newToken, accessTokenIssuedAt: now, accessTokenExpiresAt: expiresAt },
+  // The new link must not move the reopen window (linkRotationData). Guarded
+  // on updatedAt: if staff changed the ticket while the mail went out, the
+  // window already counts from that moment, so a plain update is right.
+  const link = { token: newToken, issuedAt: now, expiresAt };
+  const kept = await prisma.supportTicket.updateMany({
+    where: { id: t.id, updatedAt: t.updatedAt },
+    data: linkRotationData(t, link),
   });
+  if (kept.count === 0) {
+    await prisma.supportTicket.update({
+      where: { id: t.id },
+      data: { accessToken: link.token, accessTokenIssuedAt: link.issuedAt, accessTokenExpiresAt: link.expiresAt },
+    });
+  }
   await audit('ticket.magiclink.self', t.ref, 'requested on the expired-link page');
   return { ok: true, message: `We e-mailed a new link to ${maskEmail(t.email)}. It may take a minute to arrive.` };
 }

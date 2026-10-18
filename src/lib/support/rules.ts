@@ -224,7 +224,8 @@ export interface CustomerReplyRule {
  * What a customer may do on a ticket. Spam is never answerable. A resolved or
  * closed ticket reopens on a reply for `reopenDays` after its last change
  * (closing it, or a later staff action — so the customer gets at least that
- * long); after that the customer opens a new ticket.
+ * long); after that the customer opens a new ticket. A new private link is
+ * not a change (linkRotationData).
  */
 export function customerReplyRule(
   t: { status: string; updatedAt: Date; archivedAt?: Date | null },
@@ -237,6 +238,19 @@ export function customerReplyRule(
     return { canReply: now.getTime() < reopenUntil.getTime(), reopens: true, reopenUntil };
   }
   return { canReply: true, reopens: !!t.archivedAt, reopenUntil: null };
+}
+
+/**
+ * Update data that switches a guest ticket to a new private link. It keeps
+ * `updatedAt` (Prisma stores an explicit value for an @updatedAt field): the
+ * reopen window counts from it, and "Send me a new link" on an expired closed
+ * ticket must not open the window again.
+ */
+export function linkRotationData(
+  t: { updatedAt: Date },
+  link: { token: string; issuedAt: Date; expiresAt: Date },
+): { accessToken: string; accessTokenIssuedAt: Date; accessTokenExpiresAt: Date; updatedAt: Date } {
+  return { accessToken: link.token, accessTokenIssuedAt: link.issuedAt, accessTokenExpiresAt: link.expiresAt, updatedAt: t.updatedAt };
 }
 
 /**

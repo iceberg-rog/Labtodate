@@ -13,7 +13,7 @@ import { clientIp } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
 import { siteName } from '@/lib/brand/identity';
 import { guardPublicForm, PublicFormError } from '@/lib/security/captcha';
-import { initialPriority, isAwaitingSupport, parseAttachmentList } from '@/lib/support/rules';
+import { initialPriority, isAwaitingSupport, linkRotationData, parseAttachmentList } from '@/lib/support/rules';
 import {
   computeTicketDueAt,
   highKeywords,
@@ -798,7 +798,7 @@ export async function reissueGuestMagicLink(
   if (!id) return { ok: false, message: 'Missing ticket id.' };
   const t = await prisma.supportTicket.findUnique({
     where: { id },
-    select: { id: true, ref: true, name: true, email: true, subject: true, customerType: true },
+    select: { id: true, ref: true, name: true, email: true, subject: true, customerType: true, updatedAt: true },
   });
   if (!t) return { ok: false, message: 'Ticket not found.' };
   if (t.customerType !== 'GUEST') {
@@ -808,13 +808,11 @@ export async function reissueGuestMagicLink(
   const now = new Date();
   const newToken = makeAccessToken();
   const expiresAt = magicLinkExpiry(now);
+  // A new link is not a ticket change: the reopen window stays where it was
+  // (to reopen a closed ticket, change its status).
   await prisma.supportTicket.update({
     where: { id },
-    data: {
-      accessToken: newToken,
-      accessTokenIssuedAt: now,
-      accessTokenExpiresAt: expiresAt,
-    },
+    data: linkRotationData(t, { token: newToken, issuedAt: now, expiresAt }),
   });
 
   const sent = await trySendEmail({

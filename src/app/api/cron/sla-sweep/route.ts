@@ -7,6 +7,7 @@ import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
 import { runPaymentDueSweep } from '@/lib/orders/due-sweep';
 import { QUOTE_REF } from '@/lib/quotes/offer';
 import { mailLayout, siteBase } from '@/lib/quotes/mail';
+import { sellerSlaNotice } from './seller-notice';
 
 /** Priorities whose breach always reaches every quote admin, even when assigned. */
 const ESCALATE_PRIORITIES = new Set(['HIGH', 'URGENT', 'VIP']);
@@ -144,12 +145,18 @@ export async function POST(req: NextRequest) {
     // A supplier assignee works in their own inbox — /admin is forbidden to them.
     const isSeller = q.assignedTo?.role === 'SELLER';
     const sellerHref = `/app/seller/inbox/${q.id}`;
+    // Supplier wording: the buyer stays anonymous to them, the priority is internal.
+    const seller = sellerSlaNotice({ ref, productTitle: q.product?.title, productCategory: q.productCategory }, overdueText(overdueMinutes));
     // Staff always hear about a supplier's overdue request and about
     // high-priority breaches, not only about unassigned ones.
     const escalate = !q.assignedToId || isSeller || ESCALATE_PRIORITIES.has(q.priority);
     if (q.assignedToId) {
-      // An assigned admin is among the notified admins when escalating: one bell is enough.
-      if (isSeller || !escalate) await notifyUser(q.assignedToId, title, body, isSeller ? sellerHref : adminHref);
+      if (isSeller) {
+        await notifyUser(q.assignedToId, seller.title, seller.body, sellerHref);
+      } else if (!escalate) {
+        // An assigned admin is among the notified admins when escalating: one bell is enough.
+        await notifyUser(q.assignedToId, title, body, adminHref);
+      }
       const deliverable = isDeliverableEmail(q.assignedTo?.email);
       if (isSeller && deliverable) {
         await trySendEmail({
@@ -158,7 +165,7 @@ export async function POST(req: NextRequest) {
           html: mailLayout({
             heading: `Request ${ref} is waiting for your answer`,
             body: [
-              `The reply time for the request “${escapeHtml(subject)}” passed ${overdueText(overdueMinutes)} ago.`,
+              `The reply time for the request “${escapeHtml(seller.subject)}” passed ${overdueText(overdueMinutes)} ago.`,
               'Please answer the buyer or send your price proposal from your supplier inbox. Our team has been told as well.',
             ],
             cta: { href: `${siteBase()}${sellerHref}`, label: 'Open the request' },
