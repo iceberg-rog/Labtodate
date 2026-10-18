@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
-import { Loader2, Archive, ArchiveRestore, UserPlus, RefreshCw } from 'lucide-react';
+import { Loader2, Archive, ArchiveRestore, UserPlus } from 'lucide-react';
 import {
   setTicketStatus,
   setTicketPriority,
@@ -37,7 +37,7 @@ export function TicketHeaderControls({
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [msg, setMsg] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [transferring, setTransferring] = useState(false);
 
   function call<T>(fn: () => Promise<T>, fallback = 'Done.') {
@@ -45,10 +45,12 @@ export function TicketHeaderControls({
     start(async () => {
       try {
         const r = (await fn()) as { ok?: boolean; message?: string } | undefined;
-        setMsg(r?.message ?? fallback);
+        // "…could not be delivered" (customer e-mail on resolve / close) is a problem too.
+        const text = r?.message ?? fallback;
+        setMsg({ ok: r?.ok !== false && !/could not be delivered/i.test(text), text });
         router.refresh();
       } catch (e) {
-        setMsg(e instanceof Error ? e.message : 'Failed');
+        setMsg({ ok: false, text: e instanceof Error ? e.message : 'Failed' });
       }
     });
   }
@@ -191,7 +193,14 @@ export function TicketHeaderControls({
 
         {pending && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
       </div>
-      {msg && <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold">{msg}</p>}
+      {msg && (
+        <p
+          role={msg.ok ? 'status' : 'alert'}
+          className={`text-[10px] font-semibold max-w-[360px] text-right ${msg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}
+        >
+          {msg.text}
+        </p>
+      )}
     </div>
   );
 }

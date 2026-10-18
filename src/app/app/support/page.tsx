@@ -4,7 +4,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { ensureSettingsLoaded } from '@/lib/settings';
 import { customerReplyTicket } from '@/lib/support/actions';
+import { customerReplyRule } from '@/lib/support/rules';
+import { reopenDays, supportDate } from '@/lib/support/policy';
 import { ReplyForm } from '@/components/util/ReplyForm';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
@@ -13,10 +16,11 @@ export const dynamic = 'force-dynamic';
 
 // Customer-side labels. The DB enum is admin-jargon ("WAITING_ON_CUSTOMER" /
 // "WAITING_ON_SUPPORT") — confusing on the buyer side. Translate to plain
-// language so the buyer immediately knows whose move it is.
+// language so the buyer immediately knows whose move it is. The internal
+// priority (VIP / URGENT …) is never shown to customers.
 const CUSTOMER_STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'accent' | 'secondary' }> = {
   OPEN:                  { label: 'Open',                  variant: 'warning' },
-  WAITING_ON_SUPPORT:    { label: 'Support is replying',   variant: 'accent' },
+  WAITING_ON_SUPPORT:    { label: 'Waiting for our team',  variant: 'accent' },
   WAITING_ON_CUSTOMER:   { label: 'Awaiting your reply',   variant: 'warning' },
   PENDING:               { label: 'Pending',               variant: 'accent' },
   RESOLVED:              { label: 'Resolved',              variant: 'success' },
@@ -24,10 +28,15 @@ const CUSTOMER_STATUS: Record<string, { label: string; variant: 'success' | 'war
   SPAM:                  { label: 'Closed',                variant: 'secondary' },
 };
 
-export default async function CustomerSupportPage(props: { searchParams?: Promise<{ sent?: string }> }) {
+export default async function CustomerSupportPage(props: { searchParams?: Promise<{ sent?: string; open?: string }> }) {
   const session = await requireSession({ redirectTo: '/app/support' });
-  // Back from “Ask a question” / “Request photos” on a product page.
-  const sent = ((await props.searchParams)?.sent ?? '').slice(0, 40);
+  await ensureSettingsLoaded();
+  const sp = (await props.searchParams) ?? {};
+  // Back from “Ask a question” / “Request photos” on a product page (?sent=),
+  // or from a notification / e-mail about one ticket (?open=).
+  const sent = (sp.sent ?? '').slice(0, 40);
+  const open = (sp.open ?? sent).slice(0, 40);
+  const days = reopenDays();
   const tickets = await prisma.supportTicket.findMany({
     where: { OR: [{ submittedById: session.user.id }, { email: session.user.email }] },
     orderBy: { updatedAt: 'desc' },
@@ -80,9 +89,12 @@ export default async function CustomerSupportPage(props: { searchParams?: Promis
             const badge = closedByTeam
               ? { label: 'Closed by support', variant: 'secondary' as const }
               : (CUSTOMER_STATUS[t.status] ?? { label: t.status.toLowerCase().replace(/_/g, ' '), variant: 'secondary' as const });
+            // Spam never takes replies; resolved / closed reopen on a reply
+            // within the reopen period (Settings → Support).
+            const rule = customerReplyRule(t, days);
             return (
-            <li key={t.id} className="rounded-2xl border border-border bg-card overflow-hidden">
-              <details open={t.ref === sent}>
+            <li key={t.id} id={t.ref} className="rounded-2xl border border-border bg-card overflow-hidden scroll-mt-24">
+              <details open={t.ref === open}>
                 <summary className="p-5 cursor-pointer list-none flex items-center gap-4 hover:bg-foreground/5">
                   <div className="flex-1 min-w-0">
                     <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">
@@ -106,7 +118,7 @@ export default async function CustomerSupportPage(props: { searchParams?: Promis
                         {m.fromStaff ? 'Support' : 'You'} ·{' '}
                         {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </p>
-                      <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
+                      {m.body && <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>}
                       <MessageAttachments urls={m.attachments} />
                     </div>
                   ))}
@@ -115,12 +127,23 @@ export default async function CustomerSupportPage(props: { searchParams?: Promis
                       Our support team closed this conversation. Replying below will reopen it.
                     </p>
                   )}
-                  {t.status !== 'CLOSED' && (
+                  {rule.canReply && rule.reopenUntil && (
+                    <p className="text-xs text-muted-foreground rounded-lg border border-border bg-card px-3 py-2">
+                      This ticket is {t.status === 'RESOLVED' ? 'resolved' : 'closed'}. Not sorted yet? A reply until {supportDate(rule.reopenUntil)} reopens it.
+                    </p>
+                  )}
+                  {rule.canReply ? (
                     <ReplyForm
                       action={customerReplyTicket}
                       hidden={{ ticketId: t.id }}
                       placeholder="Reply…"
+                      label={rule.reopens ? 'Reopen and send' : 'Send'}
                     />
+                  ) : (
+                    <p className="text-xs text-muted-foreground rounded-lg border border-border bg-card px-3 py-2" data-testid="ticket-closed">
+                      This ticket is closed{rule.reopenUntil ? ` (replies were possible until ${supportDate(rule.reopenUntil)})` : ''}. Need more help?{' '}
+                      <Link href={`/support?followup=${encodeURIComponent(t.ref)}`} className="text-primary font-semibold hover:underline">Open a new ticket</Link>.
+                    </p>
                   )}
                 </div>
               </details>

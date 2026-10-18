@@ -20,30 +20,36 @@ export function TicketComposer({
   const [atts, setAtts] = useState<Att[]>([]);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
     e.target.value = '';
     if (files.length === 0) return;
     setErr(null);
+    setNotice(null);
+    // At most 5 per message: say so instead of silently dropping the rest.
+    const room = Math.max(0, 5 - atts.length);
+    if (files.length > room) setErr(`You can attach up to 5 files${room > 0 ? ` — only the first ${room} were added` : ''}.`);
     setUploading(true);
     try {
-      for (const f of files) {
-        if (atts.length >= 5) break;
+      for (const f of files.slice(0, room)) {
         const fd = new FormData();
         fd.append('file', f);
         const res = await fetch('/api/attachment-upload', { method: 'POST', body: fd });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          setErr(data.error || 'Upload failed.');
+          setErr(`${f.name}: ${data.error || 'upload failed.'}`);
           continue;
         }
         if (data.url) {
           setAtts((p) =>
-            p.length < 5 ? [...p, { url: data.url, name: data.name ?? 'file', type: data.type ?? '' }] : p,
+            p.length < 5 ? [...p, { url: data.url, name: data.name ?? f.name, type: data.type ?? '' }] : p,
           );
         }
       }
+    } catch {
+      setErr('Upload failed — check your connection and try again.');
     } finally {
       setUploading(false);
     }
@@ -133,7 +139,8 @@ export function TicketComposer({
             ))}
           </div>
         )}
-        {err && <p className="text-xs text-red-600 dark:text-red-400 mb-2">{err}</p>}
+        {err && <p role="alert" className="text-xs text-red-600 dark:text-red-400 mb-2">{err}</p>}
+        {notice && <p role="status" className="text-xs text-emerald-700 dark:text-emerald-300 mb-2">{notice}</p>}
 
         <form
           ref={ref}
@@ -141,9 +148,12 @@ export function TicketComposer({
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
             fd.set('attachments', JSON.stringify(atts.map((a) => a.url)));
+            fd.set('attachmentNames', JSON.stringify(atts.map((a) => a.name)));
             fd.set('ticketId', ticketId);
             if (isInternal) fd.set('internal', '1');
             const form = e.currentTarget;
+            setErr(null);
+            setNotice(null);
             start(async () => {
               try {
                 const r = await replyTicket(fd);
@@ -151,6 +161,7 @@ export function TicketComposer({
                 setAtts([]);
                 // Saved — but the customer email may have bounced: say so.
                 if (r?.warning) setErr(r.warning);
+                else if (r?.notice) setNotice(r.notice);
               } catch (er) {
                 if ((er as Error)?.message?.includes('NEXT_REDIRECT')) {
                   form.reset();
@@ -165,7 +176,8 @@ export function TicketComposer({
         >
           <textarea
             name="body"
-            required
+            // A file alone (e.g. a return label) can be the whole reply.
+            required={atts.length === 0}
             rows={4}
             placeholder={
               isInternal

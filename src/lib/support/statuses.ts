@@ -1,4 +1,5 @@
 import type { TicketStatus } from '@prisma/client';
+import { computeTicketDueAt } from './policy';
 
 /**
  * Ticket statuses where support owes the next reply — the admin "Open" tab.
@@ -12,19 +13,11 @@ export const TICKETS_AWAITING_SUPPORT: TicketStatus[] = ['OPEN', 'WAITING_ON_SUP
 export const ACTIVE_TICKET_STATUSES: TicketStatus[] = ['OPEN', 'WAITING_ON_SUPPORT', 'WAITING_ON_CUSTOMER', 'PENDING'];
 
 /**
- * SLA tier defaults (hours). Customer-configurable later via Settings, but
- * these are the baked defaults that drive `dueAt` + the "overdue" badge.
- * URGENT / VIP share the same tightest tier (2h response).
+ * Reply deadline of a ticket that waits on support from `from` on: the
+ * priority's hours from Settings → Support (TICKET_SLA_HOURS), counted inside
+ * the support business hours when those are set. Drives `dueAt`, the SLA
+ * sweep and the "overdue" badge. Read after ensureSettingsLoaded().
  */
-export const SLA_HOURS: Record<string, number> = {
-  URGENT: 2,
-  VIP: 2,
-  HIGH: 8,
-  NORMAL: 24,
-  LOW: 72,
-};
-
-export function computeDueAt(createdAt: Date, priority: string): Date {
-  const h = SLA_HOURS[priority] ?? SLA_HOURS.NORMAL;
-  return new Date(createdAt.getTime() + h * 3600e3);
+export function computeDueAt(from: Date, priority: string): Date {
+  return computeTicketDueAt(from, priority);
 }

@@ -1,91 +1,109 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { audit, notifyAdmins } from '@/lib/observability';
-import { sendInternalEmail } from '@/lib/email';
-import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
-
-function parseAttachments(v: FormDataEntryValue | null): string[] {
-  if (typeof v !== 'string' || !v) return [];
-  try {
-    const arr = JSON.parse(v);
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter((u): u is string => typeof u === 'string')
-      .filter((u) => u.startsWith('/api/support-attachment/'))
-      .slice(0, 5);
-  } catch {
-    return [];
-  }
-}
+import { audit } from '@/lib/observability';
+import { trySendEmail } from '@/lib/email';
+import { parseAttachmentList, maskEmail } from '@/lib/support/rules';
+import { magicLinkExpiry, replyRateLimit, supportLimit, SupportLimitError, ticketRateLimit } from '@/lib/support/policy';
+import { customerReplyRefusal, makeAccessToken, recordCustomerReply, ticketLink } from '@/lib/support/tickets';
+import { freshLinkMail } from '@/lib/support/mail';
 
 /**
  * Guest reply via magic-link token. Mirrors customerReplyTicket but uses the
  * URL token instead of a session for auth. No account creation needed.
+ * Problems come back as a readable `error` so the reply box keeps the text.
  */
-export async function guestReplyByToken(formData: FormData): Promise<void> {
+export async function guestReplyByToken(formData: FormData): Promise<{ error?: string; notice?: string }> {
   await ensureSettingsLoaded();
   const token = String(formData.get('token') ?? '');
   const body = String(formData.get('body') ?? '').trim();
-  const attachments = parseAttachments(formData.get('attachments'));
-  if (!token || (body.length < 1 && attachments.length === 0)) return;
+  const { urls, names } = parseAttachmentList(formData.get('attachments'), formData.get('attachmentNames'));
+  if (!token || (body.length < 1 && urls.length === 0)) return { error: 'Write a message or attach a file.' };
 
   const t = await prisma.supportTicket.findUnique({
     where: { accessToken: token },
   });
-  if (!t) redirect('/support');
+  if (!t) return { error: 'This link no longer works — use the newest link from our e-mails.' };
   // Token expiry — refuse the reply rather than silently dropping the input.
   if (t.accessTokenExpiresAt && t.accessTokenExpiresAt.getTime() <= Date.now()) {
-    redirect(`/support/t/${token}`);
+    return { error: 'This link has expired. Copy your text, then reload the page to get a new link by e-mail.' };
   }
-  if (t.status === 'CLOSED' || t.status === 'SPAM') {
-    redirect(`/support/t/${token}?err=closed`);
+  // Spam never takes replies; resolved / closed reopen only within the
+  // reopen period (Settings → Support).
+  const refusal = customerReplyRefusal(t);
+  if (refusal) return { error: refusal };
+  try {
+    await supportLimit(`ticket-reply:t:${t.id}`, replyRateLimit());
+  } catch (e) {
+    if (e instanceof SupportLimitError) return { error: e.message };
+    throw e;
   }
 
-  const now = new Date();
-  await prisma.supportMessage.create({
-    data: {
-      ticketId: t.id,
-      fromStaff: false,
-      authorId: null,
-      body: body.slice(0, 5000),
-      attachments,
-    },
+  const { reopened } = await recordCustomerReply(t, {
+    authorId: null,
+    authorLabel: `${t.name} (${t.email})`,
+    actor: t.email,
+    body,
+    urls,
+    names,
+    via: 'guest',
   });
+  revalidatePath(`/support/t/${token}`);
+  return { notice: reopened ? 'Reply sent — the ticket is open again and our team has been notified.' : 'Reply sent — we’ll respond shortly.' };
+}
+
+/**
+ * "Send me a new link" on the expired-link page. The new private link goes
+ * only to the ticket's own e-mail address, so holding an old link gives
+ * nothing but a fresh e-mail to the owner. Limited per ticket like new
+ * tickets (Settings → Support).
+ */
+export async function requestFreshTicketLink(formData: FormData): Promise<{ ok: boolean; message: string }> {
+  await ensureSettingsLoaded();
+  const token = String(formData.get('token') ?? '');
+  if (token.length < 16) return { ok: false, message: 'This link is not valid.' };
+  const t = await prisma.supportTicket.findUnique({
+    where: { accessToken: token },
+    select: { id: true, ref: true, name: true, email: true, customerType: true, accessTokenExpiresAt: true },
+  });
+  if (!t || t.customerType !== 'GUEST') return { ok: false, message: 'This link is not valid.' };
+  if (!t.accessTokenExpiresAt || t.accessTokenExpiresAt.getTime() > Date.now()) {
+    return { ok: true, message: 'This link still works — reload the page.' };
+  }
+  try {
+    await supportLimit(`ticket-link:${t.id}`, ticketRateLimit());
+  } catch (e) {
+    if (e instanceof SupportLimitError) return { ok: false, message: e.message };
+    throw e;
+  }
+
+  // Send first, then switch the ticket to the new token: a failed send leaves
+  // the old (expired) link in place so the guest can simply try again.
+  const now = new Date();
+  const newToken = makeAccessToken();
+  const expiresAt = magicLinkExpiry(now);
+  const sent = await trySendEmail({
+    to: t.email,
+    // Visitor-triggered: limited like the other e-mails a visitor can cause.
+    trigger: 'form.support',
+    subject: `[${t.ref}] New link to view your ticket`,
+    html: freshLinkMail({
+      ref: t.ref,
+      name: t.name,
+      href: ticketLink({ ref: t.ref, customerType: 'GUEST', accessToken: newToken }),
+      byStaff: false,
+      validUntil: expiresAt,
+    }),
+  }, 'support:magiclink-self');
+  if (!sent.ok) {
+    return { ok: false, message: 'We could not send the e-mail just now. Please try again in a few minutes.' };
+  }
   await prisma.supportTicket.update({
     where: { id: t.id },
-    data: {
-      status: 'WAITING_ON_SUPPORT',
-      lastReplyAt: now,
-      lastReplyByStaff: false,
-      // BUG-018 parity with customerReplyTicket: a customer reply must bring an
-      // archived ticket back to the working queue, or the message is lost.
-      archivedAt: null,
-      archivedById: null,
-    },
+    data: { accessToken: newToken, accessTokenIssuedAt: now, accessTokenExpiresAt: expiresAt },
   });
-
-  const ops =
-    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '';
-  // Staff copy — skipped for placeholder inboxes and never fatal: the guest's
-  // reply is already saved.
-  await sendInternalEmail({
-    to: ops,
-    subject: `[${t.ref}] Guest reply: ${headerText(t.subject, 160)}`,
-    html: `<p>${escapeHtml(t.name)} (${escapeHtml(t.email)}) replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
-  }, 'support:guest-reply');
-  await notifyAdmins(
-    `Guest replied · ${t.ref}`,
-    `${t.name} replied via magic link on "${t.subject}"`,
-    `/admin/tickets/${t.id}`,
-    'TICKET_NEW',
-  );
-  await audit('ticket.guest.reply', t.ref, `${t.email}${attachments.length ? ` +${attachments.length}attach` : ''}`);
-
-  revalidatePath(`/admin/tickets/${t.id}`);
-  revalidatePath(`/support/t/${token}`);
-  redirect(`/support/t/${token}?ok=1`);
+  await audit('ticket.magiclink.self', t.ref, 'requested on the expired-link page');
+  return { ok: true, message: `We e-mailed a new link to ${maskEmail(t.email)}. It may take a minute to arrive.` };
 }

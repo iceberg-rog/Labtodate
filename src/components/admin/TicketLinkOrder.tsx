@@ -78,7 +78,12 @@ export function TicketLinkOrder({
         )}
       </form>
       {msg && (
-        <p className={`text-[10px] font-semibold mt-1 ${msg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300'}`}>
+        // Linked, but to another customer's order: amber, not "all good" green.
+        <p className={`text-[10px] font-semibold mt-1 ${
+          !msg.ok ? 'text-red-700 dark:text-red-300'
+            : /another customer/i.test(msg.text) ? 'text-amber-800 dark:text-amber-300'
+            : 'text-emerald-700 dark:text-emerald-300'
+        }`}>
           {msg.text}
         </p>
       )}

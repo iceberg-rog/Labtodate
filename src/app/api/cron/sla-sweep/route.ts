@@ -1,23 +1,40 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
-import { isDeliverableEmail, sendEmail, sendInternalEmail } from '@/lib/email';
+import { isDeliverableEmail, sendInternalEmail, trySendEmail } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
+import { ensureSettingsLoaded } from '@/lib/settings';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
 import { runPaymentDueSweep } from '@/lib/orders/due-sweep';
 import { QUOTE_REF } from '@/lib/quotes/offer';
+import { mailLayout, siteBase } from '@/lib/quotes/mail';
+
+/** Priorities whose breach always reaches every quote admin, even when assigned. */
+const ESCALATE_PRIORITIES = new Set(['HIGH', 'URGENT', 'VIP']);
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/** "95m" → "1h 35m", for people. */
+function overdueText(minutes: number): string {
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
 
 /**
  * SLA sweep — finds tickets that have crossed their `dueAt` and haven't yet
  * been flagged (`slaBreachAt` is null). For each: stamps `slaBreachAt`,
  * notifies the assignee (or all admins if unassigned), and audits.
  *
+ * `dueAt` is the CURRENT reply deadline: the support actions restart it when
+ * a customer writes after our last reply and clear it (with slaBreachAt) when
+ * staff reply, so a ticket waiting on the customer is never flagged.
+ *
  * Idempotent: setting `slaBreachAt` makes the row no longer match the WHERE
  * clause on subsequent sweeps, so each ticket only fires once per breach
- * cycle. If priority/dueAt is later changed by an operator, `slaBreachAt` is
- * reset by setTicketPriority — that's the only way to retrigger.
+ * cycle. A new deadline (customer follow-up, priority change, reopening)
+ * resets `slaBreachAt`, which arms the next breach.
  *
  * Auth: header `X-Cron-Secret` must match env CRON_SECRET. Without this
  * the route is unreachable.
@@ -30,6 +47,7 @@ export async function POST(req: NextRequest) {
   }
 
   const now = new Date();
+  await ensureSettingsLoaded();
 
   // ─── Support tickets sweep ────────────────────────────────────────────
   const overdueTickets = await prisma.supportTicket.findMany({
@@ -63,18 +81,22 @@ export async function POST(req: NextRequest) {
     if (claim.count !== 1) continue; // another sweep already flagged this one
     const overdueMinutes = Math.max(1, Math.round((now.getTime() - (t.dueAt?.getTime() ?? now.getTime())) / 60_000));
     const title = `SLA breached · ${t.ref}`;
-    const body = `${t.priority}: "${t.subject}" — overdue by ${overdueMinutes}m`;
+    const body = `${t.priority}: "${t.subject}" — overdue by ${overdueText(overdueMinutes)}`;
     const href = `/admin/tickets/${t.id}`;
     if (t.assignedToId) {
       await notifyUser(t.assignedToId, title, body, href);
       if (t.assignedTo?.email) {
-        await sendEmail({
+        await sendInternalEmail({
           to: t.assignedTo.email,
-          subject: `[SLA] ${t.ref} — overdue ${overdueMinutes}m`,
-          html: `<p><strong>${escapeHtml(t.priority)}</strong> ticket <code>${t.ref}</code> has breached its SLA.</p>
-                 <p>${escapeHtml(t.subject)}</p>
-                 <p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open in admin</a></p>`,
-        }).catch(() => null);
+          subject: `[SLA] ${t.ref} — overdue ${overdueText(overdueMinutes)}`,
+          html: mailLayout({
+            heading: `Ticket ${t.ref} has breached its reply time`,
+            body: [
+              `<strong>${escapeHtml(t.priority)}</strong> ticket “${escapeHtml(t.subject)}” is overdue by ${overdueText(overdueMinutes)}. The customer is waiting for an answer.`,
+            ],
+            cta: { href: `${siteBase()}${href}`, label: 'Open the ticket' },
+          }),
+        }, 'sla:ticket');
       }
     } else {
       await notifyAdmins(title, body, href, 'SYSTEM');
@@ -98,7 +120,7 @@ export async function POST(req: NextRequest) {
     select: {
       id: true, proformaNumber: true, buyerName: true, buyerEmail: true,
       productCategory: true, priority: true, dueAt: true,
-      assignedToId: true, assignedTo: { select: { id: true, email: true } },
+      assignedToId: true, assignedTo: { select: { id: true, email: true, role: true } },
       product: { select: { title: true } },
     },
     take: 100,
@@ -117,25 +139,54 @@ export async function POST(req: NextRequest) {
     const ref = q.proformaNumber ?? QUOTE_REF(q.id);
     const subject = q.product?.title ?? q.productCategory ?? `from ${q.buyerName}`;
     const title = `SLA breached · ${ref}`;
-    const body = `${q.priority}: "${subject}" — overdue by ${overdueMinutes}m`;
-    const href = `/admin/quotes/${q.id}`;
+    const body = `${q.priority}: "${subject}" — overdue by ${overdueText(overdueMinutes)}`;
+    const adminHref = `/admin/quotes/${q.id}`;
+    // A supplier assignee works in their own inbox — /admin is forbidden to them.
+    const isSeller = q.assignedTo?.role === 'SELLER';
+    const sellerHref = `/app/seller/inbox/${q.id}`;
+    // Staff always hear about a supplier's overdue request and about
+    // high-priority breaches, not only about unassigned ones.
+    const escalate = !q.assignedToId || isSeller || ESCALATE_PRIORITIES.has(q.priority);
     if (q.assignedToId) {
-      await notifyUser(q.assignedToId, title, body, href);
-      // Imported sellers have placeholder addresses; send those to the intake inbox.
-      const slaTo = isDeliverableEmail(q.assignedTo?.email) ? q.assignedTo?.email : process.env.QUOTE_INTAKE_EMAIL;
-      if (slaTo) {
-        await sendInternalEmail({
-          to: slaTo,
-          subject: `[SLA] Quote ${ref} — overdue ${overdueMinutes}m`,
-          html: `<p><strong>${escapeHtml(q.priority)}</strong> quote <code>${ref}</code> has breached its SLA.</p>
-                 <p>${escapeHtml(subject)}</p>
-                 <p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open in admin</a></p>`,
-        }, 'sla:quote');
+      // An assigned admin is among the notified admins when escalating: one bell is enough.
+      if (isSeller || !escalate) await notifyUser(q.assignedToId, title, body, isSeller ? sellerHref : adminHref);
+      const deliverable = isDeliverableEmail(q.assignedTo?.email);
+      if (isSeller && deliverable) {
+        await trySendEmail({
+          to: q.assignedTo!.email,
+          subject: `[${ref}] A buyer is waiting for your answer`,
+          html: mailLayout({
+            heading: `Request ${ref} is waiting for your answer`,
+            body: [
+              `The reply time for the request “${escapeHtml(subject)}” passed ${overdueText(overdueMinutes)} ago.`,
+              'Please answer the buyer or send your price proposal from your supplier inbox. Our team has been told as well.',
+            ],
+            cta: { href: `${siteBase()}${sellerHref}`, label: 'Open the request' },
+          }),
+        }, 'sla:quote-seller');
+      } else {
+        // Imported sellers have placeholder addresses; send those to the intake inbox.
+        const slaTo = deliverable ? q.assignedTo?.email : process.env.QUOTE_INTAKE_EMAIL;
+        if (slaTo) {
+          await sendInternalEmail({
+            to: slaTo,
+            subject: `[SLA] Quote ${ref} — overdue ${overdueText(overdueMinutes)}`,
+            html: mailLayout({
+              heading: `Quote ${ref} has breached its reply time`,
+              body: [
+                `<strong>${escapeHtml(q.priority)}</strong> quote request “${escapeHtml(subject)}” is overdue by ${overdueText(overdueMinutes)}.`,
+                ...(isSeller ? [`It is assigned to the supplier ${escapeHtml(q.assignedTo?.email ?? '')}, whose address cannot receive e-mail.`] : []),
+              ],
+              cta: { href: `${siteBase()}${adminHref}`, label: 'Open in admin' },
+            }),
+          }, 'sla:quote');
+        }
       }
-    } else {
-      await notifyAdmins(title, body, href, 'SYSTEM');
     }
-    await audit('quote.sla.breach', ref, `priority=${q.priority} overdue=${overdueMinutes}m assignee=${q.assignedTo?.email ?? 'unassigned'}`);
+    if (escalate) {
+      await notifyAdmins(title, isSeller ? `${body} (assigned to supplier ${q.assignedTo?.email ?? ''})` : body, adminHref, 'SYSTEM');
+    }
+    await audit('quote.sla.breach', ref, `priority=${q.priority} overdue=${overdueMinutes}m assignee=${q.assignedTo?.email ?? 'unassigned'}${isSeller ? ' (supplier)' : ''}`);
     quotesNotified++;
   }
 
