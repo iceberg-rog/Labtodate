@@ -97,6 +97,10 @@ export const HOME_GROUP_SECTION: Partial<Record<HomeFieldGroup, HomeSection>> = 
 const lines = (...l: string[]) => l.join('\n');
 const SITE_HINT = ' {SITE} is replaced by the site name (Settings → Brand).';
 const LINK_HINT = 'Label|/link — the link is a page of this site (/…) or an https:// address.';
+const PAY_HINT = ' {PAYMENT_DOCS} and {PROFORMA} follow Payments & credit terms → “Payment methods at checkout” (the card counts once a Stripe key is set; a card order is paid without a proforma):'
+  + ' bank transfer only → “a proforma and a VAT invoice with every order” / “Proforma before payment”;'
+  + ' card too → “a VAT invoice with every order and a proforma for bank transfer” / “Proforma for bank transfer”;'
+  + ' card only → “a VAT invoice with every order” / nothing.';
 
 export const HOME_FIELDS: readonly HomeField[] = [
   // ── layout ──
@@ -124,8 +128,8 @@ export const HOME_FIELDS: readonly HomeField[] = [
   { key: 'HERO_TITLE', label: 'Title', group: 'hero', kind: 'line', default: 'The marketplace for', hint: 'The hero title (the main heading of the page).' },
   { key: 'HERO_ACCENT', label: 'Title — accent word', group: 'hero', kind: 'line', default: 'science.', hint: 'Shown after the title in the accent colour.' },
   { key: 'HERO_SUBTITLE', label: 'Subtitle', group: 'hero', kind: 'text',
-    default: 'Buy used laboratory equipment online, or request a written quote — every order with a proforma and a VAT invoice.',
-    hint: 'The paragraph under the hero title.' },
+    default: 'Buy used laboratory equipment online, or request a written quote — {PAYMENT_DOCS}.',
+    hint: 'The paragraph under the hero title.' + PAY_HINT },
   { key: 'HOME_HERO_SEARCH', label: 'Search placeholder', group: 'hero', kind: 'line', default: '',
     hint: 'Grey text in the search box. Empty = “Try ‘…’ or ‘…’…” built from the popular searches below.' },
   { key: 'HOME_HERO_BROWSE', label: 'Button next to the search', group: 'hero', kind: 'link', default: 'Browse|/marketplace', hint: LINK_HINT },
@@ -206,19 +210,20 @@ export const HOME_FIELDS: readonly HomeField[] = [
   { key: 'HOME_WAYS_TITLE', label: 'Heading', group: 'ways', kind: 'line', default: 'Choose', hint: 'The heading over the ways to buy.' },
   { key: 'HOME_WAYS_ACCENT', label: 'Heading — accent part', group: 'ways', kind: 'line', default: 'how you buy.', hint: 'Shown after the heading in the accent colour.' },
   { key: 'HOME_WAYS_LEAD', label: 'Text', group: 'ways', kind: 'text',
-    default: 'Four ways to get an instrument into your lab — all through one accountable counterparty.', hint: 'The paragraph under the heading.' },
+    default: 'Whichever way you choose, you deal with one accountable counterparty from start to finish.',
+    hint: 'The paragraph under the heading. Keep it true for every tab shown — selling to us included — and for any number of tabs.' },
   { key: 'HOME_WAYS_ITEMS', label: 'Tabs', group: 'ways', kind: 'text',
     default: lines(
-      'Buy now|Listed price|Instruments with a listed price can be ordered straight away.|Order at the listed price;Proforma and VAT invoice;Follow it in your account|Browse the marketplace|/marketplace',
+      'Buy now|Listed price|Instruments with a listed price can be ordered straight away.|Order at the listed price;{PROFORMA};VAT invoice with every order;Follow it in your account|Browse the marketplace|/marketplace',
       'Request a quote|Written offer|Ask for a quote on any listing — nothing is ordered until you accept the offer.|Itemised written offer;You accept before anything is ordered;Pay against the proforma|Request a quote|/marketplace',
       'Let us find it|Sourcing|Discontinued or rare? Tell us what you need and we search our supply network.|Tell us the model or the specs;We search our supply network;You decide on every offer|Submit a sourcing request|/let-us-find-it',
       'Sell to us|Acquisitions|Surplus instruments in your lab? Send us the details and we reply with an offer.|Send photos and details;We review and reply;{SELL_SHIPPING}|Sell your equipment|/sell',
     ),
-    hint: 'Up to four lines: Title|Tag|Text|bullet;bullet;bullet|Button|/link. {SELL_SHIPPING} follows Acquisitions → “Who ships equipment to you” (“You ship it to our warehouse” or “We arrange the collection”).' },
+    hint: 'Up to four lines: Title|Tag|Text|bullet;bullet;bullet|Button|/link (up to four bullets; an empty one is left out). {SELL_SHIPPING} follows Acquisitions → “Who ships equipment to you” (“You ship it to our warehouse” or “We arrange the collection”).' + PAY_HINT },
   { key: 'HOME_WAYS_START', label: 'Tab open at first', group: 'ways', kind: 'int', default: '1', min: 1, max: 4,
     hint: 'Which tab is open when the page loads (1 = the first). With one way the tabs are hidden and its card is shown.' },
-  { key: 'HOME_WAYS_CHIPS', label: 'Chips under the card', group: 'ways', kind: 'line', default: 'Proforma before payment, VAT invoice with every order, Everything in your account',
-    hint: 'Comma-separated. Only what is true for every order.' },
+  { key: 'HOME_WAYS_CHIPS', label: 'Chips under the card', group: 'ways', kind: 'line', default: '{PROFORMA}, VAT invoice with every order, Everything in your account',
+    hint: 'Comma-separated. Only what is true for every order; an empty chip is left out.' + PAY_HINT },
 
   // ── cta ──
   { key: 'HOME_OUTRO_WORD', label: 'Particle word', group: 'cta', kind: 'line', default: 'SOURCED.', hint: 'Shown above the sourcing call to action.' },
@@ -644,6 +649,24 @@ export interface HomeContext {
   sellLogistics?: 'SELLER_SHIPS' | 'WE_ARRANGE_PICKUP';
   /** OFFER_DEFAULT_INCOTERM, for {INCOTERM}. */
   incoterm?: string;
+  /** The payment methods checkout offers now (availablePaymentMethods()), for {PAYMENT_DOCS} and {PROFORMA}. Unset = card and bank transfer. */
+  paymentMethods?: readonly string[];
+}
+
+/**
+ * {PAYMENT_DOCS} (prose) and {PROFORMA} (a chip or bullet; '' = left out) as
+ * the payment methods make them true: every paid order gets a VAT invoice; a
+ * bank-transfer order (and every accepted offer) is paid against a proforma,
+ * a card order goes straight to the card page without one. With no method at
+ * all only quotes can be ordered, each paid against its proforma. Neither
+ * text contains a list separator (, ; |), so either fits a chip or a bullet.
+ */
+export function paymentDocTexts(methods?: readonly string[]): { docs: string; proforma: string } {
+  const card = !methods || methods.includes('STRIPE_CARD');
+  const bank = !methods || !methods.length || methods.includes('BANK_TRANSFER');
+  if (!card) return { docs: 'a proforma and a VAT invoice with every order', proforma: 'Proforma before payment' };
+  if (bank) return { docs: 'a VAT invoice with every order and a proforma for bank transfer', proforma: 'Proforma for bank transfer' };
+  return { docs: 'a VAT invoice with every order', proforma: '' };
 }
 
 const defaultCta = (key: string): [string, string] => {
@@ -655,7 +678,10 @@ const defaultCta = (key: string): [string, string] => {
 export function getHomeContent(read: HomeRead, ctx: HomeContext): HomeContent {
   const site = ctx.site;
   const sell = ctx.sellLogistics === 'WE_ARRANGE_PICKUP' ? 'We arrange the collection' : 'You ship it to our warehouse';
-  const tokens = (s: string) => s.replaceAll('{SITE}', site).replaceAll('{SELL_SHIPPING}', sell).replaceAll('{INCOTERM}', ctx.incoterm || 'EXW');
+  const pay = paymentDocTexts(ctx.paymentMethods);
+  const tokens = (s: string) => s
+    .replaceAll('{SITE}', site).replaceAll('{SELL_SHIPPING}', sell).replaceAll('{INCOTERM}', ctx.incoterm || 'EXW')
+    .replaceAll('{PAYMENT_DOCS}', pay.docs).replaceAll('{PROFORMA}', pay.proforma);
   const v = (key: string) => tokens(homeValue(read, key));
   const cta = (key: string) => parseCta(v(key), defaultCta(key));
   const int = (key: string) => {

@@ -17,7 +17,8 @@ import { audit } from '@/lib/observability';
 import { LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
 import { ownMediaPath } from '@/lib/media/public-src';
 import { HOME_KEYS, HOME_LEGACY_KEYS, envRead, homeField, homeValue, isHomeKey, parseCategoryItems, parseSlugList } from '@/lib/home-sections';
-import { clearHomeDraft, homeEditorValues, writeHomeDraft } from '@/lib/home/draft';
+import { clearHomeDraft, homeEditorValues, homeLiveVersion, latestHomeChange, readHomeDraft, writeHomeDraft } from '@/lib/home/draft';
+import { decodeHomeVersion, homeVersionConflict, type HomeIntent } from '@/lib/home/editor-version';
 import { invalidateHomeLanding } from '@/lib/home-landing-data';
 
 type Result = { ok: boolean; message: string };
@@ -114,6 +115,22 @@ function changedLabels(values: Record<string, string>): string[] {
   }).map(label);
 }
 
+const fmtWhen = (d: Date) => d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+const RELOAD = 'Nothing was saved — reload the page to see it, then make your change again (copy anything you typed first).';
+
+/** Why this submit must not go ahead: what changed since the editor was opened. */
+async function staleEditorMessage(conflict: 'live' | 'draft' | 'unknown'): Promise<string> {
+  if (conflict === 'unknown') return 'This editor was opened before the last update of Admin → Homepage. Nothing was saved — reload the page and make your change again.';
+  if (conflict === 'live') {
+    const c = await latestHomeChange();
+    const what = c ? ` (latest: “${label(c.key)}”${c.actorEmail ? ` by ${c.actorEmail}` : ''}, ${fmtWhen(c.createdAt)})` : '';
+    return `The homepage changed since you opened it${what}. ${RELOAD}`;
+  }
+  const d = await readHomeDraft();
+  const what = d ? `was saved${d.by ? ` by ${d.by}` : ''}${d.savedAt ? `, ${fmtWhen(new Date(d.savedAt))}` : ''}` : 'was published or discarded';
+  return `The homepage draft ${what} since you opened the editor. ${RELOAD}`;
+}
+
 const list = (labels: string[], max = 6) =>
   labels.length > max ? `${labels.slice(0, max).map((l) => `“${l}”`).join(', ')} and ${labels.length - max} more` : labels.map((l) => `“${l}”`).join(', ');
 
@@ -122,14 +139,24 @@ const list = (labels: string[], max = 6) =>
  * (the preview shows it, the live page does not change), “Publish” saves them
  * through the settings registry — validation, one Change-history row per
  * changed key, Revert — and clears the draft, “Discard draft” drops it.
+ *
+ * The form posts every homepage key, so each submit also posts the version the
+ * editor was opened on (homeVersion): when another admin published, reverted or
+ * saved a draft since, the submit is refused instead of putting the values this
+ * editor was opened with back over theirs (and crediting this admin with it).
  */
 export async function submitHomepage(fd: FormData): Promise<Result> {
   const session = await requireCapability('content:cms', { redirectTo: '/admin' });
   await ensureSettingsLoaded();
-  const intent = String(fd.get('intent') ?? 'draft');
+  const raw = String(fd.get('intent') ?? 'draft');
+  const intent: HomeIntent = raw === 'publish' || raw === 'discard' ? raw : 'draft';
+  const opened = decodeHomeVersion(fd.get('homeVersion'));
+  const [liveNow, draftNow] = await Promise.all([homeLiveVersion(), readHomeDraft()]);
+  const stale = homeVersionConflict(intent, opened, { live: liveNow, draft: draftNow?.savedAt ?? '' });
+  if (stale || !opened) return { ok: false, message: await staleEditorMessage(stale ?? 'unknown') };
 
   if (intent === 'discard') {
-    await clearHomeDraft();
+    if (!(await clearHomeDraft(opened.draft))) return { ok: false, message: await staleEditorMessage('draft') };
     await audit('homepage.draft.discard');
     revalidatePath('/admin/homepage');
     return { ok: true, message: 'Draft discarded — the editor shows the live homepage again.' };
@@ -139,11 +166,12 @@ export async function submitHomepage(fd: FormData): Promise<Result> {
   if (!Object.keys(values).length) return { ok: false, message: 'Nothing to save — the form sent no homepage fields.' };
   const { problems, warnings } = await checkValues(values);
   if (problems.length) return { ok: false, message: `${problems.join(' · ')} Nothing was saved.` };
-  const note = warnings.length ? ` Note: ${warnings.join(' · ')}` : '';
+  let note = warnings.length ? ` Note: ${warnings.join(' · ')}` : '';
 
-  if (intent !== 'publish') {
+  if (intent === 'draft') {
     const changed = changedLabels(values);
-    await writeHomeDraft(values, session.user.email ?? null);
+    // saved only over the draft this editor was opened on (one compare-and-write)
+    if (!(await writeHomeDraft(values, session.user.email ?? null, opened.draft))) return { ok: false, message: await staleEditorMessage('draft') };
     await audit('homepage.draft', undefined, changed.join(', ').slice(0, 900));
     revalidatePath('/admin/homepage');
     return {
@@ -165,13 +193,15 @@ export async function submitHomepage(fd: FormData): Promise<Result> {
     await prisma.setting.deleteMany({ where: { key: { in: [...HOME_LEGACY_KEYS] } } });
     for (const k of HOME_LEGACY_KEYS) delete process.env[k];
   }
-  await clearHomeDraft();
+  // the draft just published — a newer one saved meanwhile by another admin is kept
+  const draftKept = !(await clearHomeDraft(opened.draft));
+  if (draftKept) note += ' A newer draft saved meanwhile by another admin was kept — open the editor again to see it.';
   invalidateHomeLanding();
   await audit('homepage.publish', undefined, saved.changedKeys.join(',').slice(0, 900));
   revalidatePath('/');
   revalidatePath('/admin/homepage');
   revalidatePath('/admin/settings');
-  if (!saved.changedKeys.length) return { ok: true, message: `Nothing changed — the homepage already shows this. The draft was cleared.${note}` };
+  if (!saved.changedKeys.length) return { ok: true, message: `Nothing changed — the homepage already shows this.${draftKept ? '' : ' The draft was cleared.'}${note}` };
   return {
     ok: true,
     message: `Published ✓ — ${saved.changedKeys.length} change${saved.changedKeys.length === 1 ? '' : 's'} live: ${list(saved.changedKeys.map(label))}. Each is in the Change history below, with Revert.${note}`,

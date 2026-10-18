@@ -52,6 +52,37 @@ test('defaults tell the real flow: written offer, then acceptance and proforma, 
   assert.equal(getHomeContent(none, { ...ctx, incoterm: 'FCA' }).demoOffer[1][1], 'quoted separately (FCA)');
 });
 
+test('proforma claims follow the payment methods: a card order is paid without one', () => {
+  const bankOnly = getHomeContent(none, { ...ctx, paymentMethods: ['BANK_TRANSFER'] });
+  assert.equal(bankOnly.heroSubtitle, 'Buy used laboratory equipment online, or request a written quote — a proforma and a VAT invoice with every order.');
+  assert.deepEqual(bankOnly.waysChips, ['Proforma before payment', 'VAT invoice with every order', 'Everything in your account']);
+  assert.deepEqual(bankOnly.ways[0].bullets, ['Order at the listed price', 'Proforma before payment', 'VAT invoice with every order', 'Follow it in your account']);
+  // no method at all: only quotes can be ordered, each paid against its proforma
+  assert.deepEqual(getHomeContent(none, { ...ctx, paymentMethods: [] }).waysChips, bankOnly.waysChips);
+
+  const withCard = getHomeContent(none, { ...ctx, paymentMethods: ['BANK_TRANSFER', 'STRIPE_CARD'] });
+  assert.equal(withCard.heroSubtitle, 'Buy used laboratory equipment online, or request a written quote — a VAT invoice with every order and a proforma for bank transfer.');
+  assert.deepEqual(withCard.waysChips, ['Proforma for bank transfer', 'VAT invoice with every order', 'Everything in your account']);
+  assert.ok(withCard.ways[0].bullets.includes('Proforma for bank transfer'));
+  assert.deepEqual(getHomeContent(none, ctx).waysChips, withCard.waysChips, 'methods unknown: the wording true with or without the card');
+
+  const cardOnly = getHomeContent(none, { ...ctx, paymentMethods: ['STRIPE_CARD'] });
+  assert.equal(cardOnly.heroSubtitle, 'Buy used laboratory equipment online, or request a written quote — a VAT invoice with every order.');
+  assert.deepEqual(cardOnly.waysChips, ['VAT invoice with every order', 'Everything in your account'], 'the empty proforma chip is left out');
+  assert.deepEqual(cardOnly.ways[0].bullets, ['Order at the listed price', 'VAT invoice with every order', 'Follow it in your account']);
+
+  for (const c of [withCard, cardOnly]) {
+    const text = JSON.stringify([c.heroSubtitle, c.waysChips, c.ways[0]]);
+    assert.doesNotMatch(text, /every order with a proforma|proforma before payment|proforma and (a )?VAT invoice/i);
+  }
+});
+
+test('the ways lead is true for every tab, selling included, and for any number of tabs', () => {
+  const lead = getHomeContent(none, ctx).waysLead;
+  assert.doesNotMatch(lead, /\b(one|two|three|four|\d) ways\b|into your lab/i);
+  assert.match(lead, /one accountable counterparty/);
+});
+
 test('the brand comes from SITE_NAME: no default names it, {SITE} becomes the site name', () => {
   for (const f of HOME_FIELDS) assert.doesNotMatch(f.default, /lab2date|labtodate/i, f.key);
   const c = getHomeContent(none, ctx);

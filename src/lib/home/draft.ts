@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { HOME_KEYS, homeValue, envRead, getHomeLayout, type HomeRead } from '@/lib/home-sections';
 
@@ -32,23 +33,79 @@ function parseDraft(raw: string | null | undefined): HomeDraft | null {
   }
 }
 
+const draftRow = () => prisma.setting.findUnique({ where: { key: HOME_DRAFT_KEY } }).catch(() => null);
+
 export async function readHomeDraft(): Promise<HomeDraft | null> {
-  const row = await prisma.setting.findUnique({ where: { key: HOME_DRAFT_KEY } }).catch(() => null);
-  return parseDraft(row?.value);
+  return parseDraft((await draftRow())?.value);
 }
 
-/** Save `values` as the draft (the preview token stays the same while a draft exists). */
-export async function writeHomeDraft(values: Record<string, string>, by: string | null): Promise<HomeDraft> {
-  const old = await readHomeDraft();
+/**
+ * Save `values` as the draft (the preview token stays the same while a draft
+ * exists). With `expectSavedAt` ('' = no draft) it saves only over that draft —
+ * compared and written in one statement — and returns null when another admin
+ * saved, published or discarded the draft meanwhile (nothing is written).
+ */
+export async function writeHomeDraft(values: Record<string, string>, by: string | null, expectSavedAt?: string): Promise<HomeDraft | null> {
+  const row = await draftRow();
+  const old = parseDraft(row?.value);
+  if (expectSavedAt !== undefined && (old?.savedAt ?? '') !== expectSavedAt) return null;
   const draft: HomeDraft = { token: old?.token ?? randomBytes(18).toString('base64url'), savedAt: new Date().toISOString(), by, values };
   const value = JSON.stringify(draft);
-  await prisma.setting.upsert({ where: { key: HOME_DRAFT_KEY }, update: { value }, create: { key: HOME_DRAFT_KEY, value } });
-  return draft;
+  if (expectSavedAt === undefined) {
+    await prisma.setting.upsert({ where: { key: HOME_DRAFT_KEY }, update: { value }, create: { key: HOME_DRAFT_KEY, value } });
+    return draft;
+  }
+  if (row) {
+    const r = await prisma.setting.updateMany({ where: { key: HOME_DRAFT_KEY, value: row.value }, data: { value } });
+    return r.count ? draft : null;
+  }
+  try {
+    await prisma.setting.create({ data: { key: HOME_DRAFT_KEY, value } });
+    return draft;
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return null; // created meanwhile
+    throw e;
+  }
 }
 
-export async function clearHomeDraft(): Promise<void> {
-  await prisma.setting.deleteMany({ where: { key: HOME_DRAFT_KEY } });
-  delete process.env[HOME_DRAFT_KEY];
+/**
+ * Delete the draft. With `expectSavedAt` only that draft ('' = none: nothing to
+ * delete); false when another admin saved a newer draft meanwhile, which is kept.
+ */
+export async function clearHomeDraft(expectSavedAt?: string): Promise<boolean> {
+  if (expectSavedAt === undefined) {
+    await prisma.setting.deleteMany({ where: { key: HOME_DRAFT_KEY } });
+    delete process.env[HOME_DRAFT_KEY];
+    return true;
+  }
+  const row = await draftRow();
+  if (!row) return true;
+  if ((parseDraft(row.value)?.savedAt ?? '') !== expectSavedAt) return false;
+  const r = await prisma.setting.deleteMany({ where: { key: HOME_DRAFT_KEY, value: row.value } });
+  if (r.count) delete process.env[HOME_DRAFT_KEY];
+  return r.count > 0;
+}
+
+/**
+ * The published homepage's version (see src/lib/home/editor-version.ts): how
+ * many homepage changes the Change history holds and when the newest was made.
+ * Every publish, revert or Settings save of a homepage key adds a row, and rows
+ * are never deleted, so the version moves with each of them. Read it BEFORE
+ * the values an editor is opened with: a change in between then refuses the
+ * save instead of letting it slip through.
+ */
+export async function homeLiveVersion(): Promise<string> {
+  const a = await prisma.settingChange.aggregate({ where: { key: { in: [...HOME_KEYS] } }, _count: { _all: true }, _max: { createdAt: true } });
+  return `${a._count._all}@${a._max.createdAt?.toISOString() ?? '-'}`;
+}
+
+/** The newest published homepage change (for the “changed since you opened it” message). */
+export function latestHomeChange() {
+  return prisma.settingChange.findFirst({
+    where: { key: { in: [...HOME_KEYS] } },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    select: { key: true, actorEmail: true, createdAt: true },
+  });
 }
 
 /** The draft whose preview token is `token`, or null (wrong, stale or missing token). */

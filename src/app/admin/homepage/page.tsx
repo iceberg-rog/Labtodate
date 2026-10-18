@@ -1,11 +1,12 @@
 import { Clock } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { ensureSettingsLoaded, listSettingChanges, normaliseInput, settingDef } from '@/lib/settings';
+import { ensureSettingsLoaded, invalidateSettingsCache, listSettingChanges, normaliseInput, settingDef } from '@/lib/settings';
 import { HOME_KEYS, draftRead, envRead, isHomeKey, homeValue } from '@/lib/home-sections';
 import { LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
 import { getStationCategories } from '@/lib/home-landing-data';
-import { homeEditorValues, readHomeDraft } from '@/lib/home/draft';
+import { homeEditorValues, homeLiveVersion, readHomeDraft } from '@/lib/home/draft';
+import { encodeHomeVersion } from '@/lib/home/editor-version';
 import { siteName } from '@/lib/brand/identity';
 import { SettingRevertButton } from '@/components/admin/SettingRevertButton';
 import { HomepageEditor } from './HomepageEditor';
@@ -18,9 +19,15 @@ const fmtWhen = (d: Date) => d.toLocaleString('en-GB', { day: '2-digit', month: 
 
 export default async function AdminHomepagePage() {
   await requireCapability('content:cms');
+  // The version first, then the values it stands for (fresh from the database,
+  // not the few-seconds settings cache): a change in between makes the version
+  // older than the values, so a save is refused rather than undoing it.
+  const liveVersion = await homeLiveVersion();
+  invalidateSettingsCache();
   await ensureSettingsLoaded();
 
   const draft = await readHomeDraft();
+  const version = encodeHomeVersion({ live: liveVersion, draft: draft?.savedAt ?? '' });
   const live = homeEditorValues(envRead);
   const values = draft ? homeEditorValues(draftRead(draft.values)) : live;
   const norm = (k: string, v: string) => {
@@ -51,7 +58,8 @@ export default async function AdminHomepagePage() {
       </div>
 
       <HomepageEditor
-        key={draft?.savedAt ?? 'live'}
+        key={version}
+        version={version}
         values={values}
         changed={changed}
         draft={draft ? { token: draft.token, savedAt: draft.savedAt, by: draft.by } : null}

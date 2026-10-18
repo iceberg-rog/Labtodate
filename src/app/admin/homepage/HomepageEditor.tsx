@@ -215,6 +215,8 @@ function ProductPicker({ name, value, products, multi, label, hint }: { name: st
 }
 
 export interface HomepageEditorProps {
+  /** What the editor was opened on (encodeHomeVersion), posted back so a stale editor cannot overwrite newer work. */
+  version: string;
   values: Record<string, string>;
   /** Keys whose draft value differs from the live one. */
   changed: string[];
@@ -233,7 +235,7 @@ const GROUPS: HomeFieldGroup[] = ['intro', 'hero', 'categories', 'route', 'demo'
  * saved as a draft (shown in the preview), then published through the
  * settings registry (Change history, Revert).
  */
-export function HomepageEditor({ values, changed, draft, categories, products, autoCategories, siteName }: HomepageEditorProps) {
+export function HomepageEditor({ version, values, changed, draft, categories, products, autoCategories, siteName }: HomepageEditorProps) {
   const changedSet = new Set(changed);
   const stationsShown = parseStations(values.HOME_STATIONS ?? '');
   const stationRows: ModuleRow[] = [
@@ -263,6 +265,7 @@ export function HomepageEditor({ values, changed, draft, categories, products, a
               ? 'Discard the draft? Its unpublished changes are lost.'
               : null}
       >
+        <input type="hidden" name="homeVersion" value={version} />
         {draft && (
           <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30 p-4 text-sm" role="status">
             <b>Unpublished draft</b> — saved {savedAt && !Number.isNaN(savedAt.getTime()) ? savedAt.toLocaleString('en-GB') : ''}{draft.by ? ` by ${draft.by}` : ''}.

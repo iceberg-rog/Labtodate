@@ -13,6 +13,7 @@ import { type HomeExtra, draftRead, envRead, getHomeContent, getHomeLayout } fro
 import { getLiveCounts, liveStats } from '@/lib/home-stats';
 import { siteTextsFrom } from '@/lib/catalog/site-texts';
 import { getCatalogPolicy } from '@/lib/catalog/policy';
+import { availablePaymentMethods } from '@/lib/checkout/server';
 import { legalIdentity } from '@/lib/brand/identity';
 import { absoluteSiteUrl } from '@/lib/media/public-src';
 import { organizationJsonLd } from '@/lib/home/org-jsonld';
@@ -73,7 +74,13 @@ export default async function HomePage({ searchParams }: { searchParams: SearchP
   const texts = siteTextsFrom((k) => process.env[k] ?? '');
   const site = texts.siteName;
   const policy = await getCatalogPolicy();
-  const content = getHomeContent(read, { site, sellLogistics: policy.sellLogisticsMode, incoterm: settingString('OFFER_DEFAULT_INCOTERM') });
+  const content = getHomeContent(read, {
+    site,
+    sellLogistics: policy.sellLogisticsMode,
+    incoterm: settingString('OFFER_DEFAULT_INCOTERM'),
+    // the proforma / VAT-invoice wording follows the methods checkout offers now
+    paymentMethods: availablePaymentMethods(),
+  });
   const { stations, extras } = getHomeLayout(read);
   const build = isBuildPhase();
 
