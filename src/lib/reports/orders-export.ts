@@ -3,14 +3,16 @@ import { humaniseBuyer } from '@/lib/orders/display';
 import { csvMoney, csvRate } from './csv';
 import { normaliseVatId } from './documents';
 import { localDay } from './period';
-import { invoicesOf } from './revenue';
+import { invoiceChain } from './revenue';
 
 /**
  * The orders CSV (Admin → Orders → Export) for book-keeping: the order, its
  * money and fulfilment, and the fiscal columns the accountant books from. The
  * invoice and VAT columns come from the order's CURRENT invoice as issued
  * (after a correction: the replacing invoice); before an invoice exists they
- * come from the order itself.
+ * come from the order itself. The credit-note columns cover the credit notes
+ * of that invoice only: a replaced invoice and the credit notes that cancelled
+ * it net out, so they are listed by number without an amount.
  */
 
 export const ORDER_EXPORT_INCLUDE = {
@@ -18,7 +20,7 @@ export const ORDER_EXPORT_INCLUDE = {
   items: { select: { titleSnapshot: true, quantity: true, priceCentsSnapshot: true } },
   sourcingRequest: { select: { proformaNumber: true } },
   documents: {
-    select: { kind: true, number: true, issueDate: true, createdAt: true, vatTreatment: true, taxCents: true, totalCents: true, voidedAt: true, snapshot: true },
+    select: { id: true, kind: true, number: true, originalDocumentId: true, issueDate: true, createdAt: true, vatTreatment: true, taxCents: true, totalCents: true, voidedAt: true, snapshot: true },
     orderBy: { createdAt: 'asc' },
   },
 } satisfies Prisma.OrderInclude;
@@ -53,6 +55,8 @@ export const ORDER_CSV_HEADER = [
   'buyer_vat_id',
   'credit_note_numbers',
   'credit_notes_total',
+  'replaced_invoice_numbers',
+  'replacement_credit_note_numbers',
 ] as const;
 
 /** VAT rates and buyer VAT ID as printed on an issued document. */
@@ -70,9 +74,9 @@ export function printedVat(snapshot: unknown): { rates: number[]; buyerVatId: st
 export function orderCsvRow(o: OrderExportRecord, tz: string): string[] {
   const b = humaniseBuyer(o.buyer);
   const items = o.items.map((i) => `${i.quantity}× ${i.titleSnapshot} (${(i.priceCentsSnapshot / 100).toFixed(2)})`).join(' | ');
-  const invoices = invoicesOf(o.documents);
-  const invoice = invoices[invoices.length - 1] ?? null;
-  const credits = o.documents.filter((d) => d.kind === 'CREDIT_NOTE');
+  const chain = invoiceChain(o.documents);
+  const invoice = chain.current;
+  const credits = chain.credits;
   const proforma = [...o.documents].reverse().find((d) => d.kind === 'PROFORMA' && !d.voidedAt);
   const printed = invoice ? printedVat(invoice.snapshot) : null;
   // Not invoiced yet: the goods rate, and the freight rate when it differs.
@@ -107,5 +111,7 @@ export function orderCsvRow(o: OrderExportRecord, tz: string): string[] {
     printed?.buyerVatId ?? normaliseVatId(o.buyerVatId) ?? '',
     credits.map((d) => d.number).join(' | '),
     credits.length ? csvMoney(credits.reduce((s, d) => s + d.totalCents, 0)) : '',
+    chain.replaced.map((d) => d.number).join(' | '),
+    chain.replacementCredits.map((d) => d.number).join(' | '),
   ];
 }

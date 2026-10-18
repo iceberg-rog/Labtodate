@@ -4,6 +4,7 @@ import {
   averageSale,
   docNetSplit,
   formatByCurrency,
+  invoiceChain,
   revenueByCurrency,
   revenueEvents,
   revenueSeries,
@@ -14,16 +15,21 @@ import {
 
 const D = (s: string) => new Date(s);
 
-function doc(kind: RevenueDocInput['kind'], issued: string, goods: number, freight: number, vatBp = 2100): RevenueDocInput {
+let seq = 0;
+function doc(kind: RevenueDocInput['kind'], issued: string, goods: number, freight: number, vatBp = 2100, over: Partial<RevenueDocInput> = {}): RevenueDocInput {
   const net = goods + freight;
   const tax = Math.round((net * vatBp) / 10000);
   return {
+    id: `d${++seq}`,
     kind,
+    vatTreatment: 'DOMESTIC_STANDARD',
+    originalDocumentId: null,
     issueDate: D(issued),
     createdAt: D(issued),
     subtotalCents: net,
     totalCents: net + tax,
     snapshot: { totals: { goodsCents: goods, shippingCents: freight, netCents: net, taxCents: tax, totalCents: net + tax } },
+    ...over,
   };
 }
 
@@ -31,6 +37,7 @@ function order(p: Partial<RevenueOrderInput> & Pick<RevenueOrderInput, 'id'>): R
   return {
     currency: 'EUR',
     status: 'PAID',
+    vatTreatment: 'DOMESTIC_STANDARD',
     subtotalCents: 0,
     shippingCents: 0,
     totalCents: 0,
@@ -39,6 +46,7 @@ function order(p: Partial<RevenueOrderInput> & Pick<RevenueOrderInput, 'id'>): R
     createdAt: D('2026-10-01T09:00:00Z'),
     documents: [],
     refunds: [],
+    items: [],
     ...p,
   };
 }
@@ -184,4 +192,43 @@ test('document split: frozen totals, else SHIPPING lines, else all goods', () =>
     { goodsCents: 900, freightCents: 100 },
   );
   assert.deepEqual(docNetSplit({ subtotalCents: 1000, snapshot: null }), { goodsCents: 1000, freightCents: 0 });
+});
+
+test('invoice chain: the replaced invoice and its credit note apart from the real credits', () => {
+  const inv23 = doc('INVOICE', '2026-10-18T00:20:00Z', 185_000, 18_500, 2100, { id: 'inv23' });
+  const cn8 = doc('CREDIT_NOTE', '2026-10-18T01:08:13Z', -185_000, -18_500, 2100, { id: 'cn8', originalDocumentId: 'inv23' });
+  const inv24 = doc('INVOICE', '2026-10-18T01:08:14Z', 185_000, 18_500, 2100, { id: 'inv24', originalDocumentId: 'inv23' });
+  const cn9 = doc('CREDIT_NOTE', '2026-10-20T09:00:00Z', -10_000, 0, 2100, { id: 'cn9', originalDocumentId: 'inv24' });
+  const legacy = doc('CREDIT_NOTE', '2026-10-21T09:00:00Z', -5_000, 0, 2100, { id: 'old' });
+  const c = invoiceChain([cn9, inv24, cn8, inv23, legacy]);
+  assert.equal(c.current?.id, 'inv24');
+  assert.deepEqual(c.replaced.map((d) => d.id), ['inv23']);
+  assert.deepEqual(c.replacementCredits.map((d) => d.id), ['cn8']);
+  // A credit note that names no invoice counts as a credit of the current one.
+  assert.deepEqual(c.credits.map((d) => d.id), ['cn9', 'old']);
+  assert.deepEqual(invoiceChain([]), { current: null, replaced: [], replacementCredits: [], credits: [] });
+});
+
+test('margin scheme: revenue excl. VAT leaves out the margin VAT inside the price', () => {
+  // €6,500 second-hand unit bought for €4,200 (margin VAT €399.17) + €150 freight.
+  const items = [{ priceCentsSnapshot: 650_000, quantity: 1, product: { vatScheme: 'MARGIN', purchaseCostCents: 420_000 } }];
+  const o = order({
+    id: 'margin',
+    vatTreatment: 'MARGIN_SCHEME',
+    subtotalCents: 650_000,
+    shippingCents: 15_000,
+    totalCents: 668_150,
+    paidAt: D('2026-10-20T09:00:00Z'),
+    items,
+    documents: [doc('INVOICE', '2026-10-20T10:00:00Z', 650_000, 15_000, 0, { id: 'mi', vatTreatment: 'MARGIN_SCHEME' })],
+  });
+  const ev = revenueEvents(o, { marginRateBp: 2100 });
+  assert.deepEqual(ev.map((e) => [e.kind, e.goodsCents, e.freightCents]), [['SALE', 610_083, 15_000]]);
+  // Credited in full: back to zero.
+  const credited = { ...o, documents: [...o.documents, doc('CREDIT_NOTE', '2026-10-21T10:00:00Z', -650_000, -15_000, 0, { id: 'mc', vatTreatment: 'MARGIN_SCHEME', originalDocumentId: 'mi' })] };
+  assert.equal(revenueByCurrency(revenueEvents(credited, { marginRateBp: 2100 }), { freight: true })[0].cents, 0);
+  // Paid, invoice still held: the order's own margin.
+  assert.equal(revenueEvents({ ...o, documents: [] }, { marginRateBp: 2100 })[0].goodsCents, 610_083);
+  // Without a rate nothing is taken off.
+  assert.equal(revenueEvents(o)[0].goodsCents, 650_000);
 });

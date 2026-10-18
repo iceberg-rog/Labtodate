@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { vatTreatmentLabel } from '@/lib/tax/determine';
 import { inPeriod, localDay, monthOf, periodKeyLabel, prefilterBounds, quarterOf, type Period } from './period';
 import { csvMoney, csvRate } from './csv';
+import { isTaxedRow, loadMarginVat, type MarginVat } from './margin-vat';
 
 /**
  * The document register for the accountant: every proforma, invoice and
@@ -11,15 +12,26 @@ import { csvMoney, csvRate } from './csv';
  * and the ICP listing (intra-Community supplies at 0%, per quarter and
  * buyer VAT ID). Proformas are payment requests, not tax documents: they are
  * listed but never counted in the VAT summary or the ICP.
+ *
+ * Margin scheme: a margin-scheme invoice prints VAT on the freight only; the
+ * goods carry the VAT on the margin inside their price and it is never
+ * printed. The register shows those goods on their own line, and the totals
+ * and the VAT summary add the margin VAT owed (computed as issueInvoice does,
+ * see margin-vat.ts) as a separate line, flagged when a unit has no purchase
+ * cost (its margin VAT is unknown and not included).
  */
 
 export type DocKindCode = 'PROFORMA' | 'INVOICE' | 'CREDIT_NOTE';
 
+/** vat: a VAT row as printed · margin-goods: margin-scheme goods (VAT inside the price) · margin-vat: the margin VAT owed, never printed. */
+export type VatLine = 'vat' | 'margin-goods' | 'margin-vat';
+
 export interface DocRateRow {
-  /** null = the rate could not be determined (legacy document). */
+  /** null = the rate could not be determined (legacy document), or margin-scheme goods. */
   rateBp: number | null;
   baseCents: number;
   taxCents: number;
+  line: 'vat' | 'margin-goods';
 }
 
 export interface DocRow {
@@ -45,6 +57,8 @@ export interface DocRow {
   state: 'issued' | 'voided' | 'superseded';
   sentAt: Date | null;
   legacy: boolean;
+  /** Margin-scheme invoice / credit note: the margin VAT it owes (null = not computed, e.g. no order). */
+  marginVat: MarginVat | null;
 }
 
 const DOC_SELECT = {
@@ -84,18 +98,26 @@ export function vatIdCountry(v: string | null | undefined): string | null {
   return m ? m[1] : null;
 }
 
-export function docRowOf(d: DocRecord, tz: string): DocRow {
+export function docRowOf(d: DocRecord, tz: string, marginVat: MarginVat | null = null): DocRow {
   const snap = (d.snapshot && typeof d.snapshot === 'object' ? d.snapshot : {}) as {
     orderNumber?: unknown;
     buyer?: { name?: unknown; company?: unknown; vatId?: unknown; country?: unknown };
     vat?: { buyerVatId?: unknown; rows?: Array<{ rateBp?: unknown; baseCents?: unknown; taxCents?: unknown }> };
     original?: { number?: unknown };
   };
-  const rows = Array.isArray(snap.vat?.rows)
+  const printed: DocRateRow[] = Array.isArray(snap.vat?.rows)
     ? snap.vat.rows
         .filter((r) => isInt(r?.baseCents) && isInt(r?.taxCents))
-        .map((r) => ({ rateBp: isInt(r.rateBp) ? r.rateBp : null, baseCents: r.baseCents as number, taxCents: r.taxCents as number }))
+        .map((r) => ({ rateBp: isInt(r.rateBp) ? r.rateBp : null, baseCents: r.baseCents as number, taxCents: r.taxCents as number, line: 'vat' as const }))
     : [];
+  let rates = printed;
+  if (d.vatTreatment === 'MARGIN_SCHEME') {
+    // The goods have no VAT row (or a 0% one): one line for them, their margin VAT inside the price.
+    const taxed = printed.filter(isTaxedRow);
+    const goods = d.subtotalCents - taxed.reduce((s, r) => s + r.baseCents, 0);
+    const goodsTax = d.taxCents - taxed.reduce((s, r) => s + r.taxCents, 0);
+    rates = goods || goodsTax ? [...taxed, { rateBp: null, baseCents: goods, taxCents: goodsTax, line: 'margin-goods' }] : taxed;
+  }
   return {
     id: d.id,
     number: d.number,
@@ -108,8 +130,8 @@ export function docRowOf(d: DocRecord, tz: string): DocRow {
     netCents: d.subtotalCents,
     taxCents: d.taxCents,
     totalCents: d.totalCents,
-    // Margin-scheme documents print no VAT row: one row with the document's own amounts.
-    rates: rows.length ? rows : [{ rateBp: null, baseCents: d.subtotalCents, taxCents: d.taxCents }],
+    // A legacy document without VAT rows: one row with its own amounts.
+    rates: rates.length ? rates : [{ rateBp: null, baseCents: d.subtotalCents, taxCents: d.taxCents, line: 'vat' }],
     buyer: {
       name: str(snap.buyer?.name),
       company: str(snap.buyer?.company),
@@ -122,6 +144,7 @@ export function docRowOf(d: DocRecord, tz: string): DocRow {
     state: d.voidedAt ? 'voided' : d.supersededById ? 'superseded' : 'issued',
     sentAt: d.sentAt,
     legacy: d.legacy,
+    marginVat: d.kind === 'PROFORMA' ? null : marginVat,
   };
 }
 
@@ -133,7 +156,9 @@ export async function loadDocRows(period: Period, tz: string): Promise<DocRow[]>
     orderBy: [{ issueDate: 'desc' }, { number: 'desc' }],
     select: DOC_SELECT,
   });
-  return docs.filter((d) => inPeriod(d.issueDate, period, tz)).map((d) => docRowOf(d, tz));
+  const inside = docs.filter((d) => inPeriod(d.issueDate, period, tz));
+  const margin = await loadMarginVat(inside.filter((d) => d.vatTreatment === 'MARGIN_SCHEME' && d.kind !== 'PROFORMA' && d.order).map((d) => d.order!.id));
+  return inside.map((d) => docRowOf(d, tz, margin.get(d.id) ?? null));
 }
 
 export type DocKindFilter = 'all' | 'fiscal' | DocKindCode;
@@ -162,26 +187,53 @@ const isFiscal = (r: DocRow) => r.kind === 'INVOICE' || r.kind === 'CREDIT_NOTE'
 export interface RateTotal {
   currency: string;
   treatment: string;
+  line: VatLine;
+  /** margin-vat: the standard rate it is computed at. */
   rateBp: number | null;
+  /** margin-vat: the taxable margin excl. VAT. */
   baseCents: number;
   taxCents: number;
+  /** margin-vat: documents whose margin VAT is incomplete (a unit without a purchase cost). */
+  incompleteDocs: number;
 }
 
-/** Invoices minus credit notes per currency, treatment and rate (proformas excluded). */
+const LINE_ORDER: Record<VatLine, number> = { vat: 0, 'margin-goods': 1, 'margin-vat': 2 };
+
+/** A fiscal document's amounts for the totals: its rows as printed, then the margin VAT it owes (never printed). */
+function totalLines(r: DocRow): Array<{ line: VatLine; rateBp: number | null; baseCents: number; taxCents: number; incomplete: boolean }> {
+  const out = r.rates.map((x) => ({ line: x.line as VatLine, rateBp: x.rateBp, baseCents: x.baseCents, taxCents: x.taxCents, incomplete: false }));
+  if (r.treatment === 'MARGIN_SCHEME') {
+    const m = r.marginVat;
+    out.push({ line: 'margin-vat', rateBp: m?.rateBp ?? null, baseCents: m?.baseCents ?? 0, taxCents: m?.vatCents ?? 0, incomplete: !m || m.unitsWithoutCost > 0 });
+  }
+  return out;
+}
+
+const byLine = (a: RateTotal, b: RateTotal) =>
+  a.currency.localeCompare(b.currency) || a.treatment.localeCompare(b.treatment) || LINE_ORDER[a.line] - LINE_ORDER[b.line] || (b.rateBp ?? -1) - (a.rateBp ?? -1);
+
+/** Invoices minus credit notes per currency, treatment and rate (proformas excluded), with the margin VAT owed. */
 export function rateTotals(rows: DocRow[]): RateTotal[] {
   const map = new Map<string, RateTotal>();
   for (const r of rows.filter(isFiscal)) {
-    for (const x of r.rates) {
-      const key = `${r.currency}|${r.treatment}|${x.rateBp ?? ''}`;
-      const t = map.get(key) ?? { currency: r.currency, treatment: r.treatment, rateBp: x.rateBp, baseCents: 0, taxCents: 0 };
+    for (const x of totalLines(r)) {
+      const key = `${r.currency}|${r.treatment}|${x.line}|${x.rateBp ?? ''}`;
+      const t = map.get(key) ?? { currency: r.currency, treatment: r.treatment, line: x.line, rateBp: x.rateBp, baseCents: 0, taxCents: 0, incompleteDocs: 0 };
       t.baseCents += x.baseCents;
       t.taxCents += x.taxCents;
+      if (x.incomplete) t.incompleteDocs += 1;
       map.set(key, t);
     }
   }
-  return [...map.values()].sort(
-    (a, b) => a.currency.localeCompare(b.currency) || a.treatment.localeCompare(b.treatment) || (b.rateBp ?? -1) - (a.rateBp ?? -1),
-  );
+  return [...map.values()].sort(byLine);
+}
+
+/** "21%", "Margin-scheme goods (VAT in the price)", "Margin VAT owed, 21% (not printed)". */
+export function vatLineLabel(line: VatLine, rateBp: number | null): string {
+  const pct = rateBp == null ? '—' : `${Number((rateBp / 100).toFixed(2))}%`;
+  if (line === 'margin-goods') return 'Margin-scheme goods (VAT in the price)';
+  if (line === 'margin-vat') return `Margin VAT owed, ${pct} (not printed)`;
+  return pct;
 }
 
 export interface VatSummaryRow extends RateTotal {
@@ -191,18 +243,19 @@ export interface VatSummaryRow extends RateTotal {
   creditNotes: number;
 }
 
-/** The VAT return view: per month or quarter, currency, VAT treatment and rate. */
+/** The VAT return view: per month or quarter, currency, VAT treatment and rate, with the margin VAT owed. */
 export function vatSummary(rows: DocRow[], by: 'month' | 'quarter' = 'quarter'): VatSummaryRow[] {
   const map = new Map<string, VatSummaryRow>();
   // A document with two rows of the same rate (goods + freight) counts once.
   const counted = new Set<string>();
   for (const r of rows.filter(isFiscal)) {
     const period = by === 'month' ? monthOf(r.day) : quarterOf(r.day);
-    for (const x of r.rates) {
-      const key = `${period}|${r.currency}|${r.treatment}|${x.rateBp ?? ''}`;
-      const t = map.get(key) ?? { period, currency: r.currency, treatment: r.treatment, rateBp: x.rateBp, baseCents: 0, taxCents: 0, invoices: 0, creditNotes: 0 };
+    for (const x of totalLines(r)) {
+      const key = `${period}|${r.currency}|${r.treatment}|${x.line}|${x.rateBp ?? ''}`;
+      const t = map.get(key) ?? { period, currency: r.currency, treatment: r.treatment, line: x.line, rateBp: x.rateBp, baseCents: 0, taxCents: 0, incompleteDocs: 0, invoices: 0, creditNotes: 0 };
       t.baseCents += x.baseCents;
       t.taxCents += x.taxCents;
+      if (x.incomplete) t.incompleteDocs += 1;
       if (!counted.has(`${key}|${r.id}`)) {
         counted.add(`${key}|${r.id}`);
         if (r.kind === 'INVOICE') t.invoices += 1;
@@ -211,14 +264,7 @@ export function vatSummary(rows: DocRow[], by: 'month' | 'quarter' = 'quarter'):
       map.set(key, t);
     }
   }
-  return [...map.values()]
-    .sort(
-      (a, b) =>
-        b.period.localeCompare(a.period) ||
-        a.currency.localeCompare(b.currency) ||
-        a.treatment.localeCompare(b.treatment) ||
-        (b.rateBp ?? -1) - (a.rateBp ?? -1),
-    );
+  return [...map.values()].sort((a, b) => b.period.localeCompare(a.period) || byLine(a, b));
 }
 
 export interface IcpRow {
@@ -279,6 +325,7 @@ export const DOC_CSV_HEADER = [
   'currency',
   'vat_treatment',
   'vat_treatment_label',
+  'line',
   'vat_rate_pct',
   'net',
   'vat',
@@ -287,12 +334,28 @@ export const DOC_CSV_HEADER = [
   'buyer_name',
   'buyer_vat_id',
   'buyer_country',
+  'margin_vat_owed',
+  'margin_vat_note',
 ] as const;
 
-/** One CSV row per document and VAT rate (a document with two rates has two rows; amounts add up per column). */
+const csvLine = (line: VatLine) => line.replace('-', '_');
+
+/** "unknown for 1 unit without a purchase cost (not included)" — or '' when complete. */
+function marginNote(r: DocRow): string {
+  if (r.treatment !== 'MARGIN_SCHEME' || r.kind === 'PROFORMA') return '';
+  if (!r.marginVat) return 'not computed (no order or invoice to compute it from)';
+  const n = r.marginVat.unitsWithoutCost;
+  return n ? `unknown for ${n} unit${n === 1 ? '' : 's'} without a purchase cost (not included)` : '';
+}
+
+/**
+ * One CSV row per document and VAT rate (a document with two rates has two
+ * rows; amounts add up per column). A margin-scheme document's margin VAT
+ * owed stands on its goods line only.
+ */
 export function docCsvRows(rows: DocRow[]): string[][] {
   return rows.flatMap((r) =>
-    r.rates.map((x) => [
+    r.rates.map((x, i) => [
       r.number,
       r.day,
       r.kind,
@@ -302,6 +365,7 @@ export function docCsvRows(rows: DocRow[]): string[][] {
       r.currency,
       r.treatment,
       vatTreatmentLabel(r.treatment),
+      csvLine(x.line),
       csvRate(x.rateBp),
       csvMoney(x.baseCents),
       csvMoney(x.taxCents),
@@ -310,11 +374,19 @@ export function docCsvRows(rows: DocRow[]): string[][] {
       r.buyer.name ?? '',
       r.buyer.vatId ?? '',
       r.buyer.country ?? '',
+      ...(x.line === 'margin-goods' || (i === 0 && !r.rates.some((y) => y.line === 'margin-goods'))
+        ? [r.marginVat ? csvMoney(r.marginVat.vatCents) : '', marginNote(r)]
+        : ['', '']),
     ]),
   );
 }
 
-export const VAT_CSV_HEADER = ['period', 'currency', 'vat_treatment', 'vat_treatment_label', 'vat_rate_pct', 'net', 'vat', 'invoices', 'credit_notes'] as const;
+/**
+ * The VAT summary CSV. line: vat (as printed) · margin_goods (margin-scheme
+ * sales, VAT inside the price) · margin_vat (the margin VAT owed: net = the
+ * taxable margin excl. VAT, vat = the VAT on it — the amounts to declare).
+ */
+export const VAT_CSV_HEADER = ['period', 'currency', 'vat_treatment', 'vat_treatment_label', 'line', 'vat_rate_pct', 'net', 'vat', 'invoices', 'credit_notes', 'incomplete_documents'] as const;
 
 export function vatCsvRows(rows: VatSummaryRow[]): string[][] {
   return rows.map((r) => [
@@ -322,11 +394,13 @@ export function vatCsvRows(rows: VatSummaryRow[]): string[][] {
     r.currency,
     r.treatment,
     vatTreatmentLabel(r.treatment),
+    csvLine(r.line),
     csvRate(r.rateBp),
     csvMoney(r.baseCents),
     csvMoney(r.taxCents),
     String(r.invoices),
     String(r.creditNotes),
+    r.line === 'margin-vat' ? String(r.incompleteDocs) : '',
   ]);
 }
 

@@ -10,8 +10,10 @@ import {
   icpSummary,
   normaliseVatId,
   rateTotals,
+  VAT_CSV_HEADER,
   vatCsvRows,
   vatIdCountry,
+  vatLineLabel,
   vatSummary,
   type DocRecord,
 } from './documents';
@@ -81,9 +83,52 @@ test('rows come from the frozen snapshot', () => {
   assert.equal(vatIdCountry(null), null);
 });
 
-test('a margin-scheme document without VAT rows keeps its own amounts', () => {
-  const m = docRowOf({ ...docs[1], vatTreatment: 'MARGIN_SCHEME', snapshot: { vat: { rows: [] } } } as DocRecord, TZ);
-  assert.deepEqual(m.rates, [{ rateBp: null, baseCents: m.netCents, taxCents: m.taxCents }]);
+test('a legacy document without VAT rows keeps its own amounts', () => {
+  const m = docRowOf({ ...docs[1], snapshot: { vat: { rows: [] } } } as DocRecord, TZ);
+  assert.deepEqual(m.rates, [{ rateBp: null, baseCents: m.netCents, taxCents: m.taxCents, line: 'vat' }]);
+});
+
+test('margin scheme: the goods on their own line, the margin VAT owed added to the totals and the VAT summary', () => {
+  // J5: €6,500 second-hand unit (bought €4,200) + €150 freight at 21%. The invoice prints €31.50 VAT (freight only).
+  const inv = rec({ kind: 'INVOICE', number: 'INV-2026-00060', issued: '2026-10-20T10:00:00Z', treatment: 'MARGIN_SCHEME', rows: [[2100, 15_000, 3_150], [0, 650_000, 0]] });
+  const cn = rec({ kind: 'CREDIT_NOTE', number: 'CN-2026-00060', issued: '2026-10-21T10:00:00Z', treatment: 'MARGIN_SCHEME', rows: [[2100, -15_000, -3_150], [0, -650_000, 0]], original: 'INV-2026-00060' });
+  const r = docRowOf(inv, TZ, { rateBp: 2100, baseCents: 190_083, vatCents: 39_917, unitsWithoutCost: 0 });
+  assert.deepEqual(r.rates, [
+    { rateBp: 2100, baseCents: 15_000, taxCents: 3_150, line: 'vat' },
+    { rateBp: null, baseCents: 650_000, taxCents: 0, line: 'margin-goods' },
+  ]);
+  // An engine document that left the margin goods out of its rows reads the same.
+  const bare = docRowOf({ ...inv, snapshot: { vat: { rows: [{ rateBp: 2100, baseCents: 15_000, taxCents: 3_150 }] } } } as DocRecord, TZ);
+  assert.deepEqual(bare.rates.map((x) => [x.line, x.baseCents]), [['vat', 15_000], ['margin-goods', 650_000]]);
+
+  const t = rateTotals([r]);
+  assert.deepEqual(t.map((x) => [x.line, x.rateBp, x.baseCents, x.taxCents, x.incompleteDocs]), [
+    ['vat', 2100, 15_000, 3_150, 0],
+    ['margin-goods', null, 650_000, 0, 0],
+    ['margin-vat', 2100, 190_083, 39_917, 0],
+  ]);
+  assert.equal(vatLineLabel('margin-vat', 2100), 'Margin VAT owed, 21% (not printed)');
+
+  // The credit note in the same quarter takes the margin VAT back.
+  const c = docRowOf(cn, TZ, { rateBp: 2100, baseCents: -190_083, vatCents: -39_917, unitsWithoutCost: 0 });
+  const q = vatSummary([r, c], 'quarter').filter((x) => x.line === 'margin-vat');
+  assert.deepEqual(q.map((x) => [x.period, x.baseCents, x.taxCents, x.invoices, x.creditNotes]), [['2026-Q4', 0, 0, 1, 1]]);
+  const csv = vatCsvRows(vatSummary([r], 'quarter'));
+  const col = (row: string[], k: (typeof VAT_CSV_HEADER)[number]) => row[VAT_CSV_HEADER.indexOf(k)];
+  const owed = csv.find((x) => col(x, 'line') === 'margin_vat')!;
+  assert.deepEqual([col(owed, 'vat_rate_pct'), col(owed, 'net'), col(owed, 'vat'), col(owed, 'incomplete_documents')], ['21', '1900.83', '399.17', '0']);
+
+  // A unit without a purchase cost: flagged, never guessed.
+  const open = docRowOf(inv, TZ, { rateBp: 2100, baseCents: 0, vatCents: 0, unitsWithoutCost: 1 });
+  const flagged = vatSummary([open], 'quarter').find((x) => x.line === 'margin-vat')!;
+  assert.equal(flagged.incompleteDocs, 1);
+  const reg = docCsvRows([open]);
+  const goodsRow = reg.find((x) => x[DOC_CSV_HEADER.indexOf('line')] === 'margin_goods')!;
+  assert.equal(goodsRow[DOC_CSV_HEADER.indexOf('margin_vat_owed')], '0.00');
+  assert.equal(goodsRow[DOC_CSV_HEADER.indexOf('margin_vat_note')], 'unknown for 1 unit without a purchase cost (not included)');
+  assert.equal(reg.find((x) => x[DOC_CSV_HEADER.indexOf('line')] === 'vat')![DOC_CSV_HEADER.indexOf('margin_vat_owed')], '');
+  // Not computed (no order): flagged too.
+  assert.equal(vatSummary([docRowOf(inv, TZ)], 'quarter').find((x) => x.line === 'margin-vat')!.incompleteDocs, 1);
 });
 
 test('totals per rate count invoices minus credit notes, never proformas', () => {
@@ -102,7 +147,9 @@ test('VAT summary per quarter / month', () => {
   const m = vatSummary(rows, 'month');
   assert.ok(m.some((r) => r.period === '2026-11' && r.treatment === 'EU_ICS_ZERO' && r.baseCents === -30_000));
   const csv = vatCsvRows(q);
-  assert.ok(csv.some((r) => r[0] === 'Q4 2026' && r[4] === '21' && r[5] === '13150.00'));
+  const v = (r: string[], k: (typeof VAT_CSV_HEADER)[number]) => r[VAT_CSV_HEADER.indexOf(k)];
+  assert.ok(csv.some((r) => v(r, 'period') === 'Q4 2026' && v(r, 'line') === 'vat' && v(r, 'vat_rate_pct') === '21' && v(r, 'net') === '13150.00'));
+  assert.ok(!q.some((r) => r.line !== 'vat')); // no margin-scheme documents here
 });
 
 test('ICP listing: intra-EU 0% per quarter and VAT ID, credit notes in their own quarter', () => {
@@ -123,5 +170,9 @@ test('filters and CSV: one row per document and rate', () => {
   const csv = docCsvRows(rows.filter((r) => r.number === 'INV-2026-00042'));
   assert.equal(csv.length, 2);
   assert.equal(csv[0].length, DOC_CSV_HEADER.length);
-  assert.deepEqual(csv.map((r) => [r[9], r[10], r[11], r[12]]), [['21', '1000.00', '210.00', '1210.00'], ['9', '200.00', '18.00', '218.00']]);
+  const at = (k: (typeof DOC_CSV_HEADER)[number]) => DOC_CSV_HEADER.indexOf(k);
+  assert.deepEqual(csv.map((r) => [r[at('vat_rate_pct')], r[at('net')], r[at('vat')], r[at('gross')], r[at('margin_vat_owed')]]), [
+    ['21', '1000.00', '210.00', '1210.00', ''],
+    ['9', '200.00', '18.00', '218.00', ''],
+  ]);
 });

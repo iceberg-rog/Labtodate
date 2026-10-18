@@ -2,6 +2,8 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { LIVE_REFUND_STATUSES } from '@/lib/finance/held';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { MARGIN_ITEM_SELECT, marginVatByDocument, marginVatRateBp, orderMarginOf, type MarginItemInput } from './margin-vat';
 
 /**
  * Revenue as the owner and the accountant read it: one rule for the
@@ -10,6 +12,8 @@ import { LIVE_REFUND_STATUSES } from '@/lib/finance/held';
  *  - Per currency. EUR and USD are never added up: no exchange rate is
  *    stored with an order, so every figure is shown once per currency.
  *  - Excl. VAT. The goods subtotal; freight only when asked for (`freight`).
+ *    Margin-scheme goods are sold with the VAT on the margin inside the
+ *    price: that margin VAT (computed, never printed) is taken off.
  *  - Net of credit notes. A credit note counts on its own issue date.
  *  - Dated by the sale: the day the order was paid, or invoiced on terms when
  *    that came first. Not the day the order was created.
@@ -28,7 +32,11 @@ import { LIVE_REFUND_STATUSES } from '@/lib/finance/held';
 export const SOLD_ORDER_STATUSES = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] as const;
 
 export interface RevenueDocInput {
+  id: string;
   kind: 'PROFORMA' | 'INVOICE' | 'CREDIT_NOTE';
+  vatTreatment: string;
+  /** Credit note: the invoice it credits · corrected invoice: the invoice it replaces. */
+  originalDocumentId: string | null;
   issueDate: Date;
   createdAt: Date;
   /** Net amount (goods + freight, excl. VAT); negative on a credit note. */
@@ -48,6 +56,7 @@ export interface RevenueOrderInput {
   id: string;
   currency: string;
   status: string;
+  vatTreatment: string | null;
   subtotalCents: number;
   shippingCents: number;
   totalCents: number;
@@ -56,6 +65,8 @@ export interface RevenueOrderInput {
   createdAt: Date;
   documents: RevenueDocInput[];
   refunds: RevenueRefundInput[];
+  /** The order's margin-scheme lines (others may be left out). */
+  items: MarginItemInput[];
 }
 
 /** SALE: the order is sold · REINVOICE: a corrected invoice · CREDIT_NOTE · REFUND: money back without a credit note. */
@@ -89,6 +100,7 @@ export function docNetSplit(d: Pick<RevenueDocInput, 'subtotalCents' | 'snapshot
 }
 
 type DatedDoc = Pick<RevenueDocInput, 'kind' | 'issueDate' | 'createdAt'>;
+type ChainDoc = DatedDoc & { id: string; originalDocumentId: string | null };
 
 const byDate = (a: DatedDoc, b: DatedDoc) =>
   a.issueDate.getTime() - b.issueDate.getTime() || a.createdAt.getTime() - b.createdAt.getTime();
@@ -96,6 +108,28 @@ const byDate = (a: DatedDoc, b: DatedDoc) =>
 /** The order's invoices, oldest first (a corrected invoice follows the one it replaces). */
 export function invoicesOf<T extends DatedDoc>(docs: T[]): T[] {
   return docs.filter((d) => d.kind === 'INVOICE').sort(byDate);
+}
+
+/**
+ * The order's invoices and credit notes as the accountant reads them: the
+ * current invoice (the last one), the invoices it replaced and the credit
+ * notes that cancelled those (replaced invoice + its credit notes net to
+ * zero, so they carry no amount), and the credit notes of the current
+ * invoice — the only real credits. A credit note that names no invoice
+ * (legacy) counts as a credit of the current one.
+ */
+export function invoiceChain<T extends ChainDoc>(docs: T[]): { current: T | null; replaced: T[]; replacementCredits: T[]; credits: T[] } {
+  const invoices = invoicesOf(docs);
+  const current = invoices[invoices.length - 1] ?? null;
+  const replaced = invoices.slice(0, -1);
+  const replacedIds = new Set(replaced.map((d) => d.id));
+  const notes = docs.filter((d) => d.kind === 'CREDIT_NOTE').sort(byDate);
+  return {
+    current,
+    replaced,
+    replacementCredits: notes.filter((d) => d.originalDocumentId != null && replacedIds.has(d.originalDocumentId)),
+    credits: notes.filter((d) => d.originalDocumentId == null || !replacedIds.has(d.originalDocumentId)),
+  };
 }
 
 /**
@@ -116,8 +150,12 @@ function paidCents(o: RevenueOrderInput): number {
   return o.paidAt ? o.totalCents : 0;
 }
 
-/** Every revenue movement of one order (empty when it never was a sale). */
-export function revenueEvents(o: RevenueOrderInput): RevenueEvent[] {
+/**
+ * Every revenue movement of one order (empty when it never was a sale).
+ * `marginRateBp`: the standard rate the margin VAT of margin-scheme goods is
+ * computed at (0 = none taken off).
+ */
+export function revenueEvents(o: RevenueOrderInput, opts: { marginRateBp?: number } = {}): RevenueEvent[] {
   const events: RevenueEvent[] = [];
   const add = (kind: RevenueEventKind, at: Date, split: { goodsCents: number; freightCents: number }) =>
     events.push({ orderId: o.id, currency: o.currency, at, kind, ...split });
@@ -125,11 +163,18 @@ export function revenueEvents(o: RevenueOrderInput): RevenueEvent[] {
   const credits = o.documents.filter((d) => d.kind === 'CREDIT_NOTE');
   const sold = saleDateOf(o);
   if (!sold) return events;
+  const rate = opts.marginRateBp ?? 0;
   if (invoices.length) {
-    invoices.forEach((inv, i) => add(i === 0 ? 'SALE' : 'REINVOICE', i === 0 ? sold : inv.issueDate, docNetSplit(inv)));
-    for (const cn of credits) add('CREDIT_NOTE', cn.issueDate, docNetSplit(cn));
+    const margin = marginVatByDocument(o.documents, o.items, rate);
+    const split = (d: RevenueDocInput) => {
+      const s = docNetSplit(d);
+      return { goodsCents: s.goodsCents - (margin.get(d.id)?.vatCents ?? 0), freightCents: s.freightCents };
+    };
+    invoices.forEach((inv, i) => add(i === 0 ? 'SALE' : 'REINVOICE', i === 0 ? sold : inv.issueDate, split(inv)));
+    for (const cn of credits) add('CREDIT_NOTE', cn.issueDate, split(cn));
   } else {
-    add('SALE', sold, { goodsCents: o.subtotalCents, freightCents: o.shippingCents });
+    const marginVat = o.vatTreatment === 'MARGIN_SCHEME' ? orderMarginOf(o.items, rate).vatCents : 0;
+    add('SALE', sold, { goodsCents: o.subtotalCents - marginVat, freightCents: o.shippingCents });
   }
 
   // Money back without a credit note: first what was paid too much, only the
@@ -219,6 +264,7 @@ const REVENUE_SELECT = {
   id: true,
   currency: true,
   status: true,
+  vatTreatment: true,
   subtotalCents: true,
   shippingCents: true,
   totalCents: true,
@@ -227,9 +273,10 @@ const REVENUE_SELECT = {
   createdAt: true,
   documents: {
     where: { kind: { in: ['INVOICE', 'CREDIT_NOTE'] } },
-    select: { kind: true, issueDate: true, createdAt: true, subtotalCents: true, totalCents: true, snapshot: true },
+    select: { id: true, kind: true, vatTreatment: true, originalDocumentId: true, issueDate: true, createdAt: true, subtotalCents: true, totalCents: true, snapshot: true },
   },
   refunds: { select: { amountCents: true, status: true, creditNoteId: true, createdAt: true } },
+  items: { where: { product: { vatScheme: 'MARGIN' } }, select: MARGIN_ITEM_SELECT },
 } satisfies Prisma.OrderSelect;
 
 /** Orders that were ever sold: paid (or later) or invoiced. */
@@ -254,7 +301,9 @@ export async function loadRevenueEvents(since?: Date | null): Promise<RevenueEve
         ],
       }
     : EVER_SOLD;
+  await ensureSettingsLoaded();
+  const marginRateBp = marginVatRateBp();
   const orders = await prisma.order.findMany({ where, select: REVENUE_SELECT });
-  const events = orders.flatMap((o) => revenueEvents(o));
+  const events = orders.flatMap((o) => revenueEvents(o, { marginRateBp }));
   return since ? events.filter((e) => e.at.getTime() >= since.getTime()) : events;
 }

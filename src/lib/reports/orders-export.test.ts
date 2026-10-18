@@ -34,9 +34,9 @@ function order(over: Partial<OrderExportRecord> = {}): OrderExportRecord {
     items: [{ titleSnapshot: 'Agilent 1200 series HPLC', quantity: 1, priceCentsSnapshot: 1_180_000 }],
     sourcingRequest: { proformaNumber: 'PF-2026-00004' },
     documents: [
-      { kind: 'PROFORMA', number: 'PF-2026-00004-r2', issueDate: D('2026-10-12T10:00:00Z'), createdAt: D('2026-10-12T10:00:00Z'), vatTreatment: 'DOMESTIC_STANDARD', taxCents: 257_250, totalCents: 1_482_250, voidedAt: null, snapshot: {} },
-      { kind: 'INVOICE', number: 'INV-2026-00002', issueDate: D('2026-10-17T22:10:00Z'), createdAt: D('2026-10-17T22:10:00Z'), vatTreatment: 'DOMESTIC_STANDARD', taxCents: 257_250, totalCents: 1_482_250, voidedAt: null, snapshot: snap('NL812345678B01', [[2100, 1_225_000, 257_250]]) },
-      { kind: 'CREDIT_NOTE', number: 'CN-2026-00001', issueDate: D('2026-10-18T00:23:00Z'), createdAt: D('2026-10-18T00:23:00Z'), vatTreatment: 'DOMESTIC_STANDARD', taxCents: -2_100, totalCents: -12_100, voidedAt: null, snapshot: snap('NL812345678B01', [[2100, -10_000, -2_100]]) },
+      { id: 'pf', originalDocumentId: null, kind: 'PROFORMA', number: 'PF-2026-00004-r2', issueDate: D('2026-10-12T10:00:00Z'), createdAt: D('2026-10-12T10:00:00Z'), vatTreatment: 'DOMESTIC_STANDARD', taxCents: 257_250, totalCents: 1_482_250, voidedAt: null, snapshot: {} },
+      { id: 'inv2', originalDocumentId: null, kind: 'INVOICE', number: 'INV-2026-00002', issueDate: D('2026-10-17T22:10:00Z'), createdAt: D('2026-10-17T22:10:00Z'), vatTreatment: 'DOMESTIC_STANDARD', taxCents: 257_250, totalCents: 1_482_250, voidedAt: null, snapshot: snap('NL812345678B01', [[2100, 1_225_000, 257_250]]) },
+      { id: 'cn1', originalDocumentId: 'inv2', kind: 'CREDIT_NOTE', number: 'CN-2026-00001', issueDate: D('2026-10-18T00:23:00Z'), createdAt: D('2026-10-18T00:23:00Z'), vatTreatment: 'DOMESTIC_STANDARD', taxCents: -2_100, totalCents: -12_100, voidedAt: null, snapshot: snap('NL812345678B01', [[2100, -10_000, -2_100]]) },
     ],
     ...over,
   } as OrderExportRecord;
@@ -57,21 +57,40 @@ test('invoice, VAT, PO, proforma and credit-note columns', () => {
   assert.equal(col(row, 'proforma_number'), 'PF-2026-00004-r2');
   assert.equal(col(row, 'credit_note_numbers'), 'CN-2026-00001');
   assert.equal(col(row, 'credit_notes_total'), '-121.00');
+  assert.equal(col(row, 'replaced_invoice_numbers'), '');
+  assert.equal(col(row, 'replacement_credit_note_numbers'), '');
   assert.equal(col(row, 'subtotal'), '11800.00');
 });
 
-test('a corrected invoice: the replacing invoice is the current one', () => {
+test('a corrected invoice: the replacing invoice is the current one, the replaced pair carries no amount', () => {
+  // L2D-2026-K17OWI: INV-2026-00023 credited in full by CN-2026-00008 (replaced), INV-2026-00024 valid.
   const o = order();
   const fixed = order({
     documents: [
       ...o.documents.slice(0, 2),
-      { ...o.documents[2], number: 'CN-2026-00008', totalCents: -1_482_250, taxCents: -257_250 },
-      { ...o.documents[1], number: 'INV-2026-00024', issueDate: D('2026-10-18T01:08:14Z'), createdAt: D('2026-10-18T01:08:14Z') },
+      { ...o.documents[2], id: 'cn8', originalDocumentId: 'inv2', number: 'CN-2026-00008', totalCents: -1_482_250, taxCents: -257_250 },
+      { ...o.documents[1], id: 'inv24', originalDocumentId: 'inv2', number: 'INV-2026-00024', issueDate: D('2026-10-18T01:08:14Z'), createdAt: D('2026-10-18T01:08:14Z') },
     ],
   });
   const row = orderCsvRow(fixed, 'Europe/Amsterdam');
   assert.equal(col(row, 'invoice_number'), 'INV-2026-00024');
-  assert.equal(col(row, 'credit_note_numbers'), 'CN-2026-00008');
+  assert.equal(col(row, 'vat_amount'), '2572.50');
+  assert.equal(col(row, 'credit_note_numbers'), '');
+  assert.equal(col(row, 'credit_notes_total'), '');
+  assert.equal(col(row, 'replaced_invoice_numbers'), 'INV-2026-00002');
+  assert.equal(col(row, 'replacement_credit_note_numbers'), 'CN-2026-00008');
+
+  // A later credit of the replacing invoice is a real credit again.
+  const credited = order({
+    documents: [
+      ...fixed.documents,
+      { ...o.documents[2], id: 'cn9', originalDocumentId: 'inv24', number: 'CN-2026-00009', issueDate: D('2026-10-19T09:00:00Z'), createdAt: D('2026-10-19T09:00:00Z') },
+    ],
+  });
+  const r2 = orderCsvRow(credited, 'Europe/Amsterdam');
+  assert.equal(col(r2, 'credit_note_numbers'), 'CN-2026-00009');
+  assert.equal(col(r2, 'credit_notes_total'), '-121.00');
+  assert.equal(col(r2, 'replacement_credit_note_numbers'), 'CN-2026-00008');
 });
 
 test('not invoiced yet: VAT from the order, proforma from the order or the quote', () => {

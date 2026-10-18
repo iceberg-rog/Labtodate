@@ -16,9 +16,11 @@ import {
   icpSummary,
   loadDocRows,
   rateTotals,
+  vatLineLabel,
   vatSummary,
   type DocKindFilter,
   type DocRow,
+  type RateTotal,
 } from '@/lib/reports/documents';
 
 export const dynamic = 'force-dynamic';
@@ -43,10 +45,16 @@ const KINDS: Array<{ key: DocKindFilter; label: string }> = [
 
 type Search = { view?: string; period?: string; from?: string; to?: string; kind?: string; treatment?: string; currency?: string; q?: string; by?: string; page?: string };
 
-/** "21%", "0%", "—" (rate not determinable). */
-function pct(bp: number | null): string {
-  return bp == null ? '—' : `${Number((bp / 100).toFixed(2))}%`;
+/** The rate / line cell; a margin VAT line that misses units says so. */
+function lineCell(t: Pick<RateTotal, 'line' | 'rateBp' | 'incompleteDocs'>): string {
+  const label = vatLineLabel(t.line, t.rateBp);
+  return t.line === 'margin-vat' && t.incompleteDocs > 0
+    ? `${label} — incomplete: ${t.incompleteDocs} document${t.incompleteDocs === 1 ? '' : 's'} with a unit without a purchase cost`
+    : label;
 }
+
+const MARGIN_NOTE =
+  ' Margin scheme (second-hand goods): the invoice prints VAT on the freight only; the VAT on the margin is inside the goods price and is never printed. "Margin VAT owed" is computed per unit from the sale price and the recorded purchase cost at the standard VAT rate in Settings → Tax & VAT (the rate the invoice used, unless it was changed since): its net is the taxable margin excl. VAT, its VAT the amount to declare. The goods line is the sale price itself, not a VAT base. A unit without a purchase cost has no known margin VAT and is not included — record the cost and check that line.';
 
 export default async function AdminDocumentsPage(props: { searchParams: Promise<Search> }) {
   const sp = await props.searchParams;
@@ -197,9 +205,18 @@ export default async function AdminDocumentsPage(props: { searchParams: Promise<
             <section>
               <h2 className="text-xs uppercase tracking-[0.18em] font-bold text-muted-foreground mb-2">Totals per VAT rate · invoices minus credit notes</h2>
               <AmountTable
-                head={['Currency', 'VAT treatment', 'Rate', 'Net', 'VAT', 'Gross']}
-                rows={totals.map((t) => [t.currency, vatTreatmentLabel(t.treatment), pct(t.rateBp), formatPrice(t.baseCents, t.currency), formatPrice(t.taxCents, t.currency), formatPrice(t.baseCents + t.taxCents, t.currency)])}
+                head={['Currency', 'VAT treatment', 'Rate / line', 'Net', 'VAT', 'Gross']}
+                rows={totals.map((t) => [
+                  t.currency,
+                  vatTreatmentLabel(t.treatment),
+                  lineCell(t),
+                  formatPrice(t.baseCents, t.currency),
+                  formatPrice(t.taxCents, t.currency),
+                  t.line === 'margin-vat' ? '—' : formatPrice(t.baseCents + t.taxCents, t.currency),
+                ])}
+                warn={totals.map((t) => t.line === 'margin-vat' && t.incompleteDocs > 0)}
               />
+              {totals.some((t) => t.line !== 'vat') && <p className="text-[11px] text-muted-foreground mt-2">{MARGIN_NOTE.trim()}</p>}
             </section>
           )}
           {rows.length === 0 ? (
@@ -240,12 +257,13 @@ export default async function AdminDocumentsPage(props: { searchParams: Promise<
             <Empty text="No invoices or credit notes in this selection." />
           ) : (
             <AmountTable
-              head={[by === 'month' ? 'Month' : 'Quarter', 'Currency', 'VAT treatment', 'Rate', 'Net', 'VAT', 'Invoices', 'Credit notes']}
+              head={[by === 'month' ? 'Month' : 'Quarter', 'Currency', 'VAT treatment', 'Rate / line', 'Net', 'VAT', 'Invoices', 'Credit notes']}
+              warn={vat.map((v) => v.line === 'margin-vat' && v.incompleteDocs > 0)}
               rows={vat.map((v) => [
                 periodKeyLabel(v.period),
                 v.currency,
                 vatTreatmentLabel(v.treatment),
-                pct(v.rateBp),
+                lineCell(v),
                 formatPrice(v.baseCents, v.currency),
                 formatPrice(v.taxCents, v.currency),
                 String(v.invoices),
@@ -255,6 +273,7 @@ export default async function AdminDocumentsPage(props: { searchParams: Promise<
           )}
           <Note>
             Invoices minus credit notes, per {by} of the issue date. Proformas are payment requests and are not counted.
+            {vat.some((v) => v.line !== 'vat') && MARGIN_NOTE}
             {vat.some((v) => v.currency !== 'EUR') && ' Amounts in another currency than EUR are shown as invoiced: convert them for the VAT return at the exchange rate that applies to each invoice date (no rate is stored here).'}
           </Note>
         </section>
@@ -325,9 +344,15 @@ function DocLine({ r, day }: { r: DocRow; day: (d: Date) => string }) {
       <td className="px-4 py-3 text-right text-xs tabular-nums whitespace-nowrap">
         {r.rates.map((x, i) => (
           <p key={i}>
-            <span className="text-muted-foreground">{pct(x.rateBp)}</span> {formatPrice(x.baseCents, r.currency)} / {formatPrice(x.taxCents, r.currency)}
+            <span className="text-muted-foreground">{x.line === 'margin-goods' ? 'margin goods' : vatLineLabel(x.line, x.rateBp)}</span> {formatPrice(x.baseCents, r.currency)} / {formatPrice(x.taxCents, r.currency)}
           </p>
         ))}
+        {r.treatment === 'MARGIN_SCHEME' && r.kind !== 'PROFORMA' && (
+          <p className={r.marginVat && !r.marginVat.unitsWithoutCost ? 'text-muted-foreground' : 'font-semibold text-amber-700 dark:text-amber-300'}>
+            margin VAT owed (not printed) {r.marginVat ? formatPrice(r.marginVat.vatCents, r.currency) : 'not computed'}
+            {r.marginVat && r.marginVat.unitsWithoutCost > 0 && ` · ${r.marginVat.unitsWithoutCost} unit${r.marginVat.unitsWithoutCost === 1 ? '' : 's'} without a purchase cost, not included`}
+          </p>
+        )}
       </td>
       <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">{formatPrice(r.netCents, r.currency)}</td>
       <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">{formatPrice(r.taxCents, r.currency)}</td>

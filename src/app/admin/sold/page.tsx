@@ -153,8 +153,14 @@ export default async function AdminSoldPage(props: { searchParams: Promise<Searc
               <p className="text-2xl font-bold tabular-nums mt-1">{formatPrice(t.netCents, t.currency)}</p>
               <p className="text-[11px] text-muted-foreground mt-1 tabular-nums">
                 {t.units} unit{t.units === 1 ? '' : 's'}
-                {t.creditedCents !== 0 && <> · credit notes on these orders {formatPrice(t.creditedCents, t.currency)}</>}
+                {t.creditedCents !== 0 && <> · credit notes on these orders {formatPrice(t.creditedCents, t.currency)} (goods)</>}
               </p>
+              {(t.marginVatCents !== 0 || t.marginVatUnknown > 0) && (
+                <p className={`text-[11px] tabular-nums ${t.marginVatUnknown > 0 ? 'font-semibold text-amber-700 dark:text-amber-300' : 'text-muted-foreground'}`}>
+                  Margin scheme: {formatPrice(t.marginVatCents, t.currency)} margin VAT taken off the invoiced prices
+                  {t.marginVatUnknown > 0 && <> · {t.marginVatUnknown} line{t.marginVatUnknown === 1 ? '' : 's'} without a purchase cost still include it</>}
+                </p>
+              )}
               <p className="text-[11px] text-muted-foreground tabular-nums">
                 {t.rowsWithMargin > 0
                   ? <>Margin {formatPrice(t.marginCents, t.currency)} on {t.rowsWithMargin} line{t.rowsWithMargin === 1 ? '' : 's'} with a recorded cost (cost {formatPrice(t.costCents, t.currency)})</>
@@ -204,7 +210,8 @@ export default async function AdminSoldPage(props: { searchParams: Promise<Searc
         <p className="font-semibold text-foreground mb-1">How this register counts</p>
         <ul className="list-disc pl-5 space-y-0.5">
           <li>One row per order line once the order is <strong>paid</strong>, or <strong>invoiced on terms</strong> (sold, money still due). The sale date is whichever came first; the period filters on it.</li>
-          <li>Prices are the agreed price excl. VAT and freight. Credit notes are listed per order; the totals show them once per order.</li>
+          <li>Prices are the agreed price excl. VAT and freight. Margin-scheme goods are invoiced with the VAT on the margin inside the price: it is taken off here (computed from the purchase cost; without one it cannot be, and the line says so).</li>
+          <li>Credit notes are listed per order with their goods part excl. VAT; the totals and the CSV count them once per order (in the CSV on the order&apos;s first line). A corrected invoice replaces the old one: the old invoice and the credit note that cancelled it net out and carry no amount.</li>
           <li>Supplier cost comes from the supplier price behind the accepted offer, the supplier&apos;s price before the shop markup, or the recorded purchase cost of own stock. A margin is shown only when the cost is in the same currency as the sale.</li>
           <li>Amounts in different currencies are never added up.</li>
         </ul>
@@ -241,7 +248,16 @@ function SoldLine({ r, day }: { r: SoldRow; day: (d: Date | null) => string | nu
         {r.buyer.company && <p className="text-[11px] text-muted-foreground">{r.buyer.name}</p>}
         <p className="text-[11px] text-muted-foreground font-mono">{[r.buyer.vatId, r.buyer.country].filter(Boolean).join(' · ') || '—'}</p>
       </td>
-      <td className="px-4 py-3 text-right font-bold tabular-nums whitespace-nowrap">{formatPrice(r.netCents, r.currency)}</td>
+      <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
+        <p className="font-bold">{formatPrice(r.netCents, r.currency)}</p>
+        {r.marginScheme && (
+          <p className={`text-[11px] ${r.marginScheme.vatCents == null ? 'font-semibold text-amber-700 dark:text-amber-300' : 'text-muted-foreground'}`}>
+            {r.marginScheme.vatCents == null
+              ? 'margin scheme · margin VAT unknown (no purchase cost), still included'
+              : `margin scheme · invoiced ${formatPrice(r.invoicedCents, r.currency)} incl. ${formatPrice(r.marginScheme.vatCents, r.currency)} margin VAT`}
+          </p>
+        )}
+      </td>
       <td className="px-4 py-3 min-w-[160px]">
         <p className="font-semibold">{r.supplier.kind === 'own' ? `${r.supplier.name} (own stock)` : r.supplier.name}</p>
         <p className="text-[11px] text-muted-foreground tabular-nums">
@@ -256,7 +272,12 @@ function SoldLine({ r, day }: { r: SoldRow; day: (d: Date | null) => string | nu
         {r.marginCents != null ? (
           <span className={r.marginCents < 0 ? 'font-bold text-red-700 dark:text-red-300' : 'font-semibold'}>{formatPrice(r.marginCents, r.currency)}</span>
         ) : (
-          <span className="text-muted-foreground" title={r.cost ? 'The cost is in another currency than the sale' : 'No supplier cost recorded'}>—</span>
+          <span
+            className="text-muted-foreground"
+            title={!r.cost ? 'No supplier cost recorded' : r.marginScheme?.vatCents === null ? 'Margin VAT unknown' : 'The cost is in another currency than the sale'}
+          >
+            —
+          </span>
         )}
       </td>
       <td className="px-4 py-3 whitespace-nowrap">
@@ -275,9 +296,12 @@ function SoldLine({ r, day }: { r: SoldRow; day: (d: Date | null) => string | nu
         {r.replacedInvoices.map((n) => (
           <DocLink key={n} number={n} note="replaced" />
         ))}
+        {r.replacementCreditNotes.map((n) => (
+          <DocLink key={n} number={n} note="cancels the replaced invoice" />
+        ))}
         {r.invoice ? <DocLink number={r.invoice.number} note={day(r.invoice.issueDate) ?? undefined} /> : <p className="text-muted-foreground">no invoice yet</p>}
         {r.creditNotes.map((c) => (
-          <DocLink key={c.number} number={c.number} note={formatPrice(c.netCents, r.currency)} />
+          <DocLink key={c.number} number={c.number} note={`${formatPrice(c.goodsCents, r.currency)} goods · order`} />
         ))}
       </td>
     </tr>

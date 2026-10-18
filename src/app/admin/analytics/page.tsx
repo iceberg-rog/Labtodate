@@ -21,6 +21,7 @@ import {
   revenueSeries,
   SOLD_ORDER_STATUSES,
 } from '@/lib/reports/revenue';
+import { MARGIN_ITEM_SELECT, marginVatRateBp, orderMarginOf } from '@/lib/reports/margin-vat';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Analytics' };
@@ -139,7 +140,8 @@ export default async function AdminAnalyticsPage(
   const usrData = usr.map((v, i) => ({ label: labelFor(i), value: v }));
 
   // Top products: units on orders sold in the window that still stand, with
-  // their sales excl. VAT per currency (unit price × units, not the unit price once).
+  // their sales excl. VAT per currency (unit price × units, not the unit price
+  // once; margin-scheme units without the margin VAT inside their price).
   const soldInRange = await prisma.orderItem.findMany({
     where: {
       lineType: 'GOODS',
@@ -148,8 +150,10 @@ export default async function AdminAnalyticsPage(
         OR: [{ paidAt: { gte: since } }, { paidAt: null, createdAt: { gte: since } }, { documents: { some: { kind: 'INVOICE', issueDate: { gte: since } } } }],
       },
     },
-    select: { productId: true, titleSnapshot: true, quantity: true, priceCentsSnapshot: true, order: { select: { id: true, currency: true } } },
+    select: { ...MARGIN_ITEM_SELECT, productId: true, titleSnapshot: true, order: { select: { id: true, currency: true, vatTreatment: true } } },
   });
+  // Settings are loaded with the revenue events (finance:view only, as the amounts).
+  const marginRateBp = canMoney ? marginVatRateBp() : 0;
   const saleIds = new Set(revenueEvents.filter((e) => e.kind === 'SALE' && e.at.getTime() >= since.getTime()).map((e) => e.orderId));
   const topMap = new Map<string, { label: string; units: number; cents: Map<string, number> }>();
   for (const it of soldInRange) {
@@ -158,7 +162,8 @@ export default async function AdminAnalyticsPage(
     const key = it.productId ?? `title:${it.titleSnapshot}`;
     const row = topMap.get(key) ?? { label: it.titleSnapshot, units: 0, cents: new Map<string, number>() };
     row.units += it.quantity;
-    row.cents.set(it.order.currency, (row.cents.get(it.order.currency) ?? 0) + it.priceCentsSnapshot * it.quantity);
+    const marginVat = it.order.vatTreatment === 'MARGIN_SCHEME' ? orderMarginOf([it], marginRateBp).vatCents : 0;
+    row.cents.set(it.order.currency, (row.cents.get(it.order.currency) ?? 0) + it.priceCentsSnapshot * it.quantity - marginVat);
     topMap.set(key, row);
   }
   const topProductRows = [...topMap.values()]

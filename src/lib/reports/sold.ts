@@ -1,17 +1,21 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { humaniseBuyer } from '@/lib/orders/display';
-import { invoicesOf, saleDateOf, SOLD_ORDER_STATUSES } from './revenue';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { docNetSplit, invoiceChain, saleDateOf, SOLD_ORDER_STATUSES } from './revenue';
+import { MARGIN_ITEM_SELECT, marginVatByDocument, marginVatRateBp, orderMarginOf } from './margin-vat';
 import { inPeriod, localDay, prefilterBounds, type Period } from './period';
 import { csvMoney } from './csv';
 
 /**
  * The Sold register: one row per sold order line (goods), from the moment the
  * order is paid (or invoiced on terms) through delivery — the owner's sales
- * history and the accountant's sales list. Prices are excl. VAT. Supplier cost
- * and margin are internal (finance:view) and shown only when they were
- * recorded; a margin is computed only when cost and sale are in the same
- * currency (no exchange rate is stored).
+ * history and the accountant's sales list. Prices are excl. VAT: a
+ * margin-scheme line has the margin VAT inside its invoiced price, which is
+ * taken off (computed as on the invoice; unknown without a purchase cost).
+ * Supplier cost and margin are internal (finance:view) and shown only when
+ * they were recorded; a margin is computed only when cost and sale are in the
+ * same currency (no exchange rate is stored).
  */
 
 export const SOLD_STATUS_VIEWS = {
@@ -122,6 +126,10 @@ export interface SoldRow {
   qty: number;
   unitNetCents: number;
   netCents: number;
+  /** The line as invoiced (differs from netCents only under the margin scheme). */
+  invoicedCents: number;
+  /** Margin-scheme line: the margin VAT inside the invoiced price (null = unknown, no purchase cost). */
+  marginScheme: { vatCents: number | null } | null;
   currency: string;
   supplier: SupplierRef;
   cost: SoldCost | null;
@@ -132,7 +140,10 @@ export interface SoldRow {
   invoice: { number: string; issueDate: Date } | null;
   /** Earlier invoices replaced by a corrected one (each credited in full). */
   replacedInvoices: string[];
-  creditNotes: Array<{ number: string; issueDate: Date; netCents: number }>;
+  /** The credit notes of those replaced invoices: they net out with them, no amount. */
+  replacementCreditNotes: string[];
+  /** Credit notes of the current invoice (order level): the goods part excl. VAT, ≤ 0. */
+  creditNotes: Array<{ number: string; issueDate: Date; goodsCents: number }>;
 }
 
 const ITEM_SELECT = {
@@ -148,6 +159,7 @@ const ITEM_SELECT = {
       slug: true,
       sku: true,
       currency: true,
+      vatScheme: true,
       purchaseCostCents: true,
       category: { select: { name: true, slug: true } },
       company: { select: { name: true, slug: true } },
@@ -161,6 +173,7 @@ const ITEM_SELECT = {
       status: true,
       financialStatus: true,
       currency: true,
+      vatTreatment: true,
       paidAt: true,
       shippedAt: true,
       deliveredAt: true,
@@ -181,9 +194,10 @@ const ITEM_SELECT = {
         },
       },
       documents: {
-        select: { kind: true, number: true, issueDate: true, createdAt: true, subtotalCents: true, voidedAt: true },
+        select: { id: true, kind: true, number: true, vatTreatment: true, originalDocumentId: true, issueDate: true, createdAt: true, subtotalCents: true, voidedAt: true, snapshot: true },
         orderBy: { createdAt: 'asc' },
       },
+      items: { where: { product: { vatScheme: 'MARGIN' } }, select: MARGIN_ITEM_SELECT },
       _count: { select: { items: { where: { lineType: 'GOODS' } } } },
     },
   },
@@ -208,13 +222,23 @@ export function buyerOf(billing: unknown, account: { name: string | null; email:
   };
 }
 
-/** One register row from an order line. */
-export function soldRowOf(it: SoldItemRecord, ownName: string): SoldRow {
+/**
+ * One register row from an order line. `marginRateBp`: the standard rate the
+ * margin VAT of margin-scheme lines is computed at (as on the invoice).
+ */
+export function soldRowOf(it: SoldItemRecord, ownName: string, marginRateBp = 0): SoldRow {
   const o = it.order;
   const sr = o.sourcingRequest;
   const supplier = supplierOf(it.product, sr?.assignedTo ?? null, ownName);
-  const unit = it.priceCentsSnapshot;
-  const net = unit * it.quantity;
+  const chain = invoiceChain(o.documents);
+  const current = chain.current;
+  const invoiced = it.priceCentsSnapshot * it.quantity;
+  // Margin scheme (the invoice, or the order before it): the margin VAT is inside the price.
+  const marginLine = it.product?.vatScheme === 'MARGIN' && (current?.vatTreatment ?? o.vatTreatment) === 'MARGIN_SCHEME';
+  const lineMargin = marginLine ? orderMarginOf([{ priceCentsSnapshot: it.priceCentsSnapshot, quantity: it.quantity, product: it.product }], marginRateBp) : null;
+  const marginVat = lineMargin && !lineMargin.unitsWithoutCost ? lineMargin.vatCents : null;
+  const net = invoiced - (marginVat ?? 0);
+  const unit = marginVat ? Math.round(net / it.quantity) : it.priceCentsSnapshot;
   const quotedLine = !!sr && (sr.productId ? sr.productId === it.product?.id : o._count.items === 1);
   const cost = costOf({
     qty: it.quantity,
@@ -225,8 +249,7 @@ export function soldRowOf(it: SoldItemRecord, ownName: string): SoldRow {
     quotedLine,
     product: it.product ? { purchaseCostCents: it.product.purchaseCostCents, currency: it.product.currency } : null,
   });
-  const invoices = invoicesOf(o.documents);
-  const current = invoices[invoices.length - 1] ?? null;
+  const margin = marginVatByDocument(o.documents, o.items, marginRateBp);
   const proforma = [...o.documents].reverse().find((d) => d.kind === 'PROFORMA' && !d.voidedAt) ?? null;
   return {
     itemId: it.id,
@@ -248,18 +271,24 @@ export function soldRowOf(it: SoldItemRecord, ownName: string): SoldRow {
     qty: it.quantity,
     unitNetCents: unit,
     netCents: net,
+    invoicedCents: invoiced,
+    marginScheme: marginLine ? { vatCents: marginVat } : null,
     currency: o.currency,
     supplier,
     cost,
-    marginCents: marginOf(net, o.currency, cost),
+    // Margin VAT unknown: so is what the line earned.
+    marginCents: marginLine && marginVat == null ? null : marginOf(net, o.currency, cost),
     buyer: buyerOf(o.billingAddress, o.buyer, o.buyerVatId),
     poNumber: o.poNumber,
     proformaNumber: o.proformaNumber ?? proforma?.number ?? sr?.proformaNumber ?? null,
     invoice: current ? { number: current.number, issueDate: current.issueDate } : null,
-    replacedInvoices: invoices.slice(0, -1).map((d) => d.number),
-    creditNotes: o.documents
-      .filter((d) => d.kind === 'CREDIT_NOTE')
-      .map((d) => ({ number: d.number, issueDate: d.issueDate, netCents: d.subtotalCents })),
+    replacedInvoices: chain.replaced.map((d) => d.number),
+    replacementCreditNotes: chain.replacementCredits.map((d) => d.number),
+    creditNotes: chain.credits.map((d) => ({
+      number: d.number,
+      issueDate: d.issueDate,
+      goodsCents: docNetSplit(d).goodsCents - (margin.get(d.id)?.vatCents ?? 0),
+    })),
   };
 }
 
@@ -304,9 +333,11 @@ export async function loadSoldRows(f: SoldQuery, ownName: string): Promise<SoldR
         }
       : {}),
   };
+  await ensureSettingsLoaded();
+  const marginRateBp = marginVatRateBp();
   const items = await prisma.orderItem.findMany({ where, select: ITEM_SELECT });
   return items
-    .map((it) => soldRowOf(it, ownName))
+    .map((it) => soldRowOf(it, ownName, marginRateBp))
     .filter((r) => inPeriod(r.saleAt, f.period, f.tz))
     .sort((a, b) => (b.saleAt?.getTime() ?? 0) - (a.saleAt?.getTime() ?? 0) || a.orderNumber.localeCompare(b.orderNumber));
 }
@@ -343,17 +374,24 @@ export interface SoldTotals {
   marginCents: number;
   rowsWithMargin: number;
   rowsWithoutMargin: number;
-  /** Credit notes on these orders (net, ≤ 0; each order once). */
+  /** Credit notes of the current invoices of these orders (goods excl. VAT, ≤ 0; each order once). */
   creditedCents: number;
+  /** Margin-scheme lines: the margin VAT taken off their invoiced price, and the lines where it is unknown. */
+  marginVatCents: number;
+  marginVatUnknown: number;
 }
 
 export function soldTotals(rows: SoldRow[]): SoldTotals[] {
   const map = new Map<string, SoldTotals>();
   const seen = new Set<string>();
   for (const r of rows) {
-    const t = map.get(r.currency) ?? { currency: r.currency, units: 0, netCents: 0, costCents: 0, marginCents: 0, rowsWithMargin: 0, rowsWithoutMargin: 0, creditedCents: 0 };
+    const t = map.get(r.currency) ?? { currency: r.currency, units: 0, netCents: 0, costCents: 0, marginCents: 0, rowsWithMargin: 0, rowsWithoutMargin: 0, creditedCents: 0, marginVatCents: 0, marginVatUnknown: 0 };
     t.units += r.qty;
     t.netCents += r.netCents;
+    if (r.marginScheme) {
+      if (r.marginScheme.vatCents == null) t.marginVatUnknown += 1;
+      else t.marginVatCents += r.marginScheme.vatCents;
+    }
     if (r.marginCents != null && r.cost) {
       t.costCents += r.cost.cents;
       t.marginCents += r.marginCents;
@@ -363,7 +401,7 @@ export function soldTotals(rows: SoldRow[]): SoldTotals[] {
     }
     if (!seen.has(r.orderId)) {
       seen.add(r.orderId);
-      t.creditedCents += r.creditNotes.reduce((s, c) => s + c.netCents, 0);
+      t.creditedCents += r.creditNotes.reduce((s, c) => s + c.goodsCents, 0);
     }
     map.set(r.currency, t);
   }
@@ -386,6 +424,9 @@ export const SOLD_CSV_HEADER = [
   'unit_price_excl_vat',
   'line_total_excl_vat',
   'currency',
+  'vat_scheme',
+  'invoiced_line_total',
+  'margin_vat_in_price',
   'supplier',
   'supplier_cost',
   'supplier_cost_currency',
@@ -401,13 +442,24 @@ export const SOLD_CSV_HEADER = [
   'invoice_number',
   'invoice_date',
   'replaced_invoice_numbers',
+  'replacement_credit_note_numbers',
   'credit_note_numbers',
-  'order_credit_notes_excl_vat',
+  'order_credit_notes_goods_excl_vat',
 ] as const;
 
-/** CSV rows in SOLD_CSV_HEADER order (dates as YYYY-MM-DD in the business time zone). */
+/**
+ * CSV rows in SOLD_CSV_HEADER order (dates as YYYY-MM-DD in the business time
+ * zone). Credit notes belong to the order: their amount stands on the order's
+ * first line only, so the column adds up.
+ */
 export function soldCsvRows(rows: SoldRow[], tz: string): string[][] {
   const day = (d: Date | null) => (d ? localDay(d, tz) : '');
+  const credited = new Set<string>();
+  const orderCredit = (r: SoldRow) => {
+    if (!r.creditNotes.length || credited.has(r.orderId)) return '';
+    credited.add(r.orderId);
+    return csvMoney(r.creditNotes.reduce((s, c) => s + c.goodsCents, 0));
+  };
   return rows.map((r) => [
     day(r.saleAt),
     day(r.paidAt),
@@ -424,6 +476,9 @@ export function soldCsvRows(rows: SoldRow[], tz: string): string[][] {
     csvMoney(r.unitNetCents),
     csvMoney(r.netCents),
     r.currency,
+    r.marginScheme ? 'margin scheme' : '',
+    csvMoney(r.invoicedCents),
+    r.marginScheme ? (r.marginScheme.vatCents == null ? 'unknown (no purchase cost)' : csvMoney(r.marginScheme.vatCents)) : '',
     r.supplier.name,
     csvMoney(r.cost?.cents),
     r.cost ? (r.cost.currency ?? 'not recorded') : '',
@@ -439,7 +494,8 @@ export function soldCsvRows(rows: SoldRow[], tz: string): string[][] {
     r.invoice?.number ?? '',
     day(r.invoice?.issueDate ?? null),
     r.replacedInvoices.join(' | '),
+    r.replacementCreditNotes.join(' | '),
     r.creditNotes.map((c) => c.number).join(' | '),
-    r.creditNotes.length ? csvMoney(r.creditNotes.reduce((s, c) => s + c.netCents, 0)) : '',
+    orderCredit(r),
   ]);
 }
