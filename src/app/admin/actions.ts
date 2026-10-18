@@ -61,9 +61,11 @@ import { PRE_PAYMENT_HOLDS } from '@/lib/checkout/holds';
 import { holdTitle } from '@/lib/checkout/notify';
 import { businessTimeZone } from '@/lib/documents/numbering';
 import {
-  announcementLinkProblem, countryPolicyValue, fmtValueDay, lowAmountNeedsConfirm, manualPaymentBlocker, MANUAL_PAY_BLOCKING_VERIFICATION,
-  PAYMENT_REVIEW_HOLD, proofKeyOf, readReceived, shippingRateValue, shippingZoneValue,
+  announcementLinkProblem, bookingHoldBlocker, countryPolicyValue, fmtValueDay, holdResolvedAt, lowAmountNeedsConfirm, manualPaymentBlocker, MANUAL_PAY_BLOCKING_VERIFICATION,
+  PAYMENT_REVIEW_HOLD, proofKeyOf, readReceived, shippingRateValue, shippingZoneValue, STOCK_SHORTAGE_HOLD, withoutHold,
 } from '@/lib/payments/rules';
+import { onStockShortage, stockShortageText } from '@/lib/payments/stock-shortage';
+import { HOLD_PRIORITY } from '@/lib/checkout/engine';
 import { cancelPaidOrder, cancelUnpaidOrder } from '@/lib/fulfilment/cancel';
 import { heldMoneyCents, LIVE_REFUNDS_SELECT, requestRefundTx } from '@/lib/finance/refunds';
 import { markDelivered, markOrderProcessing, recordShipment, updateShipmentTracking } from '@/lib/fulfilment/shipments';
@@ -563,8 +565,8 @@ export async function getOrderQuickDetail(id: string): Promise<{
   paymentVerifiedAt: string | null;
   paymentVerifiedByEmail: string | null;
   paymentRejectionReason: string | null;
-  /** Open holds with their staff title (compliance, VAT, address, freight, stock …). */
-  holds: { code: string; title: string }[];
+  /** Open holds with their staff title (compliance, VAT, address, freight, stock …) and the order-page section that resolves each (null: none there yet). */
+  holds: { code: string; title: string; resolvedAt: string | null }[];
   holdNote: string | null;
   /** Why “Mark as paid” is not offered now (receipt waiting, hold, terms request), or null. */
   manualPayBlocker: string | null;
@@ -668,7 +670,7 @@ export async function getOrderQuickDetail(id: string): Promise<{
       ? (await prisma.user.findUnique({ where: { id: o.paymentVerifiedById }, select: { email: true } }))?.email ?? null
       : null,
     paymentRejectionReason: o.paymentRejectionReason,
-    holds: holdCodes.map((code) => ({ code, title: holdTitle(code) })),
+    holds: holdCodes.map((code) => ({ code, title: holdTitle(code), resolvedAt: holdResolvedAt(code, { unpaid: o.status === 'PENDING_PAYMENT', checkoutOrder: !o.sourcingRequestId }) })),
     holdNote: o.holdNote,
     manualPayBlocker: o.status === 'PENDING_PAYMENT'
       ? manualPaymentBlocker({ holdMessage: prePaymentHoldMessage(o), holdReason: o.holdReason, openHolds: o.openHolds, paymentVerificationStatus: o.paymentVerificationStatus })
@@ -1871,22 +1873,48 @@ async function financeRefusal(): Promise<{ ok: false; message: string } | null> 
   return { ok: false, message: 'Booking payments needs the “Register payments and credit terms” permission (finance:manage) — ask Finance or a super-admin. Nothing was changed.' };
 }
 
-/** Holds under which no money is booked by hand (manualPaymentBlocker, repeated in the claim's WHERE). */
+/** Holds under which no money is booked by hand (bookingHoldBlocker, repeated in the claims' WHERE). */
 const MANUAL_PAY_BLOCKING_HOLDS = [...PRE_PAYMENT_HOLDS, PAYMENT_REVIEW_HOLD] as OrderHoldReason[];
+
+/** WHERE: none of MANUAL_PAY_BLOCKING_HOLDS open (a hold put on meanwhile loses the claim). */
+const NO_BOOKING_HOLD_WHERE: Prisma.OrderWhereInput[] = [
+  { NOT: { openHolds: { hasSome: [...MANUAL_PAY_BLOCKING_HOLDS] } } },
+  // A nullable column: “not in” alone would also drop the NULL rows.
+  { OR: [{ holdReason: null }, { holdReason: { notIn: MANUAL_PAY_BLOCKING_HOLDS } }] },
+];
 
 /** The atomic claim of “mark as paid”: still unpaid, no blocking hold, no receipt or terms request pending. */
 function manualPayClaimWhere(id: string): Prisma.OrderWhereInput {
   return {
     id,
     status: 'PENDING_PAYMENT',
-    NOT: { openHolds: { hasSome: [...MANUAL_PAY_BLOCKING_HOLDS] } },
     AND: [
-      { OR: [{ holdReason: null }, { holdReason: { notIn: MANUAL_PAY_BLOCKING_HOLDS } }] },
-      // A nullable column: “not in” alone would also drop the NULL rows.
+      ...NO_BOOKING_HOLD_WHERE,
       { OR: [{ paymentVerificationStatus: null }, { paymentVerificationStatus: { notIn: [...MANUAL_PAY_BLOCKING_VERIFICATION] } }] },
     ],
   };
 }
+
+/**
+ * The atomic claim of “verify payment” (in full or as a part payment): the
+ * receipt staff reviewed is still the one waiting (a new upload meanwhile
+ * loses the claim) and no blocking hold was put on meanwhile.
+ */
+function verifyClaimWhere(id: string, paymentProofUrl: string | null): Prisma.OrderWhereInput {
+  return { id, status: 'PENDING_PAYMENT', paymentVerificationStatus: 'AWAITING_VERIFICATION', paymentProofUrl, AND: NO_BOOKING_HOLD_WHERE };
+}
+
+/**
+ * The receipt staff looked at (the form's `proofKey`) is not the one on the
+ * order any more: the buyer uploaded a new one meanwhile. Absent = not checked
+ * (older forms; the claim still pins the receipt read here).
+ */
+function reviewedProofChanged(formData: FormData, currentProofUrl: string | null): boolean {
+  const reviewed = formData.get('proofKey');
+  return typeof reviewed === 'string' && reviewed !== (proofKeyOf(currentProofUrl) ?? '');
+}
+
+const VERIFY_RACE_MESSAGE = 'The order changed meanwhile (another admin acted on it, the buyer sent a new receipt, or a hold was put on) — refresh and check the current state. Nothing was booked.';
 
 /** The value-date / amount checks of every payment booking (verify, mark paid). */
 function receivedFromForm(formData: FormData, openCents: number, orderCreatedAt: Date) {
@@ -1936,19 +1964,19 @@ async function takeUnitOrHold(
 
 /** After a STOCK_SHORTAGE: staff are alerted, the buyer is told the truth (no “we prepare your order”). */
 async function announceStockShortage(
-  o: { id: string; orderNumber: string; buyer: { id: string; email: string; name: string | null } },
-  amount: string,
-  valueDay: string,
+  o: { id: string; orderNumber: string; currency: string; buyer: { id: string; email: string; name: string | null } },
+  rec: { amountCents: number; receivedAt: Date },
   warning: string,
 ): Promise<string> {
+  const amount = fmtDocMoney(rec.amountCents, o.currency);
   await notifyAdmins(
     `Order ${o.orderNumber} paid — the unit is no longer in stock`,
-    `${amount} received (value date ${valueDay}). ${warning.trim()} No invoice was issued: decide refund, backorder or another unit on the order page.`.slice(0, 500),
+    `${amount} received (value date ${fmtValueDay(rec.receivedAt)}). ${warning.trim()} No invoice was issued: refund it (Cancel & refund) or secure the unit and release the stock-shortage hold on the order page.`.slice(0, 500),
     `/admin/orders/${o.id}`,
     'ORDER_PAID',
   );
-  const { settingText } = await import('@/lib/finance/texts');
-  const t = settingText('EMAIL_PAYMENT_STOCK_CHECK_TEXT', { AMOUNT: amount, ORDER: o.orderNumber, DATE: valueDay }, ['AMOUNT', 'ORDER']);
+  // The same text the buyer's payment and order pages show while the hold is open.
+  const t = stockShortageText({ orderNumber: o.orderNumber, currency: o.currency, amountCents: rec.amountCents, valueDate: rec.receivedAt });
   await notifyUser(o.buyer.id, `Payment received — order ${o.orderNumber}`, t.text.slice(0, 300), `/app/orders/${o.orderNumber}`);
   const mail = await trySendEmail({
     to: o.buyer.email,
@@ -1960,7 +1988,7 @@ async function announceStockShortage(
     }),
     text: t.text,
   }, 'orders:stock-shortage');
-  return ` The unit is no longer in stock: the order is on the STOCK SHORTAGE hold (no shipping) and NO invoice was issued — decide refund, backorder or another unit. ${mail.ok ? 'The buyer was e-mailed that the payment arrived and that we contact them.' : `The e-mail to the buyer could not be delivered (${mail.error}).`}`;
+  return ` The unit is no longer in stock: the order is on the STOCK SHORTAGE hold (no shipping) and NO invoice was issued — refund it (Cancel & refund), or secure the unit (another one, or the same one later) and release the hold on the order page. ${mail.ok ? 'The buyer was e-mailed that the payment arrived and that we contact them.' : `The e-mail to the buyer could not be delivered (${mail.error}).`}`;
 }
 
 /** Manually mark a non-Stripe order as PAID — money that landed off-platform
@@ -2084,7 +2112,7 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
   revalidatePath(`/admin/orders/${id}`);
   const overNote = overpaid ? ` Overpaid by ${cur(overpaid)}: refund REQUESTED — transfer it back and mark it sent.` : '';
   if (stock.short) {
-    const shortNote = await announceStockShortage(order, cur(rec.amountCents), valueDay, stock.warning);
+    const shortNote = await announceStockShortage(order, rec, stock.warning);
     return { ok: true, message: `Marked as paid (${cur(rec.amountCents)}, value date ${valueDay}).${overNote}${shortNote}` };
   }
   await notifyUser(
@@ -3730,6 +3758,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
       paymentVerificationStatus: true, paymentSubmittedAt: true,
       paymentMethodManual: true,
       paymentProofUrl: true,
+      holdReason: true, openHolds: true,
       proformaNumber: true,
       sourcingRequestId: true,
       shippingAddress: true,
@@ -3748,6 +3777,16 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
   if (order.paymentVerificationStatus !== 'AWAITING_VERIFICATION') {
     return { ok: false, message: `Cannot verify — current state: ${order.paymentVerificationStatus ?? 'none'}.` };
   }
+  // Only the receipt staff looked at is booked: a new upload since the page was opened is reviewed first.
+  if (reviewedProofChanged(formData, order.paymentProofUrl)) {
+    return { ok: false, message: 'The buyer uploaded a new receipt after you opened this page — reload the page and check the new receipt before verifying. Nothing was booked.' };
+  }
+  // A hold put on while the receipt waited (export compliance, VAT, address,
+  // freight, payment review): no money is booked, no invoice issued, until it is cleared.
+  const holdBlock = order.status === 'PENDING_PAYMENT'
+    ? bookingHoldBlocker({ holdMessage: prePaymentHoldMessage(order), holdReason: order.holdReason, openHolds: order.openHolds }, 'VERIFY')
+    : null;
+  if (holdBlock) return { ok: false, message: `Not verified: ${holdBlock} Nothing was booked.` };
   // A legacy "Invoice (NET)" submission carries no money: never verify it as paid.
   if ((order.paymentMethodManual ?? '').toUpperCase() === 'INVOICE') {
     return { ok: false, message: 'This submission is “pay on invoice” — no money was received, so it can not be verified as a payment. Reject it (the buyer pays by bank transfer), or approve credit terms for an approved credit customer.' };
@@ -3783,7 +3822,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     const stillOpen = open - rec.amountCents;
     const part = await prisma.$transaction(async (tx) => {
       const res = await tx.order.updateMany({
-        where: { id, paymentVerificationStatus: 'AWAITING_VERIFICATION', status: 'PENDING_PAYMENT' },
+        where: verifyClaimWhere(id, order.paymentProofUrl),
         data: {
           // The receipt was booked (financialStatus PARTIALLY_PAID): the buyer
           // uploads the next one for the rest. The texts say “part payment”.
@@ -3803,7 +3842,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
       }
       return res;
     });
-    if (part.count !== 1) return { ok: false, message: 'Verification race — another admin acted on this order. Refresh to see the current state.' };
+    if (part.count !== 1) return { ok: false, message: VERIFY_RACE_MESSAGE };
     const t = (await import('@/lib/finance/texts')).settingText('EMAIL_PART_PAYMENT_BODY', { PAID: cur(rec.amountCents), ORDER: order.orderNumber, DATE: valueDay, TOTAL: cur(order.totalCents), OPEN: cur(stillOpen), REFERENCE: order.proformaNumber ?? order.orderNumber }, ['OPEN']);
     const mail = await trySendEmail({
       to: order.buyer.email,
@@ -3826,11 +3865,8 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
   let stock = { short: false, warning: '' };
   const verifyRes = await prisma.$transaction(async (tx) => {
     const res = await tx.order.updateMany({
-      where: {
-        id,
-        paymentVerificationStatus: 'AWAITING_VERIFICATION',
-        status: 'PENDING_PAYMENT',
-      },
+      // Still waiting, still the receipt read above, still no blocking hold.
+      where: verifyClaimWhere(id, order.paymentProofUrl),
       data: {
         status: 'PAID',
         // The value date of the money, not the click.
@@ -3872,12 +3908,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     stock = await takeUnitOrHold(tx, order, session.user.email);
     return res;
   });
-  if (verifyRes.count !== 1) {
-    return {
-      ok: false,
-      message: 'Verification race — another admin acted on this order. Refresh to see the current state.',
-    };
-  }
+  if (verifyRes.count !== 1) return { ok: false, message: VERIFY_RACE_MESSAGE };
   await audit('order.payment.verify', order.orderNumber, `verifier=${session.user.email} amount=${rec.amountCents} value=${rec.receivedAt.toISOString().slice(0, 10)} ref=${rec.bankRef ?? '-'}${overpaid ? ` overpaid=${overpaid}` : ''}${short ? ` short=${short}` : ''}${stock.short ? ' STOCK_SHORTAGE' : ''}`);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
@@ -3891,7 +3922,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     ? ` Received ${cur(rec.amountCents)} for ${cur(open)} due: the overpayment of ${cur(overpaid)} is recorded as a refund REQUESTED — transfer it back and mark it sent.`
     : short ? ` Received ${cur(rec.amountCents)} — ${cur(short)} short, within the tolerance of ${cur(tolerance)} (counts as paid in full).` : '';
   if (stock.short) {
-    const shortNote = await announceStockShortage(order, cur(rec.amountCents), valueDay, stock.warning);
+    const shortNote = await announceStockShortage(order, rec, stock.warning);
     return { ok: true, message: `Payment verified (${cur(rec.amountCents)}, value date ${valueDay}).${moneyNote}${shortNote}` };
   }
   await notifyUser(
@@ -3964,6 +3995,10 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
   if (!order) return { ok: false, message: 'Order not found.' };
   if (order.paymentVerificationStatus !== 'AWAITING_VERIFICATION') {
     return { ok: false, message: `Cannot reject — current state: ${order.paymentVerificationStatus ?? 'none'}.` };
+  }
+  // The reason is about the receipt staff looked at — never pin it on a newer upload.
+  if (reviewedProofChanged(formData, order.paymentProofUrl)) {
+    return { ok: false, message: 'The buyer uploaded a new receipt after you opened this page — reload the page and check the new receipt first. Nothing was rejected.' };
   }
   // BUG-037: claim the transition atomically (mirror of verifyPayment). The
   // in-memory AWAITING_VERIFICATION check above races a concurrent verify /
@@ -4038,8 +4073,8 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
 
 /** Issue (or retry issuing) the invoice of a paid order — e.g. after the VAT
  *  settings or the buyer's billing details were corrected. Finance work; never
- *  while the unit is missing (STOCK_SHORTAGE: refund, backorder or another
- *  unit is decided first). */
+ *  while the unit is missing (STOCK_SHORTAGE: refunded, or the unit secured
+ *  and the hold released, first). */
 export async function issueOrderInvoiceAction(formData: FormData): Promise<{ ok: boolean; message: string }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   const refused = await financeRefusal();
@@ -4047,13 +4082,123 @@ export async function issueOrderInvoiceAction(formData: FormData): Promise<{ ok:
   const id = String(formData.get('orderId') ?? '');
   if (!id) return { ok: false, message: 'Missing order id.' };
   const held = await prisma.order.findUnique({ where: { id }, select: { holdReason: true, openHolds: true } });
-  if (held && (held.holdReason === 'STOCK_SHORTAGE' || held.openHolds.includes('STOCK_SHORTAGE'))) {
-    return { ok: false, message: 'Not issued: the unit of this order is no longer in stock (STOCK SHORTAGE hold). Decide refund, backorder or another unit first — the invoice follows that decision.' };
+  if (held && onStockShortage(held)) {
+    return { ok: false, message: 'Not issued: the unit of this order is no longer in stock (STOCK SHORTAGE hold). Refund it (Cancel & refund), or secure the unit and release the hold under “Stock shortage” — that issues the invoice.' };
   }
   const r = await sendOrderInvoice(id, { actorId: session.user.id });
   await audit('order.invoice.issue', id, r.issued ? `${r.number}` : `not issued: ${(r.notIssuedReason ?? '').slice(0, 200)}`);
   revalidatePath(`/admin/orders/${id}`);
   return { ok: r.issued, message: invoiceMailSummary(r) };
+}
+
+/**
+ * Stock shortage resolved: the unit is secured — back in this listing's stock
+ * (it is taken from stock now) or arranged outside the listing (another unit
+ * from the supplier; the listing's stock is unchanged), also at the end of a
+ * backorder. The hold goes with a line in the internal notes, the invoice is
+ * issued and e-mailed, and the order can ship. A refund instead is “Cancel &
+ * refund”. Finance work (it issues the invoice).
+ */
+export async function releaseStockShortageAction(formData: FormData): Promise<{ ok: boolean; message: string }> {
+  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  const refused = await financeRefusal();
+  if (refused) return refused;
+  await ensureSettingsLoaded();
+  const id = String(formData.get('orderId') ?? '');
+  const source = String(formData.get('source') ?? '');
+  const note = String(formData.get('note') ?? '').trim().slice(0, 300);
+  if (!id) return { ok: false, message: 'Missing order id.' };
+  if (source !== 'LISTING' && source !== 'OUTSIDE') return { ok: false, message: 'Choose where the unit comes from.' };
+  if (note.length < 4) return { ok: false, message: 'Write down how the unit was secured (e.g. “second unit from the supplier, ships 24 Oct”) — it is kept on the order.' };
+  const order = await prisma.order.findUnique({
+    where: { id },
+    select: {
+      id: true, orderNumber: true, status: true, currency: true, amountPaidCents: true, paidAt: true, sourcingRequestId: true, shippingAddress: true,
+      openHolds: true, holdReason: true, holdNote: true, adminNotes: true,
+      items: { select: { productId: true, quantity: true }, take: 1 }, buyer: { select: { id: true, email: true, name: true } },
+    },
+  });
+  if (!order) return { ok: false, message: 'Order not found.' };
+  if (!onStockShortage(order)) return { ok: false, message: `Order ${order.orderNumber} has no stock-shortage hold.` };
+  if (!['PAID', 'PROCESSING'].includes(order.status)) {
+    return { ok: false, message: `Order ${order.orderNumber} is ${order.status.toLowerCase()} — there is no stock-shortage hold to release on it.` };
+  }
+  const fromListing = source === 'LISTING';
+  if (fromListing && !order.sourcingRequestId) {
+    return { ok: false, message: 'This order holds no quote unit to take from stock — choose “arranged outside the listing” (and adjust the listing’s stock by hand if needed).' };
+  }
+  const next = withoutHold(order, STOCK_SHORTAGE_HOLD, HOLD_PRIORITY);
+  let stillShort = '';
+  const claimed = await prisma.$transaction(async (tx) => {
+    const res = await tx.order.updateMany({
+      // CAS on the hold list: a second click, or another hold change meanwhile, loses.
+      where: { id, status: { in: ['PAID', 'PROCESSING'] }, openHolds: { equals: order.openHolds } },
+      data: {
+        openHolds: next.openHolds as OrderHoldReason[],
+        holdReason: next.holdReason as OrderHoldReason | null,
+        holdNote: next.holdNote,
+        ...(next.openHolds.length ? {} : { holdAt: null }),
+        adminNotes: `${order.adminNotes ? `${order.adminNotes}\n` : ''}[${new Date().toISOString().slice(0, 10)}] Stock shortage resolved by ${session.user.email}: ${note} (${fromListing ? 'unit taken from the listing’s stock' : 'unit arranged outside the listing — its stock is unchanged'}).`.slice(0, 4000),
+      },
+    });
+    if (res.count !== 1) return false;
+    if (fromListing) {
+      const unit = await takeQuoteUnit(tx, order);
+      if (unit.short) {
+        stillShort = unit.warning.replace(/^\s*Warning:\s*/i, '').trim() || 'the unit could not be taken from stock';
+        throw new Error('stock still short');
+      }
+    }
+    return true;
+  }).catch((e: unknown) => {
+    if (stillShort) return null;
+    throw e;
+  });
+  if (claimed === null) {
+    return { ok: false, message: `The listing still has no unit for this order (${stillShort}). Put the unit back in the listing’s stock first, or choose “arranged outside the listing”. Nothing was changed.` };
+  }
+  if (!claimed) return { ok: false, message: 'The order changed meanwhile (the hold was released, or another hold changed) — refresh and check the current state. Nothing was changed.' };
+  await audit('order.stock-shortage.release', order.orderNumber, `${source} by ${session.user.email}: ${note}`.slice(0, 500));
+  revalidatePath('/admin/orders');
+  revalidatePath(`/admin/orders/${id}`);
+  revalidatePath(`/app/orders/${order.orderNumber}`);
+
+  // The invoice follows now (it was withheld while the unit was missing).
+  const invoiceMail = await sendOrderInvoice(order.id, { actorId: session.user.id });
+  const { settingText } = await import('@/lib/finance/texts');
+  const delayed = settingText('EMAIL_INVOICE_DELAYED_TEXT', { ORDER: order.orderNumber });
+  await notifyUser(
+    order.buyer.id,
+    `Order ${order.orderNumber}: your item is confirmed`,
+    `The item for your order is secured and we prepare it for shipping. ${invoiceMail.issued ? 'Your invoice is on your order page.' : delayed.text}`.slice(0, 300),
+    `/app/orders/${order.orderNumber}`,
+  );
+  let buyerMailNote = '';
+  if (!invoiceMail.issued || !invoiceMail.emailed) {
+    // No invoice e-mail went out: the buyer is still told the order goes ahead.
+    const v = settingText('EMAIL_PAYMENT_VERIFIED_BODY', { AMOUNT: fmtDocMoney(order.amountPaidCents, order.currency), ORDER: order.orderNumber, DATE: order.paidAt ? fmtValueDay(order.paidAt) : 'not recorded' }, ['AMOUNT', 'ORDER']);
+    const invoiceLine = invoiceMail.issued ? { html: `Your invoice ${escapeHtml(invoiceMail.number ?? '')} is available on your order page.`, text: `Your invoice ${invoiceMail.number ?? ''} is available on your order page.` } : delayed;
+    const m = await trySendEmail({
+      to: order.buyer.email,
+      subject: `Your item is confirmed — order ${order.orderNumber}`,
+      html: mailLayout({
+        heading: 'Your item is confirmed',
+        body: [`Hi <span dir="auto">${escapeHtml(order.buyer.name ?? 'there')}</span>,`, v.html, invoiceLine.html],
+        cta: { href: `${siteBase()}/app/orders/${order.orderNumber}`, label: 'View your order' },
+      }),
+      text: `${v.text}\n${invoiceLine.text}`,
+    }, 'orders:stock-secured');
+    buyerMailNote = m.ok ? ' The buyer was e-mailed that the order goes ahead.' : ` The e-mail to ${order.buyer.email} could not be delivered (${m.error}).`;
+  }
+  // The listing's supplier prepares the unit for dispatch; a unit arranged elsewhere is staff's to arrange.
+  if (fromListing) await notifySupplierOfSale(order.id, 'PAID').catch(() => {});
+  const stillOpen = next.openHolds.length ? ` Still on hold: ${next.openHolds.map(holdTitle).join(', ')}.` : '';
+  return {
+    ok: true,
+    message: `Stock-shortage hold released (${fromListing ? 'unit taken from the listing’s stock' : 'unit arranged outside the listing — the listing’s stock is unchanged; tell the supplier who ships it'}). ${invoiceMailSummary(invoiceMail)}${buyerMailNote}${stillOpen}${
+      shippingAddressIsComplete(order.shippingAddress) ? '' : ' No complete shipping address on file yet — add it on the order page before shipping.'
+    }`,
+  };
 }
 
 /**

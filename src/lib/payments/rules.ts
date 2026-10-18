@@ -143,11 +143,72 @@ export function manualPaymentBlocker(o: {
   if (o.paymentVerificationStatus === 'TERMS_REQUESTED') {
     return 'The buyer asked to pay on invoice — approve or decline that request on the order page first.';
   }
-  if (o.holdMessage) return `${o.holdMessage} It can not be marked paid until that hold is cleared (Pricing, VAT & holds on the order page).`;
+  return bookingHoldBlocker(o, 'MARK_PAID');
+}
+
+/**
+ * Why no money is booked on an unpaid order because of its holds — by “mark
+ * as paid” or by verifying the buyer's receipt — or null. A pre-payment hold
+ * (export compliance, VAT, address, freight; `holdMessage`) means there is no
+ * payment request yet; a payment review means earlier money did not match.
+ */
+export function bookingHoldBlocker(
+  o: { holdMessage: string | null; holdReason: string | null; openHolds: readonly string[] },
+  action: 'MARK_PAID' | 'VERIFY',
+): string | null {
+  if (o.holdMessage) {
+    return action === 'VERIFY'
+      ? `${o.holdMessage} The receipt can not be verified until that hold is cleared (Pricing, VAT & holds on the order page) — or reject the receipt.`
+      : `${o.holdMessage} It can not be marked paid until that hold is cleared (Pricing, VAT & holds on the order page).`;
+  }
   if (o.holdReason === PAYMENT_REVIEW_HOLD || o.openHolds.includes(PAYMENT_REVIEW_HOLD)) {
     return 'A payment on this order is under review (it did not match the order) — resolve that review before booking another payment.';
   }
   return null;
+}
+
+// ── holds after payment ─────────────────────────────────────────────────────
+
+/** Hold of a paid order whose unit is gone: no invoice, no dispatch until staff decide. */
+export const STOCK_SHORTAGE_HOLD = 'STOCK_SHORTAGE';
+
+/**
+ * The order's hold fields with `code` released: the other holds stay, the
+ * primary hold (holdReason) stays unless it was `code` — then the first hold
+ * of `priority` still open (or any other) — and `code`'s note goes.
+ */
+export function withoutHold(
+  o: { openHolds: readonly string[]; holdReason: string | null; holdNote: string | null },
+  code: string,
+  priority: readonly string[],
+): { openHolds: string[]; holdReason: string | null; holdNote: string | null } {
+  const rest = Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])])).filter((h) => h !== code);
+  const holdReason = o.holdReason && o.holdReason !== code ? o.holdReason : priority.find((h) => rest.includes(h)) ?? rest[0] ?? null;
+  const holdNote = (o.holdNote ?? '').split(' | ').filter((p) => p && !p.startsWith(`${code}:`)).join(' | ') || null;
+  return { openHolds: rest, holdReason, holdNote };
+}
+
+/**
+ * Where on the admin order page an open hold is resolved, or null when no
+ * control exists for it there (yet): the quick view only points to real ones.
+ */
+export function holdResolvedAt(code: string, o: { unpaid: boolean; checkoutOrder: boolean }): string | null {
+  switch (code) {
+    case 'COMPLIANCE':
+    case 'ADDRESS_REVIEW':
+    case 'PAYMENT_REVIEW':
+      return 'Pricing, VAT & holds';
+    case 'SHIPPING_PENDING':
+      return o.unpaid && o.checkoutOrder ? 'Pricing, VAT & holds' : null;
+    case 'VAT_REVIEW':
+      return o.unpaid ? (o.checkoutOrder ? 'Pricing, VAT & holds' : null) : 'Invoice decisions & corrections';
+    case 'INVOICE_PENDING':
+      return o.unpaid ? null : 'Invoice decisions & corrections';
+    case STOCK_SHORTAGE_HOLD:
+      return o.unpaid ? null : 'Stock shortage';
+    default:
+      return null;
+  }
 }
 
 /** “the €200.00 still due (of €2,480.50)” on a rest payment, else just the total. */

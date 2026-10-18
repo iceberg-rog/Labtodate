@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  announcementLinkProblem, briefText, countryPolicyValue, dayInZone, fmtValueDay, lowAmountNeedsConfirm, manualPaymentBlocker,
-  parseAmountInput, proofKeyOf, readReceived, receiptAmountLabel, receiptHistory,
+  announcementLinkProblem, bookingHoldBlocker, briefText, countryPolicyValue, dayInZone, fmtValueDay, holdResolvedAt, lowAmountNeedsConfirm, manualPaymentBlocker,
+  parseAmountInput, proofKeyOf, readReceived, receiptAmountLabel, receiptHistory, withoutHold,
 } from './rules';
 
 const cents = (s: string) => {
@@ -97,6 +97,42 @@ test('mark as paid is refused while a receipt waits, on invoice-terms requests, 
   const held = 'Order L2D-1 is waiting for an export-compliance review — no proforma (payment request) is issued until that is done.';
   assert.match(manualPaymentBlocker({ ...ok, holdMessage: held, holdReason: 'COMPLIANCE', openHolds: ['COMPLIANCE'] }) ?? '', /export-compliance.*can not be marked paid/);
   assert.match(manualPaymentBlocker({ ...ok, openHolds: ['PAYMENT_REVIEW'] }) ?? '', /under review/);
+});
+
+test('verifying a receipt is refused under the same holds — with the way out (clear the hold or reject)', () => {
+  const none = { holdMessage: null, holdReason: null, openHolds: [] as string[] };
+  assert.equal(bookingHoldBlocker(none, 'VERIFY'), null);
+  // A stock shortage or an invoice hold is no reason to refuse booking money.
+  assert.equal(bookingHoldBlocker({ ...none, openHolds: ['STOCK_SHORTAGE', 'INVOICE_PENDING'] }, 'VERIFY'), null);
+  const held = 'Order L2D-1 is waiting for an export-compliance review — no proforma (payment request) is issued until that is done.';
+  const v = bookingHoldBlocker({ holdMessage: held, holdReason: 'COMPLIANCE', openHolds: ['COMPLIANCE'] }, 'VERIFY') ?? '';
+  assert.match(v, /export-compliance.*receipt can not be verified.*or reject the receipt/);
+  assert.match(bookingHoldBlocker({ ...none, holdReason: 'PAYMENT_REVIEW' }, 'VERIFY') ?? '', /under review/);
+});
+
+test('releasing one hold keeps the others, the primary one and their notes', () => {
+  const prio = ['COMPLIANCE', 'VAT_REVIEW', 'ADDRESS_REVIEW', 'SHIPPING_PENDING', 'PAYMENT_REVIEW', 'INVOICE_PENDING'];
+  assert.deepEqual(withoutHold({ openHolds: ['STOCK_SHORTAGE'], holdReason: 'STOCK_SHORTAGE', holdNote: 'STOCK_SHORTAGE: sold to L2D-2' }, 'STOCK_SHORTAGE', prio), { openHolds: [], holdReason: null, holdNote: null });
+  assert.deepEqual(
+    withoutHold({ openHolds: ['ADDRESS_REVIEW', 'STOCK_SHORTAGE'], holdReason: 'ADDRESS_REVIEW', holdNote: 'ADDRESS_REVIEW: NL → DE | STOCK_SHORTAGE: sold' }, 'STOCK_SHORTAGE', prio),
+    { openHolds: ['ADDRESS_REVIEW'], holdReason: 'ADDRESS_REVIEW', holdNote: 'ADDRESS_REVIEW: NL → DE' },
+  );
+  // The released hold was the primary one: the next by priority (or any other) takes its place.
+  assert.equal(withoutHold({ openHolds: ['STOCK_SHORTAGE', 'FRAUD', 'VAT_REVIEW'], holdReason: 'STOCK_SHORTAGE', holdNote: null }, 'STOCK_SHORTAGE', prio).holdReason, 'VAT_REVIEW');
+  assert.equal(withoutHold({ openHolds: ['STOCK_SHORTAGE', 'FRAUD'], holdReason: 'STOCK_SHORTAGE', holdNote: null }, 'STOCK_SHORTAGE', prio).holdReason, 'FRAUD');
+});
+
+test('the quick view points only to holds that have a control on the order page', () => {
+  const unpaidCheckout = { unpaid: true, checkoutOrder: true };
+  const paidQuote = { unpaid: false, checkoutOrder: false };
+  assert.equal(holdResolvedAt('COMPLIANCE', paidQuote), 'Pricing, VAT & holds');
+  assert.equal(holdResolvedAt('SHIPPING_PENDING', unpaidCheckout), 'Pricing, VAT & holds');
+  assert.equal(holdResolvedAt('SHIPPING_PENDING', paidQuote), null);
+  assert.equal(holdResolvedAt('VAT_REVIEW', { unpaid: true, checkoutOrder: false }), null);
+  assert.equal(holdResolvedAt('VAT_REVIEW', paidQuote), 'Invoice decisions & corrections');
+  assert.equal(holdResolvedAt('INVOICE_PENDING', paidQuote), 'Invoice decisions & corrections');
+  assert.equal(holdResolvedAt('STOCK_SHORTAGE', paidQuote), 'Stock shortage');
+  for (const code of ['FRAUD', 'SUPPLIER_CONFIRMATION', 'SOMETHING_NEW']) assert.equal(holdResolvedAt(code, paidQuote), null, code);
 });
 
 test('the staff receipt notice names the open amount of a rest payment', () => {

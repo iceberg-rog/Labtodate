@@ -342,7 +342,12 @@ export function OrderQuickView() {
                   <span className="min-w-0 [overflow-wrap:anywhere]">
                     <strong>On hold: {data.holds.map((h) => h.title).join(', ')}.</strong>
                     {data.holdNote && <span className="block mt-0.5">{data.holdNote}</span>}
-                    <span className="block mt-0.5">Release it on the order page (Pricing, VAT &amp; holds).</span>
+                    {/* Only holds that have a control on the order page get a pointer. */}
+                    {data.holds.some((h) => h.resolvedAt) && (
+                      <span className="block mt-0.5">
+                        Resolve on the order page: {data.holds.filter((h) => h.resolvedAt).map((h) => `${h.title} → ${h.resolvedAt}`).join('; ')}.
+                      </span>
+                    )}
                   </span>
                 </div>
               )}

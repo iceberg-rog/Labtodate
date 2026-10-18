@@ -662,7 +662,7 @@ const DEFS: DefInput[] = [
     hint: 'Told to the buyer (e-mail and order page) while a paid order waits for a VAT decision or missing invoice details.' },
   { key: 'EMAIL_PAYMENT_STOCK_CHECK_TEXT', label: 'Payment received — the unit is no longer in stock', group: 'Email texts', type: 'text', multiline: true,
     default: 'We received your payment of {AMOUNT} for order {ORDER} (value date {DATE}). Unfortunately the item is no longer available from stock. Our team contacts you shortly to agree on another unit, a new delivery date or a full refund; your invoice follows once that is agreed.',
-    hint: 'Sent instead of the invoice when a payment arrives for a unit that was sold meanwhile (the order goes on the stock-shortage hold). {AMOUNT} {ORDER} {DATE} (value date).' },
+    hint: 'Sent instead of the invoice when a payment arrives for a unit that was sold meanwhile (the order goes on the stock-shortage hold), and shown on the buyer’s payment and order pages until staff resolve the hold. {AMOUNT} {ORDER} {DATE} (value date).' },
   { key: 'EMAIL_PART_PAYMENT_BODY', label: 'Part payment received — text', group: 'Email texts', type: 'text', multiline: true,
     default: 'We received {PAID} for order {ORDER} on {DATE}. The order total is {TOTAL}, so {OPEN} is still due. Please transfer the remaining amount quoting {REFERENCE}.',
     hint: 'A payment that is short by more than the tolerance. {PAID} {ORDER} {DATE} {TOTAL} {OPEN} {REFERENCE}.' },

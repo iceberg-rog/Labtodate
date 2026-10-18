@@ -32,7 +32,7 @@ import {
 } from '@/app/admin/actions';
 import { BuyerEmailReveal } from '@/components/admin/BuyerEmailReveal';
 import { documentHref } from '@/lib/documents';
-import { getOrderDocuments } from '@/lib/documents/issue';
+import { getOrderDocuments, prePaymentHoldMessage } from '@/lib/documents/issue';
 import { ensureSettingsLoaded, settingBool, settingInt } from '@/lib/settings';
 import { OrderDocumentsPanel } from '@/components/documents/OrderDocumentsPanel';
 import { OrderPricingPanel } from '@/components/admin/OrderPricingPanel';
@@ -45,7 +45,7 @@ import { StickyDetails } from '@/components/admin/StickyDetails';
 import { OrderPaymentPanels } from '@/components/admin/OrderPaymentPanels';
 import { detailsSummary, orderDetailsProblems } from '@/lib/orders/details';
 import { heldMoneyCents, LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
-import { briefText, fmtValueDay, receiptHistory, type ReceiptStatus } from '@/lib/payments/rules';
+import { bookingHoldBlocker, briefText, fmtValueDay, proofKeyOf, receiptHistory, type ReceiptStatus } from '@/lib/payments/rules';
 import { orderFulfilmentView } from '@/lib/fulfilment/view';
 import { NextSteps } from '@/components/orders/NextSteps';
 import { AdminShipments } from '@/components/admin/fulfilment/AdminShipments';
@@ -316,6 +316,12 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
   const openCents = Math.max(0, order.totalCents - receivedCents);
   const partPaid = order.status === 'PENDING_PAYMENT' && receivedCents > 0;
   const receipts = receiptHistory({ proofs: order.paymentProofs, payments: order.payments, currentProofUrl: order.paymentProofUrl, verificationStatus: order.paymentVerificationStatus });
+  // A hold put on while the receipt waits: verifying is refused (verifyPayment) — say so instead of the form.
+  const verifyHoldBlock = order.status === 'PENDING_PAYMENT' && order.paymentVerificationStatus === 'AWAITING_VERIFICATION'
+    ? bookingHoldBlocker({ holdMessage: prePaymentHoldMessage(order), holdReason: order.holdReason, openHolds: order.openHolds }, 'VERIFY')
+    : null;
+  // The receipt shown here: Verify / Reject refuse when the buyer replaced it meanwhile.
+  const reviewedProofKey = proofKeyOf(order.paymentProofUrl) ?? '';
   const billing = detailsSummary(order);
 
   const itemsTotal = order.items.reduce((s, i) => s + i.priceCentsSnapshot * i.quantity, 0);
@@ -758,9 +764,16 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   </p>
                 ) : (
                 <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200 dark:border-amber-800">
-                  {/* Verify — with what the bank statement says (amount, value date, reference) */}
+                  {/* Verify — with what the bank statement says (amount, value date, reference);
+                      not while a blocking hold is open (the action refuses it too). */}
+                  {verifyHoldBlock ? (
+                    <p role="alert" className="text-xs font-semibold text-amber-900 dark:text-amber-300 rounded-md border border-amber-300 dark:border-amber-800 bg-white dark:bg-transparent px-3 py-2" data-testid="verify-held">
+                      {verifyHoldBlock}
+                    </p>
+                  ) : (
                   <OrderActionForm action={verifyPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
+                    <input type="hidden" name="proofKey" value={reviewedProofKey} />
                     <div className="grid grid-cols-2 gap-2">
                       <label className="block">
                         <span className="block text-[10px] uppercase tracking-wider font-bold text-amber-900/80 dark:text-amber-300 mb-1">Amount received ({order.currency})</span>
@@ -789,9 +802,11 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     </Button>
                     <p className="text-[11px] text-muted-foreground">Check the bank statement: the invoice prints this value date. Less than the open amount (beyond the tolerance) is booked as a part payment and the buyer is asked for the rest.</p>
                   </OrderActionForm>
+                  )}
                   {/* Reject — reason required */}
                   <OrderActionForm action={rejectPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
+                    <input type="hidden" name="proofKey" value={reviewedProofKey} />
                     <input
                       type="text"
                       name="reason"

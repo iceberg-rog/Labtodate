@@ -26,6 +26,9 @@ const HOLD_TITLE: Record<string, string> = {
   SHIPPING_PENDING: 'Shipping cost to be confirmed',
   PAYMENT_REVIEW: 'Payment under review',
   INVOICE_PENDING: 'Invoice not issued yet',
+  STOCK_SHORTAGE: 'Stock to be confirmed',
+  SUPPLIER_CONFIRMATION: 'Supplier confirmation',
+  FRAUD: 'Security check',
 };
 export const holdTitle = (code: string | null | undefined) => (code ? HOLD_TITLE[code] ?? code : '');
 

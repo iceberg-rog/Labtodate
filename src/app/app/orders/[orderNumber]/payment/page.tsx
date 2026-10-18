@@ -37,6 +37,7 @@ import { buyerCancelExplanation } from '@/lib/orders/cancel-reason';
 import { heldMoneyCents, LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
 import { RECEIPT_TYPE_MESSAGE } from '@/lib/payments/receipts';
 import { receiptHistory } from '@/lib/payments/rules';
+import { onStockShortage, stockShortageText } from '@/lib/payments/stock-shortage';
 import { proxyProofUrl } from '@/lib/orders/display';
 
 export const dynamic = 'force-dynamic';
@@ -117,6 +118,11 @@ export default async function PaymentWorkspacePage({
   const quoteEnded = !!sourcing && (sourcing.status === 'DECLINED' || sourcing.status === 'CLOSED');
   const isVoid = lapsed || order.status === 'CANCELED' || (quoteEnded && order.status === 'PENDING_PAYMENT' && !order.paymentSubmittedAt) || notAccepted;
   const isPaid = !isVoid && PAID_STATES.includes(order.status) && !onTerms;
+  // Paid, but the unit is gone (STOCK_SHORTAGE hold): not "being prepared for
+  // shipping" — the page says what the buyer was e-mailed (Settings → Email texts).
+  const stockShort = isPaid && ['PAID', 'PROCESSING'].includes(order.status) && onStockShortage(order)
+    ? stockShortageText({ orderNumber: order.orderNumber, currency: order.currency, amountCents: order.amountPaidCents, valueDate: order.paidAt })
+    : null;
   const isRefunded = !isVoid && order.status === 'REFUNDED';
   const payable = !isVoid && order.status === 'PENDING_PAYMENT';
 
@@ -305,7 +311,15 @@ export default async function PaymentWorkspacePage({
         </Banner>
       )}
 
-      {isPaid && (
+      {stockShort && (
+        <Banner tone="amber" icon={<AlertTriangle className="h-5 w-5" />} title="Payment received — the item is being re-confirmed.">
+          <span data-testid="paid-stock-shortage">{stockShort.text}</span>{' '}
+          <Link href={`/app/orders/${order.orderNumber}`} className="underline font-semibold">View your order</Link> ·{' '}
+          <Link href="/app/support" className="underline font-semibold">Contact support</Link>
+        </Banner>
+      )}
+
+      {isPaid && !stockShort && (
         <Banner tone="emerald" icon={<CheckCircle2 className="h-5 w-5" />} title={verState === 'VERIFIED' ? 'Payment verified.' : 'Payment received.'}>
           {order.status === 'SHIPPED' ? 'Your order has shipped.' : order.status === 'DELIVERED' ? 'Your order was delivered.' : 'Your order is being prepared for shipping.'}{' '}
           No further payment is needed. <Link href={`/app/orders/${order.orderNumber}`} className="underline font-semibold">Track it</Link>.

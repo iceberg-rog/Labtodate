@@ -48,8 +48,9 @@ export async function OrderFinancePanel({ orderId }: { orderId: string }) {
   const invoiceCurrent = facts.invoice && facts.creditableCents > 0 ? facts.invoice : null;
   // Held: no invoice yet — or a corrected invoice that could not be issued after its credit note
   // (a hold says so). An invoice credited by a refund / cancellation is not “held”: the refund
-  // ledger keeps the order paid until the money is sent (lib/finance/refunds.ts).
-  const invoiceHeld = (paidFamily || facts.onTerms) && (o.status !== 'REFUNDED' && o.status !== 'CANCELED')
+  // ledger keeps the order paid until the money is sent (lib/finance/refunds.ts). A stock
+  // shortage withholds the invoice on purpose: it is resolved in the “Stock shortage” panel.
+  const invoiceHeld = (paidFamily || facts.onTerms) && (o.status !== 'REFUNDED' && o.status !== 'CANCELED') && !holds.includes('STOCK_SHORTAGE')
     && (!facts.invoice || (!invoiceCurrent && holds.some((h) => h === 'INVOICE_PENDING' || h === 'VAT_REVIEW')));
   const vatReviewOnInvoice = !!invoiceCurrent && holds.includes('VAT_REVIEW');
   const notes = (o.holdNote ?? '').split(' | ').filter(Boolean);

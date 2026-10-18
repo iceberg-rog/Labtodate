@@ -10,6 +10,7 @@ import { loadCountryFacts, loadTaxSettings } from '@/lib/tax/settings';
 import { addressCountry } from '@/lib/tax/order';
 import { audit, notifyUser } from '@/lib/observability';
 import { formatPrice } from '@/lib/utils';
+import { stockShortageText } from '@/lib/payments/stock-shortage';
 import { fillHoldText, primaryHold, type HoldCode } from './engine';
 import { sendHoldReleased, holdTitle } from './notify';
 
@@ -47,8 +48,11 @@ export function hasPrePaymentHold(o: { openHolds?: string[] | null; holdReason?:
   return PRE_PAYMENT_HOLDS.some((h) => open.has(h));
 }
 
-/** Buyer-facing sentences for an order's open holds (Settings → Checkout & customers). */
-export async function buyerHoldMessages(o: { openHolds: string[]; holdReason: string | null; shippingAddress: unknown; vatNote?: string | null }): Promise<Array<{ code: string; title: string; message: string }>> {
+/** Buyer-facing sentences for an order's open holds (Settings → Checkout & customers; the stock shortage: Email texts). */
+export async function buyerHoldMessages(o: {
+  openHolds: string[]; holdReason: string | null; shippingAddress: unknown; vatNote?: string | null;
+  orderNumber?: string; currency?: string; amountPaidCents?: number; paidAt?: Date | null;
+}): Promise<Array<{ code: string; title: string; message: string }>> {
   await ensureSettingsLoaded();
   const codes = Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])]));
   const country = addressCountry(o.shippingAddress);
@@ -59,6 +63,8 @@ export async function buyerHoldMessages(o: { openHolds: string[]; holdReason: st
     VAT_REVIEW: settingString('CHECKOUT_MSG_VAT_REVIEW'),
     ADDRESS_REVIEW: settingString('CHECKOUT_MSG_ADDRESS_REVIEW'),
     PAYMENT_REVIEW: 'Our team is checking your payment against the order. We contact you if anything is needed.',
+    // Paid, but the unit is gone: the text the buyer was e-mailed.
+    ...(o.orderNumber ? { STOCK_SHORTAGE: stockShortageText({ orderNumber: o.orderNumber, currency: o.currency ?? 'EUR', amountCents: o.amountPaidCents ?? 0, valueDate: o.paidAt ?? null }).text } : {}),
   };
   return codes.map((c) => ({ code: c, title: holdTitle(c), message: fillHoldText(tpl[c] ?? holdTitle(c), { COUNTRY: name, REASON: null }) }));
 }
