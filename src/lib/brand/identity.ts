@@ -1,4 +1,5 @@
 import { settingString } from '@/lib/settings';
+import { isDeliverableEmail } from '@/lib/email-address';
 
 /**
  * The brand and the legal identity as configured in Admin → Settings (Brand,
@@ -7,7 +8,8 @@ import { settingString } from '@/lib/settings';
  * Organization data — never a hard-coded brand.
  *
  * Synchronous: read after `await ensureSettingsLoaded()` (server code does that
- * at its entry point). Empty values stay empty — nothing is invented.
+ * at its entry point). Empty values stay empty — nothing is invented, and a
+ * placeholder e-mail (billing@lab2date.local, *.example …) reads as not set.
  */
 
 /** Used only when SITE_NAME is not set at all. */
@@ -35,9 +37,9 @@ export interface LegalIdentity {
   vat: string;
   eori: string;
   phone: string;
-  /** Billing / accounts e-mail (COMPANY_EMAIL). */
+  /** Billing / accounts e-mail (COMPANY_EMAIL); '' when not set or a placeholder. */
   email: string;
-  /** Public support e-mail (SUPPORT_EMAIL). */
+  /** Public support e-mail (SUPPORT_EMAIL); '' when not set or a placeholder. */
   supportEmail: string;
   /** Website as configured (COMPANY_WEBSITE, e.g. “labtodate.com”). */
   website: string;
@@ -79,6 +81,11 @@ export function addressLinesOf(address: string, country: string): string[] {
   return lines;
 }
 
+/** A configured address, or '' when it is a placeholder no mail server accepts. */
+function deliverable(email: string): string {
+  return isDeliverableEmail(email) ? email : '';
+}
+
 /** The seller identity: legal name, address, KvK, VAT, EORI, contact, website, logo. */
 export function legalIdentity(): LegalIdentity {
   const s = (key: string) => settingString(key).trim();
@@ -98,8 +105,8 @@ export function legalIdentity(): LegalIdentity {
     vat: s('COMPANY_VAT'),
     eori: s('COMPANY_EORI'),
     phone: s('COMPANY_PHONE'),
-    email: s('COMPANY_EMAIL'),
-    supportEmail: s('SUPPORT_EMAIL'),
+    email: deliverable(s('COMPANY_EMAIL')),
+    supportEmail: deliverable(s('SUPPORT_EMAIL')),
     website,
     websiteUrl: websiteUrlOf(website),
     logoUrl,

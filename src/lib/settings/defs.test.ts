@@ -177,6 +177,32 @@ test('release v2 keys are registered in their groups with valid defaults', () =>
   }
 });
 
+test('release v2 keys say “not applied yet” until the package that reads them ships', () => {
+  // Each W1 package removes the `pending` of its keys (and its line here) when it adds the reader.
+  const readers: Record<string, string> = {
+    TRANSACTIONAL_REPLY_TO: 'PKG-07',
+    PAYMENTS_INBOX_EMAIL: 'PKG-04',
+    BUYER_CANCEL_DISABLED_TEXT: 'PKG-04',
+    CONSUMER_WITHDRAWAL_TEXT: 'PKG-19',
+    ABOUT_PAGE_TEXT: 'PKG-15',
+    FAQ_TEXT: 'PKG-15',
+    PRIVACY_POLICY_TEXT: 'PKG-08',
+    COOKIE_POLICY_TEXT: 'PKG-08',
+    SOCIAL_LINKS: 'PKG-13',
+    OG_DEFAULT_IMAGE_URL: 'PKG-14',
+    OG_LOCALE: 'PKG-14',
+    SELLER_PROGRAMME_PUBLIC: 'PKG-12',
+    SELLER_TERMS_TEXT: 'PKG-12',
+    SELLER_PAYOUT_TERMS_TEXT: 'PKG-12',
+    MESSAGE_MEDIATION_MODE: 'PKG-16',
+    SELL_TERMS_TEXT: 'PKG-17',
+    SELL_DECONTAMINATION_TEXT: 'PKG-17',
+  };
+  for (const [k, pkg] of Object.entries(readers)) assert.ok(settingDef(k)?.pending?.includes(pkg), `${k} pending names ${pkg}`);
+  // The admin page prints “takes effect with <pending>”: a feature, then the package.
+  for (const d of SETTING_DEFS) if (d.pending) assert.match(d.pending, /^[a-z].* \(PKG-\d{2}(, PKG-\d{2})*\)$/, d.key);
+});
+
 test('the chat assistant name is gone and the AI keys describe the admin tools only', () => {
   assert.equal(settingDef('ASSISTANT_NAME'), undefined);
   for (const k of ['AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL']) assert.doesNotMatch(settingDef(k)?.hint ?? '', /on-site|chat/i, k);

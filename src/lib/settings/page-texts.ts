@@ -23,6 +23,9 @@
  *                    offered — empty otherwise
  *   {CARD_PAYMENT_COOKIES} “ <the card page of the payment provider sets its own
  *                    cookies>.” while card payments are offered — empty otherwise
+ *   {MARKETING_BASIS} who gets news and offers by e-mail and on which legal
+ *                    basis — privacyMarketingBasis(Security → Marketing e-mail →
+ *                    soft opt-in), so the policy follows what the mailer does
  * The defaults describe only what the site really does; edit them when the
  * business changes.
  */
@@ -63,23 +66,39 @@ Contact {CONTACT} within {RETURN_DAYS} days of delivery; under our [terms](/lega
 ## How do I track my order?
 Sign in and open the order under [My orders](/app/orders) — you see the fulfilment status, and the tracking number once it has shipped.`;
 
-export const PRIVACY_POLICY_TOKENS = ['{SITE}', '{LEGAL_NAME}', '{ADDRESS}', '{CONTACT}', '{RETENTION_YEARS}', '{CARD_PAYMENTS}'] as const;
+export const PRIVACY_POLICY_TOKENS = ['{SITE}', '{LEGAL_NAME}', '{ADDRESS}', '{CONTACT}', '{RETENTION_YEARS}', '{CARD_PAYMENTS}', '{MARKETING_BASIS}'] as const;
 
-export const DEFAULT_PRIVACY_POLICY_TEXT = `{LEGAL_NAME}{ADDRESS} (“{SITE}”) is the data controller for personal data processed through this site. This policy explains what we collect, why, who processes it for us and how long we keep it.
+/**
+ * Fill of {MARKETING_BASIS}: who receives news and offers by e-mail and on
+ * which legal basis. `softOptIn` is MARKETING_SOFT_OPT_IN — while it is on, the
+ * mailer (lib/security/marketing.ts) also e-mails past buyers who never opted
+ * in, so the policy must say so.
+ */
+export function privacyMarketingBasis(softOptIn: boolean): string {
+  return softOptIn
+    ? 'If you bought from us, we may e-mail you offers for products similar to those you bought unless you opt out (Dutch Telecommunicatiewet art. 11.7(3); our legitimate interest). Anyone else receives news and offers from us only after opting in (your consent).'
+    : 'Only if you opted in do we also e-mail you news and offers (your consent).';
+}
+
+export const DEFAULT_PRIVACY_POLICY_TEXT = `{LEGAL_NAME}{ADDRESS} (“{SITE}”) is the data controller for personal data processed through this site. This policy explains what we collect, why, who processes or receives it and how long we keep it.
 
 ## Data we collect
 Account data: your name, e-mail address, password (stored only as a hash), role, and sign-in security data such as sign-in times, IP address, browser and two-step verification settings.
 
-Business and order data: company name, billing and delivery addresses, phone number, VAT ID, purchase-order numbers, quote requests, offers, orders, payment receipts you upload, invoices, returns, support tickets and messages.
+Business and order data: company name, billing and delivery addresses, phone number, VAT ID, purchase-order numbers, quote requests, offers, orders, payment receipts you upload, invoices, returns, support tickets and messages. When you accept our Terms of Sale for an order, we keep the time, the version of the terms and the IP address it was accepted from.
+
+Selling equipment to us: the contact name, e-mail address, phone number, company and country you give; the equipment details and photos; our offers and the messages about them; your VAT ID and KvK (company register) number; the bank account we pay you on; the shipment tracking; and the terms and declarations you accept (ownership, decontamination) with the time you accepted them.
 
 Technical data: the server logs needed to run and protect the service (IP address, browser type, pages requested, errors).
 
 ## Why we use it
-To create and secure your account; to answer quote requests and support tickets; to make offers and process orders, payments, shipping and returns; to issue proformas, invoices and credit notes and meet our tax and accounting duties; and to send the e-mails these require. Only if you opted in do we also e-mail you news and offers — you can opt out at any time in your [e-mail preferences](/app/email-preferences) or with the link in every such e-mail.
+To create and secure your account; to answer quote requests and support tickets; to make offers and process orders, payments, shipping and returns; to assess equipment you offer us, buy it from you and pay you for it; to issue proformas, invoices and credit notes and meet our tax and accounting duties; and to send the e-mails these require.
 
-The legal bases are the contract with you, our legal obligations (tax and accounting records), our legitimate interest in keeping the service secure and, for news and offers, your consent. We do not sell personal data and do not build advertising profiles.
+{MARKETING_BASIS} You can opt out at any time in your [e-mail preferences](/app/email-preferences) or with the link in every such e-mail.
 
-## Who processes data for us
+The legal bases are the contract with you, our legal obligations (tax and accounting records), our legitimate interest in keeping the service secure and in being able to show what was agreed and, for news and offers, the basis named above. We do not sell personal data and do not build advertising profiles.
+
+## Who processes or receives data
 E-mail: our e-mail provider delivers the account and order e-mails we send you.
 
 Hosting and storage: the site, its database and uploaded files (photos, payment receipts, documents) are kept on servers we rent for this purpose, with encrypted backup copies.
@@ -89,6 +108,8 @@ VAT ID checks: a VAT ID you enter is checked with the European Commission’s VI
 Shipping: the carrier of a shipment receives the delivery name, address and phone number.
 
 Each of them processes the data only to perform that task for us.
+
+Suppliers: when you message a supplier or request a quote on a supplier’s listing, that supplier — a separate company — receives your message and the details of your request, not your name or contact details.
 
 ## How long we keep it
 Orders, invoices, credit notes, payments and the documents that belong to them are kept for {RETENTION_YEARS} years, as tax and accounting law requires. Account data is kept while you have an account; you can ask us to delete it at any time — records the law requires us to keep stay until their period ends.
@@ -113,7 +134,7 @@ Two-step sign-in: while you enter an authenticator code, a short-lived cookie li
 These cookies are strictly necessary — signing in does not work without them — so they are set without asking for consent.
 
 ## Kept in your browser only
-Your light / dark theme choice and whether you closed the cookie notice are kept in your browser’s local storage. They are never sent to us.
+Whether you closed the cookie notice is kept in your browser’s local storage. It is never sent to us.
 
 ## Managing cookies
 You can clear or block cookies in your browser settings; signing in does not work without the session cookie.

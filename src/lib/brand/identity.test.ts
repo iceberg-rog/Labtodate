@@ -44,6 +44,18 @@ test('legalIdentity reads the Company settings and invents nothing', () => {
   assert.equal(id.logoAbsoluteUrl, 'https://labtodate.com/media/lab2date-media/branding/logo.png');
 });
 
+test('legalIdentity never hands out a placeholder e-mail address', () => {
+  // .env.example ships these; a mail footer or the Organization data must not print them.
+  Object.assign(process.env, { COMPANY_EMAIL: 'billing@lab2date.local', SUPPORT_EMAIL: 'support@lab2date.local' });
+  let id = legalIdentity();
+  assert.equal(id.email, '');
+  assert.equal(id.supportEmail, '');
+  Object.assign(process.env, { COMPANY_EMAIL: ' billing@labtodate.com ', SUPPORT_EMAIL: 'sales@shop.example' });
+  id = legalIdentity();
+  assert.equal(id.email, 'billing@labtodate.com');
+  assert.equal(id.supportEmail, '');
+});
+
 test('URL helpers', () => {
   assert.equal(absoluteSiteUrl('/media/x.png', 'https://a.example'), 'https://a.example/media/x.png');
   assert.equal(absoluteSiteUrl('https://cdn.example/x.png', ''), 'https://cdn.example/x.png');
