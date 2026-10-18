@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { archiveQuote, unarchiveQuote, deleteQuotePermanently } from '@/lib/quotes/actions';
 import { EmailText } from '@/components/util/EmailText';
-import { computeDealState, toneClasses } from '@/lib/quotes/deal-state';
+import { computeDealState } from '@/lib/quotes/deal-state';
 import { DealStateBadge } from '@/components/quotes/DealStateBadge';
 import { AssigneeBadge } from '@/components/quotes/AssigneeBadge';
 import { formatPrice } from '@/lib/utils';
@@ -143,7 +143,6 @@ export function QuoteRow(p: QuoteRowProps) {
     validUntilAt: p.validUntilISO,
     linkedOrder: p.linkedOrderStatus ? { status: p.linkedOrderStatus, paymentSubmittedAt: p.linkedOrderProof ? 'yes' : null } : null,
   }, 'staff');
-  const dt = toneClasses(deal.tone);
 
   // Left stripe color reads priority first, then deal state.
   const stripe =

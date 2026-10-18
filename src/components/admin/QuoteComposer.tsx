@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useTransition } from 'react';
+import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, Send, Lock, Mail, EyeOff, ChevronUp, ChevronDown, Paperclip, X, FileText } from 'lucide-react';
 import { replyToQuote, type QuoteActionResult } from '@/lib/quotes/actions';

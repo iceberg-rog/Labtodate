@@ -111,7 +111,9 @@ export function OfferForm(p: OfferFormProps) {
   const valid = Number.isFinite(unit) && unit > 0;
   const tax = valid && p.vat.status === 'DECIDED' ? previewTax(goods, ship, p.vat.goodsRateBp, p.vat.shippingRateBp) : 0;
   const total = goods + ship + tax;
-  const titleRequired = !!p.item?.titleRequired;
+  // A request without its own listing needs the goods line — from whoever publishes the offer
+  // (staff, or a supplier with review off); a proposal for review can leave it to staff.
+  const titleRequired = !!p.item?.titleRequired && (!seller || !!p.sellerDirect);
   const destinationNeeded = !seller && ship > 0;
 
   function useProposal() {
