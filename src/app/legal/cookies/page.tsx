@@ -1,6 +1,6 @@
 import { LegalShell } from '@/components/site/LegalShell';
 import { PolicyText } from '@/components/site/PolicyText';
-import { loadPolicyFacts } from '@/lib/legal/policy-facts';
+import { loadPolicyFacts, loadPolicyUpdatedAt } from '@/lib/legal/policy-facts';
 import { cookiePolicyValues, renderPolicyBlocks } from '@/lib/legal/policy-text';
 import { settingString } from '@/lib/settings';
 import { DEFAULT_COOKIE_POLICY_TEXT } from '@/lib/settings/page-texts';
@@ -15,10 +15,10 @@ export const metadata = { title: 'Cookie Policy' };
  * The on-site chat and its guest cookie are gone (support runs on tickets).
  */
 export default async function CookiesPage() {
-  const { facts, contact } = await loadPolicyFacts();
+  const [{ facts, contact }, updatedAt] = await Promise.all([loadPolicyFacts(), loadPolicyUpdatedAt('cookies')]);
   const blocks = renderPolicyBlocks(settingString('COOKIE_POLICY_TEXT') || DEFAULT_COOKIE_POLICY_TEXT, cookiePolicyValues(facts));
   return (
-    <LegalShell title="Cookie Policy">
+    <LegalShell title="Cookie Policy" updatedAt={updatedAt}>
       <PolicyText blocks={blocks} contact={contact} />
     </LegalShell>
   );

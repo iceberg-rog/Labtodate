@@ -207,6 +207,7 @@ test('the privacy and cookie texts are applied (PKG-08): no â€œnot applied yetâ€
   assert.equal(settingDef('PRIVACY_POLICY_TEXT')?.preview, '/legal/privacy');
   assert.equal(settingDef('COOKIE_POLICY_TEXT')?.preview, '/legal/cookies');
   assert.match(settingDef('PRIVACY_POLICY_TEXT')?.hint ?? '', /\{CARD_PAYMENTS\}/);
+  assert.match(settingDef('PRIVACY_POLICY_TEXT')?.hint ?? '', /\{TEAM_NOTIFICATIONS\} names the chat services/);
   assert.match(settingDef('COOKIE_POLICY_TEXT')?.hint ?? '', /\{CARD_PAYMENT_COOKIES\}/);
 });
 

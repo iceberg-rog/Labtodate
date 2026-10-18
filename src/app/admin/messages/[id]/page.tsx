@@ -5,7 +5,7 @@ import {
   Star, UserCircle2, Mail, Clock, Hourglass, Paperclip, Lock,
 } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
-import { ARCHIVE_OUTCOME_LABEL, archiveOutcome, getArchivedConversation, type ArchiveOutcome } from '@/lib/assistant/actions';
+import { ARCHIVE_OUTCOME_LABEL, archiveOutcome, followUpMailto, getArchivedConversation, type ArchiveOutcome } from '@/lib/assistant/actions';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Chat transcript' };
@@ -51,6 +51,7 @@ export default async function AdminChatTranscriptPage(props: { params: Promise<{
   const ref = `CHT-${conv.id.slice(-6).toUpperCase()}`;
   const customerName = conv.user?.name || conv.guestName || conv.guestEmail || 'Anonymous guest';
   const customerEmail = conv.user?.email || conv.guestEmail || null;
+  const followUp = followUpMailto(customerEmail);
   const isGuest = !conv.user;
   const assignedTo = conv.assignedToId ? staffNames[conv.assignedToId] ?? 'a former team member' : null;
   const closedBy = conv.closedById ? staffNames[conv.closedById] ?? 'a former team member' : null;
@@ -118,10 +119,10 @@ export default async function AdminChatTranscriptPage(props: { params: Promise<{
             <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
             <p>
               Read-only archive: the on-site chat is switched off, so this conversation cannot be continued.{' '}
-              {customerEmail ? (
-                <>To follow up, e-mail <a href={`mailto:${customerEmail}`} className="underline">{customerEmail}</a>.</>
+              {followUp ? (
+                <>To follow up, e-mail <a href={followUp} className="underline">{customerEmail}</a>.</>
               ) : (
-                'The customer left no e-mail address.'
+                'The customer left no valid e-mail address.'
               )}
             </p>
           </div>

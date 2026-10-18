@@ -76,7 +76,7 @@ export default async function AdminChatArchivePage(
         <p>
           <strong className="text-foreground">Read-only.</strong> The on-site chat is switched off — customers contact you
           through {canTickets ? <Link href="/admin/tickets" className="underline">support tickets</Link> : 'support tickets'}. These transcripts cannot be
-          answered, claimed or closed; to follow up, e-mail the customer where a transcript shows an address.
+          answered, claimed or closed; to follow up, e-mail the customer where a transcript shows a valid address.
         </p>
       </div>
 

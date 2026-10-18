@@ -1,9 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
-  addressFill, cookiePolicyValues, policyContact, privacyPolicyValues, renderPolicyBlocks, type PolicyBlock, type PolicyFacts,
+  addressFill, cookiePolicyValues, POLICY_SOURCES, policyContact, policyRevisionDate, privacyPolicyValues, renderPolicyBlocks,
+  teamNotificationsAddedAt, teamNotificationServices, type PolicyBlock, type PolicyFacts,
 } from './policy-text';
-import { COOKIE_POLICY_TOKENS, DEFAULT_COOKIE_POLICY_TEXT, DEFAULT_PRIVACY_POLICY_TEXT, PRIVACY_POLICY_TOKENS } from '../settings/page-texts';
+import {
+  COOKIE_POLICY_TOKENS, DEFAULT_COOKIE_POLICY_DATE, DEFAULT_COOKIE_POLICY_TEXT, DEFAULT_PRIVACY_POLICY_DATE, DEFAULT_PRIVACY_POLICY_TEXT,
+  PRIVACY_POLICY_TOKENS,
+} from '../settings/page-texts';
+import { settingDef } from '../settings/defs';
 
 const FACTS: PolicyFacts = {
   site: 'Labtodate',
@@ -12,6 +18,7 @@ const FACTS: PolicyFacts = {
   retentionYears: 7,
   cardPayments: true,
   marketingSoftOptIn: true,
+  teamNotificationServices: [],
 };
 
 /** The page as plain text: headings and paragraphs, the contact link as [CONTACT], site links as label<href>. */
@@ -59,6 +66,73 @@ test('privacy: the marketing paragraph follows the soft opt-in, and no AI provid
   assert.match(privacy({ marketingSoftOptIn: true }), /If you bought from us, we may e-mail you offers/);
   assert.match(privacy({ marketingSoftOptIn: false }), /Only if you opted in do we also e-mail you news and offers/);
   assert.doesNotMatch(privacy(), /\bAI\b|OpenAI|Anthropic|assistant|chat/i);
+});
+
+test('privacy: the chat services that get staff notices are named only while an active webhook posts them', () => {
+  const none = privacy();
+  assert.doesNotMatch(none, /Team notifications|Slack|Discord|Telegram/);
+  assert.doesNotMatch(none, /\n\n|\n$/, 'no empty paragraph is left behind');
+  const one = privacy({ teamNotificationServices: ['Slack'] });
+  assert.match(one, /\nTeam notifications: our staff receive notices about orders, quotes, payments, support tickets and sign-in security in Slack\. /);
+  assert.match(one, /your name or company name, the subject or an excerpt of your message/);
+  assert.match(one, /your e-mail address and IP address; the provider of that service receives and stores these notices\.\n/);
+  // Its own paragraph after the processors, so “Each of them processes …” does not cover it.
+  assert.match(one, /Each of them processes the data only to perform that task for us\.\nTeam notifications: /);
+  const three = privacy({ teamNotificationServices: ['Discord', 'Slack', 'Telegram'] });
+  assert.match(three, / in Discord, Slack and Telegram\. /);
+  assert.match(three, /the providers of these services receive and store these notices\./);
+});
+
+test('team notifications: each delivering webhook kind once, sorted; a Telegram hook without a chat id sends nothing', () => {
+  assert.deepEqual(teamNotificationServices([]), []);
+  assert.deepEqual(
+    teamNotificationServices([
+      { kind: 'TELEGRAM', chatId: '-100123' },
+      { kind: 'SLACK', chatId: null },
+      { kind: 'SLACK', chatId: null },
+      { kind: 'DISCORD', chatId: null },
+    ]),
+    ['Discord', 'Slack', 'Telegram'],
+  );
+  assert.deepEqual(teamNotificationServices([{ kind: 'TELEGRAM', chatId: null }, { kind: 'TELEGRAM', chatId: ' ' }, { kind: 'TEAMS', chatId: null }]), []);
+});
+
+test('team notifications: the date the last named service was added (its oldest hook), null without hooks', () => {
+  const d = (s: string) => new Date(s);
+  assert.equal(teamNotificationsAddedAt([]), null);
+  const at = teamNotificationsAddedAt([
+    { kind: 'SLACK', chatId: null, createdAt: d('2026-03-01') },
+    { kind: 'SLACK', chatId: null, createdAt: d('2026-09-01') }, // a second Slack hook changes nothing on the page
+    { kind: 'DISCORD', chatId: null, createdAt: d('2026-05-01') },
+    { kind: 'TELEGRAM', chatId: null, createdAt: d('2026-10-01') }, // sends nothing
+  ]);
+  assert.deepEqual(at, d('2026-05-01'));
+});
+
+test('“Last updated”: the text in use, or a later recorded change of what fills it in — never today', () => {
+  const d = (s: string) => new Date(s);
+  const base = { defaultTextDate: d('2026-10-18') };
+  assert.deepEqual(policyRevisionDate({ ...base, textUpdatedAt: null, changes: [] }), d('2026-10-18'), 'default text: its date');
+  assert.deepEqual(policyRevisionDate({ ...base, textUpdatedAt: d('2026-06-02'), changes: [null, undefined] }), d('2026-06-02'), 'edited text: when it was saved');
+  assert.deepEqual(policyRevisionDate({ ...base, textUpdatedAt: d('2026-06-02'), changes: [d('2026-08-09'), d('2026-07-01')] }), d('2026-08-09'));
+  assert.deepEqual(policyRevisionDate({ ...base, textUpdatedAt: null, changes: [d('2026-01-01')] }), d('2026-10-18'), 'an older change does not move it');
+});
+
+test('“Last updated”: every setting a page is filled from is a registry key', () => {
+  for (const [page, src] of Object.entries(POLICY_SOURCES)) {
+    for (const key of [src.textKey, ...src.factKeys]) assert.ok(settingDef(key), `${page}: ${key}`);
+  }
+  assert.ok(POLICY_SOURCES.privacy.webhooks && !POLICY_SOURCES.cookies.webhooks);
+});
+
+test('a changed default text comes with a new default date', () => {
+  // Edited DEFAULT_PRIVACY_POLICY_TEXT or DEFAULT_COOKIE_POLICY_TEXT? Set its
+  // *_DATE (lib/settings/page-texts.ts) to the day of the change — it is the
+  // page’s “Last updated” — then update the fingerprint and date here.
+  const fp = (t: string) => createHash('sha256').update(t).digest('hex').slice(0, 16);
+  assert.deepEqual({ text: fp(DEFAULT_PRIVACY_POLICY_TEXT), date: DEFAULT_PRIVACY_POLICY_DATE }, { text: '90a804691610123e', date: '2026-10-18' });
+  assert.deepEqual({ text: fp(DEFAULT_COOKIE_POLICY_TEXT), date: DEFAULT_COOKIE_POLICY_DATE }, { text: '337e60bb0704f8d1', date: '2026-10-18' });
+  for (const date of [DEFAULT_PRIVACY_POLICY_DATE, DEFAULT_COOKIE_POLICY_DATE]) assert.ok(!Number.isNaN(Date.parse(date)), date);
 });
 
 test('privacy: without a registered address the controller line has no dangling comma', () => {

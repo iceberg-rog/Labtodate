@@ -13,6 +13,7 @@
  */
 
 import type { Prisma } from '@prisma/client';
+import { z } from 'zod';
 import { prisma } from '@/lib/db';
 
 export const ARCHIVE_PAGE_SIZE = 50;
@@ -144,6 +145,17 @@ export async function archiveSummary() {
     rated: ratings._count.rating,
     avgRating: ratings._avg.rating,
   };
+}
+
+/**
+ * The mailto: link to follow up a transcript, or null when the address is not
+ * one well-formed e-mail address. A guest typed it at escalation and it was
+ * never validated, so it may be a name, a list or carry ?bcc=/&body= that
+ * would pre-fill the staff member’s mail.
+ */
+export function followUpMailto(email: string | null | undefined): string | null {
+  if (!email || !z.string().email().safeParse(email).success) return null;
+  return `mailto:${encodeURIComponent(email).replace(/%40/g, '@')}`;
 }
 
 /** One transcript with the names of the team members who wrote in it, joined or closed it. */

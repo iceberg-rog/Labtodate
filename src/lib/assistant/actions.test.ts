@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { ARCHIVE_FILTERS, ARCHIVE_OUTCOME_LABEL, archiveFilterOf, archiveFilterWhere, archiveOutcome, archiveSearchWhere } from './actions';
+import { ARCHIVE_FILTERS, ARCHIVE_OUTCOME_LABEL, archiveFilterOf, archiveFilterWhere, archiveOutcome, archiveSearchWhere, followUpMailto } from './actions';
 
 const ROOT = resolve(__dirname, '../../..');
 
@@ -82,5 +82,23 @@ test('the chat is gone: no widget, no public endpoint, no server actions, no gue
     const src = readFileSync(f, 'utf8');
     assert.doesNotMatch(src, /cookies?\(\)?\.set\([^)]*lab2_asst_g|GUEST_COOKIE/, f);
     assert.doesNotMatch(src, /@\/components\/site\/Assistant['"]|\/api\/assistant['"]/, f);
+  }
+});
+
+test('follow-up link: only one well-formed address, never a list or a pre-filled Bcc/body', () => {
+  assert.equal(followUpMailto('jan@example.nl'), 'mailto:jan@example.nl');
+  assert.equal(followUpMailto('jan+lab@example.co.uk'), 'mailto:jan%2Blab@example.co.uk');
+  for (const bad of [
+    'victim@x.com?bcc=attacker@evil.example&body=hi',
+    'a@x.com,b@y.com',
+    'a@x.com b@y.com',
+    'a@x.com;b@y.com',
+    'John',
+    ' a@x.com ',
+    '',
+    null,
+    undefined,
+  ]) {
+    assert.equal(followUpMailto(bad), null, String(bad));
   }
 });
