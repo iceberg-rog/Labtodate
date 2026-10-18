@@ -17,14 +17,21 @@ import {
   capsAllow,
   capsChangeProblems,
 } from '@/lib/capabilities';
-import { UserRole } from '@prisma/client';
+import { UserRole, type ShopPricingMode } from '@prisma/client';
 import { RoleSelect } from '../RoleSelect';
-import { UserAccessPanel } from '@/components/admin/UserAccessPanel';
+import { linkSupplierCompany, promoteToSupplier } from '../company-link-actions';
+import { SupplierCompanyPanel, UserAccessPanel, type CompanyOption } from '@/components/admin/UserAccessPanel';
 import { UnsuspendButton } from '@/components/admin/UnsuspendButton';
 import { getSecurityPolicy } from '@/lib/security/policy';
 import { countOtherActiveSuperAdmins } from '@/lib/security/alerts';
+import { companyPriceRule } from '@/lib/sellers/listing-rules';
 
 export const dynamic = 'force-dynamic';
+
+/** A company as the supplier-company panel lists it: name and pricing rule in words. */
+function priceRule(c: { id: string; name: string; pricingMode: ShopPricingMode; pricingMarkupBp: number }): CompanyOption {
+  return { id: c.id, name: c.name, ...companyPriceRule(c.pricingMode, c.pricingMarkupBp) };
+}
 
 export function generateMetadata(props: { params: Promise<{ id: string }> }) {
   return adminDetailTitle('users:view', 'User', async () => {
@@ -53,7 +60,7 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
 
   const user = await prisma.user.findUnique({
     where: { id: params.id },
-    include: { company: { select: { name: true, slug: true } } },
+    include: { company: { select: { id: true, name: true, slug: true, pricingMode: true, pricingMarkupBp: true } } },
   });
   if (!user) notFound();
 
@@ -149,6 +156,17 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
     grantable: p.caps.every((c) => canGrantCapability(viewerCaps, c)),
   }));
   const canPromote = canManageUsers && (!policy.ONLY_SUPER_ADMIN_CREATES_ADMINS || viewerCaps.includes('*'));
+  // Supplier company (D84): becoming a supplier needs users:manage; moving a
+  // supplier to another company also companies:manage.
+  const canLinkCompany = canManageUsers || can('companies:manage');
+  const companyOptions =
+    canLinkCompany && user.role !== 'ADMIN'
+      ? (await prisma.company.findMany({
+          where: { suggestedByAi: false },
+          orderBy: { name: 'asc' },
+          select: { id: true, name: true, pricingMode: true, pricingMarkupBp: true },
+        })).map(priceRule)
+      : [];
 
   return (
     <div className="space-y-6">
@@ -245,6 +263,19 @@ export default async function AdminUserDetailPage(props: { params: Promise<{ id:
           setCaps={setUserCaps}
           resetTwoFactor={resetTwoFactorForUser}
           canResetTwoFactor
+        />
+      )}
+      {canLinkCompany && !isSelf && (user.role === 'BUYER' || user.role === 'SELLER') && (user.role === 'SELLER' || canManageUsers) && (
+        <SupplierCompanyPanel
+          userId={user.id}
+          email={user.email}
+          role={user.role}
+          current={user.company ? priceRule(user.company) : null}
+          companies={companyOptions}
+          canPromote={canManageUsers}
+          canLink={canLinkCompany}
+          promote={promoteToSupplier}
+          link={linkSupplierCompany}
         />
       )}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

@@ -3,14 +3,10 @@ import { Package, BarChart3, FileText, Plus, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { formatPrice } from '@/lib/utils';
-import type { OrderStatus } from '@prisma/client';
+import { formatMoney, loadSupplierSales, saleStage, totalsByCurrency } from '@/lib/sellers/supplier-sales';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Seller panel' };
-
-// Same "paid" set and company scope as /app/seller/payouts, so the two agree.
-const PAID: OrderStatus[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
 
 export default async function SellerDashboardPage() {
   const session = await requireSession({
@@ -22,29 +18,29 @@ export default async function SellerDashboardPage() {
   // Staff see other people's quotes / offers only with the permission for them (A31).
   const staffView = role === 'ADMIN' && (await hasCapability('quotes:view'));
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const [productsCount, publishedCount, pendingQuotes, me] = await Promise.all([
-    prisma.product.count({ where: { sellerId: session.user.id } }),
-    prisma.product.count({ where: { sellerId: session.user.id, status: 'PUBLISHED' } }),
-    // Same scope as the quote inbox: admins see every request.
-    prisma.sourcingRequest.count({
-      where: { status: 'PENDING', ...(staffView ? {} : { assignedToId: session.user.id }) },
-    }),
-    prisma.user.findUnique({ where: { id: session.user.id }, select: { companyId: true } }),
+  const mine = { sellerId: session.user.id };
+  // Same scope as the quote inbox: admins see every request. Open = still
+  // being negotiated (PENDING or RESPONDED), not archived.
+  const quoteScope = { archivedAt: null, ...(staffView ? {} : { assignedToId: session.user.id }) };
+  const [productsCount, liveCount, soldOutCount, inReviewCount, openQuotes, awaitingReply, sales] = await Promise.all([
+    prisma.product.count({ where: mine }),
+    // Live = published AND still in stock: a sold unit is not live (G1).
+    prisma.product.count({ where: { ...mine, status: 'PUBLISHED', quantity: { gt: 0 } } }),
+    prisma.product.count({ where: { ...mine, status: 'PUBLISHED', quantity: { lte: 0 } } }),
+    prisma.product.count({ where: { ...mine, status: 'PENDING_REVIEW' } }),
+    prisma.sourcingRequest.count({ where: { ...quoteScope, status: { in: ['PENDING', 'RESPONDED'] } } }),
+    prisma.sourcingRequest.count({ where: { ...quoteScope, status: 'PENDING' } }),
+    // Same sales and amounts as /app/seller/payouts: the supplier price, never our sell price.
+    loadSupplierSales(session.user.id),
   ]);
-  const recentSales = me?.companyId
-    ? await prisma.orderItem.findMany({
-        where: {
-          product: { companyId: me.companyId },
-          order: {
-            status: { in: PAID },
-            OR: [{ paidAt: { gte: since } }, { paidAt: null, createdAt: { gte: since } }],
-          },
-        },
-        select: { priceCentsSnapshot: true, quantity: true, order: { select: { currency: true } } },
-      })
-    : [];
-  const revenue30d = recentSales.reduce((sum, i) => sum + i.priceCentsSnapshot * i.quantity, 0);
-  const revenueCurrency = recentSales[0]?.order.currency || 'EUR';
+  const recent = sales.filter((l) => (l.paidAt ?? new Date(0)) >= since);
+  const recentTotals = totalsByCurrency(recent);
+  const toDispatch = sales.filter((l) => saleStage(l) === 'paid');
+  const listingsHint = [
+    `${liveCount} live`,
+    soldOutCount ? `${soldOutCount} sold out` : '',
+    inReviewCount ? `${inReviewCount} in review` : '',
+  ].filter(Boolean).join(' · ');
 
   return (
     <div className="space-y-6">
@@ -61,22 +57,46 @@ export default async function SellerDashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard icon={Package} label="Listings" value={String(productsCount)} hint={`${publishedCount} live`} href="/app/seller/products" />
+        <StatCard icon={Package} label="Listings" value={String(productsCount)} hint={listingsHint} href="/app/seller/products" />
         <StatCard
           icon={FileText}
-          label="Pending quotes"
-          value={String(pendingQuotes)}
-          hint={pendingQuotes === 1 ? 'Request awaiting your reply' : 'Requests awaiting your reply'}
+          label="Open quotes"
+          value={String(openQuotes)}
+          hint={`${awaitingReply} awaiting ${staffView ? 'a reply' : 'your reply'}`}
           href="/app/seller/inbox"
         />
         <StatCard
           icon={BarChart3}
-          label="Revenue (30d)"
-          value={me?.companyId ? formatPrice(revenue30d, revenueCurrency) : '—'}
-          hint={me?.companyId ? 'Paid orders in the last 30 days, before commission' : 'No seller company linked to your account'}
+          label="Sales (30 days)"
+          value={recentTotals.length ? recentTotals.map((t) => formatMoney(t.cents, t.currency)).join(' + ') : '—'}
+          hint={`${recent.length} sold ${recent.length === 1 ? 'item' : 'items'} at your price, excl. VAT`}
           href="/app/seller/payouts"
         />
       </div>
+
+      {toDispatch.length > 0 && (
+        <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 p-5">
+          <h2 className="text-sm font-bold">Sold — prepare for dispatch ({toDispatch.length})</h2>
+          <ul className="mt-2 space-y-1 text-sm">
+            {toDispatch.slice(0, 5).map((l) => (
+              <li key={l.key} className="flex flex-wrap gap-x-2">
+                <span className="font-mono text-xs text-muted-foreground">{l.orderNumber}</span>
+                {l.quoteId ? (
+                  <Link href={`/app/seller/inbox/${l.quoteId}`} className="font-semibold hover:text-primary" dir="auto">{l.title}</Link>
+                ) : (
+                  <span className="font-semibold" dir="auto">{l.title}</span>
+                )}
+                {l.quantity > 1 && <span className="text-muted-foreground">× {l.quantity}</span>}
+              </li>
+            ))}
+          </ul>
+          {toDispatch.length > 5 && (
+            <Link href="/app/seller/payouts" className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-primary">
+              All sales <ArrowRight className="h-4 w-4" />
+            </Link>
+          )}
+        </div>
+      )}
 
       <div className="rounded-2xl border border-border bg-card p-6">
         <h2 className="text-lg font-semibold">Quick actions</h2>

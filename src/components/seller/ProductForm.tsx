@@ -8,6 +8,8 @@ import { InstrumentIllustration, type IllustrationName } from '@/components/illu
 import { TiptapEditor } from '@/components/editor/TiptapEditor';
 import type { ProductActionError, ProductInputType } from '@/app/app/seller/products/actions';
 import { MAX_PRICE_CENTS } from '@/lib/products/validation';
+import { resolveInspection, resolveWarranty } from '@/lib/catalog/warranty';
+import { DIMENSIONS_SPEC_KEY } from '@/lib/sellers/listing-rules';
 
 const ILLUSTRATIONS: IllustrationName[] = ['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector'];
 const CONDITIONS = ['NEW', 'REFURBISHED', 'USED'] as const;
@@ -16,23 +18,47 @@ const MODES = [
   { value: 'HYBRID',    label: 'Buy now or quote' },
   { value: 'QUOTE_ONLY', label: 'Quote only' },
 ] as const;
+type ShippingClass = 'PARCEL' | 'PALLET' | 'FREIGHT_QUOTE';
+const SHIPPING_CLASSES: Record<ShippingClass, string> = {
+  PARCEL: 'Parcel',
+  PALLET: 'Pallet',
+  FREIGHT_QUOTE: 'Freight — quote per order',
+};
 
-interface Props {
-  initial?: Partial<ProductInputType> & { slug?: string };
+/** Choices and rules the form shows, from Admin → Settings (see form-options.ts). */
+export interface SellerFormOptions {
   categories: { id: string; name: string; slug: string }[];
   brands: { id: string; name: string; slug: string }[];
+  /** Currencies staff quote in (Settings → Quotes & offers). */
+  currencies: string[];
+  /** Used for listings without their own class (Settings → Shipping). */
+  defaultShippingClass: ShippingClass;
+  warrantyFallbackText: string;
+  warrantyMonthsFormat: string;
+  inspectionRequiresReport: boolean;
+  marginSchemeEnabled: boolean;
+  grades: Record<string, { label: string; defaultWarrantyMonths: number | null; warrantyScope: string | null }>;
+}
+
+interface Props {
+  initial?: Partial<ProductInputType> & { slug?: string; inspectionReportUrl?: string | null };
+  options: SellerFormOptions;
+  /** The listing belongs to a supplier: its price is what we pay for the unit. */
+  supplierPrice: boolean;
   /** Server action wrapper — caller decides create vs update. Redirects on
    *  success; returns a readable error when the server rejects the input. */
   onSubmit: (input: ProductInputType) => Promise<ProductActionError | void>;
   submitLabel?: string;
 }
 
-export function ProductForm({ initial, categories, brands, onSubmit, submitLabel = 'Save product' }: Props) {
+export function ProductForm({ initial, options, supplierPrice, onSubmit, submitLabel = 'Save product' }: Props) {
   const router = useRouter();
+  const { categories, brands, currencies, grades } = options;
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
+  const initialSpecs = (initial?.specs ?? {}) as Record<string, string>;
   const [title, setTitle] = useState(initial?.title ?? '');
   const [summary, setSummary] = useState(initial?.summary ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
@@ -41,15 +67,44 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
   const [condition, setCondition] = useState<'NEW' | 'REFURBISHED' | 'USED'>(initial?.condition ?? 'REFURBISHED');
   const [mode, setMode] = useState<'BUY_NOW' | 'QUOTE_ONLY' | 'HYBRID'>(initial?.mode ?? 'HYBRID');
   const [priceEur, setPriceEur] = useState<string>(initial?.priceCents != null ? String(initial.priceCents / 100) : '');
+  const [currency, setCurrency] = useState(initial?.currency ?? currencies[0] ?? 'EUR');
+  const [quantity, setQuantity] = useState<string>(initial?.quantity != null ? String(initial.quantity) : '1');
   const [yearMade, setYearMade] = useState<string>(initial?.yearMade ? String(initial.yearMade) : '');
   const [illustration, setIllustration] = useState<IllustrationName>(initial?.illustration ?? 'balance');
   const [images, setImages] = useState<string[]>(initial?.images ?? []);
-  const [specs, setSpecs] = useState<Array<{ k: string; v: string }>>(
-    initial?.specs
-      ? Object.entries(initial.specs as Record<string, string>).map(([k, v]) => ({ k, v }))
-      : [{ k: '', v: '' }],
+  // The dimensions are their own field, stored as the "Dimensions" spec row.
+  const [specs, setSpecs] = useState<Array<{ k: string; v: string }>>(() => {
+    const rows = Object.entries(initialSpecs).filter(([k]) => k !== DIMENSIONS_SPEC_KEY).map(([k, v]) => ({ k, v }));
+    return rows.length ? rows : [{ k: '', v: '' }];
+  });
+  const [dimensions, setDimensions] = useState(initialSpecs[DIMENSIONS_SPEC_KEY] ?? '');
+  // ── What is promised about this unit ──
+  const initialMonths = initial?.warrantyMonths ?? null;
+  const [warrantyMode, setWarrantyMode] = useState<'DEFAULT' | 'NONE' | 'MONTHS'>(
+    initialMonths === null ? 'DEFAULT' : initialMonths === 0 ? 'NONE' : 'MONTHS',
   );
+  const [warrantyMonthsStr, setWarrantyMonthsStr] = useState<string>(initialMonths && initialMonths > 0 ? String(initialMonths) : '12');
+  const [warrantyText, setWarrantyText] = useState(initial?.warrantyText ?? '');
+  const [conditionNotes, setConditionNotes] = useState(initial?.conditionNotes ?? '');
+  const [inspectedAt, setInspectedAt] = useState(initial?.inspectedAt ?? '');
+  const [inspectionNotes, setInspectionNotes] = useState(initial?.inspectionNotes ?? '');
+  // ── Shipping and VAT ──
+  const [shippingClass, setShippingClass] = useState<ShippingClass | ''>(initial?.shippingClass ?? '');
+  const [weightKg, setWeightKg] = useState<string>(initial?.weightKg != null ? String(initial.weightKg) : '');
+  const [vatScheme, setVatScheme] = useState<'STANDARD' | 'MARGIN'>(initial?.vatScheme ?? 'STANDARD');
   const [uploading, setUploading] = useState(false);
+
+  const warrantyMonthsValue: number | null =
+    warrantyMode === 'DEFAULT' ? null : warrantyMode === 'NONE' ? 0 : Math.max(1, parseInt(warrantyMonthsStr, 10) || 0);
+  const grade = grades[condition];
+  const warrantyPreview = resolveWarranty(
+    { warrantyMonths: warrantyMonthsValue, warrantyText },
+    grade ?? { label: condition, defaultWarrantyMonths: null, warrantyScope: null },
+    options.warrantyFallbackText,
+    options.warrantyMonthsFormat,
+  );
+  const reportUrl = initial?.inspectionReportUrl ?? null;
+  const inspectionPreview = resolveInspection({ inspectedAt: inspectedAt || null, inspectionReportUrl: reportUrl }, options.inspectionRequiresReport);
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -88,11 +143,21 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
       condition,
       mode,
       priceCents: priceEur.trim() ? Math.round(parseFloat(priceEur) * 100) : null,
-      currency: 'EUR',
+      currency,
+      quantity: quantity.trim() ? Math.max(0, parseInt(quantity, 10) || 0) : 1,
       yearMade: yearMade.trim() ? parseInt(yearMade, 10) : null,
       illustration,
       images,
       specs: specsObj,
+      warrantyMonths: warrantyMonthsValue,
+      warrantyText: warrantyText.trim() || null,
+      conditionNotes: conditionNotes.trim() || null,
+      inspectedAt: inspectedAt || null,
+      inspectionNotes: inspectionNotes.trim() || null,
+      shippingClass: shippingClass || null,
+      weightKg: weightKg.trim() ? Number(weightKg.replace(',', '.')) : null,
+      dimensions: dimensions.trim() || null,
+      vatScheme,
     };
 
     startTransition(async () => {
@@ -129,7 +194,7 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
         >
           <TiptapEditor value={description ?? ''} onChange={setDescription} />
         </Field>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Category" error={fieldErrors.categoryId}>
             <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className={inputCls}>
               {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -146,11 +211,11 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
 
       {/* Condition + commerce */}
       <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
-        <h2 className="text-lg font-bold">Condition & pricing</h2>
-        <div className="grid grid-cols-2 gap-4">
+        <h2 className="text-lg font-bold">Condition, price &amp; stock</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Condition">
             <select value={condition} onChange={(e) => setCondition(e.target.value as typeof condition)} className={inputCls}>
-              {CONDITIONS.map((c) => <option key={c} value={c}>{c.charAt(0) + c.slice(1).toLowerCase()}</option>)}
+              {CONDITIONS.map((c) => <option key={c} value={c}>{grades[c]?.label ?? c.charAt(0) + c.slice(1).toLowerCase()}</option>)}
             </select>
           </Field>
           <Field label="Buying mode">
@@ -158,11 +223,113 @@ export function ProductForm({ initial, categories, brands, onSubmit, submitLabel
               {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
             </select>
           </Field>
-          <Field label="Price (EUR)" hint={mode === 'QUOTE_ONLY' ? 'Leave blank for quote-only.' : 'List price ex. VAT.'} error={fieldErrors.priceCents}>
+          <Field
+            label={supplierPrice ? 'Your price (excl. VAT)' : 'Price (excl. VAT)'}
+            hint={mode === 'QUOTE_ONLY'
+              ? 'Leave blank for quote-only.'
+              : supplierPrice
+                ? 'What you receive for the unit. Our price to the buyer is set separately.'
+                : 'List price ex. VAT.'}
+            error={fieldErrors.priceCents}
+          >
             <input type="number" min="0" max={MAX_PRICE_CENTS / 100} step="0.01" value={priceEur} onChange={(e) => setPriceEur(e.target.value)} className={inputCls} placeholder="12800" disabled={mode === 'QUOTE_ONLY'} />
+          </Field>
+          <Field label="Currency" error={fieldErrors.currency}>
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} className={inputCls}>
+              {currencies.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Quantity in stock" hint="Set 0 when the unit is sold elsewhere: it goes off sale at once." error={fieldErrors.quantity}>
+            <input type="number" min="0" max="100000" step="1" value={quantity} onChange={(e) => setQuantity(e.target.value)} className={inputCls} />
           </Field>
           <Field label="Year made" error={fieldErrors.yearMade}>
             <input type="number" min="1900" max="2100" value={yearMade} onChange={(e) => setYearMade(e.target.value)} className={inputCls} placeholder="2020" />
+          </Field>
+          <Field
+            label="VAT scheme"
+            hint={options.marginSchemeEnabled
+              ? 'Margin scheme: second-hand goods you sell to us without VAT (you bought them without deductible VAT). Otherwise standard VAT.'
+              : 'Standard VAT applies: the margin scheme is switched off on this site.'}
+            error={fieldErrors.vatScheme}
+          >
+            <select value={vatScheme} onChange={(e) => setVatScheme(e.target.value as 'STANDARD' | 'MARGIN')} className={inputCls}>
+              <option value="STANDARD">Standard VAT</option>
+              <option value="MARGIN" disabled={condition === 'NEW' || (!options.marginSchemeEnabled && vatScheme !== 'MARGIN')}>
+                Margin scheme (second-hand){condition === 'NEW' ? ' — not for new goods' : ''}
+              </option>
+            </select>
+          </Field>
+        </div>
+      </section>
+
+      {/* What is promised about THIS unit */}
+      <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-bold">Warranty &amp; inspection</h2>
+          <p className="text-sm text-muted-foreground mt-1">The product page, the order and the invoice state exactly what is set here for this unit.</p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Field label="Warranty" error={fieldErrors.warrantyMonths}>
+            <select value={warrantyMode} onChange={(e) => setWarrantyMode(e.target.value as typeof warrantyMode)} className={inputCls}>
+              <option value="DEFAULT">
+                Condition default ({grade?.defaultWarrantyMonths ? `${grade.defaultWarrantyMonths} months` : 'none'})
+              </option>
+              <option value="NONE">No warranty (sold as-is)</option>
+              <option value="MONTHS">Warranty of …</option>
+            </select>
+          </Field>
+          {warrantyMode === 'MONTHS' && (
+            <Field label="Months" error={fieldErrors.warrantyMonths}>
+              <input type="number" min={1} max={120} step={1} value={warrantyMonthsStr} onChange={(e) => setWarrantyMonthsStr(e.target.value)} className={inputCls} />
+            </Field>
+          )}
+          <Field label="Warranty terms" hint="Scope, e.g. “parts and labour, functional defects”." error={fieldErrors.warrantyText}>
+            <input value={warrantyText} onChange={(e) => setWarrantyText(e.target.value)} maxLength={500} className={inputCls} />
+          </Field>
+        </div>
+        <p className="text-xs rounded-lg bg-foreground/[0.03] border border-border px-3 py-2">
+          Buyers read: <strong>{warrantyPreview.full}</strong>
+        </p>
+        <Field label="Condition notes" hint="Cosmetic marks, missing accessories, hours run… shown on the product page." error={fieldErrors.conditionNotes}>
+          <input value={conditionNotes} onChange={(e) => setConditionNotes(e.target.value)} maxLength={1000} className={inputCls} />
+        </Field>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Field label="Inspected on" hint="Only if this unit was really inspected." error={fieldErrors.inspectedAt}>
+            <input type="date" value={inspectedAt} onChange={(e) => setInspectedAt(e.target.value)} className={inputCls} />
+          </Field>
+          <div className="sm:col-span-2">
+            <Field label="Inspection notes" hint="What was checked (optional)." error={fieldErrors.inspectionNotes}>
+              <input value={inspectionNotes} onChange={(e) => setInspectionNotes(e.target.value)} maxLength={1000} className={inputCls} />
+            </Field>
+          </div>
+        </div>
+        <p className="text-xs rounded-lg bg-foreground/[0.03] border border-border px-3 py-2">
+          {inspectionPreview.claim
+            ? 'Buyers read: “This unit was inspected on …”.'
+            : inspectionPreview.reason === 'NO_REPORT'
+              ? 'No inspection claim is shown until the inspection report is on the listing: send the report to our team and we attach it.'
+              : 'No inspection claim is shown for this unit.'}
+        </p>
+      </section>
+
+      {/* Shipping — drives the freight quote at checkout */}
+      <section className="rounded-2xl border border-border bg-card p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-bold">Shipping</h2>
+          <p className="text-sm text-muted-foreground mt-1">The shipping class and weight decide the freight buyers are quoted at checkout.</p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Field label="Shipping class" error={fieldErrors.shippingClass}>
+            <select value={shippingClass} onChange={(e) => setShippingClass(e.target.value as ShippingClass | '')} className={inputCls}>
+              <option value="">Default ({SHIPPING_CLASSES[options.defaultShippingClass]})</option>
+              {(Object.keys(SHIPPING_CLASSES) as ShippingClass[]).map((c) => <option key={c} value={c}>{SHIPPING_CLASSES[c]}</option>)}
+            </select>
+          </Field>
+          <Field label="Weight per unit (kg)" hint="Packed weight." error={fieldErrors.weightKg}>
+            <input type="number" min="0" max="100000" step="0.1" value={weightKg} onChange={(e) => setWeightKg(e.target.value)} className={inputCls} placeholder="85" />
+          </Field>
+          <Field label="Dimensions" hint="L × W × H, e.g. 120 × 80 × 95 cm." error={fieldErrors.dimensions}>
+            <input value={dimensions} onChange={(e) => setDimensions(e.target.value)} maxLength={120} className={inputCls} placeholder="120 × 80 × 95 cm" />
           </Field>
         </div>
       </section>

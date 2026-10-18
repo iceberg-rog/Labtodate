@@ -1,8 +1,10 @@
 import { revalidatePath } from 'next/cache';
-import { UserRole } from '@prisma/client';
+import { UserRole, type Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getAdminCaps, requireSession } from '@/lib/auth-server';
-import { audit } from '@/lib/observability';
+import { audit, notifyUser } from '@/lib/observability';
+import { siteName } from '@/lib/brand/identity';
+import { ensureSettingsLoaded } from '@/lib/settings';
 import {
   CAPABILITY_PRESETS,
   capsAllow,
@@ -10,7 +12,7 @@ import {
   canGrantCapability,
   isKnownCapability,
 } from '@/lib/capabilities';
-import { trySendEmail } from '@/lib/email';
+import { trySendEmail, type EmailOutcome } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
 import { adminEmailAllowed, getSecurityPolicy } from './policy';
 import { activeSuperAdmins, alertSuperAdmins, countOtherActiveSuperAdmins } from './alerts';
@@ -28,7 +30,10 @@ import { stepUpRequired, type StepUpRequired } from './stepup';
  *  - demotion empties adminCaps and signs the person out everywhere, in one
  *    transaction (re-promotion never silently restores old permissions);
  *  - each change, and each refused attempt, is audited and reported to every
- *    super-admin; the affected person gets an e-mail.
+ *    super-admin; the affected person gets an e-mail;
+ *  - an internal supplier (SELLER) is always linked to a company: its pricing
+ *    rule (Admin → Companies) is our margin on the supplier's listings, so the
+ *    company is chosen when someone becomes a supplier (D84).
  */
 export type AccessResult = { ok: boolean; message: string } | StepUpRequired;
 
@@ -55,9 +60,10 @@ async function refuse(actor: Actor, action: string, target: { id: string; email:
   return { ok: false as const, message: reasons.join(' ') };
 }
 
-async function tellUser(email: string, subject: string, lines: string[]) {
-  const site = process.env.SITE_NAME || 'Labtodate';
-  await trySendEmail(
+async function tellUser(email: string, subject: string, lines: string[]): Promise<EmailOutcome> {
+  await ensureSettingsLoaded();
+  const site = siteName();
+  return trySendEmail(
     {
       to: email,
       subject: `${site}: ${subject}`,
@@ -139,21 +145,62 @@ export async function changeUserCaps(userId: string, preset: string | null, raw:
   return { ok: true, message: `Permissions saved: ${describeCaps(next)}.` };
 }
 
-/** Change someone's role. Promotion to ADMIN needs a preset. */
-export async function changeUserRole(userId: string, role: string, preset: string | null): Promise<AccessResult> {
+const NEEDS_COMPANY =
+  'Choose the company this supplier sells for first: on the user page, under “Supplier company”, pick it and use “Make internal supplier”. Its pricing rule is our margin on the supplier’s listings.';
+
+/**
+ * The supplier's own listings follow its company's pricing rule (the listings
+ * that had none, or the previous company's). Items synced from a shop keep
+ * the shop they were imported from.
+ */
+function linkListingsToCompany(db: Pick<Prisma.TransactionClient, 'product'>, userId: string, companyId: string, previous: string | null) {
+  return db.product.updateMany({
+    where: {
+      sellerId: userId,
+      externalSource: null,
+      OR: [{ companyId: null }, ...(previous && previous !== companyId ? [{ companyId: previous }] : [])],
+    },
+    data: { companyId },
+  });
+}
+
+async function tellNewSupplier(target: { id: string; email: string }, companyName: string): Promise<EmailOutcome> {
+  const base = (process.env.BETTER_AUTH_URL ?? '').replace(/\/+$/, '');
+  const mail = await tellUser(target.email, 'You are now an internal supplier', [
+    `Our team set up your account as a supplier for ${companyName}.`,
+    'In your seller panel you list equipment with the price you want to receive for it, answer the quote requests we route to you and follow your sales. Every listing is reviewed by our team before it goes live.',
+    ...(base ? [`Seller panel: ${base}/app/seller`] : []),
+  ]);
+  await notifyUser(target.id, 'You are now an internal supplier', `Your account sells for ${companyName}. List equipment and answer quote requests in your seller panel.`, '/app/seller');
+  return mail;
+}
+
+/**
+ * Change someone's role. Promotion to ADMIN needs a preset; becoming an
+ * internal supplier (SELLER) needs the company it sells for (`companyId`, or
+ * the one the account is already linked to).
+ */
+export async function changeUserRole(userId: string, role: string, preset: string | null, companyId?: string | null): Promise<AccessResult> {
   const actor = await currentActor();
   if (!capsAllow(actor.caps, 'users:manage')) return { ok: false, message: 'You need the users:manage permission.' };
   if (!(Object.values(UserRole) as string[]).includes(role)) return { ok: false, message: 'Unknown role.' };
   const next = role as UserRole;
   const target = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, adminCaps: true, emailVerified: true, suspendedAt: true },
+    select: { id: true, email: true, role: true, adminCaps: true, emailVerified: true, suspendedAt: true, companyId: true },
   });
   if (!target) return { ok: false, message: 'User not found.' };
   if (target.id === actor.id) {
     return refuse(actor, 'user.role', target, ['You can’t change your own role — ask another super-admin.'], `change their own role to ${ROLE_LABEL[next]}`);
   }
   if (target.role === next) return { ok: true, message: `Already ${ROLE_LABEL[next]}.` };
+  // A supplier without a company would sell at its own price with no margin (D84).
+  let company: { id: string; name: string } | null = null;
+  if (next === 'SELLER') {
+    const wanted = companyId || target.companyId;
+    company = wanted ? await prisma.company.findUnique({ where: { id: wanted }, select: { id: true, name: true } }) : null;
+    if (!company) return { ok: false, message: wanted ? 'That company no longer exists — choose another one.' : NEEDS_COMPANY };
+  }
   const policy = await getSecurityPolicy();
 
   if (next === 'ADMIN') {
@@ -215,16 +262,17 @@ export async function changeUserRole(userId: string, role: string, preset: strin
     const step = await stepUpRequired('users.role');
     if (step) return step;
     await prisma.$transaction([
-      prisma.user.update({ where: { id: target.id }, data: { role: next, adminCaps: [] } }),
+      prisma.user.update({ where: { id: target.id }, data: { role: next, adminCaps: [], companyId: company?.id ?? null } }),
       prisma.session.deleteMany({ where: { userId: target.id } }),
+      ...(company ? [linkListingsToCompany(prisma, target.id, company.id, target.companyId)] : []),
     ]);
-    await audit('user.role', target.id, `admin (${describeCaps(target.adminCaps)}) → ${ROLE_LABEL[next]}; permissions cleared, signed out`);
+    await audit('user.role', target.id, `admin (${describeCaps(target.adminCaps)}) → ${ROLE_LABEL[next]}${company ? ` for ${company.name}` : ''}; permissions cleared, signed out`);
     await alertSuperAdmins('Admin access removed', [
       `${actor.email} changed ${target.email} from admin to ${ROLE_LABEL[next]}.`,
       `Removed permissions: ${describeCaps(target.adminCaps)}. All their sessions were signed out.`,
     ], `/admin/users/${target.id}`);
     await tellUser(target.email, 'Your admin access was removed', [
-      `Your account is now a ${ROLE_LABEL[next]} account. You were signed out on all devices.`,
+      `Your account is now a ${ROLE_LABEL[next]} account${company ? ` (${company.name})` : ''}. You were signed out on all devices.`,
     ]);
     refreshUserPages(target.id);
     return { ok: true, message: `${target.email} is now ${ROLE_LABEL[next]}: admin permissions removed and signed out everywhere.` };
@@ -233,10 +281,53 @@ export async function changeUserRole(userId: string, role: string, preset: strin
   // BUYER ↔ SELLER.
   const step = await stepUpRequired('users.role');
   if (step) return step;
-  await prisma.user.update({ where: { id: target.id }, data: { role: next, adminCaps: [] } });
-  await audit('user.role', target.id, `${ROLE_LABEL[target.role]} → ${ROLE_LABEL[next]}`);
+  const moved = await prisma.$transaction(async (tx) => {
+    // A buyer is linked to no supplier company: a later promotion asks for it again.
+    await tx.user.update({ where: { id: target.id }, data: { role: next, adminCaps: [], companyId: company?.id ?? null } });
+    return company ? (await linkListingsToCompany(tx, target.id, company.id, target.companyId)).count : 0;
+  });
+  await audit('user.role', target.id, `${ROLE_LABEL[target.role]} → ${ROLE_LABEL[next]}${company ? ` for ${company.name}${moved ? ` (${moved} listings linked)` : ''}` : ''}`);
+  const mail = company
+    ? await tellNewSupplier(target, company.name)
+    : await tellUser(target.email, 'Your supplier access was removed', [
+        'Your account is now a buyer account: the seller panel is no longer available to you. Contact us about your listings and open deals.',
+      ]);
   refreshUserPages(target.id);
-  return { ok: true, message: `Role changed to ${ROLE_LABEL[next]}.` };
+  const told = mail.ok ? ' They were e-mailed.' : ` The e-mail to them could not be delivered (${mail.error}).`;
+  return {
+    ok: true,
+    message: company ? `${target.email} is now an internal supplier for ${company.name}.${told}` : `Role changed to ${ROLE_LABEL[next]}.${told}`,
+  };
+}
+
+/**
+ * Link an internal supplier to the company it sells for (or move it to
+ * another one): the supplier's own listings follow that company's pricing
+ * rule from now on. users:manage or companies:manage.
+ */
+export async function changeSupplierCompany(userId: string, companyId: string): Promise<AccessResult> {
+  const actor = await currentActor();
+  if (!capsAllow(actor.caps, 'users:manage') && !capsAllow(actor.caps, 'companies:manage')) {
+    return { ok: false, message: 'You need the users:manage or companies:manage permission.' };
+  }
+  const target = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true, role: true, companyId: true, company: { select: { name: true } } },
+  });
+  if (!target) return { ok: false, message: 'User not found.' };
+  if (target.role !== 'SELLER') return { ok: false, message: 'Only internal suppliers are linked to a company. Make them an internal supplier first.' };
+  const company = companyId ? await prisma.company.findUnique({ where: { id: companyId }, select: { id: true, name: true } }) : null;
+  if (!company) return { ok: false, message: 'Choose a company.' };
+  if (target.companyId === company.id) return { ok: true, message: `Already linked to ${company.name}.` };
+  const moved = await prisma.$transaction(async (tx) => {
+    await tx.user.update({ where: { id: target.id }, data: { companyId: company.id } });
+    return (await linkListingsToCompany(tx, target.id, company.id, target.companyId)).count;
+  });
+  await audit('user.company', target.id, `${target.company?.name ?? 'no company'} → ${company.name} · ${moved} listings follow its pricing`);
+  await notifyUser(target.id, 'Your supplier company', `Your account now sells for ${company.name}.`, '/app/seller');
+  refreshUserPages(target.id);
+  revalidatePath('/app/seller/products');
+  return { ok: true, message: `Linked to ${company.name}. ${moved} of their listings follow its pricing rule.` };
 }
 
 /**

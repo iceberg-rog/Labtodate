@@ -1,56 +1,50 @@
-import { LegalShell, legalContext } from '@/components/site/LegalShell';
+import type { Metadata } from 'next';
+import { notFound } from 'next/navigation';
+import { LegalShell } from '@/components/site/LegalShell';
+import { ProgrammeText } from '@/components/seller/ProgrammeText';
+import { siteName } from '@/lib/brand/identity';
 import { prisma } from '@/lib/db';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { sellerProgramme } from '@/lib/sellers/programme';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Pricing & fees' };
 
-export default async function SellerPricingPage() {
-  const c = await legalContext();
+/**
+ * How selling through us works, for suppliers. Public only while the owner
+ * runs an open supplier programme (Settings → Suppliers → Public supplier
+ * programme page); otherwise the page does not exist (404, noindex) —
+ * suppliers join by agreement. The texts are the owner's settings, so the
+ * page never states a commission or payout term the business does not run
+ * (it used to promise “8 % commission, payout 3 business days after
+ * delivery” from env defaults — D15).
+ */
+export async function generateMetadata(): Promise<Metadata> {
+  await ensureSettingsLoaded();
+  if (!sellerProgramme().isPublic) return { title: 'Page not found', robots: { index: false, follow: false } };
+  return { title: `Selling through ${siteName()}` };
+}
+
+export default async function SellerProgrammePage() {
+  await ensureSettingsLoaded();
+  const programme = sellerProgramme();
+  if (!programme.isPublic) notFound();
   // Wiki articles are admin-managed content: only link the seller guide once
-  // it is published (it 404'd before), otherwise point to the FAQ.
+  // it is published (it 404'd before).
   const sellerGuide = await prisma.wikiArticle.findFirst({
     where: { slug: 'seller-guide', status: 'PUBLISHED' },
     select: { slug: true },
   });
-  const commission = (process.env.SELLER_COMMISSION_PCT || '8').trim();
-  const listingFee = (process.env.SELLER_LISTING_FEE || 'Free').trim();
-  const payout = (process.env.SELLER_PAYOUT_DAYS || '3 business days after delivery').trim();
 
   return (
-    <LegalShell title="Pricing & fees" subtitle="Simple, transparent — you only pay when you sell.">
-      <h2>What it costs to sell on {c.site}</h2>
-      <table>
-        <tbody>
-          <tr><td><strong>Listing fee</strong></td><td>{listingFee}</td></tr>
-          <tr><td><strong>Commission</strong></td><td>{commission}% of the final sale price</td></tr>
-          <tr><td><strong>Payout</strong></td><td>{payout}</td></tr>
-          <tr><td><strong>Logistics</strong></td><td>Agreed per sale</td></tr>
-        </tbody>
-      </table>
-
-      <h2>How it works</h2>
-      <ol>
-        <li>List your equipment (or submit it via <a href="/sell">Sell equipment</a> for a managed listing).</li>
-        <li>We publish it to the marketplace — no listing fee.</li>
-        <li>When it sells, {c.site} handles the sale with the buyer and collects the payment.</li>
-        <li>You receive your payout ({payout}), minus the {commission}% commission.</li>
-      </ol>
-
-      <h2>No hidden costs</h2>
-      <p>
-        No subscription, no per-listing charge, no payment surcharge. The commission is the only
-        fee and applies solely to completed sales.
-      </p>
-
-      <h2>Questions?</h2>
-      <p>
-        Email <a href={c.contactHref}>{c.contactLabel}</a> or{' '}
-        {sellerGuide ? (
-          <>read the <a href={`/wiki/${sellerGuide.slug}`}>seller guide</a>.</>
-        ) : (
-          <>see our <a href="/faq">FAQ</a>.</>
-        )}
-      </p>
+    <LegalShell title={`Selling through ${siteName()}`}>
+      <ProgrammeText blocks={programme.terms} contactHref={programme.contactHref} contactLabel={programme.contactLabel} />
+      <h2>How you are paid</h2>
+      <ProgrammeText blocks={programme.payout} contactHref={programme.contactHref} contactLabel={programme.contactLabel} />
+      {sellerGuide && (
+        <p>
+          More in the <a href={`/wiki/${sellerGuide.slug}`}>seller guide</a>.
+        </p>
+      )}
     </LegalShell>
   );
 }

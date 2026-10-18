@@ -738,12 +738,15 @@ const DEFS: DefInput[] = [
     hint: 'Told to social media and search engines with every page (og:locale), e.g. en_US, en_GB, nl_NL. Match the language the site is written in.' },
 
   // ── Suppliers (companies that sell their stock through you) ──
-  { key: 'SELLER_PROGRAMME_PUBLIC', label: 'Public supplier programme page', group: 'Suppliers', type: 'bool', default: 'false', options: yesNo, pending: 'the supplier programme page (PKG-12)',
+  { key: 'SELLER_PROGRAMME_PUBLIC', label: 'Public supplier programme page', group: 'Suppliers', type: 'bool', default: 'false', options: yesNo,
     hint: 'Yes: /seller/pricing explains to suppliers how selling through you works (the two texts below) and search engines may list it. No (default): that page does not exist for visitors — suppliers join by agreement with your team.' },
-  { key: 'SELLER_TERMS_TEXT', label: 'Supplier programme — how it works', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_TERMS_TEXT, pending: 'the supplier programme page (PKG-12)',
+  { key: 'SELLER_TERMS_TEXT', label: 'Supplier programme — how it works', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_TERMS_TEXT,
     hint: 'First part of /seller/pricing. Describe the real deal — by default a supplier receives their own price and never sees your sell price (Quotes & offers → “Suppliers see the buyer price”). “## ” starts a heading, an empty line a new paragraph.' + tokensHint(SELLER_TERMS_TOKENS) },
-  { key: 'SELLER_PAYOUT_TERMS_TEXT', label: 'Supplier programme — how suppliers are paid', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_PAYOUT_TERMS_TEXT, pending: 'the supplier programme page (PKG-12)',
-    hint: 'Payout part of /seller/pricing: when and how a supplier is paid for a sold unit. Only state terms your supplier agreements really contain.' + tokensHint(SELLER_TERMS_TOKENS) },
+  { key: 'SELLER_PAYOUT_TERMS_TEXT', label: 'Supplier programme — how suppliers are paid', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_PAYOUT_TERMS_TEXT,
+    hint: 'When and how a supplier is paid for a sold unit: shown on /seller/pricing, on the supplier’s Payouts page and in the “delivered” notice to the supplier. Only state terms your supplier agreements really contain.' + tokensHint(SELLER_TERMS_TOKENS) },
+  { key: 'SELLER_DISPATCH_TEXT', label: 'Sold-unit notice — what the supplier does next', group: 'Suppliers', type: 'text', multiline: true,
+    default: 'Keep the unit reserved for this order and get it ready for dispatch. We contact you with the pick-up or delivery details.',
+    hint: 'Sent to a supplier (e-mail and notification) when a unit it supplies has been paid, under the unit and its agreed supplier price. Say what really happens next under your supplier agreements: who collects or ships the unit, and where to. The buyer’s name and our sell price are never included.' },
   { key: 'MESSAGE_MEDIATION_MODE', label: 'Messages between buyers and suppliers', group: 'Suppliers', type: 'enum', default: 'MASK_CONTACTS', sensitive: true, pending: 'buyer–supplier message mediation (PKG-01, PKG-16)',
     options: [
       { value: 'MASK_CONTACTS', label: 'Remove contact details (e-mail addresses, phone numbers, links, IBANs) and notify staff (recommended)' },

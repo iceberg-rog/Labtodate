@@ -1,8 +1,9 @@
 import { notFound } from 'next/navigation';
-import { requireSession } from '@/lib/auth-server';
+import { hasCapability, requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ProductForm } from '@/components/seller/ProductForm';
 import { updateProduct } from '../../actions';
+import { sellerFormOptions } from '../../form-options';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 import type { ProductInputType } from '../../actions';
 
@@ -13,18 +14,22 @@ export default async function EditProductPage(props: { params: Promise<{ slug: s
   const params = await props.params;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: `/app/seller/products/${params.slug}/edit` });
 
-  const product = await prisma.product.findUnique({ where: { slug: params.slug } });
+  const product = await prisma.product.findUnique({
+    where: { slug: params.slug },
+    include: { seller: { select: { role: true, email: true } } },
+  });
   if (!product) notFound();
 
   const role = (session.user as { role?: string }).role;
-  if (product.sellerId !== session.user.id && role !== 'ADMIN') notFound();
+  const own = product.sellerId === session.user.id;
+  // Somebody else's listing: staff with products:edit only (D05) — the same
+  // rule updateProduct applies; anyone else gets a 404, not a form.
+  if (!own && !(role === 'ADMIN' && (await hasCapability('products:edit')))) notFound();
+  const moderator = role === 'ADMIN' && (await hasCapability('products:approve'));
 
-  const [categories, brands] = await Promise.all([
-    prisma.category.findMany({ orderBy: { sortOrder: 'asc' }, select: { id: true, name: true, slug: true } }),
-    prisma.brand.findMany({ orderBy: { name: 'asc' }, select: { id: true, name: true, slug: true } }),
-  ]);
+  const options = await sellerFormOptions(product.currency);
 
-  const initial: Partial<ProductInputType> & { slug: string } = {
+  const initial: Partial<ProductInputType> & { slug: string; inspectionReportUrl: string | null } = {
     slug: product.slug,
     title: product.title,
     summary: product.summary ?? null,
@@ -35,10 +40,20 @@ export default async function EditProductPage(props: { params: Promise<{ slug: s
     mode: product.mode,
     priceCents: product.priceCents ?? null,
     currency: product.currency,
+    quantity: product.quantity,
     yearMade: product.yearMade ?? null,
     illustration: (product.illustration ?? 'balance') as IllustrationName,
     images: product.images,
     specs: (product.specs as Record<string, string> | null) ?? {},
+    warrantyMonths: product.warrantyMonths,
+    warrantyText: product.warrantyText,
+    conditionNotes: product.conditionNotes,
+    inspectedAt: product.inspectedAt ? product.inspectedAt.toISOString().slice(0, 10) : null,
+    inspectionNotes: product.inspectionNotes,
+    inspectionReportUrl: product.inspectionReportUrl,
+    shippingClass: product.shippingClass,
+    weightKg: product.weightKg,
+    vatScheme: product.vatScheme,
   };
 
   const slug = product.slug;
@@ -46,8 +61,9 @@ export default async function EditProductPage(props: { params: Promise<{ slug: s
     'use server';
     return updateProduct(slug, input);
   }
-  // Sellers' edits to a live listing go back to admin review (INVARIANTS A3).
-  const reReview = product.status === 'PUBLISHED' && role !== 'ADMIN';
+  // Commercial changes to a live listing go back to review; text and photo
+  // changes stay live and are checked by a moderator (INVARIANTS A3, D69).
+  const reReview = product.status === 'PUBLISHED' && !moderator;
 
   return (
     <div className="space-y-6">
@@ -55,12 +71,25 @@ export default async function EditProductPage(props: { params: Promise<{ slug: s
         <h1 className="text-3xl font-bold tracking-tight">Edit listing</h1>
         <p className="text-muted-foreground mt-1 truncate">{product.title}</p>
       </div>
-      {reReview && (
-        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 px-4 py-3 text-sm max-w-3xl">
-          This listing is live. If you change it, it goes back to admin review and is hidden from buyers until an admin approves it again.
+      {!own && (
+        <div className="rounded-xl border border-border bg-foreground/[0.03] px-4 py-3 text-sm max-w-3xl">
+          You are editing a listing of <strong>{product.seller.email}</strong> as staff. Every change is logged.
         </div>
       )}
-      <ProductForm initial={initial} categories={categories} brands={brands} onSubmit={handleSubmit} submitLabel="Save changes" />
+      {reReview && (
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 px-4 py-3 text-sm max-w-3xl">
+          This listing is live. A change to the price, currency, buying mode, condition, warranty, inspection date or VAT
+          scheme sends it back to admin review: it is hidden from buyers until it is approved again. Changes to texts,
+          photos, specs and shipping details stay live and our team checks them; a new stock quantity applies at once.
+        </div>
+      )}
+      <ProductForm
+        initial={initial}
+        options={options}
+        supplierPrice={product.seller.role === 'SELLER'}
+        onSubmit={handleSubmit}
+        submitLabel="Save changes"
+      />
     </div>
   );
 }

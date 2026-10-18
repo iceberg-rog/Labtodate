@@ -2,11 +2,13 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, ShieldCheck, Smartphone, KeyRound } from 'lucide-react';
+import { Loader2, ShieldCheck, Smartphone, KeyRound, Building2 } from 'lucide-react';
 import { useStepUp, type MaybeStepUp } from '@/components/security/useStepUp';
 
 export type CapRow = { cap: string; info: string; grantable: boolean; superOnly: boolean };
 export type PresetRow = { key: string; label: string; caps: string[]; grantable: boolean };
+/** A company a supplier can sell for, with its pricing rule in words. */
+export type CompanyOption = { id: string; name: string; rule: string; noMargin: boolean };
 
 /**
  * Admin permissions editor for one admin. Shows what the viewer may grant
@@ -188,6 +190,132 @@ export function UserAccessPanel({
         </div>
       )}
 
+      {msg && (
+        <p
+          role={msg.ok ? 'status' : 'alert'}
+          className={`text-xs font-semibold ${msg.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-400'}`}
+        >
+          {msg.message}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Supplier company of a buyer or internal supplier (D84). Making someone an
+ * internal supplier needs the company it sells for — that company's pricing
+ * rule is our margin on the supplier's listings — so the promotion is done
+ * here, with the company chosen first. For a supplier the link can be moved
+ * to another company. The server re-checks everything
+ * (src/lib/security/user-access.ts).
+ */
+export function SupplierCompanyPanel({
+  userId,
+  email,
+  role,
+  current,
+  companies,
+  canPromote,
+  canLink,
+  promote,
+  link,
+}: {
+  userId: string;
+  email: string;
+  role: 'BUYER' | 'SELLER';
+  current: CompanyOption | null;
+  companies: CompanyOption[];
+  /** May make the user a supplier (users:manage). */
+  canPromote: boolean;
+  /** May change a supplier's company (users:manage or companies:manage). */
+  canLink: boolean;
+  promote: (fd: FormData) => Promise<MaybeStepUp>;
+  link: (fd: FormData) => Promise<MaybeStepUp>;
+}) {
+  const router = useRouter();
+  const { run, dialog } = useStepUp();
+  const [pending, start] = useTransition();
+  const [msg, setMsg] = useState<{ ok: boolean; message: string } | null>(null);
+  const [companyId, setCompanyId] = useState(current?.id ?? '');
+  const chosen = companies.find((c) => c.id === companyId) ?? null;
+  const supplier = role === 'SELLER';
+  const editable = supplier ? canLink : canPromote;
+
+  function submit() {
+    if (!chosen) {
+      setMsg({ ok: false, message: 'Choose the company first.' });
+      return;
+    }
+    const question = supplier
+      ? `Link ${email} to ${chosen.name}? Their own listings follow its pricing rule (${chosen.rule}).`
+      : `Make ${email} an internal supplier for ${chosen.name}? They get the seller panel and an e-mail; their listings follow ${chosen.name}’s pricing rule (${chosen.rule}).`;
+    if (!window.confirm(question)) return;
+    setMsg(null);
+    const fd = new FormData();
+    fd.set('userId', userId);
+    fd.set('companyId', chosen.id);
+    start(async () => {
+      const r = await run(() => (supplier ? link(fd) : promote(fd))).catch(() => ({ ok: false, message: 'Saving failed — please try again.' }));
+      setMsg(r);
+      if (r.ok) router.refresh();
+    });
+  }
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 space-y-3" data-testid="supplier-company-panel">
+      {dialog}
+      <div>
+        <p className="text-sm font-bold inline-flex items-center gap-1.5">
+          <Building2 className="h-4 w-4 text-muted-foreground" /> Supplier company
+        </p>
+        <p className="text-xs text-muted-foreground mt-1 max-w-2xl">
+          {supplier
+            ? current
+              ? <>Sells for <strong className="text-foreground">{current.name}</strong> · {current.rule}.</>
+              : <span className="text-amber-800 dark:text-amber-300">Not linked to a company: their listings cannot be published until it is.</span>
+            : 'To let this buyer list equipment as an internal supplier, choose the company they sell for. Its pricing rule (Admin → Companies) is our margin on their prices.'}
+        </p>
+      </div>
+      {editable && (
+        companies.length === 0 ? (
+          <p className="text-xs text-amber-800 dark:text-amber-300">
+            No companies yet — add the supplier’s company under <a href="/admin/companies" className="underline">Companies</a> first.
+          </p>
+        ) : (
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              aria-label="Company"
+              value={companyId}
+              onChange={(e) => setCompanyId(e.target.value)}
+              disabled={pending}
+              required
+              className="h-8 px-2 rounded-md border border-border bg-card text-xs max-w-[320px]"
+            >
+              <option value="">Choose a company…</option>
+              {companies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name} — {c.rule}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={pending || !companyId || (supplier && companyId === current?.id)}
+              onClick={submit}
+              className="h-8 px-3 rounded-full bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-50 inline-flex items-center gap-1.5"
+            >
+              {pending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {supplier ? 'Save company' : 'Make internal supplier'}
+            </button>
+          </div>
+        )
+      )}
+      {chosen?.noMargin && editable && (
+        <p className="text-xs text-amber-800 dark:text-amber-300">
+          {chosen.name} passes prices through: buyers pay the supplier’s own price, with no margin for us. Set a markup on the company page if that is not intended.
+        </p>
+      )}
       {msg && (
         <p
           role={msg.ok ? 'status' : 'alert'}

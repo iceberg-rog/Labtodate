@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Plus, Edit2, Eye, EyeOff, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { requireSession } from '@/lib/auth-server';
+import { hasCapability, requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { InstrumentIllustration, type IllustrationName } from '@/components/illustrations/instruments';
@@ -14,22 +14,29 @@ export const metadata = { title: 'My listings' };
 
 export default async function SellerProductsPage(
   props: {
-    searchParams: Promise<{ created?: string; updated?: string; review?: string; deleted?: string; archived?: string; notice?: string }>;
+    searchParams: Promise<{ created?: string; updated?: string; review?: string; check?: string; deleted?: string; archived?: string; notice?: string }>;
   }
 ) {
   const searchParams = await props.searchParams;
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller/products' });
-  const isAdmin = (session.user as { role?: string }).role === 'ADMIN';
+  const role = (session.user as { role?: string }).role;
+  // Only a moderator publishes; everybody else (suppliers, other staff) asks for review (D05).
+  const canPublish = role === 'ADMIN' && (await hasCapability('products:approve'));
 
-  const products = await prisma.product.findMany({
-    where: { sellerId: session.user.id },
-    orderBy: { updatedAt: 'desc' },
-    include: { category: true, brand: true, _count: { select: { orderItems: true } } },
-  });
+  const [products, me] = await Promise.all([
+    prisma.product.findMany({
+      where: { sellerId: session.user.id },
+      orderBy: { updatedAt: 'desc' },
+      include: { category: true, brand: true, _count: { select: { orderItems: true } } },
+    }),
+    prisma.user.findUnique({ where: { id: session.user.id }, select: { companyId: true } }),
+  ]);
+  const noCompany = role === 'SELLER' && !me?.companyId;
 
   const banner =
     searchParams.created ? '✓ Listing created. Awaiting admin review before it goes live.'
     : searchParams.updated && searchParams.review ? '✓ Changes saved and sent for admin review. The listing is hidden from buyers until it is approved again.'
+    : searchParams.updated && searchParams.check ? '✓ Changes saved. The listing stays live; our team checks the changes.'
     : searchParams.updated ? '✓ Listing updated.'
     : searchParams.deleted ? '✓ Listing deleted.'
     : searchParams.archived ? '✓ This listing has past orders, so it was archived (hidden from buyers) instead of deleted.'
@@ -52,6 +59,13 @@ export default async function SellerProductsPage(
       {banner && (
         <div role="status" className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-300 px-4 py-3 text-sm">
           {banner}
+        </div>
+      )}
+
+      {noCompany && (
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 px-4 py-3 text-sm">
+          Your account is not linked to your company yet. You can prepare listings and send them for review; they go live
+          once our team has linked your company.
         </div>
       )}
 
@@ -96,13 +110,17 @@ export default async function SellerProductsPage(
                         <span className="text-xs font-semibold tabular-nums">{formatPrice(p.priceCents, p.currency)}</span>
                       </span>
                     )}
+                    <span className="inline-flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">·</span>
+                      <span className="text-xs text-muted-foreground tabular-nums">{p.quantity > 0 ? `${p.quantity} in stock` : 'sold out'}</span>
+                    </span>
                   </div>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-1.5 md:flex-nowrap md:flex-shrink-0">
-                {/* Sellers can't publish directly (A3): a draft asks for review,
-                    a queued listing just waits, a live one can be taken down. */}
-                {!isAdmin && p.status === 'PENDING_REVIEW' ? (
+                {/* Only moderators publish (A3): for everybody else a draft asks
+                    for review, a queued listing just waits, a live one can be taken down. */}
+                {!canPublish && p.status === 'PENDING_REVIEW' ? (
                   <Button type="button" variant="ghost" size="sm" disabled className="rounded-full font-medium" title="An admin will review this listing before it goes live.">
                     <Clock className="h-3.5 w-3.5" /> In review
                   </Button>
@@ -111,7 +129,7 @@ export default async function SellerProductsPage(
                     <Button type="submit" variant="ghost" size="sm" className="rounded-full font-medium">
                       {p.status === 'PUBLISHED'
                         ? <><EyeOff className="h-3.5 w-3.5" /> Unpublish</>
-                        : <><Eye className="h-3.5 w-3.5" /> {isAdmin ? 'Publish' : 'Request review'}</>}
+                        : <><Eye className="h-3.5 w-3.5" /> {canPublish ? 'Publish' : 'Request review'}</>}
                     </Button>
                   </form>
                 )}
@@ -137,6 +155,7 @@ const NOTICES: Record<string, string> = {
   'in-review': 'This listing is already waiting for admin review.',
   published: '✓ Listing published.',
   unpublished: '✓ Listing unpublished. It is hidden from buyers until it is published again.',
+  'no-company': 'Not published: the supplier of this listing is not linked to a company yet (Admin → Users → the supplier → Supplier company).',
 };
 
 function StatusBadge({ status }: { status: string }) {

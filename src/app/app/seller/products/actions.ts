@@ -6,10 +6,24 @@ import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/delete-guard';
-import { requireSession } from '@/lib/auth-server';
-import { notifyAdmins } from '@/lib/observability';
+import { getAdminCaps, requireSession } from '@/lib/auth-server';
+import { capsAllow } from '@/lib/capabilities';
+import { audit } from '@/lib/observability';
+import { dispatchWebhook } from '@/lib/webhooks';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { offerCurrencies } from '@/lib/quotes/policy';
 import { MAX_PRICE_CENTS, MAX_PRICE_MESSAGE, zodFieldErrors, zodMessage } from '@/lib/products/validation';
 import { isOwnMediaUrl, isSafeImageUrl } from '@/lib/products/image-urls';
+import {
+  DIMENSIONS_SPEC_KEY,
+  isListingModerator,
+  listingChanges,
+  liveEditOutcome,
+  panelAccess,
+  sellerListingPublishProblem,
+  type ListingFields,
+  type PanelActor,
+} from '@/lib/sellers/listing-rules';
 import { Prisma, type ProductCondition, type ProductMode } from '@prisma/client';
 
 const ProductInput = z.object({
@@ -21,12 +35,37 @@ const ProductInput = z.object({
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']),
   mode: z.enum(['BUY_NOW', 'QUOTE_ONLY', 'HYBRID']),
   priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
-  currency: z.string().default('EUR'),
+  // One of the currencies staff quote in (Settings → Quotes & offers); checked in parseInput.
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, 'Choose a currency from the list.').default('EUR'),
+  quantity: z.number().int().min(0).max(100_000).default(1),
   yearMade: z.number().int().min(1900).max(2100).nullable(),
   illustration: z.enum(['microscope', 'centrifuge', 'pcr', 'hplc', 'massspec', 'balance', 'gc', 'autosampler', 'detector']),
   // Where each photo may point is checked by checkImages() below.
   images: z.array(z.string().max(2048)).max(8).default([]),
   specs: z.record(z.string()).default({}),
+  // What is promised about THIS unit (src/lib/catalog/warranty.ts):
+  // warrantyMonths null = the condition's default, 0 = no warranty (sold as-is).
+  warrantyMonths: z.number().int().min(0).max(120).nullable().default(null),
+  warrantyText: z.string().trim().max(500).nullish(),
+  conditionNotes: z.string().trim().max(1000).nullish(),
+  inspectedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Inspection date must be a date.').nullish(),
+  inspectionNotes: z.string().trim().max(1000).nullish(),
+  // Drives the freight quote at checkout (null = Settings → Shipping → default class).
+  shippingClass: z.enum(['PARCEL', 'PALLET', 'FREIGHT_QUOTE']).nullable().default(null),
+  weightKg: z.number().positive('Weight must be more than 0 kg.').max(100_000).nullable().default(null),
+  // Kept as the “Dimensions” row of the spec table (shown to buyers).
+  dimensions: z.string().trim().max(120).nullish(),
+  vatScheme: z.enum(['STANDARD', 'MARGIN']).default('STANDARD'),
+}).superRefine((p, ctx) => {
+  if (p.vatScheme === 'MARGIN' && p.condition === 'NEW') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['vatScheme'], message: 'The margin scheme is only for second-hand goods (Refurbished / Used).' });
+  }
+  if (p.vatScheme === 'MARGIN' && p.priceCents == null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['priceCents'], message: 'The margin scheme needs your price: it is what we pay you for the unit.' });
+  }
+  if (p.inspectedAt && p.inspectedAt > new Date().toISOString().slice(0, 10)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['inspectedAt'], message: 'The inspection date cannot be in the future.' });
+  }
 });
 
 export type ProductInputType = z.infer<typeof ProductInput>;
@@ -45,22 +84,41 @@ const FIELD_LABELS: Record<string, string> = {
   mode: 'Buying mode',
   priceCents: 'Price',
   currency: 'Currency',
+  quantity: 'Quantity in stock',
   yearMade: 'Year made',
   illustration: 'Fallback illustration',
   images: 'Photos',
   specs: 'Technical specs',
+  warrantyMonths: 'Warranty (months)',
+  warrantyText: 'Warranty terms',
+  conditionNotes: 'Condition notes',
+  inspectedAt: 'Inspection date',
+  inspectionNotes: 'Inspection notes',
+  shippingClass: 'Shipping class',
+  weightKg: 'Weight',
+  dimensions: 'Dimensions',
+  vatScheme: 'VAT scheme',
 };
 
-function parseInput(input: ProductInputType): { data: ProductInputType } | { error: ProductActionError } {
+function parseInput(input: ProductInputType, keepCurrency?: string): { data: ProductInputType } | { error: ProductActionError } {
   const r = ProductInput.safeParse(input);
-  if (r.success) return { data: r.data };
-  return {
-    error: {
-      ok: false,
-      message: zodMessage(r.error, FIELD_LABELS),
-      fieldErrors: zodFieldErrors(r.error, FIELD_LABELS),
-    },
-  };
+  if (!r.success) {
+    return {
+      error: {
+        ok: false,
+        message: zodMessage(r.error, FIELD_LABELS),
+        fieldErrors: zodFieldErrors(r.error, FIELD_LABELS),
+      },
+    };
+  }
+  // A listing already priced in a currency that was later dropped from the
+  // list stays editable in it.
+  const allowed = offerCurrencies();
+  if (!allowed.includes(r.data.currency) && r.data.currency !== keepCurrency) {
+    const message = `Choose one of the currencies: ${allowed.join(', ')}.`;
+    return { error: { ok: false, message, fieldErrors: { currency: message } } };
+  }
+  return { data: r.data };
 }
 
 /**
@@ -90,23 +148,97 @@ function slugify(s: string): string {
     .slice(0, 90);
 }
 
-async function getActor() {
+/** The signed-in supplier or admin, with the admin's permissions (D05). */
+async function getActor(): Promise<PanelActor & { email: string }> {
   const session = await requireSession({ roles: ['SELLER', 'ADMIN'], redirectTo: '/app/seller' });
-  return { userId: session.user.id, role: (session.user as { role?: string }).role || 'SELLER' };
+  const role = (session.user as { role?: string }).role || 'SELLER';
+  await ensureSettingsLoaded();
+  return { userId: session.user.id, email: session.user.email, role, caps: role === 'ADMIN' ? await getAdminCaps() : [] };
+}
+
+/** The spec table with the dimensions row (the form edits it as its own field). */
+function specsWithDimensions(specs: Record<string, string>, dimensions: string | null | undefined): Record<string, string> {
+  const out = Object.fromEntries(Object.entries(specs).filter(([k]) => k !== DIMENSIONS_SPEC_KEY));
+  if (dimensions?.trim()) out[DIMENSIONS_SPEC_KEY] = dimensions.trim();
+  return out;
+}
+
+/** The columns a seller-panel save writes. */
+function listingData(p: ProductInputType) {
+  const specs = specsWithDimensions(p.specs, p.dimensions);
+  return {
+    title: p.title,
+    summary: p.summary ?? null,
+    description: p.description ?? null,
+    condition: p.condition as ProductCondition,
+    mode: p.mode as ProductMode,
+    priceCents: p.priceCents,
+    currency: p.currency,
+    quantity: p.quantity,
+    yearMade: p.yearMade,
+    illustration: p.illustration,
+    images: p.images,
+    // Ranks like admin listings with photos (marketplace sorts by hasImages).
+    hasImages: publicProductImages(p.images).length > 0,
+    specs: Object.keys(specs).length ? (specs as Prisma.InputJsonValue) : Prisma.JsonNull,
+    categoryId: p.categoryId,
+    brandId: p.brandId || null,
+    warrantyMonths: p.warrantyMonths,
+    warrantyText: p.warrantyText || null,
+    conditionNotes: p.conditionNotes || null,
+    inspectedAt: p.inspectedAt ? new Date(`${p.inspectedAt}T00:00:00Z`) : null,
+    inspectionNotes: p.inspectionNotes || null,
+    shippingClass: p.shippingClass,
+    weightKg: p.weightKg,
+    vatScheme: p.vatScheme,
+    // We buy the unit at the supplier's price: under the margin scheme that is
+    // the purchase cost the margin VAT is computed from.
+    ...(p.vatScheme === 'MARGIN' ? { purchaseCostCents: p.priceCents } : {}),
+  };
+}
+
+/** A stored listing or a save's data, in the shape the review rules compare. */
+function fieldsOf(p: Omit<ListingFields, 'inspectedAt' | 'specs' | 'illustration'> & { inspectedAt: Date | null; specs: unknown; illustration: string | null }): ListingFields {
+  return {
+    ...p,
+    illustration: p.illustration ?? 'balance',
+    specs: p.specs === Prisma.JsonNull ? null : p.specs,
+    inspectedAt: p.inspectedAt ? p.inspectedAt.toISOString().slice(0, 10) : null,
+  };
+}
+
+/**
+ * In-app notice (and webhook) for the admins who approve listings
+ * (products:approve) — the people who act on it, not every admin.
+ */
+async function notifyModerators(title: string, body: string, href: string): Promise<void> {
+  try {
+    const admins = await prisma.user.findMany({ where: { role: 'ADMIN', suspendedAt: null }, select: { id: true, adminCaps: true } });
+    const to = admins.filter((a) => capsAllow(a.adminCaps, 'products:approve'));
+    if (to.length) {
+      await prisma.notification.createMany({
+        data: to.map((a) => ({ userId: a.id, title: title.slice(0, 140), body: body.slice(0, 500), href, kind: 'SYSTEM' as const })),
+      });
+    }
+  } catch {
+    /* never break the save */
+  }
+  try {
+    await dispatchWebhook('SYSTEM', title, body, href);
+  } catch {
+    /* ignore */
+  }
 }
 
 export async function createProduct(input: ProductInputType): Promise<ProductActionError | void> {
-  const { userId } = await getActor();
+  const actor = await getActor();
   const result = parseInput(input);
   if ('error' in result) return result.error;
   const parsed = result.data;
   const imageError = checkImages(parsed.images);
   if (imageError) return imageError;
 
-  const me = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { companyId: true },
-  });
+  const me = await prisma.user.findUnique({ where: { id: actor.userId }, select: { role: true, companyId: true } });
 
   // Ensure unique slug — append a short random suffix if needed.
   let slug = slugify(parsed.title);
@@ -117,98 +249,83 @@ export async function createProduct(input: ProductInputType): Promise<ProductAct
 
   await prisma.product.create({
     data: {
+      ...listingData(parsed),
       slug,
-      title: parsed.title,
-      summary: parsed.summary ?? null,
-      description: parsed.description ?? null,
-      condition: parsed.condition as ProductCondition,
-      mode: parsed.mode as ProductMode,
+      // Every new listing is moderated (A3); a moderator publishes it from the list.
       status: 'PENDING_REVIEW',
-      priceCents: parsed.priceCents,
-      currency: parsed.currency,
-      yearMade: parsed.yearMade,
-      illustration: parsed.illustration,
-      images: parsed.images,
-      // Ranks like admin listings with photos (marketplace sorts by hasImages).
-      hasImages: publicProductImages(parsed.images).length > 0,
-      specs: Object.keys(parsed.specs).length ? (parsed.specs as Prisma.InputJsonValue) : Prisma.JsonNull,
-      categoryId: parsed.categoryId,
-      brandId: parsed.brandId || null,
-      sellerId: userId,
+      sellerId: actor.userId,
+      // The supplier's company decides our margin on its price (lib/pricing/resolve.ts).
       companyId: me?.companyId ?? null,
     },
   });
+  await audit('product.seller-panel.create', slug, `${parsed.title} · ${parsed.mode} · ${parsed.priceCents ?? 'no price'} ${parsed.currency}`);
+  const noCompany = sellerListingPublishProblem({ sellerRole: me?.role, companyId: me?.companyId });
+  await notifyModerators(
+    'New listing to review',
+    `${actor.email} submitted “${parsed.title}”.${noCompany ? ' The supplier is not linked to a company yet: link one (Admin → Users) before you publish it.' : ''}`,
+    `/admin/products/${slug}`,
+  );
 
   revalidatePath('/app/seller/products');
   redirect('/app/seller/products?created=1');
 }
 
 export async function updateProduct(slug: string, input: ProductInputType): Promise<ProductActionError | void> {
-  const { userId, role } = await getActor();
-  const result = parseInput(input);
-  if ('error' in result) return result.error;
-  const parsed = result.data;
-
+  const actor = await getActor();
   const existing = await prisma.product.findUnique({ where: { slug } });
   if (!existing) return { ok: false, message: 'This listing no longer exists.' };
-  if (existing.sellerId !== userId && role !== 'ADMIN') return { ok: false, message: 'You can only edit your own listings.' };
+  const access = panelAccess(actor, existing.sellerId, 'edit');
+  if (!access.ok) return { ok: false, message: access.message };
+  const result = parseInput(input, existing.currency);
+  if ('error' in result) return result.error;
+  const parsed = result.data;
   const imageError = checkImages(parsed.images, existing.images);
   if (imageError) return imageError;
 
-  // INVARIANTS A3: an approved listing can't be swapped for different content.
-  // When a seller changes anything buyers see on a PUBLISHED listing, it goes
-  // back to PENDING_REVIEW (hidden) until an admin approves it again.
-  const text = (v: string | null | undefined) => (v ?? '').trim();
-  const specsKey = (v: unknown) => (v && typeof v === 'object' && Object.keys(v).length ? JSON.stringify(v) : '');
-  const changed =
-    text(existing.title) !== text(parsed.title) ||
-    text(existing.summary) !== text(parsed.summary) ||
-    text(existing.description) !== text(parsed.description) ||
-    existing.priceCents !== parsed.priceCents ||
-    existing.currency !== parsed.currency ||
-    existing.mode !== parsed.mode ||
-    existing.condition !== parsed.condition ||
-    existing.yearMade !== parsed.yearMade ||
-    existing.categoryId !== parsed.categoryId ||
-    (existing.brandId ?? null) !== (parsed.brandId || null) ||
-    (existing.illustration ?? 'balance') !== parsed.illustration ||
-    existing.images.join('\n') !== parsed.images.join('\n') ||
-    specsKey(existing.specs) !== specsKey(parsed.specs);
-  const backToReview = role !== 'ADMIN' && existing.status === 'PUBLISHED' && changed;
+  // INVARIANTS A3 + D69: an approved listing can't be swapped for different
+  // terms unseen. A change to what is promised commercially (price, mode,
+  // condition, warranty, inspection, VAT) sends a live listing back to review;
+  // a text or photo change keeps it live and moderators are asked to check it.
+  // Moderators' own edits need no review.
+  const data = listingData(parsed);
+  const changes = listingChanges(fieldsOf(existing), fieldsOf(data));
+  const outcome = liveEditOutcome(existing.status, changes, isListingModerator(actor));
 
   await prisma.product.update({
     where: { id: existing.id },
-    data: {
-      ...(backToReview ? { status: 'PENDING_REVIEW' as const } : {}),
-      title: parsed.title,
-      summary: parsed.summary ?? null,
-      description: parsed.description ?? null,
-      condition: parsed.condition as ProductCondition,
-      mode: parsed.mode as ProductMode,
-      priceCents: parsed.priceCents,
-      currency: parsed.currency,
-      yearMade: parsed.yearMade,
-      illustration: parsed.illustration,
-      images: parsed.images,
-      // Ranks like admin listings with photos (marketplace sorts by hasImages).
-      hasImages: publicProductImages(parsed.images).length > 0,
-      specs: Object.keys(parsed.specs).length ? (parsed.specs as Prisma.InputJsonValue) : Prisma.JsonNull,
-      categoryId: parsed.categoryId,
-      brandId: parsed.brandId || null,
-    },
+    data: { ...data, ...(outcome === 'review' ? { status: 'PENDING_REVIEW' as const } : {}) },
   });
 
-  if (backToReview) {
-    await notifyAdmins(
-      'Live listing edited — needs re-review',
-      `The seller changed listing ${slug}. It is hidden from buyers until you approve it again.`,
-      '/admin/products?status=PENDING_REVIEW',
+  const changed = [...changes.commercial, ...changes.content, ...(changes.stock ? [`quantity ${existing.quantity} → ${parsed.quantity}`] : [])];
+  await audit(
+    'product.seller-panel.update',
+    slug,
+    `${access.asStaff ? 'staff edit of another supplier’s listing · ' : ''}${changed.length ? `changed: ${changed.join(', ')}` : 'no change'}${outcome === 'review' ? ' · back to review' : outcome === 'flagged' ? ' · stays live, flagged for a check' : ''}`,
+  );
+  const who = access.asStaff ? actor.email : 'The supplier';
+  if (outcome === 'review') {
+    await notifyModerators(
+      'Live listing changed — needs re-review',
+      `${who} changed the ${changes.commercial.join(', ')} of “${parsed.title}”. It is hidden from buyers until you approve it again.`,
+      `/admin/products/${slug}`,
     );
+  } else if (outcome === 'flagged') {
+    await notifyModerators(
+      'Live listing edited — check the changes',
+      `${who} changed the ${changes.content.join(', ')} of “${parsed.title}”. The listing stays live.`,
+      `/admin/products/${slug}`,
+    );
+  } else if (existing.status === 'PENDING_REVIEW' && !isListingModerator(actor) && (changes.commercial.length || changes.content.length)) {
+    await notifyModerators('Listing in review was changed', `${who} changed “${parsed.title}” while it waits for review.`, `/admin/products/${slug}`);
   }
 
   revalidatePath('/app/seller/products');
   revalidatePath(`/marketplace/${slug}`);
-  redirect(backToReview ? '/app/seller/products?updated=1&review=1' : '/app/seller/products?updated=1');
+  redirect(
+    outcome === 'review' ? '/app/seller/products?updated=1&review=1'
+    : outcome === 'flagged' ? '/app/seller/products?updated=1&check=1'
+    : '/app/seller/products?updated=1',
+  );
 }
 
 /**
@@ -221,17 +338,23 @@ export async function updateProduct(slug: string, input: ProductInputType): Prom
  * The OrderItem.productId FK is ON DELETE RESTRICT (defense-in-depth), so even a
  * stray hard-delete cannot sever the audit link; the shared deleteOrArchiveProduct
  * helper (src/lib/products/delete-guard.ts) enforces this and is also TOCTOU-safe.
+ * Staff delete somebody else's listing only with products:edit (D05).
  */
 export async function deleteProduct(slug: string) {
-  const { userId, role } = await getActor();
+  const actor = await getActor();
   const existing = await prisma.product.findUnique({
     where: { slug },
-    select: { id: true, sellerId: true },
+    select: { id: true, sellerId: true, title: true },
   });
   if (!existing) return;
-  if (existing.sellerId !== userId && role !== 'ADMIN') throw new Error('Forbidden');
+  const access = panelAccess(actor, existing.sellerId, 'delete');
+  if (!access.ok) {
+    await audit('product.seller-panel.delete.refused', slug, access.message);
+    throw new Error('Forbidden');
+  }
 
   const outcome = await deleteOrArchiveProduct(productDeleteDbFrom(prisma), existing.id);
+  await audit('product.seller-panel.delete', slug, `${outcome}${access.asStaff ? ' · staff action on another supplier’s listing' : ''} · ${existing.title}`);
   revalidatePath('/app/seller/products');
   revalidatePath(`/marketplace/${slug}`);
   redirect(outcome === 'archived' ? '/app/seller/products?archived=1' : '/app/seller/products?deleted=1');
@@ -242,47 +365,52 @@ export async function deleteProduct(slug: string) {
  *
  * BUG-001 fix: previously sellers could flip DRAFT → PUBLISHED directly,
  * bypassing admin moderation. Now:
- *  - SELLER: DRAFT → PENDING_REVIEW ("request approval"); PUBLISHED → DRAFT
+ *  - a moderator (ADMIN with products:approve) publishes / unpublishes — a
+ *    supplier's listing only once the supplier is linked to a company (D84);
+ *  - everybody else (suppliers, admins without products:approve):
+ *    DRAFT → PENDING_REVIEW ("request approval"), PUBLISHED → DRAFT
  *    ("unpublish"). They CANNOT push to PUBLISHED.
- *  - ADMIN: any transition (DRAFT/PENDING_REVIEW/PUBLISHED/ARCHIVED).
+ *  - somebody else's listing: only a moderator (D05).
  */
 export async function publishProduct(slug: string, publish: boolean) {
-  const { userId, role } = await getActor();
+  const actor = await getActor();
   const existing = await prisma.product.findUnique({
     where: { slug },
-    select: { id: true, sellerId: true, status: true },
+    select: { id: true, sellerId: true, status: true, title: true, companyId: true, seller: { select: { role: true } } },
   });
   if (!existing) return;
-  if (existing.sellerId !== userId && role !== 'ADMIN') throw new Error('Forbidden');
+  const access = panelAccess(actor, existing.sellerId, 'publish');
+  if (!access.ok) {
+    await audit('product.seller-panel.publish.refused', slug, access.message);
+    throw new Error('Forbidden');
+  }
 
   // Each outcome redirects with a flag so the list page can say what happened.
   let notice: 'published' | 'requested' | 'in-review' | 'unpublished';
-  if (role === 'ADMIN') {
-    await prisma.product.update({
-      where: { id: existing.id },
-      data: { status: publish ? 'PUBLISHED' : 'DRAFT' },
-    });
-    notice = publish ? 'published' : 'unpublished';
-  } else {
-    // Seller path — strictly gated.
-    let nextStatus: 'DRAFT' | 'PENDING_REVIEW';
-    if (publish) {
-      if (existing.status === 'PUBLISHED' || existing.status === 'PENDING_REVIEW') {
-        // Already live / already queued; idempotent no-op.
-        revalidatePath('/app/seller/products');
-        redirect(`/app/seller/products?notice=${existing.status === 'PUBLISHED' ? 'published' : 'in-review'}`);
-      }
-      // Asking to go live → enter moderation queue. Admin must approve.
-      nextStatus = 'PENDING_REVIEW';
-      notice = 'requested';
-    } else {
-      nextStatus = 'DRAFT';
-      notice = 'unpublished';
+  let next: 'PUBLISHED' | 'PENDING_REVIEW' | 'DRAFT';
+  if (isListingModerator(actor)) {
+    if (publish && sellerListingPublishProblem({ sellerRole: existing.seller.role, companyId: existing.companyId })) {
+      redirect('/app/seller/products?notice=no-company');
     }
-    await prisma.product.update({
-      where: { id: existing.id },
-      data: { status: nextStatus },
-    });
+    next = publish ? 'PUBLISHED' : 'DRAFT';
+    notice = publish ? 'published' : 'unpublished';
+  } else if (publish) {
+    if (existing.status === 'PUBLISHED' || existing.status === 'PENDING_REVIEW') {
+      // Already live / already queued; idempotent no-op.
+      revalidatePath('/app/seller/products');
+      redirect(`/app/seller/products?notice=${existing.status === 'PUBLISHED' ? 'published' : 'in-review'}`);
+    }
+    // Asking to go live → enter moderation queue. A moderator must approve.
+    next = 'PENDING_REVIEW';
+    notice = 'requested';
+  } else {
+    next = 'DRAFT';
+    notice = 'unpublished';
+  }
+  await prisma.product.update({ where: { id: existing.id }, data: { status: next } });
+  await audit('product.seller-panel.publish', slug, `${existing.status} → ${next}${access.asStaff ? ' · staff action on another supplier’s listing' : ''}`);
+  if (next === 'PENDING_REVIEW') {
+    await notifyModerators('Listing to review', `${actor.email} asks to publish “${existing.title}”.`, `/admin/products/${slug}`);
   }
 
   revalidatePath('/app/seller/products');
