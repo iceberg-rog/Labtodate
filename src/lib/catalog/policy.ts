@@ -3,7 +3,9 @@ import type { ConditionGrade, ProductCondition } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { DEFAULT_WARRANTY_FALLBACK_TEXT, DEFAULT_WARRANTY_MONTHS_FORMAT } from '@/lib/catalog/warranty';
-import { CATALOG_TEXT_DEFAULTS } from '@/lib/catalog/texts';
+import { CATALOG_TEXT_DEFAULTS, DEFAULT_TERMS_TEXT } from '@/lib/catalog/texts';
+import { SEO_TEXT_DEFAULTS } from '@/lib/catalog/settings-defs';
+import type { SeoReturnPolicy } from '@/lib/catalog/jsonld';
 
 /**
  * Typed, defaulted view of the catalog settings (src/lib/catalog/settings-defs.ts).
@@ -22,8 +24,16 @@ export interface CatalogPolicy {
   requireConsentToPublish: boolean;
   /** Days to report an item that differs from its description (terms, FAQ, structured data). */
   returnWindowDays: number;
-  /** The return window as advertised in structured data — null when not advertised. */
+  /** The return policy told to search engines (structured data) — null when not advertised. */
+  seoReturnPolicy: SeoReturnPolicy | null;
+  /** Its window in days (= seoReturnPolicy?.days). */
   seoReturnPolicyDays: number | null;
+  /** What the address of an archived listing answers (Redirects rules win). */
+  archivedListingResponse: 'GONE' | 'REDIRECT_CATEGORY';
+  /** A sold / unavailable unit still shows its last price (with texts.soldPriceLabel). */
+  soldPriceShown: boolean;
+  /** Search description of a listing without its own text ({CONDITION} {BRAND} … placeholders). */
+  metaDescriptionFormat: string;
   importRequireSignedAgreement: boolean;
   sellAcquisitionModel: 'OUTRIGHT_PURCHASE' | 'CONSIGNMENT';
   sellLogisticsMode: 'SELLER_SHIPS' | 'WE_ARRANGE_PICKUP';
@@ -43,6 +53,9 @@ export interface CatalogPolicy {
     askPhotosLabel: string;
     askPhotosMessage: string;
     reviewsEmpty: string;
+    soldPriceLabel: string;
+    notFoundTitle: string;
+    notFoundText: string;
   };
   productQuestionMinChars: number;
   sellerBoxShowListings: boolean;
@@ -53,9 +66,36 @@ export interface CatalogPolicy {
   sellerKvk: string;
   sellerVat: string;
   siteName: string;
+  /** og:locale and the default link-preview picture (see linkPreviewFrom). */
+  linkPreview: { locale: string; image: string | null };
 }
 
 const PLACEHOLDER_BRANDS_DEFAULT = 'Other,Others,Generic,Unknown,Misc,Various,N/A,NA';
+
+/**
+ * The Terms of Service state the return window: the text uses {RETURN_DAYS}
+ * (filled from the same setting) or spells the number of days. Pure.
+ */
+export function termsStateReturnWindow(termsText: string, days: number): boolean {
+  return (
+    termsText.includes('{RETURN_DAYS}') ||
+    new RegExp(`(^|[^0-9])${days}[ -]?(calendar |business |working )?days?([^a-z]|$)`, 'i').test(termsText)
+  );
+}
+
+/**
+ * Link-preview defaults (Settings → Site texts & pages): og:locale, and the
+ * picture shared for a page without its own (null = none). Pure.
+ */
+export function linkPreviewFrom(get: (key: string) => string): { locale: string; image: string | null } {
+  const locale = (get('OG_LOCALE') ?? '').trim();
+  const image = (get('OG_DEFAULT_IMAGE_URL') ?? '').trim();
+  return {
+    locale: /^[a-z]{2}_[A-Z]{2}$/.test(locale) ? locale : 'en_US',
+    // An absolute http(s) URL or a path on this site (an uploaded image).
+    image: /^https?:\/\/\S+$/i.test(image) || /^\/(?![/\\])\S*$/.test(image) ? image : null,
+  };
+}
 
 /** Pure: build the policy from an env-like map (unit-testable). */
 export function catalogPolicyFrom(get: (key: string) => string): CatalogPolicy {
@@ -74,6 +114,16 @@ export function catalogPolicyFrom(get: (key: string) => string): CatalogPolicy {
   const site = read('SITE_NAME') || 'Labtodate';
   const returnWindowDays = int('RETURN_WINDOW_DAYS', 7, 1, 365);
   const T = CATALOG_TEXT_DEFAULTS;
+  const S = SEO_TEXT_DEFAULTS;
+  // Advertised only when switched on AND the published terms state that
+  // window — never a return right the terms do not give (B2B buyers).
+  const home = read('TAX_HOME_COUNTRY').toUpperCase();
+  const country = /^[A-Z]{2}$/.test(home) ? home : 'NL';
+  const freight = read('RETURN_FREIGHT_PAID_BY');
+  const seoReturnPolicy: SeoReturnPolicy | null =
+    b('SEO_ADVERTISE_RETURN_POLICY', false) && termsStateReturnWindow(read('LEGAL_TERMS_TEXT') || DEFAULT_TERMS_TEXT, returnWindowDays)
+      ? { days: returnWindowDays, country, fees: freight === 'SELLER' ? 'FREE' : freight === 'BUYER' ? 'CUSTOMER' : null }
+      : null;
   return {
     warrantyFallbackText: read('WARRANTY_FALLBACK_TEXT') || DEFAULT_WARRANTY_FALLBACK_TEXT,
     warrantyMonthsFormat: read('WARRANTY_MONTHS_FORMAT').includes('{MONTHS}') ? read('WARRANTY_MONTHS_FORMAT') : DEFAULT_WARRANTY_MONTHS_FORMAT,
@@ -86,7 +136,11 @@ export function catalogPolicyFrom(get: (key: string) => string): CatalogPolicy {
     returnsClaim: read('TRUST_RETURNS_CLAIM'),
     requireConsentToPublish: b('REQUIRE_CONSENT_TO_PUBLISH', true),
     returnWindowDays,
-    seoReturnPolicyDays: b('SEO_ADVERTISE_RETURN_POLICY', false) ? returnWindowDays : null,
+    seoReturnPolicy,
+    seoReturnPolicyDays: seoReturnPolicy?.days ?? null,
+    archivedListingResponse: pick('ARCHIVED_LISTING_RESPONSE', ['GONE', 'REDIRECT_CATEGORY'] as const, 'GONE'),
+    soldPriceShown: pick('PDP_SOLD_PRICE', ['LAST_PRICE', 'HIDE'] as const, 'LAST_PRICE') === 'LAST_PRICE',
+    metaDescriptionFormat: read('PDP_META_DESCRIPTION_FORMAT').includes('{TITLE}') ? read('PDP_META_DESCRIPTION_FORMAT') : S.metaDescriptionFormat,
     importRequireSignedAgreement: b('IMPORT_REQUIRE_SIGNED_AGREEMENT', true),
     sellAcquisitionModel: pick('SELL_ACQUISITION_MODEL', ['OUTRIGHT_PURCHASE', 'CONSIGNMENT'] as const, 'OUTRIGHT_PURCHASE'),
     sellLogisticsMode: pick('SELL_LOGISTICS_MODE', ['SELLER_SHIPS', 'WE_ARRANGE_PICKUP'] as const, 'SELLER_SHIPS'),
@@ -105,6 +159,9 @@ export function catalogPolicyFrom(get: (key: string) => string): CatalogPolicy {
       askPhotosLabel: text('PDP_ASK_PHOTOS_LABEL', T.askPhotosLabel),
       askPhotosMessage: text('PDP_ASK_PHOTOS_MESSAGE', T.askPhotosMessage),
       reviewsEmpty: text('REVIEWS_EMPTY_TEXT', T.reviewsEmpty),
+      soldPriceLabel: text('PDP_SOLD_PRICE_LABEL', S.soldPriceLabel),
+      notFoundTitle: text('NOT_FOUND_TITLE', S.notFoundTitle),
+      notFoundText: text('NOT_FOUND_TEXT', S.notFoundText),
     },
     productQuestionMinChars: int('PRODUCT_QUESTION_MIN_CHARS', 10, 2, 200),
     sellerBoxShowListings: b('SELLER_BOX_SHOW_LISTINGS', true),
@@ -117,6 +174,7 @@ export function catalogPolicyFrom(get: (key: string) => string): CatalogPolicy {
     sellerKvk: read('COMPANY_KVK'),
     sellerVat: read('COMPANY_VAT'),
     siteName: site,
+    linkPreview: linkPreviewFrom(get),
   };
 }
 

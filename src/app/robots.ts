@@ -8,7 +8,11 @@ export default function robots(): MetadataRoute.Robots {
       {
         userAgent: '*',
         allow: '/',
-        disallow: ['/app/', '/admin/', '/api/', '/auth/'],
+        // Signed-in areas and the API only ('/app' and '/admin' without the
+        // slash also cover the bare paths). Sign-in, checkout and thank-you
+        // pages are NOT blocked here: they carry noindex, which a crawler can
+        // only read when it may fetch them.
+        disallow: ['/app', '/admin', '/api/'],
       },
     ],
     sitemap: `${BASE}/sitemap.xml`,

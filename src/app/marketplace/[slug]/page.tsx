@@ -1,5 +1,6 @@
+import { cache } from 'react';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, permanentRedirect } from 'next/navigation';
 import type { Metadata } from 'next';
 import {
   BadgeCheck,
@@ -17,13 +18,13 @@ import { Button } from '@/components/ui/button';
 import { getCatalogPolicy, getConditionGrades } from '@/lib/catalog/policy';
 import { resolveWarranty, resolveInspection } from '@/lib/catalog/warranty';
 import { resolveOfferPrice } from '@/lib/catalog/offer-price';
-import { buildProductJsonLd, isPlaceholderBrand, publicPlainText } from '@/lib/catalog/jsonld';
+import { buildProductJsonLd, isPlaceholderBrand, productMetaDescription } from '@/lib/catalog/jsonld';
 import { publicProductImages, firstPublicImage, absoluteSiteUrl } from '@/lib/media/public-src';
 import { StartThreadButton } from '@/components/messages/StartThreadButton';
 import { WishlistButton } from '@/components/marketplace/WishlistButton';
-import { ProductGallery } from '@/components/marketplace/ProductGallery';
+import { ProductGallery, type GalleryStatusBadge } from '@/components/marketplace/ProductGallery';
 import { ProductCard } from '@/components/marketplace/ProductCard';
-import { getProductBySlug, getSimilarProducts, LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
+import { getProductBySlug, getRemovedListingOutcome, getSimilarProducts } from '@/lib/marketplace/queries';
 import { isDeliverableEmail } from '@/lib/email-address';
 import { resolveProductSlug } from '@/lib/products/slug';
 import { prisma } from '@/lib/db';
@@ -44,46 +45,75 @@ interface PageProps {
   searchParams?: Promise<{ review?: string; sold?: string; quoteonly?: string; canceled?: string; payment?: string }>;
 }
 
+// One lookup per request, shared by generateMetadata and the page. Imported
+// slugs can hold a literal '%c2%b5' that the URL segment never spells the
+// same way — match it as stored (see resolveProductSlug).
+const loadListing = cache(async (param: string) => getProductBySlug(await resolveProductSlug(param)));
+
 export async function generateMetadata(props: PageProps): Promise<Metadata> {
   const params = await props.params;
-  const product = await getProductBySlug(await resolveProductSlug(params.slug));
+  const product = await loadListing(params.slug);
   // BUG-024 / S10: don't leak titles of non-public (DRAFT/PENDING_REVIEW/
   // ARCHIVED) products via metadata. Owner/admin preview still renders the
   // page itself; generic metadata is acceptable there.
-  if (!product || product.status !== 'PUBLISHED') return { title: 'Not found' };
-  const policy = await getCatalogPolicy();
+  if (!product || product.status !== 'PUBLISHED') return { title: 'Not found', robots: { index: false, follow: true } };
+  const [policy, grades] = await Promise.all([getCatalogPolicy(), getConditionGrades()]);
   // Never "Other …": a placeholder brand is not a brand.
-  const brandName = isPlaceholderBrand(product.brand, policy.placeholderBrands) ? '' : `${product.brand?.name} `;
-  // No other price in search results than ours: sentences with a price are left out.
-  const description = publicPlainText(product.summary, 300) ?? `${brandName}${product.title}`.trim();
-  // OG image: our own copy, on our own domain — never the supplier's URL.
-  const ogImage = firstPublicImage(product.images);
-  return {
+  const brandName = isPlaceholderBrand(product.brand, policy.placeholderBrands) ? null : (product.brand?.name ?? null);
+  // The admin's search title / description (product form → Search engines),
+  // else the listing's own text (no sentence with another price), else one
+  // built from its facts (Settings → Catalog & claims).
+  const title = product.seoTitle?.trim() || product.title;
+  const description = productMetaDescription({
+    seoDescription: product.seoDescription,
+    summary: product.summary,
+    description: product.description,
     title: product.title,
+    brandName,
+    conditionLabel: grades[product.condition].label,
+    categoryName: product.category.name,
+    yearMade: product.yearMade,
+    siteName: policy.siteName,
+    format: policy.metaDescriptionFormat,
+  });
+  // OG image: our own copy, on our own domain — never the supplier's URL;
+  // without one, the site's link-preview picture (Settings → Site texts & pages).
+  const ownImage = firstPublicImage(product.images);
+  const image = ownImage ? absoluteSiteUrl(ownImage) : policy.linkPreview.image;
+  return {
+    title,
     description,
     alternates: { canonical: `/marketplace/${product.slug}` },
     openGraph: {
-      title: product.title,
+      title,
       description,
       type: 'website',
       siteName: policy.siteName,
+      locale: policy.linkPreview.locale,
       url: `/marketplace/${product.slug}`,
-      images: ogImage ? [absoluteSiteUrl(ogImage)] : undefined,
+      images: image ? [image] : undefined,
     },
-    twitter: { card: 'summary_large_image', title: product.title, description },
+    twitter: { card: image ? 'summary_large_image' : 'summary', title, description },
   };
+}
+
+/**
+ * No public listing at this address: a Redirects rule or, for an archived
+ * listing, Settings → Catalog & claims → “Address of an archived listing”
+ * may send it on permanently; otherwise the "page not found" page (noindex).
+ */
+async function answerNonPublicListing(slug: string, listing: { status: string; categorySlug: string } | null): Promise<never> {
+  const policy = await getCatalogPolicy();
+  const outcome = await getRemovedListingOutcome(slug, listing, policy.archivedListingResponse);
+  if (outcome.kind === 'redirect') permanentRedirect(outcome.to);
+  notFound();
 }
 
 export default async function ProductDetailPage(props: PageProps) {
   const searchParams = await props.searchParams;
   const params = await props.params;
-  // Imported slugs can hold a literal '%c2%b5' that the URL segment never
-  // spells the same way — match it as stored (see resolveProductSlug).
-  const product = await getProductBySlug(await resolveProductSlug(params.slug));
-  if (!product) notFound();
-  const reviewNote = searchParams?.review === 'needpurchase';
-  const reviewInvalid = searchParams?.review === 'invalid';
-  const [mk, policy, grades, display] = await Promise.all([getMarketing(), getCatalogPolicy(), getConditionGrades(), loadPriceDisplay()]);
+  const product = await loadListing(params.slug);
+  if (!product) return await answerNonPublicListing(params.slug, null);
 
   const session = await getServerSession();
 
@@ -94,9 +124,19 @@ export default async function ProductDetailPage(props: PageProps) {
   const viewerRole = (session?.user as { role?: string } | undefined)?.role;
   const canPreviewUnpublished =
     viewerRole === 'ADMIN' || (!!session?.user.id && session.user.id === product.sellerId);
-  if (product.status !== 'PUBLISHED' && !canPreviewUnpublished) notFound();
+  if (product.status !== 'PUBLISHED' && !canPreviewUnpublished) {
+    return await answerNonPublicListing(product.slug, { status: product.status, categorySlug: product.category.slug });
+  }
+
+  const reviewNote = searchParams?.review === 'needpurchase';
+  const reviewInvalid = searchParams?.review === 'invalid';
+  const [mk, policy, grades, display] = await Promise.all([getMarketing(), getCatalogPolicy(), getConditionGrades(), loadPriceDisplay()]);
 
   const saved = await isWishlisted(session?.user.id ?? null, product.id);
+  // Only a published listing can be saved (toggleWishlist refuses others);
+  // an already saved one can still be removed from a preview.
+  const wishlistButton =
+    product.status === 'PUBLISHED' || saved ? <WishlistButton productSlug={product.slug} initiallySaved={saved} /> : null;
   // Only verified buyers may review (submitReview enforces it). Show the form
   // only to them, so nobody types a review that is then thrown away.
   const canReview = session
@@ -119,8 +159,11 @@ export default async function ProductDetailPage(props: PageProps) {
           : null;
   const similar = await getSimilarProducts(product.categoryId, product.slug, 4);
   // "Sold by" = the seller of record: its own number of live listings (never
-  // the hidden supplier's, which would reveal who holds the unit).
-  const sellerListings = policy.sellerBoxShowListings ? await prisma.product.count({ where: LIVE_PRODUCT_WHERE }) : null;
+  // the hidden supplier's, which would reveal who holds the unit) — the count
+  // the header already made for this request (getMarketing), not a second one.
+  const sellerListings = policy.sellerBoxShowListings
+    ? /^\d+$/.test(mk.listings) ? Number(mk.listings).toLocaleString('en-GB') : mk.listings
+    : null;
   // Imported items belong to importer accounts without an inbox: questions go
   // to the lab2date team (a support ticket), not to a "seller" nobody reads.
   const sellerReachable = isDeliverableEmail(product.seller.email);
@@ -172,16 +215,40 @@ export default async function ProductDetailPage(props: PageProps) {
   // "Reserved", not "Sold" — it comes back if that order is not completed.
   await ensureSettingsLoaded();
   const reservedForOther = product.quantity <= 0 && !unavailableAtSource && settingBool('SHOW_RESERVED_BADGE') && (await reservedUnits(product.id)) > 0;
+  const available = product.quantity > 0;
+  const stockTitle = backorderUnavailable
+    ? policy.texts.backorderTitle
+    : unavailableAtSource ? policy.texts.unavailableTitle : reservedForOther ? 'Reserved' : policy.texts.soldTitle;
+  // The price block: a unit that cannot be ordered never promises "Request a
+  // quote"; a sold / unavailable one shows its last price or none (Settings →
+  // Catalog & claims), a reserved one keeps its list price (it may come back).
+  const priceShown = !product.priceOnHold && !!product.priceCents && (available || reservedForOther || policy.soldPriceShown);
+  const priceLabel = available || reservedForOther ? 'List price' : policy.texts.soldPriceLabel;
+  const priceHeader = available || priceShown;
+  // Gallery badge: how this unit can be bought now, or why it cannot.
+  const galleryBadge: GalleryStatusBadge | null = !available
+    ? { label: stockTitle, tone: 'muted' }
+    : product.buyable && product.mode === 'BUY_NOW'
+      ? { label: 'Buy now', tone: 'success' }
+      : product.mode === 'QUOTE_ONLY'
+        ? { label: 'Quote only', tone: 'accent' }
+        : null;
+  // Product structured data only with an offer (the price the page shows, in
+  // its VAT basis) or a rating; null otherwise (see buildProductJsonLd).
   const jsonLd = buildProductJsonLd({
     baseUrl: base,
     product,
+    reserved: reservedForOther,
     images: photos,
     brand: product.brand,
+    placeholderBrands: policy.placeholderBrands,
     categoryName: product.category.name,
     schemaOrgCondition: grade.schemaOrgCondition,
     offer,
+    priceShown,
+    display,
     sellerName: policy.sellerLegalName,
-    returnPolicyDays: policy.seoReturnPolicyDays,
+    returnPolicy: policy.seoReturnPolicy,
     rating: reviewCount > 0 && avgRating ? { average: avgRating, count: reviewCount } : null,
   });
   const breadcrumbLd = {
@@ -213,10 +280,10 @@ export default async function ProductDetailPage(props: PageProps) {
 
   return (
     <div className="container-px py-10 md:py-14">
-      <script
+      {jsonLd && <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, '\\u003c') }}
-      />
+      />}
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd).replace(/</g, '\\u003c') }}
@@ -248,7 +315,7 @@ export default async function ProductDetailPage(props: PageProps) {
             illustration={product.illustration}
             title={product.title}
             conditionLabel={conditionLabel}
-            mode={product.mode}
+            statusBadge={galleryBadge}
           />
           {photos.length === 0 && (
             <div className="mt-3">
@@ -296,16 +363,18 @@ export default async function ProductDetailPage(props: PageProps) {
 
           {/* Price block */}
           <div className="mt-7 rounded-2xl border border-border bg-card p-6">
-            {product.priceOnHold ? (
+            {/* A unit that cannot be ordered: its stock box below is the
+                header (no "Request a quote" promise above a sold unit). */}
+            {available && product.priceOnHold ? (
               <div data-testid="pdp-price-review">
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold">Price</p>
                 <p className="text-2xl font-bold mt-2">Being confirmed</p>
                 <p className="mt-1 text-xs text-muted-foreground">{policy.texts.priceReview}</p>
               </div>
-            ) : product.priceCents ? (
+            ) : priceShown && product.priceCents ? (
               <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold">
-                  List price
+                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold" data-testid="pdp-price-label">
+                  {priceLabel}
                 </p>
                 <div className="mt-2" data-testid="pdp-price">
                   <PriceTag netCents={product.priceCents} currency={product.currency} size="xl" scheme={product.vatScheme} settings={display} />
@@ -316,11 +385,11 @@ export default async function ProductDetailPage(props: PageProps) {
                     {policy.texts.backorderLeadTime}
                   </p>
                 )}
-                {mk.financing && (
+                {available && mk.financing && (
                   <p className="mt-1 text-xs text-muted-foreground">{mk.financing}</p>
                 )}
               </div>
-            ) : (
+            ) : available ? (
               <div>
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold">Custom pricing</p>
                 <p className="text-2xl font-bold mt-2">Request a quote</p>
@@ -330,14 +399,14 @@ export default async function ProductDetailPage(props: PageProps) {
                     : 'We reply with a written offer.'}
                 </p>
               </div>
-            )}
+            ) : null}
 
-            <div className="mt-5 flex flex-col gap-2.5">
-              {product.quantity <= 0 ? (
+            <div className={`${priceHeader ? 'mt-5 ' : ''}flex flex-col gap-2.5`}>
+              {!available ? (
                 <>
                   <div className="rounded-2xl border border-border bg-muted/40 p-4 text-center">
                     <p className="text-sm font-bold text-foreground" data-testid="pdp-stock-title">
-                      {backorderUnavailable ? policy.texts.backorderTitle : unavailableAtSource ? policy.texts.unavailableTitle : reservedForOther ? 'Reserved' : policy.texts.soldTitle}
+                      {stockTitle}
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">
                       {backorderUnavailable
@@ -353,7 +422,7 @@ export default async function ProductDetailPage(props: PageProps) {
                     <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Source a similar unit</Link>
                   </Button>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} {...contact} />
-                  <WishlistButton productSlug={product.slug} initiallySaved={saved} />
+                  {wishlistButton}
                 </>
               ) : product.buyable ? (
                 <>
@@ -369,7 +438,7 @@ export default async function ProductDetailPage(props: PageProps) {
                     </Button>
                   </form>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} {...contact} />
-                  <WishlistButton productSlug={product.slug} initiallySaved={saved} />
+                  {wishlistButton}
                   <Link
                     href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}
                     className="mt-1 text-center text-xs text-muted-foreground hover:text-foreground"
@@ -384,7 +453,7 @@ export default async function ProductDetailPage(props: PageProps) {
                     <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Request a quote</Link>
                   </Button>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} {...contact} />
-                  <WishlistButton productSlug={product.slug} initiallySaved={saved} />
+                  {wishlistButton}
                 </>
               )}
             </div>
@@ -430,7 +499,7 @@ export default async function ProductDetailPage(props: PageProps) {
                 value={
                   product.quantity > 0
                     ? sellableBackorder ? 'For sale · on backorder at our supplier' : 'For sale · in stock'
-                    : backorderUnavailable ? policy.texts.backorderTitle : unavailableAtSource ? policy.texts.unavailableTitle : reservedForOther ? 'Reserved' : policy.texts.soldTitle
+                    : stockTitle
                 }
               />
               <DetailRow label="Condition" value={conditionLabel} />
@@ -604,7 +673,7 @@ export default async function ProductDetailPage(props: PageProps) {
             <div className={`mt-4 grid ${sellerListings !== null ? 'grid-cols-2' : 'grid-cols-1'} gap-3 pt-4 border-t border-border text-center`}>
               {sellerListings !== null && (
                 <div data-testid="seller-live-listings">
-                  <div className="text-base font-bold tabular-nums">{sellerListings.toLocaleString('en-GB')}</div>
+                  <div className="text-base font-bold tabular-nums">{sellerListings}</div>
                   <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">live listings</div>
                 </div>
               )}

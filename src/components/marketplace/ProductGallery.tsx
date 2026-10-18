@@ -6,6 +6,28 @@ import { X, ChevronLeft, ChevronRight, ZoomIn } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { NoPhoto, type MissingPhotoMode } from '@/components/marketplace/NoPhoto';
 
+/** How the unit can be bought now (“Buy now”, “Quote only”) or why it cannot
+ *  (“Sold”, “Reserved”…) — decided by the product page from its stock. */
+export interface GalleryStatusBadge {
+  label: string;
+  tone: 'success' | 'accent' | 'muted';
+}
+
+const BADGE_VARIANT = { success: 'success', accent: 'accent', muted: 'secondary' } as const;
+
+function Badges({ conditionLabel, statusBadge }: { conditionLabel: string; statusBadge?: GalleryStatusBadge | null }) {
+  return (
+    <>
+      <Badge variant="secondary">{conditionLabel}</Badge>
+      {statusBadge && (
+        <Badge variant={BADGE_VARIANT[statusBadge.tone]} data-testid="gallery-status-badge">
+          {statusBadge.label}
+        </Badge>
+      )}
+    </>
+  );
+}
+
 /** `images` must already be buyer-facing (our own /media paths only — see
  *  publicProductImages). With none, the configured no-photo tile is shown. */
 export function ProductGallery({
@@ -14,14 +36,14 @@ export function ProductGallery({
   illustration,
   title,
   conditionLabel,
-  mode,
+  statusBadge,
 }: {
   images: string[];
   photoMode: MissingPhotoMode;
   illustration?: string | null;
   title: string;
   conditionLabel: string;
-  mode: 'BUY_NOW' | 'QUOTE_ONLY' | 'HYBRID';
+  statusBadge?: GalleryStatusBadge | null;
 }) {
   const pics = images;
   const [active, setActive] = useState(0);
@@ -50,9 +72,7 @@ export function ProductGallery({
       <div className="relative aspect-[5/4] w-full rounded-3xl overflow-hidden border border-border bg-card">
         <NoPhoto mode={photoMode} illustration={illustration} />
         <div className="absolute top-5 left-5 flex gap-2">
-          <Badge variant="secondary">{conditionLabel}</Badge>
-          {mode === 'BUY_NOW' && <Badge variant="success">Buy now</Badge>}
-          {mode === 'QUOTE_ONLY' && <Badge variant="accent">Quote only</Badge>}
+          <Badges conditionLabel={conditionLabel} statusBadge={statusBadge} />
         </div>
       </div>
     );
@@ -67,20 +87,21 @@ export function ProductGallery({
         className="group relative aspect-[5/4] w-full rounded-3xl overflow-hidden border border-border bg-card block cursor-zoom-in"
         aria-label="Open image viewer"
       >
-        <Image
-          src={pics[active]}
-          alt={title}
-          fill
-          priority
-          sizes="(min-width:1024px) 55vw, 100vw"
-          className="object-contain p-4 transition-transform duration-500 group-hover:scale-[1.03]"
-        />
-        <div className="absolute top-5 left-5 flex gap-2">
-          <Badge variant="secondary">{conditionLabel}</Badge>
-          {mode === 'BUY_NOW' && <Badge variant="success">Buy now</Badge>}
-          {mode === 'QUOTE_ONLY' && <Badge variant="accent">Quote only</Badge>}
+        {/* The photo sits below the badge strip, so a badge never covers it. */}
+        <div className="absolute inset-x-0 bottom-0 top-14">
+          <Image
+            src={pics[active]}
+            alt={title}
+            fill
+            priority
+            sizes="(min-width:1024px) 55vw, 100vw"
+            className="object-contain px-4 pb-4 transition-transform duration-500 group-hover:scale-[1.03]"
+          />
         </div>
-        <div className="absolute top-5 right-5 h-9 w-9 rounded-full bg-card/90 backdrop-blur flex items-center justify-center text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="absolute top-4 left-4 right-16 flex flex-wrap gap-2">
+          <Badges conditionLabel={conditionLabel} statusBadge={statusBadge} />
+        </div>
+        <div className="absolute top-3 right-4 h-9 w-9 rounded-full bg-card/90 backdrop-blur flex items-center justify-center text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
           <ZoomIn className="h-4 w-4" />
         </div>
       </button>

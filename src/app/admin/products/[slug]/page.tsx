@@ -5,7 +5,7 @@ import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { adminDetailTitle } from '@/app/admin/admin-title';
 import { resolveProductSlug } from '@/lib/products/slug';
-import { AdminProductForm } from '@/components/admin/AdminProductForm';
+import { AdminProductForm, type ProductSeoFields } from '@/components/admin/AdminProductForm';
 import { adminUpdateProduct, adminDeleteProduct, type AdminProductInputType } from '@/app/admin/actions';
 import { Button } from '@/components/ui/button';
 import { formatPrice } from '@/lib/utils';
@@ -48,8 +48,10 @@ export default async function AdminProductEditPage(props: { params: Promise<{ sl
     prisma.orderItem.count({ where: { productId: product.id } }),
   ]);
 
-  const initial: Partial<AdminProductInputType> = {
+  const initial: Partial<AdminProductInputType> & ProductSeoFields = {
     title: product.title,
+    seoTitle: product.seoTitle,
+    seoDescription: product.seoDescription,
     summary: product.summary ?? null,
     description: product.description ?? null,
     categoryId: product.categoryId,

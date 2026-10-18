@@ -1,4 +1,5 @@
 import { Suspense } from 'react';
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Sparkles, Clock, ShieldCheck, LogIn } from 'lucide-react';
 import { SourcingForm } from './SourcingForm';
@@ -9,10 +10,28 @@ import { getServerSession } from '@/lib/auth-server';
 import { getMarketing } from '@/lib/marketing';
 import { formCaptchaFlag } from '@/lib/security/captcha';
 
-export const metadata = { title: 'Let Us Find It' };
+type SearchParams = Promise<{ product?: string; facility?: string; reason?: string }>;
+
+// One page, one address: a variant for a listing, a facility or a shipping
+// quote is a form state, so it is noindex and points to the plain page.
+export async function generateMetadata({ searchParams }: { searchParams: SearchParams }): Promise<Metadata> {
+  const sp = await searchParams;
+  const variant = !!(sp.product || sp.facility || sp.reason);
+  return {
+    title: 'Let Us Find It',
+    alternates: { canonical: '/let-us-find-it' },
+    ...(variant ? { robots: { index: false, follow: true } } : {}),
+  };
+}
 export const dynamic = 'force-dynamic';
 
-export default async function LetUsFindItPage({ searchParams }: { searchParams: Promise<{ product?: string; facility?: string; reason?: string }> }) {
+/** "No obligation: you decide …" → a bold lead and the rest (no lead without a colon). */
+function splitLead(text: string): { lead: string | null; body: string } {
+  const m = /^([^:.!?]{2,40}):\s+(\S[\s\S]*)$/.exec(text.trim());
+  return m ? { lead: m[1], body: m[2].charAt(0).toUpperCase() + m[2].slice(1) } : { lead: null, body: text.trim() };
+}
+
+export default async function LetUsFindItPage({ searchParams }: { searchParams: SearchParams }) {
   const mk = await getMarketing();
   const session = await getServerSession();
   const captcha = session ? await formCaptchaFlag('quote', true) : false;
@@ -20,9 +39,11 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
   const slug = sp.product;
   // Checkout's "Other — request a shipping quote" country lands here.
   const shippingQuote = sp.reason === 'shipping';
+  // Only a published listing anchors the request: a draft's (or a removed
+  // one's) title is never shown — the generic form is.
   const anchor = slug
-    ? await prisma.product.findUnique({
-        where: { slug },
+    ? await prisma.product.findFirst({
+        where: { slug, status: 'PUBLISHED' },
         select: { slug: true, title: true, brand: { select: { name: true } } },
       })
     : null;
@@ -45,6 +66,7 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
   const back = shippingQuote
     ? `${backBase}${backBase.includes('?') ? '&' : '?'}reason=shipping`
     : backBase;
+  const obligation = splitLead(mk.noObligation);
 
   return (
     <div className="container-px py-12 md:py-20">
@@ -77,7 +99,9 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
                 ? `We come back as soon as we have something solid — within ${mk.quoteTurnaround}.`
                 : 'We come back as soon as we have something solid.'}
             />
-            <Bullet icon={ShieldCheck} title="No obligation" body={mk.noObligation} />
+            {/* What a request commits the buyer to (Settings → Site texts &
+                pages), said once — not again under the form. */}
+            <Bullet icon={ShieldCheck} title={obligation.lead} body={obligation.body} />
           </ul>
         </div>
 
@@ -87,7 +111,6 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
               anchor={anchor ? { slug: anchor.slug, title: anchor.title, brand: anchor.brand?.name ?? null } : null}
               facility={facility}
               buyer={{ name: session.user.name ?? '', email: session.user.email }}
-              note={mk.noObligation}
               captcha={captcha}
             />
           </Suspense>
@@ -160,7 +183,7 @@ function Bullet({
   body,
 }: {
   icon: React.ComponentType<{ className?: string }>;
-  title: string;
+  title: string | null;
   body: string;
 }) {
   return (
@@ -168,9 +191,9 @@ function Bullet({
       <div className="flex-shrink-0 h-10 w-10 rounded-xl bg-accent/15 text-primary flex items-center justify-center">
         <Icon className="h-5 w-5" />
       </div>
-      <div>
-        <p className="font-bold">{title}</p>
-        <p className="text-sm text-muted-foreground">{body}</p>
+      <div className={title ? undefined : 'self-center'}>
+        {title && <p className="font-bold">{title}</p>}
+        <p className={title ? 'text-sm text-muted-foreground' : 'text-sm text-foreground'}>{body}</p>
       </div>
     </li>
   );

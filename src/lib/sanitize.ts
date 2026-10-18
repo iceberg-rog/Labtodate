@@ -1,4 +1,5 @@
 import sanitizeHtml from 'sanitize-html';
+import { decodeEntities } from '@/lib/marketplace/import-clean';
 
 /**
  * Allowlist-based HTML sanitizer for rich text that is rendered with
@@ -11,7 +12,8 @@ import sanitizeHtml from 'sanitize-html';
  * Strips <script>, event-handler attributes (onerror/onload/…), <iframe>,
  * <object>, <form>, and javascript:/data: URLs on links — the vectors that
  * turn stored HTML into stored XSS. Keeps ordinary formatting, tables, images
- * and safe links.
+ * and safe links. A <h1> in the body becomes a <h2>: the page's own title is
+ * its only <h1> (imported shop HTML often starts with one).
  */
 const OPTIONS: sanitizeHtml.IOptions = {
   allowedTags: [
@@ -35,6 +37,7 @@ const OPTIONS: sanitizeHtml.IOptions = {
   // Force safe rel/target on every link so sanitized content can't tabnab.
   transformTags: {
     a: sanitizeHtml.simpleTransform('a', { rel: 'nofollow noopener noreferrer', target: '_blank' }),
+    h1: 'h2',
   },
   disallowedTagsMode: 'discard',
 };
@@ -42,4 +45,21 @@ const OPTIONS: sanitizeHtml.IOptions = {
 export function sanitizeRichHtml(dirty: string | null | undefined): string {
   if (!dirty) return '';
   return sanitizeHtml(dirty, OPTIONS);
+}
+
+/**
+ * Decode the character references in stored HTML that stand for ordinary
+ * text ("&#8211;" → "–", "&deg;" → "°"), keeping the ones that matter to the
+ * markup ("&lt;", "&gt;", "&amp;", quotes) and "&nbsp;" as they are — the
+ * HTML means exactly the same, and plain-text uses (search snippets, PDFs,
+ * e-mails) no longer show "&#8211;". Used by the data clean-up of old imports.
+ */
+export function decodeTextEntities(html: string): string {
+  return html.replace(/&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});/g, (ref) => {
+    const ch = decodeEntities(ref);
+    // Unknown names stay; markup characters and any space (incl. the
+    // non-breaking one) stay encoded.
+    if (ch === ref || /^[<>&"']$/.test(ch) || /^\s$/.test(ch)) return ref;
+    return ch;
+  });
 }

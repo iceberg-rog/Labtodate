@@ -6,7 +6,7 @@ import { requireSession } from '@/lib/auth-server';
 
 export async function toggleWishlist(productSlug: string) {
   const session = await requireSession({ redirectTo: `/marketplace/${productSlug}` });
-  const product = await prisma.product.findUnique({ where: { slug: productSlug }, select: { id: true } });
+  const product = await prisma.product.findUnique({ where: { slug: productSlug }, select: { id: true, status: true } });
   if (!product) throw new Error('Product not found');
 
   const existing = await prisma.wishlistItem.findUnique({
@@ -14,8 +14,12 @@ export async function toggleWishlist(productSlug: string) {
   });
 
   if (existing) {
+    // Removing works whatever the listing's state (it may be unpublished since).
     await prisma.wishlistItem.delete({ where: { id: existing.id } });
   } else {
+    // Only a published listing can be saved: a draft / pending / archived one
+    // is not public (the wishlist would show its title and price).
+    if (product.status !== 'PUBLISHED') throw new Error('Product not found');
     await prisma.wishlistItem.create({
       data: { userId: session.user.id, productId: product.id },
     });

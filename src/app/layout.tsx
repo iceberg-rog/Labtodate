@@ -1,4 +1,5 @@
 import { siteTextsFrom } from '@/lib/catalog/site-texts';
+import { linkPreviewFrom } from '@/lib/catalog/policy';
 import type { Metadata, Viewport } from 'next';
 import localFont from 'next/font/local';
 import './globals.css';
@@ -39,21 +40,19 @@ export async function generateMetadata(): Promise<Metadata> {
   // geographic claim.
   const t = siteTextsFrom((k) => process.env[k] ?? '');
   const site = t.siteName;
+  // Settings → Site texts & pages: og:locale and the picture shared for a
+  // page without its own (relative paths resolve against metadataBase).
+  const preview = linkPreviewFrom((k) => process.env[k] ?? '');
   return {
+    // Absolute canonical / og:url / og:image URLs for every page.
     metadataBase: new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com'),
     title: {
       default: `${site} — ${t.titleSuffix}`,
       template: `%s · ${site}`,
     },
     description: t.metaDescription,
-    keywords: [
-      'used laboratory instruments',
-      'HPLC',
-      'gas chromatography',
-      'mass spectrometry',
-      'analytical instruments',
-      'lab equipment marketplace',
-    ],
+    // No meta keywords: search engines ignore them, and a fixed list was not
+    // the owner's to edit.
     applicationName: site,
     authors: [{ name: site }],
     // NOTE: no site-wide `alternates.canonical` — that would point every page at
@@ -63,17 +62,17 @@ export async function generateMetadata(): Promise<Metadata> {
       follow: true,
       googleBot: { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1, 'max-video-preview': -1 },
     },
+    // No og:title / og:description here: a page that does not set its own
+    // Open Graph data shares ITS title and description (Next fills them from
+    // the page metadata), never the homepage's.
     openGraph: {
-      title: `${site} — ${t.titleSuffix}`,
-      description: t.metaDescription,
       type: 'website',
       siteName: site,
-      locale: 'en_US',
+      locale: preview.locale,
+      images: preview.image ? [preview.image] : undefined,
     },
     twitter: {
-      card: 'summary_large_image',
-      title: `${site} — ${t.titleSuffix}`,
-      description: t.metaDescription,
+      card: preview.image ? 'summary_large_image' : 'summary',
     },
   };
 }

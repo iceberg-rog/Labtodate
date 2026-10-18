@@ -203,6 +203,69 @@ export async function getProductBySlug(slug: string) {
   };
 }
 
+/** A rule of the redirect manager (Admin → SEO → Redirects, model Redirect). */
+export interface RedirectRule {
+  toPath: string | null;
+  statusCode: number;
+}
+
+/**
+ * What the address of a listing that is not public answers:
+ *  - redirect: a permanent redirect (the product page sends 308, which search
+ *    engines treat like 301);
+ *  - gone: removed for good (a Redirects 410 rule, or an archived listing);
+ *  - not-found: unknown, or never public (draft / pending review) — nothing
+ *    says it exists.
+ * The product page renders "gone" as the "page not found" page (an App Router
+ * page cannot send 410); a proxy in front of it can answer 410 from the same
+ * outcome.
+ */
+export type RemovedListingOutcome = { kind: 'redirect'; to: string } | { kind: 'gone' } | { kind: 'not-found' };
+
+/** A redirect target we follow: a path on this site or an http(s) URL. */
+function safeRedirectTarget(to: string | null | undefined): string | null {
+  const t = (to ?? '').trim();
+  return /^\/(?![/\\])\S*$/.test(t) || /^https?:\/\/\S+$/i.test(t) ? t : null;
+}
+
+/** Pure decision behind getRemovedListingOutcome (unit-tested). */
+export function removedListingOutcome(i: {
+  rule: RedirectRule | null;
+  listing: { status: string; categorySlug: string } | null;
+  archivedResponse: 'GONE' | 'REDIRECT_CATEGORY';
+}): RemovedListingOutcome {
+  // The redirect manager wins: 301 to its target, 410 (or no target) = gone.
+  if (i.rule) {
+    const to = i.rule.statusCode === 410 ? null : safeRedirectTarget(i.rule.toPath);
+    return to ? { kind: 'redirect', to } : { kind: 'gone' };
+  }
+  if (i.listing?.status === 'ARCHIVED') {
+    return i.archivedResponse === 'REDIRECT_CATEGORY'
+      ? { kind: 'redirect', to: `/marketplace?category=${encodeURIComponent(i.listing.categorySlug)}` }
+      : { kind: 'gone' };
+  }
+  return { kind: 'not-found' };
+}
+
+/**
+ * The outcome for /marketplace/<slug> when no public listing answers it
+ * (`listing` = the row at that slug, if any). Reads the Redirects rule of
+ * that path.
+ */
+export async function getRemovedListingOutcome(
+  slug: string,
+  listing: { status: string; categorySlug: string } | null,
+  archivedResponse: 'GONE' | 'REDIRECT_CATEGORY',
+): Promise<RemovedListingOutcome> {
+  let rule: RedirectRule | null = null;
+  try {
+    rule = await prisma.redirect.findUnique({ where: { fromPath: `/marketplace/${slug}` }, select: { toPath: true, statusCode: true } });
+  } catch {
+    /* Redirect table missing (migration 9c not applied yet): no rules */
+  }
+  return removedListingOutcome({ rule, listing, archivedResponse });
+}
+
 export async function getSimilarProducts(categoryId: string, excludeSlug: string, take = 4) {
   return prisma.product.findMany({
     where: {

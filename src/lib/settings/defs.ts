@@ -731,9 +731,9 @@ const DEFS: DefInput[] = [
     hint: 'The /legal/cookies page. List every cookie the site sets; analytics or marketing cookies would also need a consent banner. “## ” starts a heading, an empty line a new paragraph.' + tokensHint(COOKIE_POLICY_TOKENS) },
   { key: 'SOCIAL_LINKS', label: 'Company profiles on other sites', group: 'Site texts & pages', type: 'list', optional: true, validate: httpsLinksProblem, pending: 'the homepage company data for search engines (PKG-13)',
     hint: 'Full https:// links of your own company pages (LinkedIn, YouTube, X …), comma-separated. Search engines are told these profiles belong to your company. Empty = none.' },
-  { key: 'OG_DEFAULT_IMAGE_URL', label: 'Link-preview image', group: 'Site texts & pages', type: 'image', verify: 'image', optional: true, pending: 'the link-preview update (PKG-14)',
+  { key: 'OG_DEFAULT_IMAGE_URL', label: 'Link-preview image', group: 'Site texts & pages', type: 'image', verify: 'image', optional: true,
     hint: 'Picture shown when a page without its own image is shared (chat apps, social media, search previews); 1200 × 630 px works everywhere. Empty = no preview picture.' },
-  { key: 'OG_LOCALE', label: 'Language of the site for link previews', group: 'Site texts & pages', type: 'string', default: 'en_US', pending: 'the link-preview update (PKG-14)',
+  { key: 'OG_LOCALE', label: 'Language of the site for link previews', group: 'Site texts & pages', type: 'string', default: 'en_US',
     validate: (v) => (/^[a-z]{2}_[A-Z]{2}$/.test(v) ? null : 'use language_COUNTRY, e.g. en_US, en_GB or nl_NL.'),
     hint: 'Told to social media and search engines with every page (og:locale), e.g. en_US, en_GB, nl_NL. Match the language the site is written in.' },
 

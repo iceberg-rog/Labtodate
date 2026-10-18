@@ -33,6 +33,23 @@ const ON_OFF = [
 
 const tokenHint = (tokens: string) => ` Placeholders: ${tokens}.`;
 
+/** Placeholders of “Search description built from the facts” (filled by fillMetaFormat in jsonld.ts). */
+export const PDP_META_TOKENS = ['{CONDITION}', '{BRAND}', '{TITLE}', '{CATEGORY}', '{YEAR}', '{SITE}'] as const;
+
+/** Defaults of the search / not-found texts below (read through getCatalogPolicy()). */
+export const SEO_TEXT_DEFAULTS = {
+  soldPriceLabel: 'Last price',
+  metaDescriptionFormat: '{CONDITION} {BRAND} {TITLE} ({CATEGORY}, {YEAR}) at {SITE}. See the condition, warranty and details of this unit.',
+  notFoundTitle: 'Page not found',
+  notFoundText: 'The page you are looking for does not exist or is no longer available. Search the marketplace or continue with one of the pages below.',
+} as const;
+
+function metaFormatProblem(v: string): string | null {
+  if (!v.includes('{TITLE}')) return 'must contain {TITLE}.';
+  const unknown = (v.match(/\{[A-Z_]+\}/g) ?? []).filter((t) => !(PDP_META_TOKENS as readonly string[]).includes(t));
+  return unknown.length ? `unknown placeholder ${unknown[0]}.` : null;
+}
+
 export const CATALOG_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   // ── Catalog & claims ───────────────────────────────────────────────────
   {
@@ -89,7 +106,34 @@ export const CATALOG_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   {
     key: 'SEO_ADVERTISE_RETURN_POLICY', label: 'Tell search engines about the return window', group: 'Catalog & claims',
     type: 'bool', default: 'false', options: ON_OFF,
-    hint: 'On: product structured data includes a return policy with the number of days of the return window (Settings → Returns & refunds). Off (default): no return policy is advertised.',
+    hint: 'On: the structured data of priced listings includes a return policy — the days of the return window (Settings → Returns & refunds), your VAT home country, return by post, and who pays the return shipping when that is fixed — but only while the Terms of Service text states that window ({RETURN_DAYS}). Off (default): no return policy is advertised. Only switch it on if buyers can really return an item within that window, not only one that differs from its description.',
+  },
+  {
+    key: 'ARCHIVED_LISTING_RESPONSE', label: 'Address of an archived listing', group: 'Catalog & claims',
+    type: 'enum', default: 'GONE',
+    options: [
+      { value: 'GONE', label: 'A “page not found” page with search and links; search engines drop the address' },
+      { value: 'REDIRECT_CATEGORY', label: 'Send visitors and search engines to its category (permanent redirect)' },
+    ],
+    hint: 'What a link to a listing you archived opens. A rule for that address in Admin → SEO → Redirects wins over this. Drafts and listings waiting for review always answer “page not found” (they were never public).',
+  },
+  {
+    key: 'PDP_SOLD_PRICE', label: 'Price of a sold unit', group: 'Catalog & claims',
+    type: 'enum', default: 'LAST_PRICE',
+    options: [
+      { value: 'LAST_PRICE', label: 'Show it, with the label below' },
+      { value: 'HIDE', label: 'Hide it' },
+    ],
+    hint: 'Product page and search-engine data of a sold or no longer available unit (a reserved one keeps its price). A sold unit never shows “Buy now” or “Request a quote”: it offers to source a similar one.',
+  },
+  {
+    key: 'PDP_SOLD_PRICE_LABEL', label: 'Label of a sold unit’s price', group: 'Catalog & claims', type: 'string', default: SEO_TEXT_DEFAULTS.soldPriceLabel,
+    hint: 'Above the price of a sold or no longer available unit (when it is shown).',
+  },
+  {
+    key: 'PDP_META_DESCRIPTION_FORMAT', label: 'Search description built from the facts', group: 'Catalog & claims',
+    type: 'string', default: SEO_TEXT_DEFAULTS.metaDescriptionFormat, validate: metaFormatProblem,
+    hint: 'Search results and link previews of a listing. Order used: the listing’s own search description (product form → Search engines), else its summary or description (first ~155 characters), else this text. The brand or condition is left out when the title already says it, and an empty year or category drops its brackets.' + tokenHint(PDP_META_TOKENS.join(', ')),
   },
   {
     key: 'REQUIRE_CONSENT_TO_PUBLISH', label: 'Testimonials & case studies need recorded consent', group: 'Catalog & claims',
@@ -383,6 +427,14 @@ export const CATALOG_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   {
     key: 'WIKI_INTRO', label: 'Wiki page — introduction', group: 'Site texts & pages', type: 'text', multiline: true, default: T.wikiIntro,
     hint: 'Shown above the articles.',
+  },
+  {
+    key: 'NOT_FOUND_TITLE', label: '“Page not found” page — heading', group: 'Site texts & pages', type: 'string', default: SEO_TEXT_DEFAULTS.notFoundTitle,
+    hint: 'Shown for an address that does not exist (or a listing that is no longer available), above a search box and links to the main pages.',
+  },
+  {
+    key: 'NOT_FOUND_TEXT', label: '“Page not found” page — text', group: 'Site texts & pages', type: 'text', multiline: true, default: SEO_TEXT_DEFAULTS.notFoundText,
+    hint: 'Under the heading above.',
   },
   // ── Documents & legal texts ────────────────────────────────────────────
   {

@@ -25,6 +25,13 @@ const STATUSES = [
   { value: 'ARCHIVED',       label: 'Archived' },
 ] as const;
 
+/** The listing's own search title / description (Product.seoTitle / seoDescription;
+ *  empty = derived from the listing). Sent with the other fields on save. */
+export interface ProductSeoFields {
+  seoTitle: string | null;
+  seoDescription: string | null;
+}
+
 /** Condition grade data the form previews the warranty with (Admin → Catalog → Conditions). */
 export interface FormConditionGrade {
   label: string;
@@ -33,7 +40,7 @@ export interface FormConditionGrade {
 }
 
 interface Props {
-  initial?: Partial<AdminProductInputType> & { slug?: string };
+  initial?: Partial<AdminProductInputType> & Partial<ProductSeoFields> & { slug?: string };
   categories: { id: string; name: string }[];
   brands: { id: string; name: string }[];
   companies: { id: string; name: string }[];
@@ -51,7 +58,7 @@ interface Props {
   publicPaths?: Record<string, string | null>;
   /** Labels of the condition grades (Admin → Catalog → Conditions & warranty). */
   onSubmit: (
-    input: AdminProductInputType,
+    input: AdminProductInputType & ProductSeoFields,
   ) => Promise<{ ok: true; slug?: string } | { ok: boolean; message: string; fieldErrors?: Record<string, string> } | void>;
   submitLabel?: string;
 }
@@ -79,6 +86,8 @@ export function AdminProductForm({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const [title, setTitle] = useState(initial?.title ?? '');
+  const [seoTitle, setSeoTitle] = useState(initial?.seoTitle ?? '');
+  const [seoDescription, setSeoDescription] = useState(initial?.seoDescription ?? '');
   const [summary, setSummary] = useState(initial?.summary ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
   const [categoryId, setCategoryId] = useState(initial?.categoryId ?? categories[0]?.id ?? '');
@@ -213,8 +222,10 @@ export function AdminProductForm({
       return;
     }
 
-    const input: AdminProductInputType = {
+    const input: AdminProductInputType & ProductSeoFields = {
       title: title.trim(),
+      seoTitle: seoTitle.trim() || null,
+      seoDescription: seoDescription.trim() || null,
       summary: summary.trim() || null,
       description: description.trim() || null,
       categoryId,
@@ -297,6 +308,31 @@ export function AdminProductForm({
             </select>
           </Field>
         </div>
+      </section>
+
+      {/* Search engines: the listing's own title / description in search results */}
+      <section className="rounded-2xl border border-border bg-card p-6 space-y-4" data-testid="seo-section">
+        <div>
+          <h2 className="text-lg font-bold">Search engines</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Optional. Empty = the title above, and as description the first ~155 characters of the summary or description
+            (else one built from brand, condition, category and year — Settings → Catalog &amp; claims).
+          </p>
+        </div>
+        <Field
+          label="Search title"
+          hint={`Shown as the headline in search results and link previews; the site name is added after it. ${seoTitle.trim().length}/70 characters (longer is cut by search engines).`}
+          error={fieldErrors.seoTitle}
+        >
+          <input value={seoTitle} onChange={(e) => setSeoTitle(e.target.value)} maxLength={120} className={inputCls} name="seoTitle" placeholder={title || 'Same as the title'} />
+        </Field>
+        <Field
+          label="Search description"
+          hint={`The text under the headline. ${seoDescription.trim().length}/160 characters (longer is cut by search engines). Say what the unit is and its state; no price (it changes).`}
+          error={fieldErrors.seoDescription}
+        >
+          <textarea value={seoDescription} onChange={(e) => setSeoDescription(e.target.value)} maxLength={320} rows={3} className={textareaCls} name="seoDescription" />
+        </Field>
       </section>
 
       {/* Condition + commerce */}
@@ -618,6 +654,8 @@ export function AdminProductForm({
 
 const inputCls =
   'w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary disabled:opacity-50';
+const textareaCls =
+  'w-full px-3 py-2 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary';
 
 function Field({
   label,

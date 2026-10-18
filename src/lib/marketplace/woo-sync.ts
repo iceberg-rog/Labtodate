@@ -379,7 +379,10 @@ export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
           counts.lockedSkips += plan.skipped.filter((s) => s.reason === 'locked').length;
           const changed = plan.changes.length > 0 || Object.keys(data).length > 0;
           if (!opts.dryRun) {
-            await prisma.product.update({ where: { id: local.id }, data: { ...data, lastSyncedAt: now } });
+            if (Object.keys(data).length) await prisma.product.update({ where: { id: local.id }, data: { ...data, lastSyncedAt: now } });
+            // Nothing to write: record the check without bumping updatedAt
+            // (@updatedAt) — the sitemap's lastmod is the last real change.
+            else await prisma.$executeRaw`UPDATE "Product" SET "lastSyncedAt" = ${now} WHERE "id" = ${local.id}`;
           }
           if (changed) {
             counts.updated++;

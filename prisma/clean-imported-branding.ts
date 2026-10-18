@@ -13,12 +13,18 @@
  *     rebuilt from it, which also restores characters it blanked ("&deg;");
  *   - moves PUBLISHED "Product 1234" placeholder titles to Pending review so
  *     an admin gives them a real title before they go live again.
+ * Then, for EVERY other listing (rows of the first catalogue import belong to
+ * other owners, e.g. "Agilent GCMS &#8211; 6890N" — printed raw on product
+ * pages, proformas, mails and quote pages): titles and summaries are plain
+ * text, so their character references are decoded; descriptions are HTML, so
+ * only the references that stand for ordinary text are ("&#8211;" → "–";
+ * "&lt;", "&amp;", "&nbsp;" stay). Nothing else of those rows changes.
  *
  * Dry run by default (prints what would change). Idempotent: a listing is
  * only proposed when a field would actually change, so a dry run right after
  * --apply reports 0. Supplier mentions the cleaner cannot take out on its own
  * are listed separately ("check by hand") and are not counted as changes.
- * Apply with:
+ * Run it on staging first, then live. Apply with:
  *   npx tsx prisma/clean-imported-branding.ts --apply
  */
 
@@ -31,6 +37,10 @@ import {
   supplierPattern,
   PLACEHOLDER_TITLE_RE,
 } from '../src/lib/marketplace/import-clean';
+import { decodeTextEntities } from '../src/lib/sanitize';
+
+/** A character reference ("&#8211;", "&#x2013;", "&ndash;"). */
+const ENTITY = /&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]{1,31});/;
 
 const prisma = new PrismaClient();
 const APPLY = process.argv.includes('--apply');
@@ -74,8 +84,10 @@ async function main() {
   let decoded = 0;
   let flagged = 0;
   const leftovers: string[] = [];
+  const seen = new Set<string>();
   for (const p of products) {
     if (!p.company) continue;
+    seen.add(p.id);
     const supplier = { name: p.company.name, urls: [p.company.website, p.company.importSourceUrl] };
     const re = supplierPattern(supplier);
     const data: { title?: string; description?: string | null; summary?: string | null; status?: ProductStatus } = {};
@@ -109,6 +121,12 @@ async function main() {
     // summary written apart from the description): listed, not counted.
     const finalSummary = data.summary !== undefined ? data.summary : p.summary;
     if (re.test(stripHtml(finalDescription ?? '')) || re.test(finalSummary ?? '')) leftovers.push(p.slug);
+    // Text references left in the HTML ("&#8211;") are decoded too; markup
+    // ones ("&lt;", "&amp;") and "&nbsp;" stay.
+    if (finalDescription && ENTITY.test(finalDescription)) {
+      const next = decodeTextEntities(finalDescription);
+      if (next !== finalDescription) data.description = next;
+    }
     const title = decodeText(p.title).slice(0, 200);
     if (title && title !== p.title) data.title = title;
     if (p.status === ProductStatus.PUBLISHED && PLACEHOLDER_TITLE_RE.test(p.title)) {
@@ -117,7 +135,7 @@ async function main() {
     }
     if (!Object.keys(data).length) continue;
     if (branded) cleaned++;
-    else if (data.title !== undefined || data.summary !== undefined) decoded++;
+    else if (data.title !== undefined || data.summary !== undefined || data.description !== undefined) decoded++;
 
     console.log(`• ${p.slug} (${p.title})`);
     if (data.title !== undefined) console.log(`    title → ${JSON.stringify(data.title)}`);
@@ -128,13 +146,44 @@ async function main() {
     if (APPLY) await prisma.product.update({ where: { id: p.id }, data });
   }
 
+  // Every other listing: character references only (see the header).
+  const others = (
+    await prisma.product.findMany({
+      where: { OR: [{ title: { contains: '&' } }, { summary: { contains: '&' } }, { description: { contains: '&' } }] },
+      select: { id: true, slug: true, title: true, summary: true, description: true },
+    })
+  ).filter((p) => !seen.has(p.id));
+  let entitiesOnly = 0;
+  for (const p of others) {
+    const data: { title?: string; summary?: string; description?: string } = {};
+    if (ENTITY.test(p.title)) {
+      const title = decodeEntities(p.title).replace(/\s+/g, ' ').trim().slice(0, 200);
+      if (title && title !== p.title) data.title = title;
+    }
+    if (p.summary && ENTITY.test(p.summary)) {
+      const summary = decodeEntities(p.summary);
+      if (summary !== p.summary) data.summary = summary;
+    }
+    if (p.description && ENTITY.test(p.description)) {
+      const description = decodeTextEntities(p.description);
+      if (description !== p.description) data.description = description;
+    }
+    if (!Object.keys(data).length) continue;
+    entitiesOnly++;
+    console.log(`• ${p.slug} (${p.title})`);
+    if (data.title !== undefined) console.log(`    title → ${JSON.stringify(data.title)}`);
+    if (data.summary !== undefined) console.log(`    summary: HTML entities decoded`);
+    if (data.description !== undefined) console.log(`    description: HTML entities decoded`);
+    if (APPLY) await prisma.product.update({ where: { id: p.id }, data });
+  }
+
   if (leftovers.length) {
     console.log(`\nStill mention the supplier after cleaning — check by hand (${leftovers.length}):`);
     for (const slug of leftovers) console.log(`  ! ${slug}`);
   }
   console.log(
     `\n${APPLY ? 'Updated' : 'Would update'}: ${cleaned} cleaned listing(s), ${decoded} more with only HTML entities decoded, ` +
-      `${flagged} placeholder title(s) sent to Pending review` +
+      `${flagged} placeholder title(s) sent to Pending review; ${entitiesOnly} other listing(s) with HTML entities decoded` +
       (APPLY ? '' : '\nDry run — re-run with --apply to write.'),
   );
 }

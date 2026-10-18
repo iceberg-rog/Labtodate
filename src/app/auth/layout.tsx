@@ -1,5 +1,10 @@
+import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Logo } from '@/components/site/Logo';
+
+// Sign-in, sign-up and the other account screens: never in search results
+// (robots.txt lets crawlers fetch them, so they can read this noindex).
+export const metadata: Metadata = { robots: { index: false, follow: true } };
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
