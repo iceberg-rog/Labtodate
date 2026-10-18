@@ -260,10 +260,19 @@ export function settleCredit(m: MoneyState, amountCents: number): { receivableCe
   return { receivableCents, refundCents: amountCents - receivableCents };
 }
 
-/** Money state of the order after a refund status change. */
+/**
+ * Money state of the order after a refund status change (only money actually
+ * SENT counts). Everything received sent back → REFUNDED. Sending back only an
+ * overpayment (more received than the invoice total) leaves the sale paid in
+ * full → PAID, not “partly refunded”; PARTIALLY_REFUNDED means part of the sale
+ * itself went back. Nothing received and the invoice credited in full → VOID.
+ */
 export function financialAfterRefunds(p: { paidCents: number; sentCents: number; totalCreditedCents: number; totalCents: number; current: string }): string {
   if (p.sentCents > 0 && p.sentCents >= p.paidCents && p.paidCents > 0) return 'REFUNDED';
-  if (p.sentCents > 0) return 'PARTIALLY_REFUNDED';
+  if (p.sentCents > 0) {
+    const excessCents = Math.max(0, p.paidCents - p.totalCents);
+    return p.sentCents <= excessCents ? 'PAID' : 'PARTIALLY_REFUNDED';
+  }
   if (p.paidCents === 0 && p.totalCreditedCents >= p.totalCents && p.totalCents > 0) return 'VOID';
   return p.current;
 }
@@ -320,6 +329,16 @@ export function returnEligibility(
 
 export const OPEN_RETURN_STATUSES = ['REQUESTED', 'APPROVED', 'LABEL_SENT', 'IN_TRANSIT', 'RECEIVED', 'INSPECTED'] as const;
 
+/** Where a return can be resolved from: inspected goods, or an approval when nothing comes back. */
+export function resolvableReturnStatuses(noReturnNeeded: boolean): Array<'APPROVED' | 'LABEL_SENT' | 'INSPECTED'> {
+  return noReturnNeeded ? ['APPROVED', 'LABEL_SENT', 'INSPECTED'] : ['INSPECTED'];
+}
+
+/** Staff-typed text that a template follows with its own full stop (“… it: {REASON}.”). */
+export function withoutFinalStop(text: string): string {
+  return text.trim().replace(/[\s.]+$/, '');
+}
+
 export const RETURN_STATUS_LABEL: Record<string, string> = {
   REQUESTED: 'Waiting for our review',
   APPROVED: 'Approved',
@@ -368,9 +387,29 @@ export interface NextStepInput {
   returnsOpen: boolean;
   buyerCanCancel: boolean;
   invoiceIssued: boolean;
+  /** The invoice on NET terms (when onTermsUnpaid): its number, due date and the amount still open. */
+  invoiceNumber?: string | null;
+  invoiceDueAt?: Date | null;
+  amountDueLabel?: string | null;
+  now?: Date;
 }
 
 const fmtDay = (d: Date) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+/** An invoice on NET terms that is still open: the buyer pays it (by its due date), staff chase it once overdue. */
+function payInvoiceStep(i: NextStepInput, B: boolean): NextStep {
+  const inv = i.invoiceNumber ? `invoice ${i.invoiceNumber}` : 'the invoice';
+  const amount = i.amountDueLabel ? ` (${i.amountDueLabel})` : '';
+  const due = i.invoiceDueAt ?? null;
+  const overdue = i.financialStatus === 'OVERDUE' || (!!due && due.getTime() < (i.now ?? new Date()).getTime());
+  if (B) {
+    return { who: 'buyer', text: overdue ? `Pay ${inv}${amount} now — it was due ${due ? `on ${fmtDay(due)}` : 'already'}.` : `Pay ${inv}${amount} by ${due ? fmtDay(due) : 'the due date on the invoice'}.` };
+  }
+  const Inv = inv.charAt(0).toUpperCase() + inv.slice(1);
+  return overdue
+    ? { who: 'staff', text: `${Inv}${amount} on NET terms is overdue${due ? ` (due ${fmtDay(due)})` : ''} — chase the payment, or record it when it arrives.` }
+    : { who: 'buyer', text: `${Inv}${amount} on NET terms is still unpaid — the buyer pays by ${due ? fmtDay(due) : 'the due date'}.` };
+}
 
 /**
  * What happens next on an order, and who does it — the same facts for both
@@ -412,15 +451,18 @@ export function orderNextSteps(i: NextStepInput, audience: 'buyer' | 'staff'): N
       else steps.push({ who: 'staff', text: B ? 'We prepare your order and email you the carrier and tracking number when it ships.' : i.status === 'PAID' ? 'Mark it “processing” while you prepare it, then record the shipment (carrier + tracking).' : 'Record the shipment (carrier + tracking) — the buyer is emailed.' });
       if (!B && i.progress === 'NONE') steps.push({ who: 'staff', text: i.onTermsUnpaid ? 'Not going ahead? Cancel it: the invoice is credited — the unpaid amount is no longer due (no money refunded for it); a part that was paid is refunded.' : 'Not going ahead? Cancel it before shipping: a credit note is issued and the refund is recorded.' });
       if (B && i.progress === 'NONE') steps.push({ who: 'buyer', text: 'Need to cancel? Contact us before it ships — after payment we cancel and refund it for you.' });
+      if (i.onTermsUnpaid) steps.push(payInvoiceStep(i, B));
       break;
     case 'SHIPPED':
       steps.push({ who: 'carrier', text: B ? 'Your order is on its way. When it arrives, confirm receipt below.' : 'In transit. Record the delivery (or the buyer confirms receipt).' });
       if (B && i.returnsOpen) steps.push({ who: 'buyer', text: 'Something wrong on arrival? Report it below with photos.' });
+      if (i.onTermsUnpaid) steps.push(payInvoiceStep(i, B));
       break;
     case 'DELIVERED':
       if (i.returnsOpen && i.returnWindowEndsAt) steps.push({ who: 'buyer', text: B ? `Something wrong? Report a problem or request a return until ${fmtDay(i.returnWindowEndsAt)}.` : `The buyer can report a problem until ${fmtDay(i.returnWindowEndsAt)}.` });
+      // An unpaid invoice on NET terms is the buyer's open step — never “nothing more to do”.
+      if (i.onTermsUnpaid) steps.push(payInvoiceStep(i, B));
       if (!steps.length) steps.push({ who: 'none', text: B ? 'Delivered — nothing more to do.' : 'Delivered — order complete.' });
-      if (!B && i.onTermsUnpaid) steps.push({ who: 'buyer', text: 'Invoice on NET terms still unpaid — the buyer pays by the due date.' });
       break;
     case 'CANCELED':
       if (!pendingRefunds.length && !sentRefunds.length) steps.push({ who: 'none', text: B ? 'This order is canceled — nothing is due.' : 'Canceled — nothing left to do.' });

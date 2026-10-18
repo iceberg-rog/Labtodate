@@ -67,6 +67,8 @@ export async function orderFulfilmentView(orderId: string) {
   const onTermsUnpaid = ['INVOICED_ON_TERMS', 'OVERDUE', 'PARTIALLY_PAID'].includes(o.financialStatus) && o.amountPaidCents < o.totalCents;
   const detailsMissing = orderDetailsProblems(o, { vatIdRule: vatIdRule() });
   const invoice = o.documents.find((d) => d.kind === 'INVOICE') ?? null;
+  // The open NET-terms invoice the buyer still has to pay (the current one, after any correction).
+  const termsInvoice = onTermsUnpaid && m?.invoice ? await prisma.fiscalDocument.findUnique({ where: { id: m.invoice.id }, select: { number: true, dueDate: true } }) : null;
 
   const shipments = o.shipments.map((s) => ({
     id: s.id,
@@ -137,6 +139,8 @@ export async function orderFulfilmentView(orderId: string) {
     open: (OPEN_RETURN_STATUSES as readonly string[]).includes(r.status),
     instructionsDraft: r.status === 'REQUESTED' ? returnInstructionsDraft(r.rmaNumber) : null,
     hasRefund: r.refunds.length > 0,
+    /** The support ticket that carries the conversation of this return. */
+    ticketId: r.ticketId,
   }));
 
   const nextInput = {
@@ -156,6 +160,9 @@ export async function orderFulfilmentView(orderId: string) {
     returnsOpen: !!rc?.eligibility.canRequest,
     buyerCanCancel: o.status === 'PENDING_PAYMENT' && !o.paymentSubmittedAt && buyerCanCancelUnpaid(),
     invoiceIssued: !!invoice,
+    invoiceNumber: termsInvoice?.number ?? invoice?.number ?? null,
+    invoiceDueAt: termsInvoice?.dueDate ?? null,
+    amountDueLabel: onTermsUnpaid && cap.receivableCents > 0 ? money(cap.receivableCents) : null,
   };
 
   return {

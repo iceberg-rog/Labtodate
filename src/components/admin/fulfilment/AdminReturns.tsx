@@ -1,4 +1,4 @@
-import { RotateCcw, Paperclip, ExternalLink } from 'lucide-react';
+import { RotateCcw, Paperclip, ExternalLink, MessagesSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OrderActionForm } from '@/components/admin/OrderActionForm';
 import {
@@ -52,6 +52,13 @@ export function AdminReturns({ v, canRefund }: { v: OrderFulfilmentView; canRefu
               <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${STATUS_CLS[r.status] ?? 'bg-muted text-muted-foreground border-border'}`}>{r.statusLabel}</span>
             </div>
             <p className="text-sm whitespace-pre-wrap [overflow-wrap:anywhere] rounded-xl bg-foreground/[0.03] border border-border p-3" dir="auto">{r.description}</p>
+            {r.ticketId ? (
+              <a href={`/admin/tickets/${r.ticketId}`} className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline" data-testid={`rma-ticket-${r.rmaNumber}`}>
+                <MessagesSquare className="h-3.5 w-3.5" /> Conversation with the buyer (support ticket) — every step is posted there
+              </a>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">No support ticket is linked to this return.</p>
+            )}
             {r.files.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {r.files.map((f, i) => (

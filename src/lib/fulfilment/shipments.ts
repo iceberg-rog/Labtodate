@@ -4,7 +4,8 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { checkCountry } from '@/lib/compliance/country';
 import { addressCountry } from '@/lib/tax/order';
 import { addressLines } from '@/lib/orders/details';
-import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
+import { audit, logError, notifyAdmins, notifyUser } from '@/lib/observability';
+import { notifySupplierOfSale } from '@/lib/sellers/sale-notice';
 import { escapeHtml } from '@/lib/email-html';
 import { fmtDocDay } from '@/lib/documents/render';
 import { uploadObject } from '@/lib/storage/s3';
@@ -67,6 +68,15 @@ export function blockedMessage(orderNumber: string, what: string, blockers: stri
 
 async function lockOrder(tx: Prisma.TransactionClient, orderId: string) {
   await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
+}
+
+/** Tell the supplier of the sold unit (lib/sellers/sale-notice.ts) — after the change is committed, never fatal. */
+async function supplierNotice(orderId: string, event: 'SHIPPED' | 'DELIVERED'): Promise<void> {
+  try {
+    await notifySupplierOfSale(orderId, event);
+  } catch (e) {
+    await logError(`orders:supplier-notice-${event.toLowerCase()}`, e);
+  }
 }
 
 /** PAID → PROCESSING (“being prepared”), only when the order could actually ship. */
@@ -197,6 +207,8 @@ export async function recordShipment(input: ShipmentInput, actor: Actor): Promis
 
   const mail = await sendShippedEmail(o, { ...created, carrier: carrier.name, tracking, trackingUrl, parcels: input.parcels, shippedAt: input.shippedAt });
   if (mail.ok) await prisma.shipment.update({ where: { id: created.id }, data: { shippedEmailAt: new Date() } });
+  // The supplier who owns the unit hears it left once the whole order is on its way (no buyer data).
+  if (created.progress === 'ALL') await supplierNotice(o.id, 'SHIPPED');
   await notifyUser(o.buyer.id, `Order ${o.orderNumber}: ${created.progress === 'ALL' ? 'shipped' : 'partly shipped'}`, `${carrier.name}${tracking ? ` · tracking ${tracking}` : ''}`, `/app/orders/${o.orderNumber}`);
   await notifyAdmins(`Order ${o.orderNumber}: shipment ${created.seq} sent${created.progress === 'PARTIAL' ? ' (partial)' : ''}`, `${carrier.name}${tracking ? ` · ${tracking}` : ''} · by ${actor.email ?? 'staff'}`, `/admin/orders/${o.id}`, 'ORDER_SHIPPED');
   await audit('order.shipment', o.orderNumber, `#${created.seq} ${carrier.name} ${tracking ?? '(no tracking)'} · ${created.lines.map((l) => `${l.qty}× ${l.title}`).join(', ').slice(0, 200)} · ${created.progress} · email ${mail.ok ? 'ok' : mail.error}`);
@@ -318,6 +330,7 @@ export async function markDelivered(
   if (orderDelivered) {
     if (p.by !== 'BUYER') await notifyUser(o.buyer.id, `Order ${o.orderNumber}: delivered`, 'Your order was delivered.', `/app/orders/${o.orderNumber}`);
     await notifyAdmins(`Order ${o.orderNumber}: delivered${p.by === 'BUYER' ? ' (confirmed by the buyer)' : ''}`, `${targets.length} shipment(s)`, `/admin/orders/${o.id}`, 'ORDER_DELIVERED');
+    await supplierNotice(o.id, 'DELIVERED');
   }
   await audit('order.shipment.delivered', o.orderNumber, `${targets.map((t) => `#${t.seq}`).join(',')} by ${p.by} (${actor.email ?? '—'}) on ${p.deliveredAt.toISOString().slice(0, 10)}${orderDelivered ? ' · order DELIVERED' : ''}`);
   const msg = orderDelivered

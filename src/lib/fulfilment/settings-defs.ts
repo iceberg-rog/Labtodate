@@ -10,7 +10,8 @@ import { carriersProblem, returnReasonsProblem } from './rules';
  *
  * Placeholders in texts: {ORDER} order number, {ITEMS} the items in the shipment,
  * {CARRIER}, {TRACKING}, {DATE}, {AMOUNT}, {REFERENCE}, {RMA}, {DAYS},
- * {ADDRESS} (receiving address), {REASON}.
+ * {ADDRESS} (receiving address), {REASON}, {TICKET} (the return's support ticket).
+ * The RMA texts are also posted on the return's support ticket.
  */
 
 const yesNo = [
@@ -172,8 +173,8 @@ export const FULFILMENT_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   },
   {
     key: 'RETURN_EMAIL_REJECTED_TEXT', label: 'Email text — not approved', group: G_RET, type: 'text', multiline: true,
-    default: 'We reviewed your request {RMA} for order {ORDER} and can not approve it: {REASON}. Reply from your order page if you want to discuss it.',
-    hint: '{REASON} = the reason staff give (required).',
+    default: 'We reviewed your request {RMA} for order {ORDER} and cannot approve it: {REASON}. If you want to discuss it, write to us on {TICKET} (Account → Support).',
+    hint: '{REASON} = the reason staff give (required; a full stop at its end is dropped, so the text adds its own). {TICKET} = the support ticket of the request (“support ticket TKT-…”), where the buyer can reply. The same text is posted on that ticket.',
   },
   {
     key: 'RETURN_EMAIL_RECEIVED_GOODS_TEXT', label: 'Email text — returned goods received', group: G_RET, type: 'text', multiline: true,

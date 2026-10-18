@@ -25,9 +25,11 @@ import {
   type CreditOutcome,
   type RefundMethod,
 } from '@/lib/finance/refunds';
-import { refundCapacity } from './rules';
+import { refundCapacity, withoutFinalStop } from './rules';
 import { isValidIban } from '@/lib/settings/defs';
-import { mailOutcomeText, orderUrl, sendBuyerMail } from './mail';
+import { siteName } from '@/lib/brand/identity';
+import { notifySupplierOfSale } from '@/lib/sellers/sale-notice';
+import { contactUsHtml, mailOutcomeText, orderUrl, sendBuyerMail } from './mail';
 
 /**
  * Cancellation at every legitimate stage (owner report 6):
@@ -67,7 +69,7 @@ export async function cancelUnpaidOrder(orderId: string, actor: CancelActor, opt
   if (o.paymentSubmittedAt) {
     return { ok: false, message: actor.kind === 'BUYER'
       ? `You already sent a payment receipt for order ${o.orderNumber}. Contact support to cancel it — we check the payment first.`
-      : 'A payment receipt is waiting for verification — verify or reject it first.' };
+      : `A payment receipt for order ${o.orderNumber} is waiting for verification — verify or reject it first.` };
   }
   // Money already received (a part payment) and not refunded: canceling would keep it silently.
   const kept = heldMoneyCents(o.amountPaidCents, o.refunds);
@@ -97,8 +99,8 @@ export async function cancelUnpaidOrder(orderId: string, actor: CancelActor, opt
     html: [
       `<p style="margin:0 0 12px;">Hi <span dir="auto">${escapeHtml(o.buyer.name || 'there')}</span>,</p>`,
       `<p style="margin:0 0 12px;">${actor.kind === 'BUYER' ? 'As you asked, we canceled' : 'We canceled'} order <strong>${escapeHtml(o.orderNumber)}</strong> (<span dir="auto">${escapeHtml(o.items[0]?.titleSnapshot ?? '')}</span>, ${escapeHtml(total)}).</p>`,
-      `<p style="margin:0 0 12px;">Reason: <span dir="auto">${escapeHtml(reason)}</span>${note && actor.kind !== 'SYSTEM' ? ` — <span dir="auto">${escapeHtml(note)}</span>` : ''}.</p>`,
-      `<p style="margin:0 0 12px;"><strong>No payment is due</strong> and nothing was charged. ${pfNames ? `Proforma <strong>${escapeHtml(pfNames)}</strong> is void` : 'The proforma for this order is void'} — please do not transfer money for it. If you already sent a transfer, reply to this email and we refund it.</p>`,
+      `<p style="margin:0 0 12px;">Reason: <span dir="auto">${escapeHtml(note && actor.kind !== 'SYSTEM' ? reason : withoutFinalStop(reason))}</span>${note && actor.kind !== 'SYSTEM' ? ` — <span dir="auto">${escapeHtml(withoutFinalStop(note))}</span>` : ''}.</p>`,
+      `<p style="margin:0 0 12px;"><strong>No payment is due</strong> and nothing was charged. ${pfNames ? `Proforma <strong>${escapeHtml(pfNames)}</strong> is void` : 'The proforma for this order is void'} — please do not transfer money for it. If you already sent a transfer, ${contactUsHtml()} and we refund it.</p>`,
     ],
     cta: { href: orderUrl(o.orderNumber), label: 'View the order' },
     context: 'orders:cancel-unpaid',
@@ -175,7 +177,7 @@ export async function cancelPaidOrder(
       await tx.order.update({ where: { id: o.id }, data: { adminNotes: `${cur?.adminNotes ? `${cur.adminNotes}\n` : ''}[${isoDay(new Date())}] Canceled${m.state.paidCents > 0 ? ' after payment' : ' (invoice terms, unpaid part credited)'} by ${actor.email ?? 'staff'}: ${reason}${p.note ? ` — ${p.note}` : ''}.`.slice(0, 4000) } });
       if (o.sourcingRequestId) {
         await tx.sourcingRequest.updateMany({ where: { id: o.sourcingRequestId, status: { in: ['ACCEPTED', 'RESPONDED'] } }, data: { status: 'CLOSED', lostReason: credit.refund ? 'Canceled by lab2date after payment' : 'Canceled by lab2date after acceptance', lostNote: reason, dueAt: null } });
-        await tx.quoteMessage.create({ data: { sourcingRequestId: o.sourcingRequestId, authorId: actor.id, fromStaff: true, body: `Order ${o.orderNumber} was canceled by lab2date${credit.refund ? ' after payment' : ''}: ${reason}. ${credit.creditNote ? `The invoice is credited in full (credit note ${credit.creditNote.number}). ` : ''}${credit.refund ? `A refund of ${fmtDocMoney(credit.refund.amountCents, o.currency)} is ${credit.refund.method === 'STRIPE' ? 'issued to the card' : 'recorded and will be sent by bank transfer'}${credit.receivableCents > 0 ? '; the rest is no longer due' : ''}.` : 'Nothing is due.'}` } });
+        await tx.quoteMessage.create({ data: { sourcingRequestId: o.sourcingRequestId, authorId: actor.id, fromStaff: true, body: `Order ${o.orderNumber} was canceled by ${siteName()}${credit.refund ? ' after payment' : ''}: ${withoutFinalStop(reason)}. ${credit.creditNote ? `The invoice is credited in full (credit note ${credit.creditNote.number}). ` : ''}${credit.refund ? `A refund of ${fmtDocMoney(credit.refund.amountCents, o.currency)} is ${credit.refund.method === 'STRIPE' ? 'issued to the card' : 'recorded and will be sent by bank transfer'}${credit.receivableCents > 0 ? '; the rest is no longer due' : ''}.` : 'Nothing is due.'}` } });
       }
       return credit;
     });
@@ -185,6 +187,8 @@ export async function cancelPaidOrder(
     return { ok: false, message: stripeId ? `The card refund WAS issued (${stripeId}) but recording the cancellation failed — do not refund again; contact a developer.` : `Nothing was changed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown error'}` };
   }
   const mail = await emailCreditOutcome(o, out, { kind: 'CANCEL', reason });
+  // The supplier who was told the unit sold must not prepare / ship it any more.
+  await notifySupplierOfSale(o.id, 'CANCELED').catch((e) => logError('fulfilment:cancel-supplier-notice', e));
   await notifyUser(o.buyer.id, `Order ${o.orderNumber} canceled`, out.refund ? (out.refund.method === 'STRIPE' ? 'Your payment is refunded to your card.' : 'A refund is approved — the bank transfer is not sent yet; we email you when it is.') : 'Nothing is due.', `/app/orders/${o.orderNumber}`);
   await notifyAdmins(`Order ${o.orderNumber} canceled${out.refund ? ' after payment' : ' — invoice credited, nothing refunded'}`, `${creditSummary(out, o.currency)}${restock ? (out.restocked ? '' : ' Stock returned.') : tookStock ? (alreadyRestocked ? ' Stock was returned earlier.' : ' Stock NOT returned (Settings).') : ''}`.slice(0, 480), `/admin/orders/${o.id}`, 'ORDER_CANCELED');
   await audit('order.cancel.paid', o.orderNumber, `by ${actor.email ?? 'staff'} · ${reason} · cn=${out.creditNote?.number ?? 'none'} · receivable ${out.receivableCents} · refund ${out.refundCents} ${p.method ?? ''}${stripeId ? ` ${stripeId}` : ''} · restock=${restock}`);
