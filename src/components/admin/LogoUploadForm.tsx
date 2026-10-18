@@ -56,10 +56,11 @@ export function LogoUploadForm({
         <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Brand logo</h2>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground bg-foreground/[0.02] border border-border rounded-xl p-3">
-        Uploaded once, then surfaced on every invoice + proforma. Keep a transparent background — looks best on white documents.
+        Printed on every new proforma, invoice and credit note and shown above every e-mail, all on white: keep a transparent or white background. The website is dark, so its header and footer, the sign-in screens and the admin top bar show this logo on a white tile; to show a light version there instead, set “Website logo (dark background)” under Brand.
       </p>
       <div className="flex items-center gap-5 flex-wrap">
-        <div className="h-20 w-48 rounded-lg border border-border bg-card flex items-center justify-center overflow-hidden">
+        {/* the logo on white, as the documents and e-mails show it */}
+        <div className={`h-20 w-48 rounded-lg border border-border ${currentUrl ? 'bg-white' : 'bg-card'} flex items-center justify-center overflow-hidden`}>
           {currentUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             (<img

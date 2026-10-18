@@ -3,7 +3,8 @@ import { Logo } from '@/components/site/Logo';
 import { Linkedin, Twitter, Github, Mail } from 'lucide-react';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getMarketing } from '@/lib/marketing';
-import { getCompany } from '@/lib/invoice';
+import { legalIdentity } from '@/lib/brand/identity';
+import { siteBrand } from '@/lib/brand/site-logo';
 import { FooterWord } from '@/components/site/FooterWord';
 
 const COLUMNS = [
@@ -48,18 +49,19 @@ const COLUMNS = [
 
 export async function Footer() {
   await ensureSettingsLoaded();
-  // Only a configured address — never a made-up one on a domain we do not own.
-  const supportEmail = (process.env.SUPPORT_EMAIL || '').trim();
-  const siteName = process.env.SITE_NAME || 'Labtodate';
+  // Brand and legal identity (Settings → Brand / Company), the same source as
+  // the e-mails and invoices — legal fields shown only when filled in, and
+  // only a real support address (never a placeholder on a domain we don't own).
+  const id = legalIdentity();
+  const brand = siteBrand();
+  const supportEmail = id.supportEmail;
+  const siteName = id.siteName;
   const mk = await getMarketing();
-  // Legal identity (Settings → Company), same source as the invoices — shown
-  // only for the fields that are filled in.
-  const co = getCompany();
   const legalParts = [
-    process.env.COMPANY_LEGAL_NAME ? co.name : '',
-    [...co.addrLines, co.country].filter(Boolean).join(', '),
-    co.kvk ? `KvK ${co.kvk}` : '',
-    co.vat ? `VAT ${co.vat}` : '',
+    id.legalName,
+    id.addressLines.join(', '),
+    id.kvk ? `KvK ${id.kvk}` : '',
+    id.vat ? `VAT ${id.vat}` : '',
   ].filter(Boolean);
   return (
     <footer className="sfoot">
@@ -68,7 +70,7 @@ export async function Footer() {
         <div className="sfoot-grid">
           <div className="space-y-4">
             <Link href="/" aria-label={`${siteName} home`} className="inline-block">
-              <Logo name={siteName} />
+              <Logo name={siteName} logoUrl={brand.logoUrl} logoOnLight={brand.logoOnLight} />
             </Link>
             <p className="text-sm text-muted-foreground max-w-xs">{mk.footerTagline}</p>
             <div className="sfoot-social">

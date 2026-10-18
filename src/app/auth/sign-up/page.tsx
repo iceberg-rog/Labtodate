@@ -4,6 +4,8 @@ import { getActiveSession } from '@/lib/auth-server';
 import { getMarketing } from '@/lib/marketing';
 import { safeRedirect } from '@/lib/safe-redirect';
 import { authCaptchaFlags } from '@/lib/security/captcha';
+import { getSecurityPolicy } from '@/lib/security/policy';
+import { siteName } from '@/lib/brand/identity';
 import SignUpForm from './SignUpForm';
 
 export const metadata = { title: 'Sign up' };
@@ -20,10 +22,11 @@ export default async function SignUpPage({
     redirect(target.startsWith('/auth/') ? '/auth/continue' : target);
   }
   // Same live (or admin-set) catalogue count the header search shows.
-  const [{ listings }, captcha] = await Promise.all([getMarketing(), authCaptchaFlags()]);
+  // getMarketing() loads the settings, so the brand below is the live one.
+  const [{ listings }, captcha, policy] = await Promise.all([getMarketing(), authCaptchaFlags(), getSecurityPolicy()]);
   return (
     <Suspense>
-      <SignUpForm listings={listings} captcha={captcha} />
+      <SignUpForm listings={listings} captcha={captcha} site={siteName()} mailCooldownSec={policy.MAIL_ADDRESS_COOLDOWN_SEC} />
     </Suspense>
   );
 }

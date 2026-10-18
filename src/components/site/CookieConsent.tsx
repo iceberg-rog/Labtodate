@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 
@@ -12,9 +12,18 @@ const KEY = 'l2d_cookie_ack';
 // (/, /marketplace, /blog, etc.) still see it.
 const HIDE_ON = ['/auth', '/checkout', '/admin', '/app'];
 
+/**
+ * The cookie notice: a slim bar along the bottom edge. While it shows, the
+ * page gets the same amount of bottom padding, so everything under the bar
+ * (a form's submit button, the sign-in / create-account buttons of a gate) can
+ * be scrolled above it — the old floating card covered them with no way round.
+ * Its height is also published as --cookie-bar-h on <html> for screen-high
+ * pinned sections (the homepage stations), which no padding can move.
+ */
 export function CookieConsent() {
   const pathname = usePathname();
   const [show, setShow] = useState(false);
+  const bar = useRef<HTMLDivElement | null>(null);
   const hidden = HIDE_ON.some((p) => pathname?.startsWith(p));
   useEffect(() => {
     if (hidden) return;
@@ -24,14 +33,39 @@ export function CookieConsent() {
       /* storage blocked — don't nag */
     }
   }, [hidden]);
-  if (hidden || !show) return null;
+
+  const visible = show && !hidden;
+  useEffect(() => {
+    const el = bar.current;
+    if (!visible || !el) return;
+    const body = document.body;
+    const root = document.documentElement;
+    const before = body.style.paddingBottom;
+    const reserve = () => {
+      const h = `${Math.ceil(el.getBoundingClientRect().height)}px`;
+      body.style.paddingBottom = h;
+      root.style.setProperty('--cookie-bar-h', h);
+    };
+    reserve();
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(reserve);
+    ro?.observe(el);
+    return () => {
+      ro?.disconnect();
+      body.style.paddingBottom = before;
+      root.style.removeProperty('--cookie-bar-h');
+    };
+  }, [visible]);
+
+  if (!visible) return null;
   return (
-    // The full-width wrapper is click-through and keeps clear of the
-    // bottom-right corner (below lg), where the assistant button sits —
-    // otherwise the notice blocked "Open assistant" until dismissed.
-    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[90] p-3 pr-24 sm:p-4 sm:pr-24 lg:pr-4">
-      <div className="pointer-events-auto mx-auto max-w-3xl rounded-2xl border border-border bg-card shadow-lg p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-        <p className="text-sm text-muted-foreground flex-1">
+    <div
+      ref={bar}
+      role="region"
+      aria-label="Cookie notice"
+      className="fixed inset-x-0 bottom-0 z-[90] border-t border-border bg-card shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.5)]"
+    >
+      <div className="container-px mx-auto flex max-w-5xl items-center gap-3 py-2.5 sm:gap-4 sm:py-3">
+        <p className="flex-1 text-xs leading-snug text-muted-foreground sm:text-sm">
           We use only essential cookies to keep you signed in and secure — no tracking or ads.{' '}
           <Link href="/legal/cookies" className="text-primary underline underline-offset-2">
             Cookie policy
@@ -48,7 +82,7 @@ export function CookieConsent() {
             }
             setShow(false);
           }}
-          className="shrink-0 rounded-full bg-primary text-primary-foreground px-5 py-2 text-sm font-semibold hover:bg-primary/90"
+          className="shrink-0 rounded-full bg-primary text-primary-foreground px-4 py-1.5 text-sm font-semibold hover:bg-primary/90 sm:px-5 sm:py-2"
         >
           Got it
         </button>

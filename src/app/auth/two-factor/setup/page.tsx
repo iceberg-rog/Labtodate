@@ -8,6 +8,14 @@ import { SignOutLink } from './SignOutLink';
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Set up two-factor sign-in' };
 
+/** Why this account must use an authenticator: Settings → Security lists its role (TWO_FACTOR_REQUIRED_ROLES). */
+function RequiredReason({ role, email }: { role: string | undefined; email: string }) {
+  const who = <strong className="text-foreground">{email}</strong>;
+  if (role === 'ADMIN') return <>Your account ({who}) has access to the admin console, so it must be protected with an authenticator app.</>;
+  if (role === 'SELLER') return <>Supplier accounts such as yours ({who}) must be protected with an authenticator app.</>;
+  return <>Accounts such as yours ({who}) must be protected with an authenticator app.</>;
+}
+
 /**
  * Forced set-up: accounts whose role must use an authenticator (Settings →
  * Security; admins by default) land here from every page until it is done.
@@ -30,8 +38,8 @@ export default async function TwoFactorSetupPage({ searchParams }: { searchParam
         <p className="text-sm text-muted-foreground mt-2">
           {required ? (
             <>
-              Your account (<strong className="text-foreground">{session.user.email}</strong>) has access to the admin console,
-              so it must be protected with an authenticator app. You can continue once this is done — it takes about a minute.
+              <RequiredReason role={sec?.role} email={session.user.email} /> You can continue once this is done — it takes
+              about a minute.
             </>
           ) : (
             <>Protect <strong className="text-foreground">{session.user.email}</strong> with a code from your phone at every sign-in.</>

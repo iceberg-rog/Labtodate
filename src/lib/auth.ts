@@ -7,6 +7,11 @@ import { hashPassword } from 'better-auth/crypto';
 import { prisma } from './db';
 import { sendEmail } from './email';
 import { escapeHtml } from './email-html';
+import { ensureSettingsLoaded } from './settings';
+import { DEFAULT_SITE_NAME, siteName } from './brand/identity';
+import { brandedMail, mailBrandColor } from './quotes/mail';
+import { clientIpFrom } from './ratelimit';
+import { deviceLabel, noteSuccessfulSignIn } from './security/signin-events';
 import { cleanName, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_RULE } from './auth-rules';
 import { isOwnMediaUrl } from './products/image-urls';
 import { safeRedirect, signInErrorURL } from './safe-redirect';
@@ -154,22 +159,79 @@ async function auditAuth(action: string, email: string, meta?: string) {
   }
 }
 
+/** "Not you? Reset your password …" line for account security mails. */
+function notYouLine(): string {
+  const url = `${SITE_URL}/auth/forgot-password`;
+  return `If this wasn't you, reset your password right away at <a href="${url}" style="color:${mailBrandColor()};">${url}</a> and contact support.`;
+}
+
 async function sendTwoFactorNotice(email: string, on: boolean) {
-  const subject = on ? 'Two-factor sign-in is on for your lab2date account' : 'Two-factor sign-in was turned off on your lab2date account';
-  const line = on
-    ? 'From now on, signing in needs your password and a code from your authenticator app. Other devices were signed out. Keep your recovery codes somewhere safe.'
-    : 'Your account no longer asks for an authenticator code at sign-in.';
-  await sendEmail({
-    to: email,
-    trigger: 'account',
-    subject,
-    html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-      <h2 style="color:#0E4F40;">${escapeHtml(subject)}</h2>
-      <p>${escapeHtml(line)}</p>
-      <p style="color:#6b7280;font-size:13px;">Not you? Reset your password at <a href="${SITE_URL}/auth/forgot-password">${SITE_URL}/auth/forgot-password</a> and contact support.</p>
-    </div>`,
-    text: `${subject}\n\n${line}\n\nNot you? Reset your password at ${SITE_URL}/auth/forgot-password and contact support.`,
-  }).catch((e) => console.error('[auth] two-factor notice failed:', e));
+  const mail = await brandedMail((site) => {
+    const subject = on ? `Two-factor sign-in is on for your ${site} account` : `Two-factor sign-in was turned off on your ${site} account`;
+    const line = on
+      ? 'From now on, signing in needs your password and a code from your authenticator app. Other devices were signed out. Keep your recovery codes somewhere safe.'
+      : 'Your account no longer asks for an authenticator code at sign-in.';
+    return {
+      subject,
+      heading: on ? 'Two-factor sign-in is on' : 'Two-factor sign-in was turned off',
+      body: [escapeHtml(line)],
+      footer: [notYouLine()],
+      text: `${subject}\n\n${line}\n\nNot you? Reset your password at ${SITE_URL}/auth/forgot-password and contact support.`,
+    };
+  });
+  await sendEmail({ to: email, trigger: 'account', ...mail }).catch((e) => console.error('[auth] two-factor notice failed:', e));
+}
+
+/**
+ * Password changed on the Profile page (better-auth /change-password): audit
+ * it and tell the owner, with the device — a hijacked session could otherwise
+ * change the password silently. Resets by e-mailed link have their own notice
+ * (onPasswordReset).
+ */
+async function notePasswordChanged(user: { id: string; email: string }, request: Request | undefined, othersSignedOut: boolean) {
+  const ip = request ? clientIpFrom(request.headers) : 'unknown';
+  const device = deviceLabel(request?.headers.get('user-agent'));
+  await prisma.auditLog
+    .create({
+      data: {
+        actorEmail: user.email,
+        actorId: user.id,
+        ip: ip === 'unknown' ? null : ip,
+        action: 'auth.password.changed',
+        target: user.id,
+        meta: `device=${device}; other sessions ${othersSignedOut ? 'signed out' : 'kept'}`,
+      },
+    })
+    .catch(() => {});
+  const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Amsterdam' });
+  const mail = await brandedMail((site) => {
+    const line = `The password on your ${site} account was just changed on the Profile page${othersSignedOut ? ', and every other device that was signed in has been signed out' : ''}.`;
+    return {
+      subject: `Your ${site} password was changed`,
+      heading: 'Your password was changed',
+      body: [
+        escapeHtml(line),
+        `<p style="margin:0 0 12px;"><strong>${escapeHtml(device)}</strong><br>IP address ${escapeHtml(ip)}<br>${escapeHtml(when)} (Amsterdam time)</p>`,
+      ],
+      footer: [notYouLine()],
+      text: `${line}\n${device}, IP ${ip}, ${when} (Amsterdam time).\n\nIf this wasn't you, reset your password right away at ${SITE_URL}/auth/forgot-password and contact support.`,
+    };
+  });
+  await sendEmail({ to: user.email, trigger: 'account', ...mail }).catch((e) => console.error('[auth] password-changed notice failed:', e));
+}
+
+/**
+ * The account a request is signed in to, read from its session cookie (null:
+ * not signed in). The cookie's token is the session secret; its signature only
+ * guards against tampering, which a wrong token can't survive either.
+ */
+async function sessionUserId(request: Request | undefined): Promise<string | null> {
+  const cookie = request?.headers.get('cookie') ?? '';
+  const m = /(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=([^;]+)/.exec(cookie);
+  const token = m ? decodeURIComponent(m[1]).split('.')[0] : '';
+  if (!token) return null;
+  const row = await prisma.session.findUnique({ where: { token }, select: { userId: true, expiresAt: true } }).catch(() => null);
+  return row && row.expiresAt > new Date() ? row.userId : null;
 }
 
 const AVATAR_RULE = 'Profile photos can only be changed by uploading one on your Profile page.';
@@ -267,7 +329,9 @@ export const auth = betterAuth({
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL: process.env.BETTER_AUTH_URL,
-  appName: 'lab2date',
+  // The brand at boot (Settings → Brand). The authenticator-app account name
+  // follows a later change: /two-factor/enable gets the live SITE_NAME below.
+  appName: siteName(),
 
   emailAndPassword: {
     enabled: true,
@@ -291,39 +355,35 @@ export const auth = betterAuth({
       // …and so is the owner: lift any brute-force pause on the account.
       await clearAccountSignInLocks(user.email);
       await auditAuth('auth.password.reset', user.email);
-      await sendEmail({
-        to: user.email,
-        trigger: 'account',
-        subject: 'Your lab2date password was changed',
-        html: `
-          <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-            <h2 style="color:#0E4F40;">Your password was changed</h2>
-            <p>The password on your lab2date account was just reset, and every device that was signed in has been signed out.</p>
-            <p style="color:#6b7280;font-size:13px;">If this wasn't you, reset your password again right away at <a href="${SITE_URL}/auth/forgot-password">${SITE_URL}/auth/forgot-password</a> and contact support.</p>
-          </div>
-        `,
-        text: `The password on your lab2date account was just reset and all devices were signed out. If this wasn't you, reset it again at ${SITE_URL}/auth/forgot-password and contact support.`,
-      }).catch((e) => console.error('[auth] password-changed notice failed:', e));
+      const mail = await brandedMail((site) => ({
+        subject: `Your ${site} password was changed`,
+        heading: 'Your password was changed',
+        body: [`The password on your ${escapeHtml(site)} account was just reset, and every device that was signed in has been signed out.`],
+        footer: [notYouLine()],
+        text: `The password on your ${site} account was just reset and all devices were signed out. If this wasn't you, reset it again at ${SITE_URL}/auth/forgot-password and contact support.`,
+      }));
+      await sendEmail({ to: user.email, trigger: 'account', ...mail }).catch((e) => console.error('[auth] password-changed notice failed:', e));
     },
-    sendResetPassword: async ({ user, url }) => {
+    sendResetPassword: async ({ user, url }, request) => {
+      const mail = await brandedMail((site) => ({
+        subject: `Reset your ${site} password`,
+        heading: 'Reset your password',
+        body: [
+          `Hi ${escapeHtml(user.name || 'there')},`,
+          `We received a request to reset the password on your ${escapeHtml(site)} account. Click the button below — the link expires in 1 hour.`,
+        ],
+        cta: { href: url, label: 'Reset password' },
+        footer: ["If you didn't request this, you can safely ignore this e-mail — your password won't change."],
+        text: `Reset your ${site} password: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the e-mail.`,
+      }));
       await sendEmail({
         to: user.email,
-        trigger: 'auth.password-reset',
-        subject: 'Reset your lab2date password',
-        html: `
-          <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-            <h2 style="color:#0E4F40;">Reset your password</h2>
-            <p>Hi ${escapeHtml(user.name || 'there')},</p>
-            <p>We received a request to reset the password on your lab2date account. Click the button below — the link expires in 1 hour.</p>
-            <p style="margin:24px 0;">
-              <a href="${escapeHtml(url)}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-                Reset password
-              </a>
-            </p>
-            <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email — your password won't change.</p>
-          </div>
-        `,
-        text: `Reset your lab2date password: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.`,
+        // Asked for by the account itself while signed in ("Email me a link to
+        // set a password" right after a sign-in link): not an anonymous
+        // trigger, so the per-address wait the sign-in link just started
+        // doesn't silently hold it back. Anyone else: the visitor limits.
+        trigger: (await sessionUserId(request)) === user.id ? 'account' : 'auth.password-reset',
+        ...mail,
       });
     },
     resetPasswordTokenExpiresIn: 60 * 60, // 1 hour
@@ -344,26 +404,19 @@ export const auth = betterAuth({
     },
     sendVerificationEmail: async ({ user, url }) => {
       const note = !user.emailVerified && (await hasPassword(user.id)) ? PASSWORD_REMOVAL_NOTE : null;
-      await sendEmail({
-        to: user.email,
-        trigger: 'auth.verify-link',
-        subject: 'Verify your lab2date email',
-        html: `
-          <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-            <h2 style="color:#0E4F40;">Confirm your email</h2>
-            <p>Hi ${escapeHtml(user.name || 'there')},</p>
-            <p>Click the button below to confirm that this email belongs to you. The link expires in 1 hour.</p>
-            <p style="margin:24px 0;">
-              <a href="${escapeHtml(url)}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-                Verify my email
-              </a>
-            </p>
-            ${note ? `<p style="color:#374151;">${note}</p>` : ''}
-            <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
-          </div>
-        `,
-        text: `Verify your lab2date email: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.${note ? `\n\n${note}` : ''}`,
-      });
+      const mail = await brandedMail((site) => ({
+        subject: `Verify your ${site} e-mail`,
+        heading: 'Confirm your e-mail',
+        body: [
+          `Hi ${escapeHtml(user.name || 'there')},`,
+          'Click the button below to confirm that this e-mail address belongs to you. The link expires in 1 hour.',
+          ...(note ? [note] : []),
+        ],
+        cta: { href: url, label: 'Verify my e-mail' },
+        footer: ["If you didn't request this, you can safely ignore this e-mail."],
+        text: `Verify your ${site} e-mail: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the e-mail.${note ? `\n\n${note}` : ''}`,
+      }));
+      await sendEmail({ to: user.email, trigger: 'auth.verify-link', ...mail });
     },
   },
 
@@ -545,6 +598,13 @@ export const auth = betterAuth({
         return { context: { query: { ...(ctx.query ?? {}), disableCookieCache: true } } };
       }
 
+      // The account name the authenticator app shows: the live brand
+      // (Settings → Brand), not the one the server booted with.
+      if (ctx.path === '/two-factor/enable') {
+        await ensureSettingsLoaded();
+        return { context: { body: { ...((ctx.body ?? {}) as Record<string, unknown>), issuer: siteName() } } };
+      }
+
       // "Trust this device for 30 days" would skip the second factor on the
       // next sign-ins; not offered (admins must enter a code every sign-in).
       if (ctx.path.startsWith('/two-factor/verify-')) {
@@ -585,6 +645,33 @@ export const auth = betterAuth({
       }
     }),
     after: createAuthMiddleware(async (ctx) => {
+      // A sign-in by e-mailed link: audit it and run the new-device alert,
+      // like a password sign-in (src/app/api/auth/[...all]/route.ts). The
+      // link answers with a redirect either way; a session was only made when
+      // it signed someone in.
+      if (ctx.path === '/magic-link/verify') {
+        const made = ctx.context.newSession;
+        if (made?.user) {
+          const headers = ctx.request?.headers ?? ctx.headers;
+          await noteSuccessfulSignIn(
+            { id: made.user.id, email: made.user.email },
+            headers ? clientIpFrom(headers) : 'unknown',
+            headers?.get('user-agent') ?? null,
+            'magic link',
+          );
+        }
+        return;
+      }
+      // Password changed on the Profile page: audit + tell the owner.
+      if (ctx.path === '/change-password') {
+        const returned = ctx.context.returned;
+        const user = ctx.context.session?.user as { id: string; email: string } | undefined;
+        if (user && returned && !(returned instanceof APIError)) {
+          const revoke = !!((ctx.body ?? {}) as { revokeOtherSessions?: unknown }).revokeOtherSessions;
+          await notePasswordChanged(user, ctx.request, revoke);
+        }
+        return;
+      }
       // A sign-up that passed the bot check: its code e-mail (sent by the form
       // right after) needs no second check. Only when sign-up has the check on.
       if (ctx.path === '/sign-up/email') {
@@ -638,20 +725,19 @@ export const auth = betterAuth({
           select: { id: true, emailVerified: true, role: true, twoFactorEnabled: true },
         });
         if (!exists) {
-          await sendEmail({
-            to: email,
-            trigger: 'auth.notice',
-            subject: 'Sign-in request for lab2date',
-            html: `
-              <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-                <h2 style="color: #047857;">No lab2date account yet</h2>
-                <p>Someone asked for a sign-in link for this address, but there's no lab2date account for it.</p>
-                <p>To get started, <a href="${SITE_URL}/auth/sign-up">create an account</a>.</p>
-                <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore the email.</p>
-              </div>
-            `,
-            text: `There's no lab2date account for this address. Create one at ${SITE_URL}/auth/sign-up\n\nIf you didn't request this, ignore the email.`,
-          });
+          const mail = await brandedMail((site) => ({
+            subject: `Sign-in request for ${site}`,
+            heading: `No ${site} account yet`,
+            body: [`Someone asked for a sign-in link for this address, but there's no ${escapeHtml(site)} account for it.`],
+            cta: { href: `${SITE_URL}/auth/sign-up`, label: 'Create an account' },
+            footer: ["If you didn't request this, you can safely ignore the e-mail."],
+            text: `There's no ${site} account for this address. Create one at ${SITE_URL}/auth/sign-up\n\nIf you didn't request this, ignore the e-mail.`,
+          }));
+          // Like every sign-in notice it sends the reader on to another e-mail
+          // (here the sign-up code): it must not start the per-address wait
+          // that would silently hold that one back. The daily and hourly
+          // limits still count it.
+          await sendEmail({ to: email, trigger: 'auth.notice', skipCooldown: true, ...mail });
           return;
         }
         if (await magicLinkRefused(exists)) {
@@ -659,43 +745,30 @@ export const auth = betterAuth({
           // so this can't be used to find admin addresses; the owner is told
           // how to sign in instead.
           await auditAuth('auth.magiclink.refused', email, 'requested for an admin / 2FA account');
-          await sendEmail({
-            to: email,
-            trigger: 'auth.notice',
-            subject: 'Sign-in links are switched off for your lab2date account',
-            html: `
-              <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-                <h2 style="color:#0E4F40;">Use your password and authenticator app</h2>
-                <p>Someone asked for an e-mailed sign-in link for this address. For your security, this account can only sign in with its password and a code from your authenticator app, so no link was sent.</p>
-                <p><a href="${SITE_URL}/auth/sign-in">Sign in</a> · <a href="${SITE_URL}/auth/forgot-password">Forgot password</a></p>
-                <p style="color:#6b7280;font-size:13px;">If you didn't ask for this, you can ignore this e-mail — nothing has changed.</p>
-              </div>
-            `,
-            text: `For your security this account signs in with its password and an authenticator code only, so no sign-in link was sent. Sign in: ${SITE_URL}/auth/sign-in — Forgot password: ${SITE_URL}/auth/forgot-password\n\nIf you didn't ask for this, ignore this e-mail.`,
-          });
+          const mail = await brandedMail((site) => ({
+            subject: `Sign-in links are switched off for your ${site} account`,
+            heading: 'Use your password and authenticator app',
+            body: [
+              'Someone asked for an e-mailed sign-in link for this address. For your security, this account can only sign in with its password and a code from your authenticator app, so no link was sent.',
+              `<p style="margin:0 0 12px;"><a href="${SITE_URL}/auth/sign-in" style="color:${mailBrandColor()};">Sign in</a> · <a href="${SITE_URL}/auth/forgot-password" style="color:${mailBrandColor()};">Forgot password</a></p>`,
+            ],
+            footer: ["If you didn't ask for this, you can ignore this e-mail — nothing has changed."],
+            text: `For your security this ${site} account signs in with its password and an authenticator code only, so no sign-in link was sent. Sign in: ${SITE_URL}/auth/sign-in — Forgot password: ${SITE_URL}/auth/forgot-password\n\nIf you didn't ask for this, ignore this e-mail.`,
+          }));
+          // Links to Forgot password: no per-address wait (see the notice above).
+          await sendEmail({ to: email, trigger: 'auth.notice', skipCooldown: true, ...mail });
           return;
         }
         const note = !exists.emailVerified && (await hasPassword(exists.id)) ? PASSWORD_REMOVAL_NOTE : null;
-        await sendEmail({
-          to: email,
-          trigger: 'auth.magic-link',
-          subject: 'Your lab2date sign-in link',
-          html: `
-            <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-              <h2 style="color: #047857;">Sign in to lab2date</h2>
-              <p>Click the link below to sign in. It expires in 10 minutes.</p>
-              <p style="margin: 24px 0;">
-                <a href="${escapeHtml(url)}"
-                   style="background:#047857;color:white;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:600;">
-                  Sign in to lab2date
-                </a>
-              </p>
-              ${note ? `<p style="color:#374151;">${note}</p>` : ''}
-              <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore the email.</p>
-            </div>
-          `,
-          text: `Sign in to lab2date: ${url}\n\nThis link expires in 10 minutes.${note ? `\n\n${note}` : ''}`,
-        });
+        const mail = await brandedMail((site) => ({
+          subject: `Your ${site} sign-in link`,
+          heading: `Sign in to ${site}`,
+          body: ['Click the button below to sign in. The link expires in 10 minutes and works once.', ...(note ? [note] : [])],
+          cta: { href: url, label: `Sign in to ${site}` },
+          footer: ["If you didn't request this, you can safely ignore the e-mail."],
+          text: `Sign in to ${site}: ${url}\n\nThis link expires in 10 minutes.${note ? `\n\n${note}` : ''}`,
+        }));
+        await sendEmail({ to: email, trigger: 'auth.magic-link', ...mail });
       },
     }),
     // 5-digit e-mail verification code, used by sign-up and by sign-in for
@@ -718,43 +791,39 @@ export const auth = betterAuth({
             // answers as if it were new, so it can't be used to probe which
             // addresses are registered). A code would only sign the person in
             // and silently drop the password they just typed — explain instead.
-            await sendEmail({
-              to: email,
-              trigger: 'auth.notice',
-              subject: 'You already have a lab2date account',
-              html: `
-                <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
-                  <h2 style="color:#0E4F40;margin:0 0 8px;">You already have an account</h2>
-                  <p style="color:#374151;">Someone (hopefully you) tried to create a lab2date account with this address, but it already has one.</p>
-                  <p style="color:#374151;"><a href="${SITE_URL}/auth/sign-in">Sign in</a>, or <a href="${SITE_URL}/auth/forgot-password">reset your password</a> if you don't remember it.</p>
-                  <p style="color:#6b7280;font-size:13px;">If this wasn't you, you can safely ignore this email — nothing has changed.</p>
-                </div>
-              `,
-              text: `This address already has a lab2date account. Sign in at ${SITE_URL}/auth/sign-in or reset your password at ${SITE_URL}/auth/forgot-password.\n\nIf this wasn't you, ignore this email — nothing has changed.`,
-            });
+            const mail = await brandedMail((site) => ({
+              subject: `You already have a ${site} account`,
+              heading: 'You already have an account',
+              body: [
+                `Someone (hopefully you) tried to create a ${escapeHtml(site)} account with this address, but it already has one.`,
+                `<p style="margin:0 0 12px;"><a href="${SITE_URL}/auth/sign-in" style="color:${mailBrandColor()};">Sign in</a>, or <a href="${SITE_URL}/auth/forgot-password" style="color:${mailBrandColor()};">reset your password</a> if you don't remember it.</p>`,
+              ],
+              footer: ["If this wasn't you, you can safely ignore this e-mail — nothing has changed."],
+              text: `This address already has a ${site} account. Sign in at ${SITE_URL}/auth/sign-in or reset your password at ${SITE_URL}/auth/forgot-password.\n\nIf this wasn't you, ignore this e-mail — nothing has changed.`,
+            }));
+            // Links to the password reset: no per-address wait that would hold that link back.
+            await sendEmail({ to: email, trigger: 'auth.notice', skipCooldown: true, ...mail });
             return;
           }
         }
-        await sendEmail({
-          to: email,
-          trigger: 'auth.signup-code',
-          subject: `${otp} is your lab2date verification code`,
-          html: `
-            <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
-              <h2 style="color:#0E4F40;margin:0 0 8px;">Confirm your email</h2>
-              <p style="color:#374151;">Enter this code to finish creating your lab2date account:</p>
-              <p style="font-size:34px;font-weight:800;letter-spacing:8px;color:#0E4F40;background:#f3f4f6;border-radius:12px;padding:16px;text-align:center;margin:20px 0;">${otp}</p>
-              <p style="color:#6b7280;font-size:13px;">This code expires in 10 minutes. If you didn't sign up, you can safely ignore this email.</p>
-            </div>
-          `,
-          text: `Your lab2date verification code is ${otp}. It expires in 10 minutes.`,
-        });
+        const mail = await brandedMail((site) => ({
+          subject: `${otp} is your ${site} verification code`,
+          heading: 'Confirm your e-mail',
+          body: [
+            `Enter this code to confirm your e-mail address for your ${escapeHtml(site)} account:`,
+            `<p style="font-size:34px;font-weight:800;letter-spacing:8px;color:${mailBrandColor()};background:#f3f4f6;border-radius:12px;padding:16px;text-align:center;margin:20px 0;">${otp}</p>`,
+          ],
+          footer: ["This code expires in 10 minutes. If you didn't ask for it, you can safely ignore this e-mail."],
+          text: `Your ${site} verification code is ${otp}. It expires in 10 minutes.`,
+        }));
+        await sendEmail({ to: email, trigger: 'auth.signup-code', ...mail });
       },
     }),
     // TOTP authenticator app + 10 one-time recovery codes. Required for the
     // roles in Settings → Security (admins by default) — see requireSession.
     twoFactor({
-      issuer: process.env.SITE_NAME || 'Labtodate',
+      // Fallback only: /two-factor/enable is given the live SITE_NAME (hooks.before).
+      issuer: process.env.SITE_NAME?.trim() || DEFAULT_SITE_NAME,
       backupCodeOptions: { amount: 10, length: 10 },
       // The "enter your code" step after the password stays open 10 minutes.
       twoFactorCookieMaxAge: 600,

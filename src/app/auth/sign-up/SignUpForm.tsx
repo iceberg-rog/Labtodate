@@ -19,8 +19,21 @@ import {
 import { VerifyEmailStep, sendVerificationCode } from '../VerifyEmailStep';
 import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
 import type { AuthCaptchaFlags } from '@/lib/security/captcha-shared';
+import { mailCooldownNotice, noteMailRequest } from '@/lib/auth-mail-notice';
 
-export default function SignUpPage({ listings, captcha: flags }: { listings: string; captcha: AuthCaptchaFlags }) {
+export default function SignUpPage({
+  listings,
+  captcha: flags,
+  site,
+  mailCooldownSec,
+}: {
+  listings: string;
+  captcha: AuthCaptchaFlags;
+  /** The brand (Settings → Brand → SITE_NAME). */
+  site: string;
+  /** The e-mail guard's per-address wait (Settings → Security). */
+  mailCooldownSec: number;
+}) {
   const params = useSearchParams();
   // Role-aware landing after the account is verified + signed in. Only a
   // same-origin relative path is honoured (blocks open-redirect phishing).
@@ -33,6 +46,7 @@ export default function SignUpPage({ listings, captcha: flags }: { listings: str
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState<string | null>(null);
   // Bot check (Settings → Security): solved in the background while the form
   // is filled in; the first code e-mail right after needs no second one.
   const captcha = useCaptcha('signup', { required: flags.signup, start: 'focus' });
@@ -77,6 +91,9 @@ export default function SignUpPage({ listings, captcha: flags }: { listings: str
     const sendErr = await sendVerificationCode(email);
     setLoading(false);
     setCodeError(sendErr);
+    // Inside the per-address wait no new code is made (the last one stays
+    // valid) and the answer is the same as a sent one: the screen says so.
+    setCooldown(sendErr ? null : mailCooldownNotice(mailCooldownSec, noteMailRequest(email, mailCooldownSec), 'code'));
     setStep('code');
   }
 
@@ -92,10 +109,18 @@ export default function SignUpPage({ listings, captcha: flags }: { listings: str
         lead={
           <>
             We sent a 5-digit code to <strong className="text-foreground">{email}</strong>. If this address
-            already has a lab2date account, we emailed you sign-in instructions instead.
+            already has a {site} account, we e-mailed you sign-in instructions instead.
+            {cooldown && (
+              <span className="block mt-2" data-testid="mail-cooldown">
+                {cooldown}
+              </span>
+            )}
           </>
         }
         initialError={codeError}
+        mailCooldownSec={mailCooldownSec}
+        // A registered address gets the sign-in instructions again, not a code.
+        resentText={`A new code is on its way to ${email} (or, if this address already has a ${site} account, the sign-in instructions again). Nothing after a minute? Check your spam folder.`}
         onBack={() => {
           setStep('form');
           setError(null);

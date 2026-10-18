@@ -19,6 +19,8 @@ import { auditAs } from '@/lib/observability';
 import { emailTransportStatus, mailRefusals, sendEmail, type EmailBlockedError } from '@/lib/email';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { escapeHtml } from '@/lib/email-html';
+import { brandedMail } from '@/lib/quotes/mail';
+import { legalIdentity } from '@/lib/brand/identity';
 import { alertSuperAdmins } from '@/lib/security/alerts';
 import { noteSuccessfulSignIn } from '@/lib/security/signin-events';
 import { CAPTCHA_HEADER, signInNeedsCaptcha, verifyCaptcha } from '@/lib/security/captcha';
@@ -87,19 +89,28 @@ async function notifyLockout(email: string, block: SignInBlock, ip: string) {
   const site = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
   const mins = minutesUntil(block.until);
   if (policy.LOCKOUT_EMAIL_ENABLED) {
+    const reset = `${site}/auth/forgot-password`;
+    const mail = await brandedMail((brand) => ({
+      subject: `Sign-in to your ${brand} account was paused`,
+      heading: 'Too many wrong passwords',
+      body: [
+        `Hi ${escapeHtml(user.name || 'there')},`,
+        `Someone entered a wrong password for your account several times${block.scope === 'account-ip' ? ` from the network ${escapeHtml(ip)}` : ' from several networks'}. To protect the account, password sign-in is paused for ${mins} minutes${block.scope === 'account-ip' ? ' from that network' : ''}.`,
+        'Was it you? Reset your password to get in right away.',
+      ],
+      cta: { href: reset, label: 'Reset my password' },
+      footer: ['Wasn’t you? Your password was not accepted. Resetting it to a new, strong one is still a good idea.'],
+      text: `Too many wrong passwords were entered for your ${brand} account. Password sign-in is paused for ${mins} minutes. Reset your password to get in right away: ${reset}`,
+    }));
     await sendEmail({
       to: email,
       // Caused by whoever typed the wrong passwords, not by the owner.
       trigger: 'auth.notice',
-      subject: 'Sign-in to your lab2date account was paused',
-      html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-        <h2 style="color:#0E4F40;">Too many wrong passwords</h2>
-        <p>Hi ${escapeHtml(user.name || 'there')},</p>
-        <p>Someone entered a wrong password for your account several times${block.scope === 'account-ip' ? ` from the network ${escapeHtml(ip)}` : ' from several networks'}. To protect the account, password sign-in is paused for ${mins} minutes${block.scope === 'account-ip' ? ' from that network' : ''}.</p>
-        <p>Was it you? Reset your password to get in right away: <a href="${site}/auth/forgot-password">${site}/auth/forgot-password</a></p>
-        <p style="color:#6b7280;font-size:13px;">Wasn’t you? Your password was not accepted. Resetting it to a new, strong one is still a good idea.</p>
-      </div>`,
-      text: `Too many wrong passwords were entered for your lab2date account. Password sign-in is paused for ${mins} minutes. Reset your password to get in right away: ${site}/auth/forgot-password`,
+      // It tells the owner to ask for a reset link right away: it must not
+      // start the per-address wait that would silently hold that link back
+      // (the daily and hourly limits still count it).
+      skipCooldown: true,
+      ...mail,
     }).catch(() => {});
   }
   if (user.role === 'ADMIN') {
@@ -224,7 +235,8 @@ async function twoFactorVerify(req: Request): Promise<Response> {
 const MAIL_PATHS = /\/(sign-up\/email|email-otp\/send-verification-otp|request-password-reset|sign-in\/magic-link|send-verification-email)$/;
 
 function supportLine(): string {
-  const support = (process.env.SUPPORT_EMAIL || '').trim();
+  // Only a real address (a placeholder such as support@….local reads as unset).
+  const support = legalIdentity().supportEmail;
   return support ? ` Please contact ${support}.` : '';
 }
 

@@ -180,7 +180,6 @@ test('release v2 keys are registered in their groups with valid defaults', () =>
 test('release v2 keys say “not applied yet” until the package that reads them ships', () => {
   // Each W1 package removes the `pending` of its keys (and its line here) when it adds the reader.
   const readers: Record<string, string> = {
-    TRANSACTIONAL_REPLY_TO: 'PKG-07',
     CONSUMER_WITHDRAWAL_TEXT: 'PKG-19',
     ABOUT_PAGE_TEXT: 'PKG-15',
     FAQ_TEXT: 'PKG-15',
@@ -213,6 +212,29 @@ test('the chat assistant name is gone and the AI keys describe the admin tools o
   assert.equal(settingDef('ASSISTANT_NAME'), undefined);
   for (const k of ['AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL']) assert.doesNotMatch(settingDef(k)?.hint ?? '', /on-site|chat/i, k);
   assert.match(settingDef('SITE_NAME')?.hint ?? '', /e-mail/);
+});
+
+test('branded e-mails: Reply-To is applied, the brand colour is checked for readable button text', () => {
+  assert.equal(settingDef('TRANSACTIONAL_REPLY_TO')?.pending, undefined);
+  assert.equal(settingDef('EMAIL_BRAND_COLOR')?.group, 'Brand');
+  assert.equal(settingDef('EMAIL_BRAND_COLOR')?.default, '#0E4F40');
+  assert.equal(v('EMAIL_BRAND_COLOR', '#1d4ed8'), null);
+  assert.match(v('EMAIL_BRAND_COLOR', 'green') ?? '', /six hex digits/);
+  assert.match(v('EMAIL_BRAND_COLOR', '#a4e335') ?? '', /too light/);
+  assert.match(settingDef('COMPANY_LOGO_URL')?.hint ?? '', /e-mail/);
+});
+
+test('logos: the document logo says where it shows; the dark website can have its own', () => {
+  const doc = settingDef('COMPANY_LOGO_URL');
+  assert.equal(doc?.effect, 'immediate'); // site and e-mails change at once (documents freeze it at issue — said in the hint)
+  assert.match(doc?.hint ?? '', /white tile/);
+  assert.match(doc?.hint ?? '', /issued documents keep/);
+  const dark = settingDef('COMPANY_LOGO_DARK_URL');
+  assert.equal(dark?.group, 'Brand');
+  assert.equal(dark?.type, 'image');
+  assert.equal(dark?.optional, true);
+  assert.equal(v('COMPANY_LOGO_DARK_URL', '/media/lab2date-media/products/branding/logo-light.png'), null);
+  assert.match(v('COMPANY_LOGO_DARK_URL', 'logo.png') ?? '', /valid URL/);
 });
 
 test('domain lists spread into the registry (support, homepage)', async () => {

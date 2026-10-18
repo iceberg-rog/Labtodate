@@ -1,11 +1,20 @@
 import { cn } from '@/lib/utils';
+import { UploadedLogo } from './UploadedLogo';
+
+// The box an uploaded logo is fitted into (any aspect ratio; left-aligned):
+// fixed, so the header never shifts while it loads. Height matches the mark.
+const UPLOADED_BOX = { sm: { width: 150, height: 32 }, md: { width: 190, height: 40 }, lg: { width: 230, height: 48 } } as const;
 
 /**
- * Labtodate identity — molecular scatter mark.
+ * The site logo. With a logo set in Admin → Settings (passed in as `logoUrl`
+ * by siteBrand(), src/lib/brand/site-logo.ts) that image, with the site name
+ * as its alt text — on a white tile when it is the document logo, made for
+ * white (`logoOnLight`); without one — or when it fails to load — the
+ * built-in lock-up:
  *
  *  A cluster of nodes of varying size rising to a peak then trailing
  *  off, set above a baseline — reads as a chromatogram peak / molecular
- *  scatter over an axis. Wordmark (the site name, "Labtodate") with a small
+ *  scatter over an axis. Wordmark (the site name) with a small
  *  "MOLECULAR ANALYSIS" tagline lock-up.
  *
  *  Dark theme: the mark glows lime → teal (the redesign's accent gradient)
@@ -17,19 +26,29 @@ export function Logo({
   withWordmark = true,
   withTagline = true,
   size = 'md',
-  name = 'Labtodate',
+  name,
+  logoUrl,
+  logoOnLight = false,
+  priority = false,
 }: {
   className?: string;
   withWordmark?: boolean;
   withTagline?: boolean;
   size?: 'sm' | 'md' | 'lg';
-  name?: string;
+  /** The brand (SITE_NAME): wordmark, and the alt text of an uploaded logo. */
+  name: string;
+  /** The logo to show (SiteBrand.logoUrl); empty = the built-in lock-up. */
+  logoUrl?: string | null;
+  /** The logo is made for a light background: set it on a white tile on the dark site. */
+  logoOnLight?: boolean;
+  /** Above the fold (the header): fetch the uploaded logo first. */
+  priority?: boolean;
 }) {
   const mark = size === 'lg' ? 'h-10 w-14' : size === 'sm' ? 'h-7 w-10' : 'h-9 w-12';
   const word = size === 'lg' ? 'text-3xl' : size === 'sm' ? 'text-lg' : 'text-2xl';
   const tag = size === 'lg' ? 'text-[11px]' : 'text-[9px]';
 
-  return (
+  const lockup = (
     <div className={cn('inline-flex items-center gap-3', className)}>
       <svg
         viewBox="0 0 64 46"
@@ -80,4 +99,8 @@ export function Logo({
       )}
     </div>
   );
+
+  const src = logoUrl?.trim();
+  if (!src) return lockup;
+  return <UploadedLogo src={src} alt={name} {...UPLOADED_BOX[size]} onLight={logoOnLight} priority={priority} className={className} fallback={lockup} />;
 }

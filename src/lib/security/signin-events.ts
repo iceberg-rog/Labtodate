@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { sendEmail } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
+import { brandedMail, mailBrandColor } from '@/lib/quotes/mail';
 import { getSecurityPolicy } from './policy';
 
 /** "Chrome on Windows" from a user agent (coarse on purpose: a browser update is not a new device). */
@@ -57,19 +58,21 @@ export async function noteSuccessfulSignIn(
     if (!policy.NEW_DEVICE_ALERT) return;
     const site = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
     const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/Amsterdam' });
-    await sendEmail({
-      to: user.email,
-      trigger: 'account',
-      subject: 'New sign-in to your lab2date account',
-      html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-        <h2 style="color:#0E4F40;">New sign-in</h2>
-        <p>Your account was just signed in to from a device we haven’t seen before:</p>
-        <p><strong>${escapeHtml(device)}</strong><br>IP address ${escapeHtml(ip)}<br>${escapeHtml(when)} (Amsterdam time)</p>
-        <p>Was this you? Then there is nothing to do.</p>
-        <p>Not you? <a href="${site}/auth/forgot-password">Reset your password</a> now, then check the signed-in devices under <a href="${site}/app/security">Account security</a>.</p>
-      </div>`,
-      text: `New sign-in to your lab2date account: ${device}, IP ${ip}, ${when} (Amsterdam time). Not you? Reset your password at ${site}/auth/forgot-password and check ${site}/app/security.`,
-    }).catch(() => {});
+    const mail = await brandedMail((brand) => {
+      const link = `style="color:${mailBrandColor()};"`;
+      return {
+        subject: `New sign-in to your ${brand} account`,
+        heading: 'New sign-in',
+        body: [
+          `Your account was just signed in to${method === 'magic link' ? ' with an e-mailed sign-in link' : ''} from a device we haven’t seen before:`,
+          `<p style="margin:0 0 12px;"><strong>${escapeHtml(device)}</strong><br>IP address ${escapeHtml(ip)}<br>${escapeHtml(when)} (Amsterdam time)</p>`,
+          'Was this you? Then there is nothing to do.',
+          `Not you? <a href="${site}/auth/forgot-password" ${link}>Reset your password</a> now, then check the signed-in devices under <a href="${site}/app/security" ${link}>Account security</a>.`,
+        ],
+        text: `New sign-in to your ${brand} account: ${device}, IP ${ip}, ${when} (Amsterdam time). Not you? Reset your password at ${site}/auth/forgot-password and check ${site}/app/security.`,
+      };
+    });
+    await sendEmail({ to: user.email, trigger: 'account', ...mail }).catch(() => {});
   } catch {
     /* never block a sign-in on this */
   }

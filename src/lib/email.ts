@@ -17,6 +17,7 @@ import {
 } from './email-guard';
 
 import { isDeliverableEmail } from './email-address';
+import { DEFAULT_SITE_NAME, siteName } from './brand/identity';
 
 export { isDeliverableEmail };
 export type { EmailTrigger };
@@ -34,7 +35,7 @@ interface SendEmailParams {
   text?: string;
   /** Files attached to the message (e.g. a proforma / invoice PDF). */
   attachments?: EmailAttachment[];
-  /** Where replies go (e.g. the support inbox for announcements). */
+  /** Where replies go. Default: {@link defaultReplyTo} (customer e-mails reach a person, not the no-reply From). */
   replyTo?: string;
   /** Extra MIME headers, e.g. List-Unsubscribe / List-Unsubscribe-Post (RFC 8058). */
   headers?: Record<string, string>;
@@ -44,7 +45,34 @@ interface SendEmailParams {
    * rate-limited per address / domain / hour. Default: transactional.
    */
   trigger?: EmailTrigger;
+  /**
+   * true: the per-address wait neither holds this e-mail back nor starts
+   * with it; the daily, per-domain and hourly limits still apply and count
+   * it. For notices nobody asked for that send the owner on to a reset link,
+   * code or sign-in right away (sign-in paused, already registered, …): the
+   * wait would silently hold that next e-mail back.
+   */
+  skipCooldown?: boolean;
 }
+
+/**
+ * Reply-To when the caller sets none: TRANSACTIONAL_REPLY_TO (Settings →
+ * Email), else the public support address (Settings → Brand). Customer e-mails
+ * come from a no-reply sender, so without it a customer pressing Reply wrote
+ * to nobody. Staff copies keep none (their callers set the customer as the
+ * Reply-To where it helps). Placeholders (*.local …) are never used.
+ */
+export function defaultReplyTo(trigger: EmailTrigger): string | undefined {
+  if (trigger === 'internal') return undefined;
+  for (const key of ['TRANSACTIONAL_REPLY_TO', 'SUPPORT_EMAIL']) {
+    const addr = (process.env[key] ?? '').trim();
+    if (isDeliverableEmail(addr)) return addr;
+  }
+  return undefined;
+}
+
+/** Outside production only: the From of the development mailbox when EMAIL_FROM is empty. */
+export const DEV_FALLBACK_FROM = 'no-reply@mail.invalid';
 
 /** Thrown when no real mail transport is configured (production). */
 export class EmailNotConfiguredError extends Error {
@@ -148,6 +176,32 @@ export function emailTransportStatus(): EmailTransportStatus {
     mode: 'dev-capture',
     label: `development mailbox (${host || 'localhost'}:${process.env.SMTP_PORT || '1025'}) — not delivered to real inboxes`,
   };
+}
+
+declare global {
+  var __mailNotConfiguredAlertAt: number | undefined;
+}
+const MAIL_ALERT_EVERY_MS = 6 * 3600_000;
+
+/**
+ * Production without a usable transport or From address (a placeholder such
+ * as no-reply@….local included): besides the red banner on every admin page,
+ * tell the admins in-app and on the configured webhooks that customer e-mails
+ * are being refused — at most every 6 hours per server process, so a burst of
+ * refused e-mails is one alert. Never throws.
+ */
+async function alertMailNotConfigured(problem: string): Promise<void> {
+  const now = Date.now();
+  const last = globalThis.__mailNotConfiguredAlertAt;
+  if (last && now - last < MAIL_ALERT_EVERY_MS) return;
+  globalThis.__mailNotConfiguredAlertAt = now;
+  try {
+    // Loaded here: observability → auth-server → auth → this module.
+    const { notifyAdmins } = await import('./observability');
+    await notifyAdmins('E-mail is not being sent', `Customer e-mails are refused until this is fixed: ${problem}.`, '/admin/settings');
+  } catch {
+    /* the banner on every admin page still says it */
+  }
 }
 
 // Resend HTTP API send — used when RESEND_API_KEY is set.
@@ -279,6 +333,7 @@ export async function sendEmail({
   replyTo,
   headers,
   trigger = 'transactional',
+  skipCooldown = false,
 }: SendEmailParams): Promise<void> {
   await ensureSettingsLoaded();
   const status = emailTransportStatus();
@@ -286,7 +341,7 @@ export async function sendEmail({
   // Blocked / throw-away domains, suppressed addresses and the limits on
   // e-mails visitors can trigger: refused before anything reaches the mail
   // server, and logged like a failed send so the trail stays complete.
-  const guard = await guardOutgoing(to, trigger);
+  const guard = await guardOutgoing(to, trigger, undefined, { skipCooldown });
   if (!guard.ok) {
     try {
       await prisma.emailLog.create({
@@ -304,23 +359,27 @@ export async function sendEmail({
   const subject = headerText(rawSubject, 250);
   const text = rawText === undefined ? undefined : plainTextBody(rawText);
   // Outside production a missing From falls back to a dev placeholder; in
-  // production emailTransportStatus() refuses to send without a real one.
-  const addr = process.env.EMAIL_FROM || 'no-reply@lab2date.local';
-  const name = headerText(process.env.SITE_NAME || 'Labtodate', 80).replace(/"/g, '') || 'Labtodate';
+  // production emailTransportStatus() refuses to send without a real one (a
+  // placeholder such as *.local included) and the admins are alerted.
+  const addr = process.env.EMAIL_FROM || DEV_FALLBACK_FROM;
+  const name = headerText(siteName(), 80).replace(/"/g, '') || DEFAULT_SITE_NAME;
   const from = addr.includes('<') ? addr : `"${name}" <${addr}>`;
   // Attachment filenames end up in a MIME header: keep them single-line and safe.
   const files = attachments?.map((a) => ({
     ...a,
     filename: headerText(a.filename, 120).replace(/[\\/"]/g, '_') || 'attachment',
   }));
-  const reply = replyTo && isDeliverableEmail(replyTo) ? replyTo : undefined;
+  const reply = replyTo && isDeliverableEmail(replyTo) ? replyTo : defaultReplyTo(trigger);
   const extraHeaders = headers
     ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [headerText(k, 80), headerText(v, 900)]))
     : undefined;
   let result: { messageId?: string } | undefined;
   let sendError: Error | null = null;
   try {
-    if (!status.configured) throw new EmailNotConfiguredError(status.problem ?? 'no mail transport');
+    if (!status.configured) {
+      await alertMailNotConfigured(status.problem ?? 'no mail transport');
+      throw new EmailNotConfiguredError(status.problem ?? 'no mail transport');
+    }
     if (status.mode === 'resend') {
       result = await sendViaResendHttp(from, to, subject, html, text, files, reply, extraHeaders);
     } else {

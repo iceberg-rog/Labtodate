@@ -1,15 +1,26 @@
 import { ensureSettingsLoaded } from '@/lib/settings';
+import { legalIdentity } from '@/lib/brand/identity';
 
+/**
+ * Brand and seller identity for the legal and company pages, from Settings
+ * (Brand, Company) through legalIdentity() — the same source as the e-mail
+ * footers and the invoices. Placeholder e-mail addresses read as not set.
+ */
 export async function legalContext() {
   await ensureSettingsLoaded();
+  const id = legalIdentity();
+  // The registered address on one line, without the country (printed after it).
+  const last = id.addressLines[id.addressLines.length - 1];
+  const lines = id.country && last === id.country ? id.addressLines.slice(0, -1) : id.addressLines;
   return {
-    site: process.env.SITE_NAME || 'Labtodate',
-    legal: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'Labtodate',
-    address: process.env.COMPANY_ADDRESS || '',
-    country: process.env.COMPANY_COUNTRY || '',
-    vat: process.env.COMPANY_VAT || '',
-    phone: process.env.COMPANY_PHONE || '',
-    email: (process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '').trim(),
+    site: id.siteName,
+    legal: id.displayName,
+    address: lines.join(', '),
+    country: id.country,
+    kvk: id.kvk,
+    vat: id.vat,
+    phone: id.phone,
+    email: id.supportEmail || id.email,
     // Where "contact us" points: the configured address, else the contact page
     // (never a made-up address — Settings → Brand → Public support email).
     get contactHref(): string {
@@ -33,6 +44,7 @@ export function LegalShell({
 }: {
   title: string;
   subtitle?: string;
+  /** When the text last changed. Without it no date is shown — it used to print the current month on every visit. */
   updatedAt?: Date | null;
   children: React.ReactNode;
 }) {
@@ -45,7 +57,7 @@ export function LegalShell({
       <div className="prose-article mt-10 text-foreground">{children}</div>
       {updatedAt && (
         <p className="mt-12 text-xs text-muted-foreground">
-          Last updated: {updatedAt.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', timeZone: 'Europe/Amsterdam' })}
+          Last updated: {updatedAt.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Europe/Amsterdam' })}
         </p>
       )}
     </div>
