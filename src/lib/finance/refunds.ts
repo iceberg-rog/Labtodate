@@ -455,7 +455,11 @@ export function creditSummary(out: CreditOutcome, currency: string, askedCents?:
 export async function createRefund(
   p: {
     orderId: string; amountCents: number; reason: string; method: RefundMethod | null; returnId?: string | null; justification?: string | null; payeeIban?: string | null; restock?: boolean | null;
-    /** Stripe idempotency key of the card refund (default: per order + refund count + amount). A return passes its own: one card refund per RMA. */
+    /**
+     * Stripe idempotency key prefix of the card refund; the refunded amount is appended, so a
+     * corrected amount is a new request (default: per order + refund count). A return passes its
+     * own: one card refund per RMA and amount.
+     */
     stripeKey?: string;
     /**
      * Runs inside the money transaction right after the order row is locked,
@@ -465,7 +469,7 @@ export async function createRefund(
     inTx?: (tx: Tx) => Promise<void>;
   },
   actor: Actor,
-): Promise<{ ok: true; message: string; outcome: CreditOutcome } | { ok: false; message: string }> {
+): Promise<{ ok: true; message: string; outcome: CreditOutcome } | { ok: false; message: string; /** Set when the card refund WAS issued in Stripe but nothing was booked. */ stripeRefundId?: string }> {
   await ensureSettingsLoaded();
   const reason = p.reason.trim().slice(0, 300);
   if (reason.length < 4) return { ok: false, message: 'Give the reason (at least 4 characters) — it is printed on the credit note and shown to the buyer.' };
@@ -509,14 +513,15 @@ export async function createRefund(
       : alreadyRestocked ? ' Stock was already returned earlier — not returned twice.'
         : o.status === 'PENDING_PAYMENT' ? '' : ' Stock NOT returned (Settings → Stock & reservation, or unticked) — put it back by hand after checking the unit.';
 
+  // Loaded before any money moves: after a card refund only the booking below can still fail.
+  const docCtx = await refundDocContext();
   let stripeId: string | null = null;
   if (p.method === 'STRIPE' && split.refundCents > 0) {
-    const n = await prisma.refund.count({ where: { orderId: p.orderId } });
-    const s = await stripeRefund(p.orderId, o.stripePaymentIntentId as string, split.refundCents, p.stripeKey ?? `r${n + 1}-${split.refundCents}`);
+    const prefix = p.stripeKey ?? `r${(await prisma.refund.count({ where: { orderId: p.orderId } })) + 1}`;
+    const s = await stripeRefund(p.orderId, o.stripePaymentIntentId as string, split.refundCents, `${prefix}-${split.refundCents}`);
     if (!s.ok) return { ok: false, message: s.message };
     stripeId = s.id;
   }
-  const docCtx = await refundDocContext();
   let out: CreditOutcome;
   try {
     out = await prisma.$transaction(async (tx) => {
@@ -530,10 +535,12 @@ export async function createRefund(
       // Same idempotency key (e.g. the same return resolved twice): Stripe returned the card refund the
       // first request already booked — nothing went back twice.
       const booked = await prisma.refund.findFirst({ where: { stripeRefundId: stripeId }, select: { id: true } });
-      return { ok: false, message: booked ? `${e.message} The card refund ${stripeId} is the one already recorded on this order — nothing was refunded twice.` : `The card refund WAS issued in Stripe (${stripeId}) but could not be recorded: ${e.message} Do not refund again — record it by hand.` };
+      return { ok: false, stripeRefundId: stripeId, message: booked ? `${e.message} The card refund ${stripeId} is the one already recorded on this order — nothing was refunded twice.` : `The card refund WAS issued in Stripe (${stripeId}) but could not be recorded: ${e.message} Do not refund again — record it by hand.` };
     }
     await logError('refunds:credit', e);
-    return { ok: false, message: stripeId ? `The card refund WAS issued in Stripe (${stripeId}) but recording it failed — do not refund again; contact a developer.` : `Nothing was changed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown error'}` };
+    return stripeId
+      ? { ok: false, stripeRefundId: stripeId, message: `The card refund WAS issued in Stripe (${stripeId}) but recording it failed — do not refund again; contact a developer.` }
+      : { ok: false, message: `Nothing was changed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown error'}` };
   }
   const mail = await emailCreditOutcome(o, out, { kind: 'REFUND', reason });
   await notifyUser(o.buyer.id, out.refund ? (out.refund.method === 'STRIPE' ? `Refund issued — order ${o.orderNumber}` : `Refund approved — order ${o.orderNumber}`) : `Credit note — order ${o.orderNumber}`, out.refund && out.refund.method !== 'STRIPE' ? 'The transfer has not been sent yet — we email you when it is.' : 'See your order page.', `/app/orders/${o.orderNumber}`);

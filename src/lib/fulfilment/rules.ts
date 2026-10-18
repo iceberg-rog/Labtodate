@@ -396,12 +396,23 @@ export interface NextStepInput {
 
 const fmtDay = (d: Date) => d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 
+/**
+ * Paying on the due date is on time: an invoice is overdue once the due sweep
+ * marked it OVERDUE, or after its due DAY has ended. The stored due date is the
+ * issue time + N days; the invoice and the next step print only that day (UTC).
+ */
+export function invoiceOverdue(due: Date | null, financialStatus: string, now: Date): boolean {
+  if (financialStatus === 'OVERDUE') return true;
+  if (!due) return false;
+  return now.getTime() >= Date.UTC(due.getUTCFullYear(), due.getUTCMonth(), due.getUTCDate() + 1);
+}
+
 /** An invoice on NET terms that is still open: the buyer pays it (by its due date), staff chase it once overdue. */
 function payInvoiceStep(i: NextStepInput, B: boolean): NextStep {
   const inv = i.invoiceNumber ? `invoice ${i.invoiceNumber}` : 'the invoice';
   const amount = i.amountDueLabel ? ` (${i.amountDueLabel})` : '';
   const due = i.invoiceDueAt ?? null;
-  const overdue = i.financialStatus === 'OVERDUE' || (!!due && due.getTime() < (i.now ?? new Date()).getTime());
+  const overdue = invoiceOverdue(due, i.financialStatus, i.now ?? new Date());
   if (B) {
     return { who: 'buyer', text: overdue ? `Pay ${inv}${amount} now — it was due ${due ? `on ${fmtDay(due)}` : 'already'}.` : `Pay ${inv}${amount} by ${due ? fmtDay(due) : 'the due date on the invoice'}.` };
   }

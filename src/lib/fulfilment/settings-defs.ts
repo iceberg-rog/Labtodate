@@ -182,6 +182,16 @@ export const FULFILMENT_SETTING_DEFS: readonly SettingDefinitionInput[] = [
     hint: 'Sent when staff record the receipt of a return.',
   },
   {
+    key: 'RETURN_TICKET_REUSE_CATEGORIES', label: 'A new return continues an open ticket in these categories', group: G_RET, type: 'list', default: 'Return/refund,Order / delivery', optional: true,
+    validate: (v) => (v.trim() ? textList(v) : null),
+    hint: 'Support ticket categories that are about a problem with the goods, separated by commas. When the buyer already has an open ticket about the same order in one of these categories (or with a tag below), the new return is posted on it instead of opening a second ticket. Any other ticket (billing, a general question) is left alone and the return gets its own ticket. A continued ticket is never closed by the return — staff close it; a ticket the return opened is resolved with it.',
+  },
+  {
+    key: 'RETURN_TICKET_REUSE_TAGS', label: '… or an open ticket with one of these tags', group: G_RET, type: 'list', default: 'complaint,return', optional: true,
+    validate: (v) => (v.trim() ? textList(v) : null),
+    hint: 'Ticket tags (exactly as set on the ticket), separated by commas. Empty = only the categories above count.',
+  },
+  {
     key: 'REFUND_REASONS', label: 'Refund reasons (staff)', group: G_RET, type: 'list', default: 'Returned item,Damaged in transport,Not as described,Price adjustment / goodwill,Order canceled before shipping,Other',
     validate: textList,
     hint: 'Offered when staff record a refund; the reason is printed on the credit note and shown to the buyer.',

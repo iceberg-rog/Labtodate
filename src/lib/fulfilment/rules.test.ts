@@ -6,6 +6,7 @@ import {
   fillTemplate,
   financialAfterRefunds,
   findCarrier,
+  invoiceOverdue,
   orderNextSteps,
   parseCarriers,
   parseReturnReasons,
@@ -210,4 +211,27 @@ test('next steps on NET terms (G3/J10): an unpaid invoice is the buyer’s step,
   assert.deepEqual(orderNextSteps({ ...base, financialStatus: 'PAID', onTermsUnpaid: false }, 'buyer').map((s) => s.text), ['Delivered — nothing more to do.']);
   // No invoice data passed (older callers): still the truth, without a number or date.
   assert.equal(orderNextSteps({ ...base, invoiceNumber: null, invoiceDueAt: null, amountDueLabel: null }, 'buyer')[0].text, 'Pay the invoice by the due date on the invoice.');
+});
+
+test('NET terms: paying on the due day is on time — overdue only after the printed day ends (or once marked OVERDUE)', () => {
+  // The stored due date is issue time + N days (the QA DB has 2026-11-17T00:56Z); the invoice prints “17 November 2026”.
+  const due = new Date('2026-11-17T00:56:00Z');
+  const base: NextStepInput = {
+    status: 'DELIVERED', financialStatus: 'INVOICED_ON_TERMS', onTermsUnpaid: true, prePaymentHold: false, paymentVerificationStatus: null, paymentSubmitted: false,
+    detailsMissing: [], shipBlockers: [], progress: 'ALL', deliveredAt: new Date('2026-10-14T10:00:00Z'), refunds: [], returns: [],
+    returnWindowEndsAt: null, returnsOpen: false, buyerCanCancel: false, invoiceIssued: true,
+    invoiceNumber: 'INV-2026-00018', invoiceDueAt: due, amountDueLabel: '€3,115.75',
+  };
+  for (const now of ['2026-11-17T00:57:00Z', '2026-11-17T12:00:00Z', '2026-11-17T23:59:59Z']) {
+    const at = { ...base, now: new Date(now) };
+    assert.equal(orderNextSteps(at, 'buyer')[0].text, 'Pay invoice INV-2026-00018 (€3,115.75) by 17 November 2026.', `on the due day (${now}) it is not overdue`);
+    assert.doesNotMatch(orderNextSteps(at, 'staff').map((s) => s.text).join(' '), /overdue|chase/);
+    assert.equal(invoiceOverdue(due, 'INVOICED_ON_TERMS', new Date(now)), false);
+  }
+  const nextDay = { ...base, now: new Date('2026-11-18T00:00:00Z') };
+  assert.equal(orderNextSteps(nextDay, 'buyer')[0].text, 'Pay invoice INV-2026-00018 (€3,115.75) now — it was due on 17 November 2026.');
+  assert.match(orderNextSteps(nextDay, 'staff').map((s) => s.text).join(' '), /overdue \(due 17 November 2026\) — chase the payment/);
+  // The due sweep's OVERDUE wins; no due date and not marked: never overdue.
+  assert.equal(invoiceOverdue(due, 'OVERDUE', new Date('2026-11-17T08:00:00Z')), true);
+  assert.equal(invoiceOverdue(null, 'INVOICED_ON_TERMS', new Date('2030-01-01T00:00:00Z')), false);
 });
