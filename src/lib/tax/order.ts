@@ -174,6 +174,8 @@ export async function resolveOrderVat(
     billingCountry: billing,
     customerKind: rawVatId || company ? 'BUSINESS' : 'UNKNOWN',
     vatId: vatId && vatId.country ? vatId : null,
+    // The billing company is compared with the name VIES returns (another company's VAT ID → review).
+    buyerLegalName: order.billingAddress && typeof order.billingAddress === 'object' ? str((order.billingAddress as Addr).company) : null,
     lines: orderVatLines(order),
   };
 

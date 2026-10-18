@@ -302,6 +302,8 @@ const DEFS: DefInput[] = [
     hint: 'VIES is regularly down for single member states. This decides what happens to an intra-EU B2B sale meanwhile.' },
   { key: 'TAX_VIES_CACHE_HOURS', label: 'Re-use a VIES result for (hours)', group: 'Tax & VAT', type: 'int', default: '24', min: 1, max: 720,
     hint: 'A VAT ID confirmed within this window is not checked again.' },
+  { key: 'TAX_VIES_RETRY_AFTER_MINUTES', label: 'After VIES could not answer, ask again after (minutes)', group: 'Tax & VAT', type: 'int', default: '10', min: 1, max: 240,
+    hint: 'When VIES could not check a VAT ID (after two quick retries on busy / timeout errors), that answer is re-used for this long instead of asking VIES again on every click or page refresh. “Test a VAT ID with VIES” below always asks VIES.' },
   { key: 'TAX_MANUAL_VAT_CHECK_DAYS', label: 'A VAT ID checked by hand counts for (days)', group: 'Tax & VAT', type: 'int', default: '30', min: 1, max: 365,
     hint: 'When VIES is down for days, staff can record a VAT ID check by hand on the order (with the evidence). That check is used — also while live checks are off — for this many days.' },
   { key: 'TAX_EXPORT_ZERO_RATE_ENABLED', label: 'Exports outside the EU at 0%', group: 'Tax & VAT', type: 'bool', default: 'true', options: yesNo, sensitive: true, effect: 'new-documents',

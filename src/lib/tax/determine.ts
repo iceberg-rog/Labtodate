@@ -11,6 +11,7 @@
  *    other than the home country ................ EU_ICS_ZERO, 0% + legal text + buyer VAT ID on the invoice
  *      · VIES unavailable → TAX_VIES_DOWN_POLICY (review / home VAT / block)
  *      · VAT ID invalid   → treated as a buyer without a VAT ID
+ *      · VIES name is another company than the buyer's legal name → REVIEW_REQUIRED
  *  - Ship-to another EU state, no (valid) VAT ID  EU_B2C_HOME (home rate) or EU_B2C_OSS (destination rate)
  *  - Lines of products under the margin scheme (setting on) are taxed on the
  *    margin, VAT not shown (MARGIN_SCHEME); exports of them stay 0%.
@@ -21,6 +22,11 @@
  * Amounts: tax is computed per rate group on the summed base (round half up),
  * then allocated to lines (largest line takes the rounding cent), so the
  * document total always equals the sum of its VAT rows.
+ *
+ * Two text sets: `reasons` are for staff (vatNote, admin panels, alerts);
+ * `buyerReasons` / `buyerLabel` are what a customer may read — no internal
+ * wording ("keep the export evidence", "policy"). Use buyerVatExplanation(),
+ * buyerVatLabel() and vatRowTitle() for anything a buyer sees.
  */
 
 export type VatTreatmentCode =
@@ -127,7 +133,12 @@ export interface VatDecision {
   reviewRequired: boolean;
   /** A configured rule forbids this sale as is. */
   blocked: boolean;
+  /** For staff. */
   reasons: string[];
+  /** For the buyer (absent on decisions rebuilt from a recorded order). */
+  buyerReasons?: string[];
+  /** Buyer-facing name of the treatment (absent → buyerTreatmentLabel). */
+  buyerLabel?: string;
 }
 
 const PCT = (bp: number) => `${(bp / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
@@ -155,6 +166,11 @@ type Main = {
 
 export function determineVat(ctx: VatContext, s: TaxSettings, countries: CountryFacts): VatDecision {
   const reasons: string[] = [];
+  // Buyer-facing text: why a VAT ID did not give 0% (notes), then the outcome.
+  const buyerNotes: string[] = [];
+  let buyerMain = '';
+  let buyerLabel: string | null = null;
+  let buyerBlock: string | null = null;
   const home = s.homeCountry.toUpperCase();
   const dest = (ctx.shipToCountry || ctx.billingCountry || '').toUpperCase() || null;
   if (!ctx.shipToCountry && ctx.billingCountry) {
@@ -165,16 +181,20 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
 
   if (!dest) {
     reasons.push('No delivery or billing country — VAT cannot be decided.');
+    buyerMain = 'We need your delivery country to determine the VAT.';
   } else if (dest === home) {
     Object.assign(main, { treatment: 'DOMESTIC_STANDARD', rateBp: s.standardRateBp, review: false });
     reasons.push(`Delivery in ${home}: domestic supply at ${PCT(s.standardRateBp)}.`);
+    buyerMain = `Delivery in ${home}: VAT ${PCT(s.standardRateBp)}.`;
   } else if (!countries.isEu(dest)) {
     if (s.exportZeroEnabled) {
       Object.assign(main, { treatment: 'EXPORT_ZERO', rateBp: 0, legal: 'EXPORT', review: false });
       reasons.push(`Delivery to ${dest} (outside the EU): export at 0% — keep the export evidence.`);
+      buyerMain = `Delivery to ${dest}, outside the EU: export at 0% VAT.`;
     } else {
       Object.assign(main, { treatment: 'DOMESTIC_STANDARD', rateBp: s.standardRateBp, review: false });
       reasons.push(`Delivery to ${dest} (outside the EU) but export 0% is switched off: home rate ${PCT(s.standardRateBp)}.`);
+      buyerMain = `Delivery to ${dest}, outside the EU: VAT ${PCT(s.standardRateBp)}.`;
     }
   } else {
     // Another EU member state.
@@ -183,54 +203,84 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
     if (consumer && s.salesMode === 'B2B_ONLY') {
       main.blocked = true;
       reasons.push('Buyer is a consumer and sales are B2B only.');
+      buyerBlock = 'We sell to businesses only: enter your company details and EU VAT ID to order.';
     }
     let b2c = true;
+    let idInvalid = false;
     if (id && !consumer) {
       if (!s.icsEnabled) {
         reasons.push('Intra-EU 0% (ICS) is switched off: buyer treated like one without a VAT ID.');
       } else if (id.country === home) {
         reasons.push(`Buyer VAT ID ${id.vatId} is from ${home} (the dispatch country), not from another member state: no intra-EU 0%.`);
+        buyerNotes.push(`A VAT ID from ${home} does not give the intra-EU 0% rate, because we ship from ${home}.`);
       } else if (!countries.isEu(id.country)) {
         reasons.push(`Buyer VAT ID ${id.vatId} is not an EU VAT ID: no intra-EU 0%.`);
+        buyerNotes.push(`${id.vatId} is not an EU VAT ID, so the intra-EU 0% rate does not apply.`);
       } else if (id.status === 'VALID') {
-        Object.assign(main, { treatment: 'EU_ICS_ZERO', rateBp: 0, legal: 'ICS', vatIdRequired: true, review: false });
         b2c = false;
-        reasons.push(`Intra-EU supply to a business with VIES-valid VAT ID ${id.vatId}${id.consultationNumber ? ` (VIES consultation ${id.consultationNumber})` : ''}: 0%.`);
-        if (id.country !== dest) reasons.push(`Note: VAT ID country ${id.country} differs from delivery country ${dest} — allowed, keep transport proof.`);
+        const legal = ctx.buyerLegalName?.trim() || null;
+        const names = legal && id.name ? compareCompanyNames(legal, id.name) : 'UNKNOWN';
+        if (names === 'MISMATCH') {
+          // A valid VAT ID of ANOTHER company gives no right to 0%: staff check first.
+          Object.assign(main, { treatment: 'REVIEW_REQUIRED', review: true });
+          reasons.push(`VAT ID belongs to ${id.name}: VIES registers ${id.vatId} to “${id.name}”, not to the billing name “${legal}” — VAT review required before 0% (confirm the buyer may use this VAT ID, or ask for the right one).`);
+          buyerMain = `We need to check your VAT ID ${id.vatId}: the EU VIES register lists it for “${id.name}”, not for “${legal}”. We confirm the VAT before asking for payment.`;
+        } else {
+          Object.assign(main, { treatment: 'EU_ICS_ZERO', rateBp: 0, legal: 'ICS', vatIdRequired: true, review: false });
+          reasons.push(`Intra-EU supply to a business with VIES-valid VAT ID ${id.vatId}${id.consultationNumber ? ` (VIES consultation ${id.consultationNumber})` : ''}: 0%.`);
+          if (legal && id.name && names === 'UNKNOWN') reasons.push(`VIES name “${id.name}” could not be compared with the billing name “${legal}” — check that it is the same company.`);
+          if (id.country !== dest) reasons.push(`Note: VAT ID country ${id.country} differs from delivery country ${dest} — allowed, keep transport proof.`);
+          buyerMain = `Intra-EU supply to a business with VAT ID ${id.vatId}, confirmed in the EU VIES register: 0% VAT (reverse charge).`;
+        }
       } else if (id.status === 'INVALID') {
+        idInvalid = true;
         reasons.push(`VIES says VAT ID ${id.vatId} is NOT valid: buyer treated like one without a VAT ID.`);
+        buyerNotes.push(`The EU VIES register says VAT ID ${id.vatId} is not valid, so the intra-EU 0% rate does not apply.`);
       } else if (!s.icsRequireVies && id.formatValid !== false) {
         Object.assign(main, { treatment: 'EU_ICS_ZERO', rateBp: 0, legal: 'ICS', vatIdRequired: true, review: false });
         b2c = false;
         reasons.push(`VAT ID ${id.vatId} not confirmed by VIES (${id.status.toLowerCase().replace('_', ' ')}), but a VIES confirmation is not required by the settings: 0%.`);
+        buyerMain = `Intra-EU supply to a business with VAT ID ${id.vatId}: 0% VAT (reverse charge).`;
       } else {
         b2c = false;
         const why = id.status === 'UNAVAILABLE' ? 'VIES is unavailable' : 'the VAT ID was not checked with VIES';
+        const buyerWhy = id.status === 'UNAVAILABLE'
+          ? `We could not check your VAT ID ${id.vatId} with the EU VIES service right now`
+          : `Your VAT ID ${id.vatId} is not confirmed yet`;
         if (s.viesDownPolicy === 'CHARGE_HOME_VAT') {
           Object.assign(main, { treatment: 'EU_B2C_HOME', rateBp: s.standardRateBp, review: false });
           reasons.push(`${why} for ${id.vatId}: home VAT ${PCT(s.standardRateBp)} charged (policy) — can be credited once VIES confirms the ID.`);
+          buyerMain = `${buyerWhy}, so VAT ${PCT(s.standardRateBp)} is charged; it is credited once your VAT ID is confirmed.`;
+          buyerLabel = 'Home VAT (VAT ID not yet confirmed — credited later)';
         } else if (s.viesDownPolicy === 'BLOCK') {
           Object.assign(main, { treatment: 'REVIEW_REQUIRED', blocked: true, review: true });
           reasons.push(`${why} for ${id.vatId}: sale blocked until VIES answers (policy).`);
+          buyerMain = `${buyerWhy}, so the order cannot be placed yet. Please try again later.`;
         } else {
           Object.assign(main, { treatment: 'REVIEW_REQUIRED', review: true });
           reasons.push(`${why} for ${id.vatId}: VAT review required before invoicing (policy).`);
+          buyerMain = `${buyerWhy}. We confirm the VAT before asking for payment.`;
         }
       }
     }
     if (b2c) {
+      const without = id ? '' : ' without an EU VAT ID';
       if (s.euB2cMode === 'OSS') {
         const r = countries.standardRateBp(dest);
         if (r == null) {
           Object.assign(main, { treatment: 'REVIEW_REQUIRED', review: true });
           reasons.push(`OSS is on but no VAT rate is configured for ${dest}.`);
+          buyerMain = `We confirm the VAT for delivery to ${dest} before asking for payment.`;
         } else {
           Object.assign(main, { treatment: 'EU_B2C_OSS', rateBp: r, legal: 'OSS', review: false });
           reasons.push(`EU buyer without a valid VAT ID, OSS: ${dest} rate ${PCT(r)}.`);
+          buyerMain = `Delivery to ${dest}${without}: ${dest} VAT ${PCT(r)} (EU One-Stop-Shop).`;
         }
       } else {
         Object.assign(main, { treatment: 'EU_B2C_HOME', rateBp: s.standardRateBp, review: false });
         reasons.push(`EU buyer without a valid VAT ID (no OSS): home rate ${PCT(s.standardRateBp)}.`);
+        buyerMain = `Delivery to ${dest}${without}: VAT ${PCT(s.standardRateBp)}.`;
+        buyerLabel = id ? (idInvalid ? 'Standard rate (VAT ID not valid in VIES)' : 'Standard rate') : 'Standard rate (no EU VAT ID)';
       }
     }
   }
@@ -306,6 +356,26 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
 
   const netCents = lines.reduce((a, l) => a + l.netCents, 0);
   const taxCents = lines.reduce((a, l) => a + l.taxCents, 0);
+
+  // ── what the buyer reads ──
+  const hasShipping = ctx.lines.some((l) => l.lineType === 'SHIPPING');
+  let buyerReasons: string[];
+  if (buyerBlock) {
+    buyerReasons = [buyerBlock];
+  } else if (treatment === 'MARGIN_SCHEME') {
+    // Only the margin-scheme explanation: VAT ID or destination do not change it.
+    buyerReasons = [`Margin scheme for second-hand goods: the VAT is included in the price and not shown separately${hasShipping && shippingRateBp > 0 ? `; VAT ${PCT(shippingRateBp)} is charged on the freight only` : ''}.`];
+  } else {
+    buyerReasons = [...buyerNotes, buyerMain];
+    if (lines.some((l) => l.treatment === 'MARGIN_SCHEME')) buyerReasons.push('Items under the margin scheme: the VAT is included in their price and not shown separately.');
+    if (hasShipping && !main.review && shippingRateBp !== main.rateBp) buyerReasons.push(`Freight: VAT ${PCT(shippingRateBp)}.`);
+  }
+  const finalBuyerLabel = main.review
+    ? 'VAT to be confirmed'
+    : treatment === 'MARGIN_SCHEME'
+      ? buyerTreatmentLabel('MARGIN_SCHEME')
+      : buyerLabel ?? buyerTreatmentLabel(treatment);
+
   return {
     treatment,
     rateBp: main.review ? 0 : treatment === 'MARGIN_SCHEME' ? 0 : main.rateBp,
@@ -321,7 +391,107 @@ export function determineVat(ctx: VatContext, s: TaxSettings, countries: Country
     reviewRequired: main.review,
     blocked: main.blocked,
     reasons,
+    buyerReasons: buyerReasons.filter(Boolean),
+    buyerLabel: finalBuyerLabel,
   };
+}
+
+// ── Buyer-facing texts ──
+
+/** Name of a treatment for a customer (no internal wording); see also buyerVatLabel(). */
+export function buyerTreatmentLabel(t: VatTreatmentCode | string | null | undefined): string {
+  switch (t) {
+    case 'DOMESTIC_STANDARD': return 'Standard rate';
+    case 'EU_ICS_ZERO': return 'Intra-EU supply, 0% (reverse charge)';
+    case 'EU_B2C_HOME': return 'Standard rate';
+    case 'EU_B2C_OSS': return 'VAT of the destination country (EU OSS)';
+    case 'EXPORT_ZERO': return 'Export outside the EU, 0%';
+    case 'MARGIN_SCHEME': return 'Margin scheme — VAT included in the price';
+    case 'REVIEW_REQUIRED': return 'VAT to be confirmed';
+    default: return 'VAT';
+  }
+}
+
+/** The treatment label a buyer sees ("Home VAT (VAT ID not yet confirmed — credited later)"). */
+export function buyerVatLabel(d: Pick<VatDecision, 'treatment' | 'buyerLabel'>): string {
+  return d.buyerLabel ?? buyerTreatmentLabel(d.treatment);
+}
+
+/** The explanation a buyer sees — never the staff `reasons`. */
+export function buyerVatExplanation(d: Pick<VatDecision, 'treatment' | 'buyerReasons' | 'buyerLabel'>): string {
+  return (d.buyerReasons?.length ? d.buyerReasons : [`${buyerVatLabel(d)}.`]).join(' ');
+}
+
+/**
+ * Title of the VAT row next to the amount: "VAT 21%", "VAT 0%", or "VAT 21% on
+ * freight" when only the freight is taxed (margin-scheme goods; export with
+ * freight at the home rate) — never "VAT 0%" next to a non-zero amount, nor
+ * for VAT that is still to be confirmed.
+ */
+export function vatRowTitle(d: Pick<VatDecision, 'lines' | 'rateBp' | 'treatment' | 'reviewRequired'>): string {
+  if (d.reviewRequired) return 'VAT';
+  const taxed = d.lines.filter((l) => l.taxCents !== 0);
+  if (!taxed.length) return d.treatment === 'MARGIN_SCHEME' ? 'VAT' : `VAT ${PCT(d.rateBp)}`;
+  const rates = [...new Set(taxed.map((l) => l.rateBp))];
+  if (rates.length > 1) return 'VAT';
+  return `VAT ${PCT(rates[0])}${taxed.every((l) => l.lineType === 'SHIPPING') ? ' on freight' : ''}`;
+}
+
+// ── VIES name vs the buyer's legal name ──
+
+/** Legal-form (and holding / group) tokens dropped before comparing names (B.V., NV, GmbH, Ltd, …; dots removed first). */
+const LEGAL_FORMS = new Set([
+  'BV', 'NV', 'VOF', 'CV', 'BVBA', 'SPRL', 'SRL', 'SA', 'SAS', 'SASU', 'SARL', 'SNC', 'SCS', 'SCA', 'SCRL', 'EURL', 'EIRL',
+  'GMBH', 'MBH', 'AG', 'KG', 'KGAA', 'OHG', 'UG', 'EV', 'GBR', 'EG', 'SE', 'LTD', 'LIMITED', 'PLC', 'LLP', 'LLC', 'INC', 'CORP',
+  'CORPORATION', 'CO', 'COMPANY', 'SPA', 'SAPA', 'SL', 'SLU', 'LDA', 'AB', 'HB', 'AS', 'ASA', 'APS', 'OY', 'OYJ', 'SP', 'ZOO', 'OO',
+  'SRO', 'KFT', 'ZRT', 'NYRT', 'DOO', 'DD', 'EOOD', 'OOD', 'AD', 'UAB', 'SIA', 'OU', 'AE', 'EPE', 'IKE', 'OE', 'EE',
+  'STICHTING', 'VERENIGING', 'VZW', 'ASBL', 'HOLDING', 'HOLDINGS', 'GROUP',
+]);
+/** Words that say nothing about which company it is. */
+const NAME_STOPWORDS = new Set(['THE', 'AND', 'OF', 'FOR', 'DE', 'DER', 'DIE', 'DAS', 'DEN', 'DES', 'VAN', 'VON', 'HET', 'EN', 'UND', 'ET', 'LA', 'LE', 'LES', 'DU', 'DI', 'DEL', 'DELLA', 'ZU', 'ZUR', 'FUR', 'FUER', 'VOOR', 'TE', 'TER', 'AM', 'IM', 'IN', 'OP']);
+/** Common in lab company names: compared only when a name has nothing more specific. */
+const GENERIC_NAME_WORDS = new Set([
+  'LAB', 'LABS', 'LABO', 'LABORATORY', 'LABORATORIES', 'LABORATORIUM', 'LABORATOIRE', 'LABORATORIO', 'RESEARCH', 'SCIENCE', 'SCIENCES',
+  'SCIENTIFIC', 'INSTITUTE', 'INSTITUUT', 'INSTITUT', 'INSTITUTO', 'ISTITUTO', 'UNIVERSITY', 'UNIVERSITEIT', 'UNIVERSITAT', 'UNIVERSITE',
+  'UNIVERSIDAD', 'UNIVERSITA', 'CENTER', 'CENTRE', 'CENTRUM', 'ZENTRUM', 'TECHNOLOGY', 'TECHNOLOGIES', 'TECH', 'SOLUTIONS', 'SERVICES',
+  'SERVICE', 'SYSTEMS', 'TRADING', 'HANDEL', 'MEDICAL', 'PHARMA', 'BIO', 'CHEMICALS', 'INSTRUMENTS', 'EQUIPMENT', 'ANALYTICAL',
+  'DIAGNOSTICS', 'INTERNATIONAL', 'EUROPE', 'EUROPA',
+]);
+
+/** "N.V. Anheuser-Busch InBev" → ["ANHEUSER", "BUSCH", "INBEV"]: no accents, case, punctuation or legal forms. */
+export function companyNameTokens(name: string): string[] {
+  return name
+    .normalize('NFD')
+    .replace(/\p{M}+/gu, '')
+    .toUpperCase()
+    .replace(/['’.]/g, '')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => t.length > 1 && !LEGAL_FORMS.has(t) && !NAME_STOPWORDS.has(t));
+}
+
+/**
+ * Is the company VIES registers for a VAT ID the buyer's company? MATCH when
+ * the normalised names contain one another or share a distinctive word;
+ * MISMATCH when they share none; UNKNOWN when one side is empty or in another
+ * script (a Greek / Cyrillic VIES name) — no conclusion either way.
+ */
+export function compareCompanyNames(a: string, b: string): 'MATCH' | 'MISMATCH' | 'UNKNOWN' {
+  const ta = companyNameTokens(a);
+  const tb = companyNameTokens(b);
+  if (!ta.length || !tb.length) return 'UNKNOWN';
+  const latin = (ts: string[]) => ts.some((t) => /[A-Z]/.test(t));
+  if (latin(ta) !== latin(tb)) return 'UNKNOWN';
+  const ca = ta.join('');
+  const cb = tb.join('');
+  if (ca === cb || (Math.min(ca.length, cb.length) >= 4 && (ca.includes(cb) || cb.includes(ca)))) return 'MATCH';
+  const distinctive = (ts: string[]) => {
+    const d = ts.filter((t) => !GENERIC_NAME_WORDS.has(t));
+    return d.length ? d : ts;
+  };
+  const da = distinctive(ta);
+  const db = distinctive(tb);
+  const same = (x: string, y: string) => x === y || (x.length >= 5 && y.length >= 5 && (x.startsWith(y) || y.startsWith(x)));
+  return da.some((x) => db.some((y) => same(x, y))) ? 'MATCH' : 'MISMATCH';
 }
 
 /** "Domestic (standard rate) 21%" / "Export outside the EU, 0%" — the rate only when the label does not state it. */

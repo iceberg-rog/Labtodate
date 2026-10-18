@@ -5,8 +5,8 @@ import { orderLineTruthFor } from '@/lib/catalog/order-snapshot';
 import { prefillDetails, type DetailsPrefill, type VatIdRule } from '@/lib/orders/details';
 import type { CountryOption } from '@/components/orders/OrderDetailsFields';
 import type { OfferFormProps } from '@/components/quotes/OfferForm';
-import { vatTreatmentLabel } from '@/lib/tax/determine';
-import { offerVatAtSend, vatExplanation } from './engine';
+import { vatRowTitle, vatTreatmentLabel } from '@/lib/tax/determine';
+import { offerVatAtSend, vatStaffExplanation } from './engine';
 import { applyMarkup, pctLabel } from './pricing';
 import {
   cancelReasons, declineReasons, offerDefaults, requireTermsAcceptance, sellerMarkupBp, sellerPriceRounding, stockReserveOn, termsOfSaleUrl, vatIdRule,
@@ -41,11 +41,12 @@ export async function stockLine(productId: string | null, quoteId: string): Prom
   if (!av) return { text: 'The listed product no longer exists.', tone: 'bad' };
   const mode = stockReserveOn();
   const when = mode === 'OFFER_SENT' ? 'when the offer is sent' : mode === 'OFFER_ACCEPTED' ? 'when the buyer accepts' : 'when the payment is verified';
-  if (av.heldByThisQuote) return { text: `Listed unit reserved for this deal (${av.quantity} more in stock).`, tone: 'ok' };
+  // A revised quantity resizes the hold: up to heldQty + quantity units can be offered.
+  if (av.heldByThisQuote) return { text: `Listed unit reserved for this deal: ${av.heldQty} held (${av.quantity} more in stock).`, tone: 'ok' };
   if (av.quantity > 0) return { text: `Listed unit available: ${av.quantity} in stock — reserved ${when}.`, tone: 'ok' };
   const other = av.otherHolds[0];
   return {
-    text: `Listed unit NOT available: 0 in stock${other ? ` — reserved for ${other.orderNumber ? `order ${other.orderNumber}` : other.quoteRef ?? 'another deal'}` : ' (sold)'}. ${mode === 'PAYMENT_VERIFIED' ? 'The buyer can still accept; check stock before verifying the payment.' : 'An offer can not be accepted until it is back in stock.'}`,
+    text: `Listed unit NOT available: 0 in stock${other ? ` — reserved for ${other.orderNumber ? `order ${other.orderNumber}` : other.quoteRef ?? 'another deal'}` : ' (sold)'}. ${mode === 'PAYMENT_VERIFIED' ? 'The buyer can still accept; if the unit is still gone when the payment is verified, the order goes on a stock-shortage hold for you to decide refund, backorder or another unit.' : 'An offer can not be accepted until it is back in stock.'}`,
     tone: 'bad',
   };
 }
@@ -54,21 +55,27 @@ export async function offerFormContextFor(sr: SrLite, mode: 'STAFF' | 'SELLER', 
   const defaults = offerDefaults();
   const scheme = sr.product?.vatScheme ?? null;
   const [vat, truth, stock] = await Promise.all([
-    mode === 'STAFF' ? offerVatAtSend(sr.submittedById, { goodsCents: 100_000, shippingCents: 10_000, scheme }) : Promise.resolve(null),
+    // A preview from STORED VIES evidence: the admin page re-renders every few
+    // seconds (AutoRefresh) and must not call VIES / write a VatValidation row
+    // each time. Sending the offer checks the VAT ID live (cached).
+    mode === 'STAFF'
+      ? offerVatAtSend(sr.submittedById, { goodsCents: 100_000, shippingCents: 10_000, scheme, productId: sr.productId, qty: 1 }, { storedViesOnly: true })
+      : Promise.resolve(null),
     sr.productId ? orderLineTruthFor([sr.productId]) : Promise.resolve(new Map()),
     stockLine(sr.productId, sr.id),
   ]);
+  const notCheckedYet = vat?.vatId?.status === 'NOT_CHECKED' && vat.vatId.source === 'CACHE' ? ' The VAT ID is checked with VIES when you send the offer.' : '';
   let vatProp: OfferFormProps['vat'];
   if (vat?.decision) {
     vatProp = {
       status: 'DECIDED',
       goodsRateBp: vat.decision.rateBp,
       shippingRateBp: vat.decision.shippingRateBp,
-      label: `VAT ${pctLabel(vat.decision.rateBp)} — ${vatTreatmentLabel(vat.decision.treatment)}`,
-      explanation: vatExplanation(vat.decision),
+      label: `${vatRowTitle(vat.decision)} — ${vatTreatmentLabel(vat.decision.treatment)}`,
+      explanation: vatStaffExplanation(vat.decision),
     };
   } else {
-    vatProp = { status: 'AT_ACCEPTANCE', explanation: `VAT is decided when the buyer accepts: ${vat?.basis.reasons.join(' ') ?? 'the buyer confirms billing country and VAT ID then.'}` };
+    vatProp = { status: 'AT_ACCEPTANCE', explanation: `VAT is decided when the buyer accepts: ${vat?.basis.reasons.join(' ') ?? 'the buyer confirms billing country and VAT ID then.'}${notCheckedYet}` };
   }
   const t = sr.sellerProposalTerms && typeof sr.sellerProposalTerms === 'object' ? (sr.sellerProposalTerms as Record<string, unknown>) : {};
   const proposal: OfferFormProps['proposal'] =

@@ -227,6 +227,33 @@ export interface SyncOptions {
 /** Orders whose units are no longer committed (stock was released). */
 const RELEASED_ORDER_STATES: OrderStatus[] = ['CANCELED', 'REFUNDED'];
 
+/**
+ * What the stock plan subtracts from the source quantity of one listing (D32):
+ *  - units sold here (OrderItems of live orders) — only with SUBTRACT_LOCAL_SALES
+ *    (with SOURCE_IS_TRUTH the supplier updates its stock after our orders);
+ *  - units HELD here that no order counts yet (an open offer's reservation) —
+ *    in both modes: the supplier cannot know about them, and raising the
+ *    quantity over a hold would sell the unit twice.
+ * An as-is shop with such holds is therefore planned as "source minus held".
+ */
+export function syncStockInputs(
+  mode: ShopSyncPolicy['syncStockMode'],
+  soldUnits: number,
+  heldUnits: number,
+): { committedUnits: number; syncStockMode: ShopSyncPolicy['syncStockMode'] } {
+  if (mode === 'SUBTRACT_LOCAL_SALES') return { committedUnits: soldUnits + heldUnits, syncStockMode: mode };
+  return heldUnits > 0 ? { committedUnits: heldUnits, syncStockMode: 'SUBTRACT_LOCAL_SALES' } : { committedUnits: soldUnits, syncStockMode: mode };
+}
+
+/** The plan's "held at 0" note, worded for what the units really are (sold vs reserved). */
+function heldAtZeroNote(mode: ShopSyncPolicy['syncStockMode'], soldUnits: number, heldUnits: number): string {
+  const parts = [
+    mode === 'SUBTRACT_LOCAL_SALES' && soldUnits > 0 ? `${soldUnits} unit(s) already sold on lab2date` : '',
+    heldUnits > 0 ? `${heldUnits} unit(s) reserved for an open offer` : '',
+  ].filter(Boolean);
+  return `In stock at the source, but held at 0: ${parts.join(' and ')}.`;
+}
+
 export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
   const counts = emptyCounts();
   const attention: string[] = [];
@@ -297,13 +324,25 @@ export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
       },
     });
     const committed = new Map<string, number>();
+    const heldOpen = new Map<string, number>();
     if (locals.length) {
+      const ids = locals.map((l) => l.id);
       const rows = await prisma.orderItem.groupBy({
         by: ['productId'],
-        where: { productId: { in: locals.map((l) => l.id) }, order: { status: { notIn: RELEASED_ORDER_STATES } } },
+        where: { productId: { in: ids }, order: { status: { notIn: RELEASED_ORDER_STATES } } },
         _sum: { quantity: true },
       });
       for (const r of rows) if (r.productId) committed.set(r.productId, r._sum.quantity ?? 0);
+      // Active holds no live order counts yet (an open offer; a hold of a live
+      // order is already counted through its OrderItem above).
+      const holds = await prisma.stockReservation.findMany({
+        where: { productId: { in: ids }, releasedAt: null, consumedAt: null },
+        select: { productId: true, qty: true, order: { select: { status: true } } },
+      });
+      for (const h of holds) {
+        if (h.order && !RELEASED_ORDER_STATES.includes(h.order.status)) continue;
+        heldOpen.set(h.productId, (heldOpen.get(h.productId) ?? 0) + h.qty);
+      }
     }
     const byExternal = new Map(locals.filter((l) => l.externalSource === 'woo' && l.externalId).map((l) => [l.externalId!, l]));
     const legacyBySlug = new Map(locals.filter((l) => !l.externalId).map((l) => [l.slug, l]));
@@ -331,8 +370,12 @@ export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
         }
         if (local) {
           matched.add(local.id);
-          const state: LocalState = { ...local, committedUnits: committed.get(local.id) ?? 0 };
-          const plan = planExisting(state, src, policy, { adopt, review, now });
+          const sold = committed.get(local.id) ?? 0;
+          const heldHere = heldOpen.get(local.id) ?? 0;
+          const stock = syncStockInputs(policy.syncStockMode, sold, heldHere);
+          const state: LocalState = { ...local, committedUnits: stock.committedUnits };
+          const plan = planExisting(state, src, { ...policy, syncStockMode: stock.syncStockMode }, { adopt, review, now });
+          if (heldHere > 0) plan.notes = plan.notes.map((n) => (n.startsWith('In stock at the source, but held at 0:') ? heldAtZeroNote(policy.syncStockMode, sold, heldHere) : n));
           const data: Prisma.ProductUpdateInput = { ...plan.data };
           // Product.sourceUrl is unique: never take it from another listing.
           if (typeof plan.data.sourceUrl === 'string') {
@@ -374,13 +417,26 @@ export async function runWooSync(opts: SyncOptions): Promise<SyncResult> {
               }
             }
           }
+          if (!opts.dryRun) {
+            const { quantity, ...rest } = data;
+            const guarded = typeof quantity === 'number';
+            await prisma.product.update({ where: { id: local.id }, data: { ...(guarded ? rest : data), lastSyncedAt: now } });
+            if (guarded) {
+              // Guarded on the quantity this plan started from: a sale or a
+              // reservation made while the run was busy (photos, other items)
+              // is never overwritten — the next run re-plans from the new count.
+              const w = await prisma.product.updateMany({ where: { id: local.id, quantity: local.quantity }, data: { quantity } });
+              if (w.count !== 1) {
+                delete data.quantity;
+                plan.changes = plan.changes.filter((c) => c.field !== 'quantity');
+                plan.notes.push('The stock changed here during the sync (a sale or a reservation): the quantity was left as it is and is checked again on the next run.');
+              }
+            }
+          }
           if (plan.changes.some((c) => c.field === 'priceCents')) counts.priceChanges++;
           if (plan.changes.some((c) => c.field === 'quantity')) counts.stockChanges++;
           counts.lockedSkips += plan.skipped.filter((s) => s.reason === 'locked').length;
           const changed = plan.changes.length > 0 || Object.keys(data).length > 0;
-          if (!opts.dryRun) {
-            await prisma.product.update({ where: { id: local.id }, data: { ...data, lastSyncedAt: now } });
-          }
           if (changed) {
             counts.updated++;
             items.push({

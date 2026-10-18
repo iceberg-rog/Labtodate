@@ -24,7 +24,7 @@ import { absoluteDocumentHref } from '@/lib/documents';
 import { documentAttachment, issueProforma, markDocumentSent, voidProformas } from '@/lib/documents/issue';
 import { quoteDeletionBlockers } from '@/lib/documents/retention';
 import { QUOTE_REF, offerMaxCents, endOfDayUtc, fmtDay, isoDay, offerPhase, quoteRef, PAID_ORDER_STATES } from '@/lib/quotes/offer';
-import { vatTreatmentLabel, type VatTreatmentCode } from '@/lib/tax/determine';
+import type { VatTreatmentCode } from '@/lib/tax/determine';
 import { billingAddressJson, parseDetailsInput, shippingAddressJson, type DetailsFieldErrors, type OrderDetails } from '@/lib/orders/details';
 import {
   autoArchiveOnClose, declineReasons, offerCurrencies, offerDefaults, offerIncoterms, openOfferHoldDays, quoteSlaHours,
@@ -33,7 +33,7 @@ import {
 import {
   applyMarkup, daysFrom, fillPaymentTermsText, incotermLabel, offerAmounts, parseOfferTerms, pctLabel, type OfferTerms,
 } from '@/lib/quotes/pricing';
-import { decideVatForDetails, offerVatAtSend, offerVatLines, vatExplanation } from '@/lib/quotes/engine';
+import { buyerVatLabel, decideVatForDetails, offerVatAtSend, offerVatLines, vatExplanation, vatRowTitle } from '@/lib/quotes/engine';
 import { holdUnitForQuote, releaseQuoteHold, unitAvailability } from '@/lib/quotes/stock';
 import { mailLayout, mailTable } from '@/lib/quotes/mail';
 
@@ -487,12 +487,14 @@ const clean = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null
 function offerMailRows(o: {
   qty: number; unitCents: number; goodsCents: number; shippingCents: number; vatDecided: boolean; vatRateBp: number | null;
   vatCents: number | null; vatLabel: string | null; totalCents: number; currency: string;
+  /** Row title from the engine ("VAT 21% on freight"); else "VAT <rate>". */
+  vatTitle?: string | null;
 }): string {
   const m = (c: number) => escapeHtml(formatPrice(c, o.currency));
   const rows: Array<[string, string, boolean?]> = [];
   rows.push([o.qty > 1 ? `Price (${o.qty} × ${m(o.unitCents)})` : 'Price', m(o.goodsCents)]);
   if (o.shippingCents > 0) rows.push(['Freight / shipping', m(o.shippingCents)]);
-  if (o.vatDecided) rows.push([`VAT ${pctLabel(o.vatRateBp)}${o.vatLabel ? ` <span style="color:#6b7280;font-size:12px;">(${escapeHtml(o.vatLabel)})</span>` : ''}`, m(o.vatCents ?? 0)]);
+  if (o.vatDecided) rows.push([`${escapeHtml(o.vatTitle ?? `VAT ${pctLabel(o.vatRateBp)}`)}${o.vatLabel ? ` <span style="color:#6b7280;font-size:12px;">(${escapeHtml(o.vatLabel)})</span>` : ''}`, m(o.vatCents ?? 0)]);
   else rows.push(['VAT', '<span style="color:#6b7280;">determined from your billing details when you accept</span>']);
   rows.push([o.vatDecided ? 'Total' : 'Total excl. VAT', m(o.totalCents), true]);
   return mailTable(rows);
@@ -559,16 +561,17 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   const mode = stockReserveOn();
   if (sr.productId && mode !== 'PAYMENT_VERIFIED') {
     const av = await unitAvailability(sr.productId, sr.id);
-    if (av && !av.heldByThisQuote && av.quantity < c.qty) {
+    // Units this quote already holds count as available to it (a revised quantity resizes the hold).
+    if (av && av.quantity + av.heldQty < c.qty) {
       const other = av.otherHolds[0];
       return {
-        error: `The listed unit is not available right now (${av.quantity} in stock${other ? ` — reserved for ${other.orderNumber ? `order ${other.orderNumber}` : other.quoteRef ?? 'another deal'}` : ' — sold'}). The buyer could not accept this offer. Wait until the hold ends, or restock the listing first.`,
+        error: `The listed unit is not available right now (${av.quantity} in stock${av.heldQty ? `, ${av.heldQty} already held for this offer` : ''}${other ? ` — reserved for ${other.orderNumber ? `order ${other.orderNumber}` : other.quoteRef ?? 'another deal'}` : ' — sold'}). The buyer could not accept this offer. Wait until the hold ends, or restock the listing first.`,
       };
     }
   }
 
   // VAT at send time (buyer's saved billing details) — never inside the transaction.
-  const vat = await offerVatAtSend(sr.submittedById, { goodsCents, shippingCents: c.shippingCents, scheme: sr.product?.vatScheme ?? null });
+  const vat = await offerVatAtSend(sr.submittedById, { goodsCents, shippingCents: c.shippingCents, scheme: sr.product?.vatScheme ?? null, productId: sr.productId, qty: c.qty });
   const d = vat.decision;
   const vatCents = d ? d.taxCents : null;
   const totalCents = goodsCents + c.shippingCents + (vatCents ?? 0);
@@ -661,7 +664,7 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
           authorId: c.actorId,
           fromStaff: true,
           body: [
-            `${isUpdate ? 'Updated offer' : 'Offer'} (revision ${nextRevision}) for "${itemTitle}": ${c.qty > 1 ? `${c.qty} × ${money(c.unitCents)} = ` : ''}${money(goodsCents)}${c.shippingCents ? ` + freight ${money(c.shippingCents)}` : ''} excl. VAT${d ? `; VAT ${pctLabel(d.rateBp)}: ${money(vatCents ?? 0)}; total ${money(totalCents)}` : '; VAT is determined from your billing details when you accept'}. Valid until ${fmtDay(c.validUntil)}.`,
+            `${isUpdate ? 'Updated offer' : 'Offer'} (revision ${nextRevision}) for "${itemTitle}": ${c.qty > 1 ? `${c.qty} × ${money(c.unitCents)} = ` : ''}${money(goodsCents)}${c.shippingCents ? ` + freight ${money(c.shippingCents)}` : ''} excl. VAT${d ? `; ${vatRowTitle(d)}: ${money(vatCents ?? 0)}; total ${money(totalCents)}` : '; VAT is determined from your billing details when you accept'}. Valid until ${fmtDay(c.validUntil)}.`,
             isUpdate && previousAmounts ? `Previous offer: ${formatPrice(previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, sr.quotedCurrency || 'EUR')}${previousAmounts.vatDecided ? '' : ' excl. VAT'}.` : '',
             [incotermLabel(terms), terms.leadTime ? `Lead time: ${terms.leadTime}` : '', terms.warranty ? `Warranty: ${terms.warranty}` : '', terms.paymentTerms.text].filter(Boolean).join(' · '),
             'Accept or decline it at the top of this page. Nothing is ordered until you accept.',
@@ -687,7 +690,7 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   const buyerLink = sr.submittedById || !sr.accessToken ? `${siteBase()}/app/quotes/${sr.id}` : `${siteBase()}/quotes/t/${sr.accessToken}`;
   const amounts = {
     qty: c.qty, unitCents: c.unitCents, goodsCents, shippingCents: c.shippingCents, vatDecided: !!d, vatRateBp: d?.rateBp ?? null,
-    vatCents, vatLabel: d ? vatTreatmentLabel(d.treatment) : null, totalCents, currency: c.currency,
+    vatCents, vatLabel: d ? buyerVatLabel(d) : null, vatTitle: d ? vatRowTitle(d) : null, totalCents, currency: c.currency,
   };
   const prevLine = isUpdate && previousAmounts
     ? `<p style="margin:0 0 12px;color:#4b5563;">Previous offer: <s>${escapeHtml(formatPrice(previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, sr.quotedCurrency || 'EUR'))}${previousAmounts.vatDecided ? '' : ' excl. VAT'}</s></p>`
@@ -976,6 +979,8 @@ export type AcceptancePreview = {
   vatRateBp: number;
   vatTreatment: string;
   vatLabel: string;
+  /** Title of the VAT row ("VAT 21%", "VAT 21% on freight"). */
+  vatRowLabel: string;
   vatExplanation: string;
   legalText: string | null;
   totalCents: number;
@@ -1066,7 +1071,7 @@ async function prepareAcceptance(
   const amounts = offerAmounts(sr);
   const qty = terms?.qty ?? 1;
   const unitCents = terms?.unitCents || Math.round(amounts.goodsCents / qty);
-  const vat = await decideVatForDetails(details, offerVatLines({ goodsCents: amounts.goodsCents, shippingCents: amounts.shippingCents, scheme: sr.product?.vatScheme ?? null }));
+  const vat = await decideVatForDetails(details, await offerVatLines({ goodsCents: amounts.goodsCents, shippingCents: amounts.shippingCents, scheme: sr.product?.vatScheme ?? null, productId: sr.productId, qty }));
   for (const c of [vat.shipTo, vat.billing]) {
     if (c?.mode === 'BLOCK') {
       return { ok: false, result: { error: `${c.reason} The offer can not be accepted with these details — contact us in the conversation below.`, fieldErrors: { [c === vat.shipTo ? 'd_country' : 'b_country']: 'not allowed' } } };
@@ -1115,7 +1120,8 @@ async function prepareAcceptance(
         vatCents: d.taxCents,
         vatRateBp: d.rateBp,
         vatTreatment: d.treatment,
-        vatLabel: vatTreatmentLabel(d.treatment),
+        vatLabel: buyerVatLabel(d),
+        vatRowLabel: vatRowTitle(d),
         vatExplanation: vatExplanation(d),
         legalText: d.legalText,
         totalCents,
@@ -1300,7 +1306,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
           sourcingRequestId: sr.id,
           authorId: session.user.id,
           fromStaff: false,
-          body: `Offer accepted (revision ${sr.offerRevision}): ${money(preview.totalCents)} incl. ${preview.vatRateBp ? `VAT ${pctLabel(preview.vatRateBp)}` : 'VAT 0%'} for "${itemTitle}". Order ${created.orderNumber} and proforma ${number} were created — payment due by ${fmtDay(dueDate)}.${r.prep.complianceNote ? ` Note: ${r.prep.complianceNote}` : ''}`,
+          body: `Offer accepted (revision ${sr.offerRevision}): ${money(preview.totalCents)} incl. ${preview.vatRowLabel} for "${itemTitle}". Order ${created.orderNumber} and proforma ${number} were created — payment due by ${fmtDay(dueDate)}.${r.prep.complianceNote ? ` Note: ${r.prep.complianceNote}` : ''}`,
         },
       });
       if (p.saveProfile !== false) {
@@ -1372,7 +1378,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         onHold
           ? `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong>.`
           : `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong> and proforma invoice <strong>${order.number}</strong>${doc.attachment ? ' (attached as PDF)' : ''}.`,
-        offerMailRows({ qty: preview.qty, unitCents: preview.unitCents, goodsCents: preview.goodsCents, shippingCents: preview.shippingCents, vatDecided: true, vatRateBp: preview.vatRateBp, vatCents: preview.vatCents, vatLabel: preview.vatLabel, totalCents: preview.totalCents, currency }),
+        offerMailRows({ qty: preview.qty, unitCents: preview.unitCents, goodsCents: preview.goodsCents, shippingCents: preview.shippingCents, vatDecided: true, vatRateBp: preview.vatRateBp, vatCents: preview.vatCents, vatLabel: preview.vatLabel, vatTitle: preview.vatRowLabel, totalCents: preview.totalCents, currency }),
         r.prep.complianceNote
           ? `<p style="margin:0 0 12px;padding:10px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;"><strong>Please do not pay yet.</strong> ${escapeHtml(r.prep.complianceNote)} We email you as soon as the check is done.</p>`
           : `<h3 style="color:#0E4F40;margin:16px 0 6px;font-size:15px;">How to pay</h3>${mailTable(payRows)}${b ? '' : '<p style="margin:0 0 12px;">Our bank details are on the payment page.</p>'}`,

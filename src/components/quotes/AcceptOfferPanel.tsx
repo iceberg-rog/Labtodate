@@ -8,8 +8,6 @@ import { formatPrice } from '@/lib/utils';
 import type { DetailsPrefill, VatIdRule } from '@/lib/orders/details';
 import { OrderDetailsFields, type CountryOption } from '@/components/orders/OrderDetailsFields';
 
-const pct = (bp: number) => `${(bp / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
-
 /**
  * Acceptance in two steps: (1) the buyer confirms billing + delivery details
  * (prefilled from their saved billing profile / the request), the server
@@ -121,7 +119,7 @@ export function AcceptOfferPanel(p: {
             <dt className="text-muted-foreground">{preview.qty > 1 ? `Price (${preview.qty} × ${money(preview.unitCents)})` : 'Price'}</dt>
             <dd className="text-right tabular-nums">{money(preview.goodsCents)}</dd>
             {preview.shippingCents > 0 && (<><dt className="text-muted-foreground">Freight / shipping</dt><dd className="text-right tabular-nums">{money(preview.shippingCents)}</dd></>)}
-            <dt className="text-muted-foreground">VAT {pct(preview.vatRateBp)}<span className="block text-[11px]">{preview.vatLabel}</span></dt>
+            <dt className="text-muted-foreground">{preview.vatRowLabel}<span className="block text-[11px]">{preview.vatLabel}</span></dt>
             <dd className="text-right tabular-nums">{money(preview.vatCents)}</dd>
             <dt className="font-bold border-t border-border pt-1">Total to pay</dt>
             <dd className="text-right tabular-nums font-bold border-t border-border pt-1" data-testid="accept-total">{money(preview.totalCents)}</dd>

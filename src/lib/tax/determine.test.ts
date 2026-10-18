@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { determineVat, taxOn, vatInMargin, type TaxSettings, type CountryFacts, type VatContext, type VatIdEvidence } from './determine';
+import {
+  buyerVatExplanation, buyerVatLabel, compareCompanyNames, companyNameTokens, determineVat, taxOn, vatInMargin, vatRowTitle,
+  type TaxSettings, type CountryFacts, type VatContext, type VatIdEvidence,
+} from './determine';
 import { parseVatId, vatIdLooksValid, viesPrefixFor } from './vatid';
 
 const EU: Record<string, number> = { NL: 2100, DE: 1900, FR: 2000, BE: 2100, GR: 2400, IE: 2300 };
@@ -193,4 +196,112 @@ test('VAT ID shapes', () => {
   assert.equal(vatIdLooksValid('ATU12345678'), true);
   assert.equal(vatIdLooksValid('XX123'), false);
   assert.equal(parseVatId('12345'), null);
+});
+
+// ── VIES name vs the buyer's legal name ──
+
+const named = (vatId: string, name: string | null): VatIdEvidence => ({ ...id(vatId, 'VALID'), name });
+
+test('a VIES-valid VAT ID of ANOTHER company: review, not 0% ("VAT ID belongs to …")', () => {
+  const d = determineVat(
+    ctx({ shipToCountry: 'BE', billingCountry: 'BE', vatId: named('BE0417497106', 'NV Anheuser-Busch InBev'), buyerLegalName: 'G4 Brussels Research Lab NV' }),
+    S(),
+    countries,
+  );
+  assert.equal(d.treatment, 'REVIEW_REQUIRED');
+  assert.equal(d.reviewRequired, true);
+  assert.equal(d.taxCents, 0);
+  assert.match(d.reasons.join(' '), /VAT ID belongs to NV Anheuser-Busch InBev/);
+  assert.match(buyerVatExplanation(d), /lists it for “NV Anheuser-Busch InBev”, not for “G4 Brussels Research Lab NV”/);
+  assert.doesNotMatch(buyerVatExplanation(d), /policy|review required/i);
+});
+
+test('the same company under its legal form / spelling still gets 0%', () => {
+  for (const [vies, billing] of [
+    ['ACME LABORATORIES B.V.', 'Acme Labs'],
+    ['NV ANHEUSER-BUSCH INBEV', 'Anheuser Busch InBev N.V.'],
+    ['STICHTING WAGENINGEN RESEARCH', 'Wageningen University & Research'],
+    ['Max-Planck-Gesellschaft zur Förderung der Wissenschaften e.V.', 'Max Planck Institut für Biochemie'],
+    ['QA LAB GMBH', 'QA Lab GmbH'],
+  ]) {
+    const d = determineVat(ctx({ shipToCountry: 'DE', billingCountry: 'DE', vatId: named('DE123456789', vies), buyerLegalName: billing }), S(), countries);
+    assert.equal(d.treatment, 'EU_ICS_ZERO', `${vies} vs ${billing}`);
+  }
+});
+
+test('no VIES name (DE answers "---"), no legal name or another script: no conclusion, 0% stands', () => {
+  assert.equal(determineVat(ctx({ shipToCountry: 'DE', vatId: named('DE123456789', null), buyerLegalName: 'Anything GmbH' }), S(), countries).treatment, 'EU_ICS_ZERO');
+  assert.equal(determineVat(ctx({ shipToCountry: 'DE', vatId: named('DE123456789', 'Other GmbH') }), S(), countries).treatment, 'EU_ICS_ZERO');
+  const greek = determineVat(ctx({ shipToCountry: 'GR', vatId: named('EL123456789', 'ΦΑΡΜΑ ΕΛΛΑΣ Α.Ε.'), buyerLegalName: 'Pharma Hellas SA' }), S(), countries);
+  assert.equal(greek.treatment, 'EU_ICS_ZERO');
+  assert.match(greek.reasons.join(' '), /could not be compared/);
+});
+
+test('name normalisation drops legal forms, case, accents and punctuation', () => {
+  assert.deepEqual(companyNameTokens('N.V. Anheuser-Busch InBev'), ['ANHEUSER', 'BUSCH', 'INBEV']);
+  assert.deepEqual(companyNameTokens('Société Générale S.A.'), ['SOCIETE', 'GENERALE']);
+  assert.equal(compareCompanyNames('XYZ Research NV', 'G4 Brussels Research Lab NV'), 'MISMATCH', 'a shared generic word is not enough');
+  assert.equal(compareCompanyNames('B.V.', 'Acme'), 'UNKNOWN');
+});
+
+// ── buyer-facing texts ──
+
+test('buyer texts never carry staff wording (policy, evidence, review required)', () => {
+  const cases: Array<[Partial<VatContext>, Partial<TaxSettings>]> = [
+    [{}, {}],
+    [{ shipToCountry: 'US', billingCountry: 'US' }, {}],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'VALID') }, {}],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'INVALID') }, {}],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'UNAVAILABLE') }, { viesDownPolicy: 'MANUAL_REVIEW' }],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'UNAVAILABLE') }, { viesDownPolicy: 'CHARGE_HOME_VAT' }],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'UNAVAILABLE') }, { viesDownPolicy: 'BLOCK' }],
+    [{ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('NL123456789B01', 'VALID') }, {}],
+    [{ shipToCountry: 'FR', billingCountry: 'FR', customerKind: 'CONSUMER' }, { salesMode: 'B2B_AND_B2C', euB2cMode: 'OSS' }],
+    [{ shipToCountry: 'FR', billingCountry: 'FR', customerKind: 'CONSUMER' }, { salesMode: 'B2B_ONLY' }],
+    [{ shipToCountry: null, billingCountry: null }, {}],
+  ];
+  for (const [c, st] of cases) {
+    const d = determineVat(ctx(c), S(st), countries);
+    const text = `${buyerVatExplanation(d)} ${buyerVatLabel(d)}`;
+    assert.ok(buyerVatExplanation(d).length > 10, JSON.stringify(c));
+    assert.doesNotMatch(text, /policy|evidence|review required|home rate|dispatch country/i, `${JSON.stringify(c)} ${JSON.stringify(st)} → ${text}`);
+  }
+});
+
+test('export: "export at 0% VAT" for the buyer, the evidence reminder stays for staff', () => {
+  const d = determineVat(ctx({ shipToCountry: 'US', billingCountry: 'US' }), S(), countries);
+  assert.match(buyerVatExplanation(d), /Delivery to US, outside the EU: export at 0% VAT/);
+  assert.match(d.reasons.join(' '), /keep the export evidence/);
+  assert.equal(vatRowTitle(d), 'VAT 0%');
+});
+
+test('CHARGE_HOME_VAT for a VAT ID VIES could not confirm: labelled as such for the buyer', () => {
+  const d = determineVat(ctx({ shipToCountry: 'DE', billingCountry: 'DE', vatId: id('DE123456789', 'UNAVAILABLE') }), S({ viesDownPolicy: 'CHARGE_HOME_VAT' }), countries);
+  assert.equal(d.treatment, 'EU_B2C_HOME');
+  assert.equal(buyerVatLabel(d), 'Home VAT (VAT ID not yet confirmed — credited later)');
+  assert.match(buyerVatExplanation(d), /could not check your VAT ID DE123456789/);
+  const none = determineVat(ctx({ shipToCountry: 'DE', billingCountry: 'DE' }), S(), countries);
+  assert.equal(buyerVatLabel(none), 'Standard rate (no EU VAT ID)');
+});
+
+test('margin scheme with freight: only the margin explanation, the row reads "VAT 21% on freight"', () => {
+  const lines = [{ netCents: 50_000, lineType: 'GOODS' as const, scheme: 'MARGIN' as const, purchaseCostCents: 42_000 }, { netCents: 15_000, lineType: 'SHIPPING' as const }];
+  const d = determineVat(ctx({ lines }), S({ marginSchemeEnabled: true }), countries);
+  assert.equal(d.treatment, 'MARGIN_SCHEME');
+  assert.equal(d.taxCents, 3_150);
+  assert.equal(vatRowTitle(d), 'VAT 21% on freight');
+  assert.deepEqual(d.buyerReasons, ['Margin scheme for second-hand goods: the VAT is included in the price and not shown separately; VAT 21% is charged on the freight only.']);
+  assert.equal(buyerVatLabel(d), 'Margin scheme — VAT included in the price');
+  assert.doesNotMatch(d.reasons.join(' '), /no purchase cost/, 'the cost is on file');
+  const noCost = determineVat(ctx({ lines: [{ ...lines[0], purchaseCostCents: null }, lines[1]] }), S({ marginSchemeEnabled: true }), countries);
+  assert.match(noCost.reasons.join(' '), /no purchase cost recorded/, 'staff still learn that the cost is missing');
+  assert.doesNotMatch(buyerVatExplanation(noCost), /purchase cost/);
+});
+
+test('VAT row title: one rate, freight only, nothing taxed', () => {
+  assert.equal(vatRowTitle(determineVat(ctx(), S(), countries)), 'VAT 21%');
+  const exportFreight = determineVat(ctx({ shipToCountry: 'US' }), S({ shippingFollowsMain: false }), countries);
+  assert.equal(vatRowTitle(exportFreight), 'VAT 21% on freight');
+  const marginOnly = determineVat(ctx({ lines: [{ netCents: 50_000, lineType: 'GOODS', scheme: 'MARGIN', purchaseCostCents: 1 }] }), S({ marginSchemeEnabled: true }), countries);
+  assert.equal(vatRowTitle(marginOnly), 'VAT');
 });

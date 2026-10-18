@@ -19,8 +19,8 @@ import { effectiveDueDate, endOfDayUtc, fmtDueDate } from '@/lib/orders/payment-
 import { creditStatusFor } from '@/lib/credit/terms';
 import { cancelQuoteOrder, cancelSummary } from '@/lib/quotes/cancel';
 import { cancelPaidOrder } from '@/lib/fulfilment/cancel';
-import { consumeQuoteHold, holdUnitForQuote } from '@/lib/quotes/stock';
-import { creditDefaults, paymentTermDays, stockReserveOn, vatIdRule } from '@/lib/quotes/policy';
+import { sellQuoteUnit } from '@/lib/quotes/stock';
+import { creditDefaults, paymentTermDays, vatIdRule } from '@/lib/quotes/policy';
 import { mailLayout, siteBase } from '@/lib/quotes/mail';
 import { clearComplianceHold as clearComplianceHoldCore } from '@/lib/checkout/holds';
 
@@ -158,7 +158,6 @@ export async function approveOrderOnTerms(formData: FormData): Promise<Result> {
   if (missing.length) return { ok: false, message: `Missing ${missing.join(', ')} — add the billing and delivery details first.` };
   const credit = await creditStatusFor(o.buyerId, o.totalCents, o.currency, { excludeOrderId: o.id });
   if (!credit.eligible) return { ok: false, message: `Not possible: ${credit.reason}` };
-  const mode = stockReserveOn();
   let stockNote = '';
   try {
     await prisma.$transaction(async (tx) => {
@@ -177,11 +176,8 @@ export async function approveOrderOnTerms(formData: FormData): Promise<Result> {
       if (flip.count !== 1) throw new Error('RACE');
       await voidProformas(o.id, `Replaced by the invoice on NET ${credit.termDays} terms (approved by staff).`, tx);
       if (o.sourcingRequestId) {
-        if (mode === 'PAYMENT_VERIFIED' && o.items[0]?.productId) {
-          const h = await holdUnitForQuote(tx, { quoteId: o.sourcingRequestId, productId: o.items[0].productId, qty: o.items[0].quantity, orderId: o.id });
-          if (!h.ok) stockNote = ` Warning: the unit could not be reserved (${h.message}) — check stock before shipping.`;
-        }
-        await consumeQuoteHold(o.sourcingRequestId, tx);
+        // Sold on terms: the unit is taken by state (held or not), whatever STOCK_RESERVE_ON says now.
+        stockNote = await sellQuoteUnit(tx, o.sourcingRequestId, o.id, o.items[0]);
         await tx.sourcingRequest.updateMany({ where: { id: o.sourcingRequestId, status: { in: ['PENDING', 'RESPONDED'] } }, data: { status: 'ACCEPTED' } });
       }
     });

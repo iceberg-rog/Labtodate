@@ -10,19 +10,23 @@ import { ensureSettingsLoaded, settingInt, settingIntOrNull } from '@/lib/settin
  *  - reserveStock()      guarded decrement (quantity >= qty) + a StockReservation
  *                        row, in one transaction. Idempotent per (source, refId,
  *                        productId) — a partial unique index guarantees one
- *                        active hold.
+ *                        active hold. Called again with another qty (a revised
+ *                        offer), the hold follows it: the difference is taken
+ *                        (guarded) or put back.
  *  - releaseReservation() claims the hold ONCE (releasedAt) and puts the units
  *                        back — double clicks / overlapping sweeps restock once.
  *  - consumeReservation() the units were sold (payment / dispatch): the hold
  *                        ends without restock.
- *  - releaseExpiredReservations() for the sweep cron.
+ *  - releaseExpiredReservations() for the sweep cron; the buyer of a lapsed
+ *                        quote hold is told (lib/quotes/stock.ts).
  */
 
 type Db = Prisma.TransactionClient;
 export type ReservationSource = 'ORDER' | 'QUOTE' | 'CART';
 
 export type ReserveResult =
-  | { ok: true; reservationId: string; created: boolean }
+  /** `delta`: units taken (+) or put back (−) when an existing hold changed size. */
+  | { ok: true; reservationId: string; created: boolean; delta: number }
   | { ok: false; reason: 'UNAVAILABLE' | 'BAD_QTY'; message: string };
 
 async function inTx<T>(tx: Db | undefined, fn: (tx: Db) => Promise<T>): Promise<T> {
@@ -45,9 +49,9 @@ export async function reserveStock(
     return await inTx(tx, async (db) => {
       const existing = await db.stockReservation.findFirst({
         where: { source: p.source, refId: p.refId, productId: p.productId, releasedAt: null, consumedAt: null },
-        select: { id: true },
+        select: { id: true, qty: true },
       });
-      if (existing) return { ok: true as const, reservationId: existing.id, created: false };
+      if (existing) return resizeHold(db, existing, p.productId, p.qty);
       const dec = await db.product.updateMany({
         where: { id: p.productId, quantity: { gte: p.qty } },
         data: { quantity: { decrement: p.qty } },
@@ -57,7 +61,7 @@ export async function reserveStock(
         data: { productId: p.productId, qty: p.qty, source: p.source, refId: p.refId, orderId: p.orderId ?? null, expiresAt: p.expiresAt ?? null },
         select: { id: true },
       });
-      return { ok: true as const, reservationId: r.id, created: true };
+      return { ok: true as const, reservationId: r.id, created: true, delta: p.qty };
     });
   } catch (e) {
     // Concurrent duplicate hold: the partial unique index fired — the other one won.
@@ -66,10 +70,35 @@ export async function reserveStock(
         where: { source: p.source, refId: p.refId, productId: p.productId, releasedAt: null, consumedAt: null },
         select: { id: true },
       });
-      if (existing) return { ok: true, reservationId: existing.id, created: false };
+      if (existing) return { ok: true, reservationId: existing.id, created: false, delta: 0 };
     }
     throw e;
   }
+}
+
+/**
+ * An active hold gets another size (the offer quantity was revised, or the
+ * order is for more / fewer units than the open offer held): take the extra
+ * units with the same guarded decrement, or put the surplus back — in the
+ * caller's transaction, so the hold and Product.quantity never disagree.
+ */
+async function resizeHold(db: Db, hold: { id: string; qty: number }, productId: string, qty: number): Promise<ReserveResult> {
+  const delta = qty - hold.qty;
+  if (delta === 0) return { ok: true, reservationId: hold.id, created: false, delta: 0 };
+  if (delta > 0) {
+    const dec = await db.product.updateMany({ where: { id: productId, quantity: { gte: delta } }, data: { quantity: { decrement: delta } } });
+    if (dec.count !== 1) {
+      return { ok: false, reason: 'UNAVAILABLE', message: `Not enough units in stock for ${qty} (${hold.qty} already held for this deal; the rest is sold or reserved by another order).` };
+    }
+  }
+  // Guarded on the size we read: a concurrent resize / release wins, ours is undone.
+  const claim = await db.stockReservation.updateMany({ where: { id: hold.id, qty: hold.qty, releasedAt: null, consumedAt: null }, data: { qty } });
+  if (claim.count !== 1) {
+    if (delta > 0) await db.product.updateMany({ where: { id: productId }, data: { quantity: { increment: delta } } });
+    return { ok: false, reason: 'UNAVAILABLE', message: 'The reservation changed meanwhile — reload and try again.' };
+  }
+  if (delta < 0) await db.product.updateMany({ where: { id: productId }, data: { quantity: { increment: -delta } } });
+  return { ok: true, reservationId: hold.id, created: false, delta };
 }
 
 /** Release active holds (by id, or every hold of a source/ref). Returns units put back. */
@@ -108,16 +137,33 @@ export async function consumeReservation(where: { source: ReservationSource; ref
   });
 }
 
-/** Sweep: release every hold past its expiry. Returns the number released. */
+/**
+ * Sweep: release every hold past its expiry. Returns the number released.
+ * A lapsed QUOTE hold (open offer, STOCK_RESERVE_ON = OFFER_SENT) is not
+ * silent: the buyer — whose offer may still be valid — and the assignee are
+ * told, and the quote is flagged for follow-up (exactly once: only the sweep
+ * that claimed the release notifies).
+ */
 export async function releaseExpiredReservations(now = new Date()): Promise<number> {
   const due = await prisma.stockReservation.findMany({
     where: { releasedAt: null, consumedAt: null, expiresAt: { lt: now } },
-    select: { id: true },
+    select: { id: true, source: true, refId: true, qty: true, expiresAt: true },
     take: 200,
     orderBy: { expiresAt: 'asc' },
   });
   let n = 0;
-  for (const d of due) if ((await releaseReservation({ reservationId: d.id }, 'Hold expired')) > 0) n++;
+  const lapsedQuoteHolds: typeof due = [];
+  for (const d of due) {
+    if ((await releaseReservation({ reservationId: d.id }, 'Hold expired')) > 0) {
+      n++;
+      if (d.source === 'QUOTE') lapsedQuoteHolds.push(d);
+    }
+  }
+  if (lapsedQuoteHolds.length) {
+    // Dynamic: the quote side (mails, notifications) imports this module.
+    const { notifyQuoteHoldLapsed } = await import('@/lib/quotes/stock');
+    for (const h of lapsedQuoteHolds) await notifyQuoteHoldLapsed({ quoteId: h.refId, qty: h.qty, expiredAt: h.expiresAt ?? now }, now);
+  }
   return n;
 }
 
