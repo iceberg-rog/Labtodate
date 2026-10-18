@@ -4,8 +4,9 @@ import { useActionState, useState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { Image as ImageIcon, Loader2, Upload, CheckCircle2, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useStepUp, type MaybeStepUp } from '@/components/security/useStepUp';
 
-type Result = { ok: boolean; message: string } | null;
+type Result = MaybeStepUp | null;
 
 const MAX_BYTES = 2 * 1024 * 1024;
 
@@ -13,7 +14,9 @@ const MAX_BYTES = 2 * 1024 * 1024;
  * Brand-logo upload on the Settings → Logo tab. Uses useActionState so a
  * rejected file (wrong type, too big) or a successful upload shows a message
  * by the button instead of a server-error page. Oversized files are stopped
- * here before they are sent.
+ * here before they are sent. The logo is printed on every proforma and
+ * invoice, so the upload asks for a fresh authenticator code (step-up) like
+ * the other Company settings; the same file is sent again once confirmed.
  */
 export function LogoUploadForm({
   action,
@@ -22,7 +25,11 @@ export function LogoUploadForm({
   action: (prev: Result, formData: FormData) => Promise<Result>;
   currentUrl: string | undefined;
 }) {
-  const [state, formAction] = useActionState(action, null);
+  const { run: withStepUp, dialog: stepUpDialog } = useStepUp();
+  const [state, formAction] = useActionState(
+    (prev: Result, fd: FormData) => withStepUp(async () => (await action(prev, fd)) ?? { ok: false, message: 'No response — try again.' }),
+    null,
+  );
   const [localError, setLocalError] = useState<string | null>(null);
   const shown: Result = localError ? { ok: false, message: localError } : state;
 
@@ -43,6 +50,7 @@ export function LogoUploadForm({
       onSubmit={onSubmit}
       className="rounded-2xl border border-border bg-card p-6 space-y-5"
     >
+      {stepUpDialog}
       <div className="flex items-center gap-2">
         <ImageIcon className="h-4 w-4 text-primary" />
         <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-primary">Brand logo</h2>

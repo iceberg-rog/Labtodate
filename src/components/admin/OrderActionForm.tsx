@@ -1,6 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import { useStepUp } from '@/components/security/useStepUp';
 import { AdminActionForm, AdminActionStatus } from './AdminActionForm';
 import { announceAdminResult } from './AdminResultToast';
 
@@ -17,6 +18,10 @@ import { announceAdminResult } from './AdminResultToast';
  * renders through <AdminActionStatus>.
  *
  * `confirmText` adds a confirmation step (for refund / cancel / delete).
+ *
+ * An action that answers “confirm first” (StepUpRequired — e.g. the country
+ * and shipping tables, Settings → Tax & VAT) opens the authenticator-code
+ * dialog and is sent again once confirmed.
  *
  * `announce`: report a success in the admin-wide toast instead of inline — for
  * forms that may disappear once the action lands (a refunded order loses its
@@ -41,9 +46,10 @@ export function OrderActionForm({
   children: React.ReactNode;
 }) {
   const router = useRouter();
+  const { run: withStepUp, dialog: stepUpDialog } = useStepUp();
   return (
     <AdminActionForm
-      action={action}
+      action={(fd) => withStepUp(() => action(fd))}
       className={className}
       confirmMessage={confirmText}
       statusInChildren
@@ -52,6 +58,7 @@ export function OrderActionForm({
         if (r.ok) router.refresh();
       }}
     >
+      {stepUpDialog}
       {children}
       <AdminActionStatus className={messageClassName} hideSuccess={announce} />
     </AdminActionForm>

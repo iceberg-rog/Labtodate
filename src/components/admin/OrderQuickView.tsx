@@ -37,6 +37,7 @@ import {
   deleteOrderPermanently,
 } from '@/app/admin/actions';
 import { humaniseBuyer, smartDate, STATUS_LABEL, STATUS_TONE } from '@/lib/orders/display';
+import { fmtValueDay } from '@/lib/payments/rules';
 import { openManualPaid, ORDER_PAID_EVENT } from './ManualPaidPanel';
 import { announceAdminResult } from './AdminResultToast';
 import { BuyerEmailReveal } from './BuyerEmailReveal';
@@ -188,7 +189,8 @@ export function OrderQuickView() {
   const tone = data ? STATUS_TONE[data.status] ?? 'slate' : 'slate';
   const ship = data ? fmtAddrLines(data.shippingAddress) : null;
   const bill = data ? fmtAddrLines(data.billingAddress) : null;
-  const sameAddr = ship && bill && JSON.stringify(ship) === JSON.stringify(bill);
+  const sameAddr = ship && bill && JSON.stringify(ship) === JSON.stringify(bill) && !data?.billingCompany && !data?.billingVat;
+  const partPaid = !!data && data.status === 'PENDING_PAYMENT' && data.receivedCents > 0;
 
   return (
     <>
@@ -307,12 +309,16 @@ export function OrderQuickView() {
                     <strong>Payment proof submitted</strong>
                     {data.paymentSubmittedAt && ` ${smartDate(new Date(data.paymentSubmittedAt))}`}. Verify it on the order page with the amount and value date from your bank statement (or reject it there).
                   </span>
-                  <Link
-                    href={`/admin/orders/${data.id}#verify`}
-                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold"
-                  >
-                    <ShieldCheck className="h-3.5 w-3.5" /> Verify payment…
-                  </Link>
+                  {data.canBookPayments ? (
+                    <Link
+                      href={`/admin/orders/${data.id}#verify`}
+                      className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold"
+                    >
+                      <ShieldCheck className="h-3.5 w-3.5" /> Verify payment…
+                    </Link>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-sky-900 dark:text-sky-300">Finance verifies it (finance:manage).</span>
+                  )}
                 </div>
               )}
               {data.paymentVerificationStatus === 'VERIFIED' && data.paymentVerifiedByEmail && (
@@ -321,9 +327,28 @@ export function OrderQuickView() {
                   <span><strong>Payment verified</strong> {data.paymentVerifiedAt ? smartDate(new Date(data.paymentVerifiedAt)) : ''} by {data.paymentVerifiedByEmail}.</span>
                 </div>
               )}
-              {data.paymentVerificationStatus === 'REJECTED' && (
+              {partPaid ? (
+                <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-300" data-testid="quick-part-paid">
+                  <strong>Part payment received</strong> — {fmt(data.receivedCents, data.currency)} received, {fmt(data.openCents, data.currency)} still due. The buyer uploads the receipt for the rest; refunds and credits are on the order page.
+                </div>
+              ) : data.paymentVerificationStatus === 'REJECTED' && (
                 <div className="rounded-2xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-3 text-xs text-amber-900 dark:text-amber-300">
                   <strong>Last receipt rejected.</strong> {data.paymentRejectionReason ? `Reason: "${data.paymentRejectionReason}"` : ''} Buyer can resubmit from their workspace.
+                </div>
+              )}
+              {data.holds.length > 0 && (
+                <div className="rounded-2xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 p-3 text-xs text-amber-900 dark:text-amber-300 flex items-start gap-2" data-testid="quick-holds">
+                  <ShieldAlert className="h-4 w-4 flex-shrink-0 mt-0.5" />
+                  <span className="min-w-0 [overflow-wrap:anywhere]">
+                    <strong>On hold: {data.holds.map((h) => h.title).join(', ')}.</strong>
+                    {data.holdNote && <span className="block mt-0.5">{data.holdNote}</span>}
+                    {/* Only holds that have a control on the order page get a pointer. */}
+                    {data.holds.some((h) => h.resolvedAt) && (
+                      <span className="block mt-0.5">
+                        Resolve on the order page: {data.holds.filter((h) => h.resolvedAt).map((h) => `${h.title} → ${h.resolvedAt}`).join('; ')}.
+                      </span>
+                    )}
+                  </span>
                 </div>
               )}
               {actionMsg && (
@@ -459,11 +484,17 @@ export function OrderQuickView() {
                   )}
                 </Card>
                 <Card icon={<MapPin className="h-3.5 w-3.5 text-primary" />} title="Billing">
+                  {(data.billingCompany || data.billingVat) && (
+                    <div className="text-sm mb-1">
+                      {data.billingCompany && <p className="font-semibold">{data.billingCompany}</p>}
+                      {data.billingVat && <p className="text-xs text-muted-foreground">VAT ID <span className="font-mono text-foreground">{data.billingVat}</span></p>}
+                    </div>
+                  )}
                   {sameAddr ? (
                     <p className="text-xs text-muted-foreground italic">Same as shipping</p>
                   ) : bill ? (
                     <address className="not-italic text-sm space-y-0.5">
-                      {bill.name && <p className="font-semibold">{bill.name}</p>}
+                      {bill.name && <p className={data.billingCompany ? 'text-xs' : 'font-semibold'}>{data.billingCompany ? `Attn. ${bill.name}` : bill.name}</p>}
                       {bill.lines.map((l, i) => <p key={i} className="text-muted-foreground text-xs">{l}</p>)}
                     </address>
                   ) : (
@@ -517,7 +548,7 @@ export function OrderQuickView() {
                 </div>
                 <ol className="p-4 space-y-2 text-sm">
                   <TimelineRow label="Created" iso={data.createdAtISO} />
-                  {data.paidAtISO && <TimelineRow label="Payment received" iso={data.paidAtISO} />}
+                  {data.paidAtISO && <TimelineRow label={data.paidAtIsValueDate ? 'Payment received (value date)' : 'Payment received'} iso={data.paidAtISO} dateOnly={data.paidAtIsValueDate} />}
                   {data.shippedAtISO && <TimelineRow label="Shipped" iso={data.shippedAtISO} />}
                   {data.deliveredAtISO && <TimelineRow label="Delivered" iso={data.deliveredAtISO} />}
                 </ol>
@@ -532,20 +563,31 @@ export function OrderQuickView() {
                 </section>
               )}
 
-              {/* Manual paid + receipt — only when relevant */}
-              {data.status === 'PENDING_PAYMENT' && (
-                <section className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/30 p-3 flex items-center gap-3 flex-wrap">
+              {/* Manual paid + receipt — only when relevant: Finance books money, and
+                  never past a hold, a receipt waiting for review or a terms request. */}
+              {data.status === 'PENDING_PAYMENT' && !data.archivedAt && (
+                <section className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/30 p-3 flex items-center gap-3 flex-wrap" data-testid="quick-manual-paid">
                   <CreditCard className="h-4 w-4 text-amber-700 dark:text-amber-300" />
-                  <span className="text-xs flex-1 text-amber-900 dark:text-amber-300">
-                    Buyer paid off-platform? Mark this as paid and attach the receipt.
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => openManualPaid(data.id)}
-                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-amber-700 text-white text-xs font-bold hover:bg-amber-800"
-                  >
-                    Mark as paid
-                  </button>
+                  {data.manualPayBlocker ? (
+                    <span className="text-xs flex-1 text-amber-900 dark:text-amber-300 [overflow-wrap:anywhere]">{data.manualPayBlocker}</span>
+                  ) : !data.canBookPayments ? (
+                    <span className="text-xs flex-1 text-amber-900 dark:text-amber-300">Awaiting payment. Payments are booked by Finance (finance:manage).</span>
+                  ) : (
+                    <>
+                      <span className="text-xs flex-1 text-amber-900 dark:text-amber-300">
+                        {partPaid
+                          ? `Part paid: ${fmt(data.openCents, data.currency)} still due. Rest received off-platform? Record it with the bank statement and the receipt.`
+                          : 'Buyer paid off-platform? Mark this as paid and attach the receipt.'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => openManualPaid(data.id, data.openCents, { currency: data.currency, receivedCents: data.receivedCents, totalCents: data.totalCents })}
+                        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-amber-700 text-white text-xs font-bold hover:bg-amber-800"
+                      >
+                        {partPaid ? 'Record the remaining payment' : 'Mark as paid'}
+                      </button>
+                    </>
+                  )}
                 </section>
               )}
               {data.paymentProofUrl && (
@@ -643,11 +685,11 @@ function Card({ icon, title, children }: { icon: React.ReactNode; title: string;
   );
 }
 
-function TimelineRow({ label, iso }: { label: string; iso: string }) {
+function TimelineRow({ label, iso, dateOnly = false }: { label: string; iso: string; dateOnly?: boolean }) {
   return (
     <li className="flex items-center justify-between">
       <span className="font-semibold">{label}</span>
-      <span className="text-xs text-muted-foreground tabular-nums">{smartDate(new Date(iso))}</span>
+      <span className="text-xs text-muted-foreground tabular-nums">{dateOnly ? fmtValueDay(iso) : smartDate(new Date(iso))}</span>
     </li>
   );
 }

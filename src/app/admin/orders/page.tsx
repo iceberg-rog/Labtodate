@@ -1,6 +1,6 @@
 import Link from 'next/link';
-import { Banknote, Package, TrendingUp, Truck, CircleAlert, Calendar, Download, Building2, Users as UsersIcon, Repeat } from 'lucide-react';
-import { requireCapability } from '@/lib/auth-server';
+import { Banknote, TrendingUp, Truck, CircleAlert, Calendar, Download, Building2, Users as UsersIcon, Repeat } from 'lucide-react';
+import { hasCapability, requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { firstPublicImage } from '@/lib/media/public-src';
 import { formatPrice } from '@/lib/utils';
@@ -11,8 +11,6 @@ import { ProductQuickView } from '@/components/admin/ProductQuickView';
 import { OrderQuickView } from '@/components/admin/OrderQuickView';
 import {
   humaniseBuyer,
-  itemCountLabel,
-  smartDate,
   shipAddressOneLiner,
   shippingAddressIsComplete,
   computeOrderPriority,
@@ -23,6 +21,9 @@ import { isQuoteRef } from '@/lib/quotes/offer';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { carriers as configuredCarriers, requireTrackingToShip, staffCancelReasons } from '@/lib/fulfilment/policy';
 import { buildTrackingUrl, findCarrier, trackingRequired } from '@/lib/fulfilment/rules';
+import { heldMoneyCents, LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
+import { prePaymentHoldMessage } from '@/lib/documents/issue';
+import { manualPaymentBlocker } from '@/lib/payments/rules';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Orders' };
@@ -112,13 +113,16 @@ export default async function AdminOrdersPage(
       : {}),
   };
 
-  // Counts for the two new tabs (independent of current filters so the chip
-  // counters always reflect the total backlog the operator is responsible for).
-  const [archivedCount, awaitingVerifyCount, invoiceHoldCount, refundsOpenCount] = await Promise.all([
-    prisma.order.count({ where: { archivedAt: { not: null } } }),
-    prisma.order.count({ where: { paymentVerificationStatus: 'AWAITING_VERIFICATION', archivedAt: null } }),
-    prisma.order.count({ where: { ...INVOICE_HOLD_WHERE, archivedAt: null } }),
-    prisma.order.count({ where: { refunds: { some: { status: 'REQUESTED' } }, archivedAt: null } }),
+  // Counts of the view chips: within the date range and the search, like the
+  // status chips and the list itself (“1 order matching …” must not sit next
+  // to “Awaiting verification 3”).
+  const scoped = (w: Prisma.OrderWhereInput): Prisma.OrderWhereInput => ({ AND: [w, rangeWhere(range), q ? { OR: where.OR } : {}] });
+  const [archivedCount, awaitingVerifyCount, invoiceHoldCount, refundsOpenCount, canBookPayments] = await Promise.all([
+    prisma.order.count({ where: scoped({ archivedAt: { not: null } }) }),
+    prisma.order.count({ where: scoped({ paymentVerificationStatus: 'AWAITING_VERIFICATION', archivedAt: null }) }),
+    prisma.order.count({ where: scoped({ ...INVOICE_HOLD_WHERE, archivedAt: null }) }),
+    prisma.order.count({ where: scoped({ refunds: { some: { status: 'REQUESTED' } }, archivedAt: null }) }),
+    hasCapability('finance:manage'),
   ]);
 
   const [orders, total, statusBreakdown, agg, paidCount] = await Promise.all([
@@ -129,7 +133,7 @@ export default async function AdminOrdersPage(
       take: PAGE_SIZE,
       include: {
         buyer: { select: { id: true, name: true, email: true, company: { select: { name: true } } } },
-        refunds: { where: { status: 'REQUESTED' }, select: { id: true } },
+        refunds: LIVE_REFUNDS_SELECT,
         items: {
           select: {
             quantity: true,
@@ -448,6 +452,7 @@ export default async function AdminOrdersPage(
               buyerLifetimeCents: intel.lifetimeCents,
             });
             const supplierNames = Array.from(new Set(o.items.map((i) => i.product?.seller?.name).filter(Boolean) as string[]));
+            const received = heldMoneyCents(o.amountPaidCents, o.refunds);
             return {
               id: o.id,
               orderNumber: o.orderNumber,
@@ -480,12 +485,19 @@ export default async function AdminOrdersPage(
               shipTo: shipAddressOneLiner(o.shippingAddress),
               buyerCountry: o.buyerCountry,
               priority,
-              paymentVerificationStatus: (o.paymentVerificationStatus ?? null) as 'AWAITING_VERIFICATION' | 'VERIFIED' | 'REJECTED' | null,
+              paymentVerificationStatus: (o.paymentVerificationStatus ?? null) as 'AWAITING_VERIFICATION' | 'VERIFIED' | 'REJECTED' | 'TERMS_REQUESTED' | null,
               paymentSubmittedAtISO: o.paymentSubmittedAt?.toISOString() ?? null,
               archived: !!o.archivedAt,
-              openCents: Math.max(0, o.totalCents - o.amountPaidCents),
+              openCents: Math.max(0, o.totalCents - received),
+              receivedCents: received,
+              totalCents: o.totalCents,
+              currency: o.currency,
+              canBookPayments,
+              manualPayBlocker: o.status === 'PENDING_PAYMENT'
+                ? manualPaymentBlocker({ holdMessage: prePaymentHoldMessage(o), holdReason: o.holdReason, openHolds: o.openHolds, paymentVerificationStatus: o.paymentVerificationStatus })
+                : null,
               holds: Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])])),
-              refundsToSend: o.refunds.length,
+              refundsToSend: o.refunds.filter((r) => r.status === 'REQUESTED').length,
             };
           })}
         />

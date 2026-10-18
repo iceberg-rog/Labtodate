@@ -32,8 +32,8 @@ import {
 } from '@/app/admin/actions';
 import { BuyerEmailReveal } from '@/components/admin/BuyerEmailReveal';
 import { documentHref } from '@/lib/documents';
-import { getOrderDocuments } from '@/lib/documents/issue';
-import { ensureSettingsLoaded, settingBool } from '@/lib/settings';
+import { getOrderDocuments, prePaymentHoldMessage } from '@/lib/documents/issue';
+import { ensureSettingsLoaded, settingBool, settingInt } from '@/lib/settings';
 import { OrderDocumentsPanel } from '@/components/documents/OrderDocumentsPanel';
 import { OrderPricingPanel } from '@/components/admin/OrderPricingPanel';
 import { OrderFinancePanel } from '@/components/admin/OrderFinancePanel';
@@ -43,7 +43,9 @@ import { vatTreatmentLabel } from '@/lib/tax/determine';
 import { OrderActionForm } from '@/components/admin/OrderActionForm';
 import { StickyDetails } from '@/components/admin/StickyDetails';
 import { OrderPaymentPanels } from '@/components/admin/OrderPaymentPanels';
-import { orderDetailsProblems } from '@/lib/orders/details';
+import { detailsSummary, orderDetailsProblems } from '@/lib/orders/details';
+import { heldMoneyCents, LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
+import { bookingHoldBlocker, briefText, fmtValueDay, proofKeyOf, receiptHistory, type ReceiptStatus } from '@/lib/payments/rules';
 import { orderFulfilmentView } from '@/lib/fulfilment/view';
 import { NextSteps } from '@/components/orders/NextSteps';
 import { AdminShipments } from '@/components/admin/fulfilment/AdminShipments';
@@ -164,6 +166,10 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
           },
         },
       },
+      refunds: LIVE_REFUNDS_SELECT,
+      // The money ledger and every receipt event: the timeline and the receipts list.
+      payments: { select: { id: true, amountCents: true, receivedAt: true, method: true, source: true, proofKey: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+      paymentProofs: { select: { id: true, key: true, kind: true, fileName: true, amountCents: true, rejectedReason: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
     },
   });
   if (!order) notFound();
@@ -240,6 +246,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
   ]);
 
   type FeedEntry = { id: string; at: Date; label: string; sub?: string; actor?: string | null; kind: 'audit' | 'notif' };
+  const money = (c: number) => formatPrice(c, order.currency);
   const feed: FeedEntry[] = [
     ...auditEvents.map((a) => ({
       id: 'a:' + a.id,
@@ -258,10 +265,34 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
     })),
   ].sort((a, b) => a.at.getTime() - b.at.getTime());
 
-  // Build a timeline of state-change facts we actually have.
-  const events: { label: string; at: Date; icon: React.ReactNode }[] = [];
+  // Build a timeline of state-change facts we actually have. A value date (bank
+  // statement) is a day, shown without a time and sorted by when it was booked.
+  const events: { label: string; at: Date; icon: React.ReactNode; dateOnly?: boolean; sortAt?: Date }[] = [];
   events.push({ label: order.sourcingRequestId ? 'Created (offer accepted by the buyer)' : 'Created (checkout)', at: order.createdAt, icon: <Clock className="h-3.5 w-3.5" /> });
-  if (order.paidAt) events.push({ label: 'Payment received', at: order.paidAt, icon: <CreditCard className="h-3.5 w-3.5" /> });
+  let ledgerSum = 0;
+  order.payments.forEach((p, i) => {
+    ledgerSum += p.amountCents;
+    const last = i === order.payments.length - 1;
+    const part = !(last && ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'].includes(order.status)) && ledgerSum < order.totalCents;
+    const card = p.source === 'STRIPE';
+    events.push({
+      label: `${part ? 'Part payment' : 'Payment'} ${money(p.amountCents)} received${card ? ' (card)' : ` — value date ${fmtValueDay(p.receivedAt)} (${p.method.toLowerCase().replace(/_/g, ' ')})`}${part ? ` · ${money(Math.max(0, order.totalCents - ledgerSum))} still due` : ''}`,
+      at: p.receivedAt,
+      sortAt: card ? p.receivedAt : p.createdAt,
+      dateOnly: !card,
+      icon: <CreditCard className="h-3.5 w-3.5" />,
+    });
+  });
+  if (!order.payments.length && order.paidAt) {
+    const card = !!order.stripePaymentIntentId;
+    events.push({ label: card ? 'Payment received' : 'Payment received (value date)', at: order.paidAt, dateOnly: !card, icon: <CreditCard className="h-3.5 w-3.5" /> });
+  }
+  for (const pr of order.paymentProofs) {
+    const file = pr.fileName ? ` (${pr.fileName})` : '';
+    if (pr.kind === 'SUBMITTED') events.push({ label: `Payment receipt uploaded by the buyer${file}`, at: pr.createdAt, icon: <FileText className="h-3.5 w-3.5" /> });
+    else if (pr.kind === 'REJECTED') events.push({ label: `Receipt rejected${file}${pr.rejectedReason ? ` — ${briefText(pr.rejectedReason, 160)}` : ''}`, at: pr.createdAt, icon: <FileText className="h-3.5 w-3.5" /> });
+    else if (pr.kind === 'MANUAL') events.push({ label: `Proof attached by staff${file}`, at: pr.createdAt, icon: <FileText className="h-3.5 w-3.5" /> });
+  }
   const fv = await orderFulfilmentView(order.id);
   if (!fv) notFound();
   for (const s of fv.shipments) {
@@ -276,10 +307,22 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
   for (const r of fv.returns) events.push({ label: `${r.rmaNumber} opened — ${r.typeLabel.toLowerCase()} (now: ${r.statusLabel.toLowerCase()})`, at: r.createdAt, icon: <Clock className="h-3.5 w-3.5" /> });
   if (order.status === 'CANCELED') {
     const c = auditEvents.find((e) => e.action.startsWith('order.cancel'));
-    events.push({ label: `Canceled${c?.actorEmail ? ` by ${c.actorEmail}` : ''}${c?.meta ? ` — ${c.meta.slice(0, 140)}` : ''}`, at: c?.createdAt ?? order.updatedAt, icon: <Clock className="h-3.5 w-3.5" /> });
+    events.push({ label: `Canceled${c?.actorEmail ? ` by ${c.actorEmail}` : ''}${c?.meta ? ` — ${briefText(c.meta, 200)}` : ''}`, at: c?.createdAt ?? order.updatedAt, icon: <Clock className="h-3.5 w-3.5" /> });
   }
-  events.sort((a, b) => a.at.getTime() - b.at.getTime());
-  const canMoney = await hasCapability('orders:refund');
+  events.sort((a, b) => (a.sortAt ?? a.at).getTime() - (b.sortAt ?? b.at).getTime());
+  const [canMoney, canFinance] = await Promise.all([hasCapability('orders:refund'), hasCapability('finance:manage')]);
+  // Money received and kept on an unpaid order (part payment), and what is still open.
+  const receivedCents = heldMoneyCents(order.amountPaidCents, order.refunds);
+  const openCents = Math.max(0, order.totalCents - receivedCents);
+  const partPaid = order.status === 'PENDING_PAYMENT' && receivedCents > 0;
+  const receipts = receiptHistory({ proofs: order.paymentProofs, payments: order.payments, currentProofUrl: order.paymentProofUrl, verificationStatus: order.paymentVerificationStatus });
+  // A hold put on while the receipt waits: verifying is refused (verifyPayment) — say so instead of the form.
+  const verifyHoldBlock = order.status === 'PENDING_PAYMENT' && order.paymentVerificationStatus === 'AWAITING_VERIFICATION'
+    ? bookingHoldBlocker({ holdMessage: prePaymentHoldMessage(order), holdReason: order.holdReason, openHolds: order.openHolds }, 'VERIFY')
+    : null;
+  // The receipt shown here: Verify / Reject refuse when the buyer replaced it meanwhile.
+  const reviewedProofKey = proofKeyOf(order.paymentProofUrl) ?? '';
+  const billing = detailsSummary(order);
 
   const itemsTotal = order.items.reduce((s, i) => s + i.priceCentsSnapshot * i.quantity, 0);
   const hasCompleteAddress = shippingAddressIsComplete(order.shippingAddress);
@@ -304,7 +347,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
     : null;
   const docsForHeader = await getOrderDocuments(order.id);
   const requireAmountOnVerify = settingBool('PAYMENT_REQUIRE_AMOUNT_ON_VERIFY');
-  const headerHolds = Array.from(new Set([...order.openHolds, ...(order.holdReason ? [order.holdReason] : [])])).filter((h) => h === 'VAT_REVIEW' || h === 'INVOICE_PENDING');
+  const headerHolds = Array.from(new Set([...order.openHolds, ...(order.holdReason ? [order.holdReason] : [])])).filter((h) => h === 'VAT_REVIEW' || h === 'INVOICE_PENDING' || h === 'STOCK_SHORTAGE');
 
   return (
     <div className="space-y-6 max-w-6xl">
@@ -348,10 +391,15 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
               </a>
             )}
             {headerHolds.map((h) => (
-              <a key={h} href="#invoice-held" className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-                {h === 'VAT_REVIEW' ? 'VAT review' : 'invoice not issued'}
+              <a key={h} href={h === 'STOCK_SHORTAGE' ? '#stock-shortage' : '#invoice-held'} className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                {h === 'VAT_REVIEW' ? 'VAT review' : h === 'STOCK_SHORTAGE' ? 'stock shortage' : 'invoice not issued'}
               </a>
             ))}
+            {partPaid && (
+              <span className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                part paid · {money(openCents)} due
+              </span>
+            )}
             {order.paymentMethodManual === 'INVOICE' && ['INVOICED_ON_TERMS', 'OVERDUE', 'PARTIALLY_PAID'].includes(order.financialStatus) && (
               <span className="inline-flex items-center text-[11px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300">
                 on invoice terms · {order.financialStatus === 'PARTIALLY_PAID' ? 'partly paid' : 'unpaid'}
@@ -488,7 +536,13 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1.5">
                   Billing
                 </p>
-                {sameAddr ? (
+                {billing.billing.length > 0 ? (
+                  <address className="not-italic" data-testid="admin-billing">
+                    {billing.billing.map((l, i) => <p key={i} className={i === 0 ? 'font-semibold' : 'text-muted-foreground'} dir="auto">{l}</p>)}
+                    {billing.vatId && <p className="text-muted-foreground">VAT ID <span className="font-mono text-foreground">{billing.vatId}</span></p>}
+                    {billing.po && <p className="text-muted-foreground">PO <span className="font-mono text-foreground">{billing.po}</span></p>}
+                  </address>
+                ) : sameAddr ? (
                   <p className="text-xs text-muted-foreground italic">Same as shipping</p>
                 ) : billAddr ? (
                   <address className="not-italic">
@@ -704,14 +758,26 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     Billing / delivery details missing ({detailsMissing.join(', ')}). Add them under “Billing & delivery details” before verifying — the invoice and the shipment need them.
                   </p>
                 )}
+                {!canFinance ? (
+                  <p className="text-xs font-semibold text-amber-900 dark:text-amber-300 pt-3 border-t border-amber-200 dark:border-amber-800" data-testid="verify-finance-only">
+                    Verifying or rejecting a receipt books money: it needs the “Register payments and credit terms” permission (finance:manage) — Finance does it.
+                  </p>
+                ) : (
                 <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200 dark:border-amber-800">
-                  {/* Verify — with what the bank statement says (amount, value date, reference) */}
+                  {/* Verify — with what the bank statement says (amount, value date, reference);
+                      not while a blocking hold is open (the action refuses it too). */}
+                  {verifyHoldBlock ? (
+                    <p role="alert" className="text-xs font-semibold text-amber-900 dark:text-amber-300 rounded-md border border-amber-300 dark:border-amber-800 bg-white dark:bg-transparent px-3 py-2" data-testid="verify-held">
+                      {verifyHoldBlock}
+                    </p>
+                  ) : (
                   <OrderActionForm action={verifyPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
+                    <input type="hidden" name="proofKey" value={reviewedProofKey} />
                     <div className="grid grid-cols-2 gap-2">
                       <label className="block">
                         <span className="block text-[10px] uppercase tracking-wider font-bold text-amber-900/80 dark:text-amber-300 mb-1">Amount received ({order.currency})</span>
-                        <input name="amount" inputMode="decimal" required={requireAmountOnVerify} defaultValue={(Math.max(0, order.totalCents - order.amountPaidCents) / 100).toFixed(2)} className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 text-xs tabular-nums" />
+                        <input name="amount" inputMode="decimal" required={requireAmountOnVerify} defaultValue={(openCents / 100).toFixed(2)} className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 text-xs tabular-nums" />
                       </label>
                       <label className="block">
                         <span className="block text-[10px] uppercase tracking-wider font-bold text-amber-900/80 dark:text-amber-300 mb-1">Value date</span>
@@ -721,15 +787,26 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                         <span className="block text-[10px] uppercase tracking-wider font-bold text-amber-900/80 dark:text-amber-300 mb-1">Bank reference (optional)</span>
                         <input name="bankRef" maxLength={120} placeholder="As on the bank statement" className="w-full h-9 px-2 rounded-md border border-amber-300 bg-white dark:bg-transparent dark:border-amber-800 text-xs" />
                       </label>
+                      {/* Only needed when the check below the button asks for it. */}
+                      <label className="col-span-2 flex items-start gap-1.5 text-[11px] text-amber-900/90 dark:text-amber-300">
+                        <input type="checkbox" name="confirmEarlierDate" className="mt-0.5 h-3.5 w-3.5 accent-primary" />
+                        Value date before the order date ({fmtValueDay(order.createdAt)}) — confirmed
+                      </label>
+                      <label className="col-span-2 flex items-start gap-1.5 text-[11px] text-amber-900/90 dark:text-amber-300">
+                        <input type="checkbox" name="confirmLowAmount" className="mt-0.5 h-3.5 w-3.5 accent-primary" />
+                        Part payment below {settingInt('PAYMENT_LOW_AMOUNT_CONFIRM_PCT', 50)}% of {money(openCents)} — confirmed
+                      </label>
                     </div>
                     <Button type="submit" size="sm" className="w-full rounded-full bg-emerald-600 hover:bg-emerald-700 text-white">
                       <ShieldCheck className="h-3.5 w-3.5" /> Verify payment
                     </Button>
                     <p className="text-[11px] text-muted-foreground">Check the bank statement: the invoice prints this value date. Less than the open amount (beyond the tolerance) is booked as a part payment and the buyer is asked for the rest.</p>
                   </OrderActionForm>
+                  )}
                   {/* Reject — reason required */}
                   <OrderActionForm action={rejectPayment} className="space-y-2" announce>
                     <input type="hidden" name="orderId" value={order.id} />
+                    <input type="hidden" name="proofKey" value={reviewedProofKey} />
                     <input
                       type="text"
                       name="reason"
@@ -744,6 +821,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     </Button>
                   </OrderActionForm>
                 </div>
+                )}
               </div>
             </section>
           )}
@@ -762,7 +840,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                   {order.paymentVerificationStatus === 'VERIFIED'
                     ? <>Verified {order.paymentVerifiedAt ? smartDate(order.paymentVerifiedAt) : ''}{verifiedBy ? ` by ${verifiedBy.email}` : ''}.</>
                     : order.paidAt
-                      ? <>Paid {smartDate(order.paidAt)}{paidByAdmin ? ` · marked by ${paidByAdmin.email}` : ''}.</>
+                      ? <>Paid {order.stripePaymentIntentId ? smartDate(order.paidAt) : `— value date ${fmtValueDay(order.paidAt)}`}{paidByAdmin ? ` · marked by ${paidByAdmin.email}` : ''}.</>
                       : null}
                   {order.paymentNote && <span className="block mt-1 whitespace-pre-wrap">Note: {order.paymentNote}</span>}
                 </p>
@@ -782,8 +860,19 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
             </section>
           )}
 
+          {/* === Part payment: booked, the rest is still due ================ */}
+          {partPaid && order.paymentVerificationStatus !== 'AWAITING_VERIFICATION' && (
+            <section className="rounded-2xl border border-amber-300 bg-amber-50/60 dark:bg-amber-950/30 dark:border-amber-800 p-4 text-sm flex items-start gap-3" data-testid="admin-part-paid">
+              <CircleDollarSign className="h-5 w-5 text-amber-700 dark:text-amber-300 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-bold text-amber-900 dark:text-amber-300">Part payment received — {money(receivedCents)} received, {money(openCents)} still due</p>
+                <p className="text-amber-900 dark:text-amber-300 text-xs mt-1">The buyer was asked to pay the rest and upload that receipt; the order stays unpaid and no invoice is issued until then. Cancelling needs the part payment refunded or credited first (Money back).</p>
+              </div>
+            </section>
+          )}
+
           {/* === Rejected payment summary ================================ */}
-          {order.paymentVerificationStatus === 'REJECTED' && (
+          {order.paymentVerificationStatus === 'REJECTED' && !partPaid && (
             <section className="rounded-2xl border border-red-200 bg-red-50/50 dark:bg-red-950/30 dark:border-red-800 p-4 text-sm flex items-start gap-3">
               <CircleDollarSign className="h-5 w-5 text-red-700 dark:text-red-300 mt-0.5" />
               <div className="flex-1">
@@ -793,6 +882,38 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 )}
                 <p className="text-red-800 dark:text-red-300 text-xs mt-1">Waiting for the buyer to resubmit.</p>
               </div>
+            </section>
+          )}
+
+          {/* === Every receipt of the order (kept after a rejection or a new upload) === */}
+          {receipts.length > 0 && (
+            <section className="rounded-2xl border border-border bg-card overflow-hidden" data-testid="admin-receipts">
+              <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
+                <FileText className="h-4 w-4 text-primary" />
+                <h2 className="text-sm font-bold">Payment receipts ({receipts.length})</h2>
+              </div>
+              <ul className="divide-y divide-border text-sm">
+                {receipts.map((r) => {
+                  const href = proxyProofUrl(r.key);
+                  return (
+                    <li key={r.key} className="px-5 py-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0 [overflow-wrap:anywhere]">
+                        <p className="font-semibold" dir="auto">{r.fileName ?? r.key.replace(/^order-proofs\//, '')}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {r.by === 'STAFF' ? 'Attached by staff' : 'From the buyer'}{r.at ? ` · ${smartDate(r.at)}` : ''} · {RECEIPT_STATUS[r.status]}
+                          {r.amountCents != null && (r.status === 'PART' || r.status === 'VERIFIED' || r.status === 'BOOKED') ? ` · ${money(r.amountCents)}` : ''}
+                          {r.reason ? ` — ${r.reason}` : ''}
+                        </p>
+                      </div>
+                      {href && (
+                        <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-border text-xs font-semibold hover:bg-foreground/5 flex-shrink-0">
+                          Open <ExternalLink className="h-3 w-3 opacity-60" />
+                        </a>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
             </section>
           )}
 
@@ -809,8 +930,8 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     {e.icon}
                   </span>
                   <div className="flex-1 min-w-0">
-                    <p className="font-semibold">{e.label}</p>
-                    <p className="text-xs text-muted-foreground">{smartDate(e.at)}</p>
+                    <p className="font-semibold [overflow-wrap:anywhere]">{e.label}</p>
+                    <p className="text-xs text-muted-foreground">{e.dateOnly ? fmtValueDay(e.at) : smartDate(e.at)}</p>
                   </div>
                 </li>
               ))}
@@ -840,9 +961,9 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                     <span className={`absolute -left-[14px] top-1.5 h-2 w-2 rounded-full ring-2 ring-card ${
                       e.kind === 'audit' ? 'bg-primary' : 'bg-amber-500'
                     }`} />
-                    <p className="text-xs">
+                    <p className="text-xs [overflow-wrap:anywhere]" title={e.sub && e.sub.length > 240 ? e.sub : undefined}>
                       <span className="font-semibold">{e.label}</span>
-                      {e.sub && <span className="text-muted-foreground"> · {e.sub.slice(0, 200)}</span>}
+                      {e.sub && <span className="text-muted-foreground"> · {briefText(e.sub, 240)}</span>}
                     </p>
                     <p className="text-[10px] text-muted-foreground/80 mt-0.5">
                       {smartDate(e.at)}
@@ -996,6 +1117,16 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
     </div>
   );
 }
+
+const RECEIPT_STATUS: Record<ReceiptStatus, string> = {
+  AWAITING: 'awaiting verification',
+  REJECTED: 'rejected',
+  PART: 'booked as a part payment',
+  VERIFIED: 'verified',
+  BOOKED: 'booked with the payment',
+  REPLACED: 'replaced by a newer upload before review',
+  ON_FILE: 'on file',
+};
 
 function Row({
   label,

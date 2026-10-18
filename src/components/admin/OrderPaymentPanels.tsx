@@ -14,6 +14,8 @@ import { Button } from '@/components/ui/button';
 import {
   approveBuyerCredit, approveOrderOnTerms, declineTermsRequest, extendOrderDueDate, recordTermsPayment, revokeBuyerCredit,
 } from '@/app/admin/quote-payment-actions';
+import { releaseStockShortageAction } from '@/app/admin/actions';
+import { onStockShortage } from '@/lib/payments/stock-shortage';
 
 /**
  * Admin order page panels for the payment side (owner reports 5/6, A25, B07):
@@ -50,6 +52,8 @@ export async function OrderPaymentPanels({ orderId }: { orderId: string }) {
   const defaults = creditDefaults();
   const outstanding = o.totalCents - o.amountPaidCents;
   const input = 'h-9 px-2 rounded-md border border-input bg-background text-xs';
+  const stockNote = (o.holdNote ?? '').split(' | ').find((p) => p.startsWith('STOCK_SHORTAGE:'))?.replace(/^STOCK_SHORTAGE:\s*/, '') ?? null;
+  const paidFamily = o.status === 'PAID' || o.status === 'PROCESSING';
 
   return (
     <div className="space-y-5" data-testid="order-payment-panels">
@@ -100,6 +104,33 @@ export async function OrderPaymentPanels({ orderId }: { orderId: string }) {
               ? 'Clear it under “Pricing, VAT & holds” above (what was checked is kept as the record): the payment term restarts today and the proforma is emailed.'
               : 'Clearing needs the compliance:clear permission.'}
           </p>
+        </section>
+      )}
+
+      {/* Paid, but the unit is gone (verify / mark paid found no stock): staff
+          refund it (Cancel & refund) or secure the unit and release the hold
+          here — which issues the invoice. More resolutions follow (PKG-23). */}
+      {onStockShortage(o) && (
+        <section id="stock-shortage" className="rounded-2xl border-2 border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30 p-4 text-sm space-y-2 scroll-mt-28" data-testid="admin-stock-shortage">
+          <h2 className="text-sm font-bold inline-flex items-center gap-2 text-red-900 dark:text-red-300"><ShieldAlert className="h-4 w-4" /> Stock shortage — paid, but the unit is no longer in stock</h2>
+          {stockNote && <p className="text-red-900 dark:text-red-300 [overflow-wrap:anywhere]">{stockNote}</p>}
+          <p className="text-xs text-muted-foreground">
+            Shipping is blocked and no invoice was issued; the buyer was told we contact them. Agree with the buyer: a refund — “Cancel &amp; refund” under <a href="#actions" className="font-semibold text-primary hover:underline">Cancel this order</a>; another unit, or the same one later (backorder) — once the unit is secured, release the hold below: the invoice is issued and e-mailed and the order can ship.
+          </p>
+          {paidFamily && (canFinance ? (
+            <OrderActionForm action={releaseStockShortageAction} className="space-y-2 rounded-xl border border-red-200 dark:border-red-900 bg-card p-3" confirmText={`Release the stock-shortage hold of ${o.orderNumber}? The invoice is issued and e-mailed to the buyer now, and the order can ship.`}>
+              <input type="hidden" name="orderId" value={o.id} />
+              <fieldset className="space-y-1">
+                <legend className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">Where the unit comes from</legend>
+                {o.sourcingRequestId && <label className="flex items-start gap-2 text-xs"><input type="radio" name="source" value="LISTING" required className="mt-0.5" /> <span>Back in this listing’s stock — take it from stock now</span></label>}
+                <label className="flex items-start gap-2 text-xs"><input type="radio" name="source" value="OUTSIDE" required className="mt-0.5" /> <span>Arranged outside the listing (another unit from the supplier) — the listing’s stock stays as it is</span></label>
+              </fieldset>
+              <label className="block"><span className="block text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1">How it was secured (kept on the order)</span><input name="note" required minLength={4} maxLength={300} placeholder="e.g. second unit from the supplier, ships 24 Oct" className={`${input} w-full`} /></label>
+              <Button type="submit" size="sm" className="rounded-full">Unit secured — release the hold &amp; issue the invoice</Button>
+            </OrderActionForm>
+          ) : (
+            <p className="text-xs">Releasing the hold issues the invoice: it needs the finance:manage permission.</p>
+          ))}
         </section>
       )}
 

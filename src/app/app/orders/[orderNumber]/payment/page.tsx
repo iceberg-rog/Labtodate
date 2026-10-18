@@ -35,13 +35,17 @@ import { CancelOrderButton } from '@/components/orders/CancelOrderButton';
 import { InvoiceTermsRequest } from '@/components/orders/InvoiceTermsRequest';
 import { buyerCancelExplanation } from '@/lib/orders/cancel-reason';
 import { heldMoneyCents, LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
+import { RECEIPT_TYPE_MESSAGE } from '@/lib/payments/receipts';
+import { receiptHistory } from '@/lib/payments/rules';
+import { onStockShortage, stockShortageText } from '@/lib/payments/stock-shortage';
+import { proxyProofUrl } from '@/lib/orders/display';
 
 export const dynamic = 'force-dynamic';
 
 const ERR_MSG: Record<string, string> = {
   method: 'Please pick how you paid.',
   large: 'Receipt file must be under 8 MB.',
-  type: 'Receipt must be a JPG / PNG / WEBP / GIF or PDF.',
+  type: RECEIPT_TYPE_MESSAGE,
   proofreq: 'Please attach the receipt file — we need it to find your transfer.',
   closed: 'This order is no longer accepting payment proof.',
   canceled: 'This order was canceled, so no payment is due. Please do not send a transfer for it.',
@@ -75,6 +79,8 @@ export default async function PaymentWorkspacePage({
     include: {
       items: { select: { titleSnapshot: true, quantity: true, priceCentsSnapshot: true } },
       refunds: LIVE_REFUNDS_SELECT,
+      paymentProofs: { select: { key: true, kind: true, fileName: true, amountCents: true, rejectedReason: true, createdAt: true }, orderBy: { createdAt: 'asc' } },
+      payments: { select: { proofKey: true, amountCents: true } },
     },
   });
   if (!order || order.buyerId !== session.user.id) notFound();
@@ -112,6 +118,11 @@ export default async function PaymentWorkspacePage({
   const quoteEnded = !!sourcing && (sourcing.status === 'DECLINED' || sourcing.status === 'CLOSED');
   const isVoid = lapsed || order.status === 'CANCELED' || (quoteEnded && order.status === 'PENDING_PAYMENT' && !order.paymentSubmittedAt) || notAccepted;
   const isPaid = !isVoid && PAID_STATES.includes(order.status) && !onTerms;
+  // Paid, but the unit is gone (STOCK_SHORTAGE hold): not "being prepared for
+  // shipping" — the page says what the buyer was e-mailed (Settings → Email texts).
+  const stockShort = isPaid && ['PAID', 'PROCESSING'].includes(order.status) && onStockShortage(order)
+    ? stockShortageText({ orderNumber: order.orderNumber, currency: order.currency, amountCents: order.amountPaidCents, valueDate: order.paidAt })
+    : null;
   const isRefunded = !isVoid && order.status === 'REFUNDED';
   const payable = !isVoid && order.status === 'PENDING_PAYMENT';
 
@@ -161,6 +172,12 @@ export default async function PaymentWorkspacePage({
   // longer cancel online — it needs a refund (lib/finance/refunds.ts heldMoneyCents).
   const netReceived = heldMoneyCents(order.amountPaidCents, order.refunds);
   const canCancel = payable && !!sourcing && !order.paymentSubmittedAt && netReceived === 0 && buyerCanCancelUnpaid();
+  // Buyers who can not cancel here (switched off, or a checkout order) are told how instead.
+  const cancelHelp = payable && !canCancel && !order.paymentSubmittedAt && netReceived === 0 ? settingString('BUYER_CANCEL_DISABLED_TEXT').trim() : '';
+  const referenceHint = settingString('BANK_REFERENCE_HINT').trim();
+  // The receipts this buyer sent (staff-attached proofs are not listed).
+  const myReceipts = receiptHistory({ proofs: order.paymentProofs, payments: order.payments, currentProofUrl: order.paymentProofUrl, verificationStatus: verState })
+    .filter((r) => r.by === 'BUYER');
   const ok = sp.ok === '1';
   const err = sp.err && ERR_MSG[sp.err];
   const cardMsg = sp.card === 'canceled'
@@ -294,7 +311,15 @@ export default async function PaymentWorkspacePage({
         </Banner>
       )}
 
-      {isPaid && (
+      {stockShort && (
+        <Banner tone="amber" icon={<AlertTriangle className="h-5 w-5" />} title="Payment received — the item is being re-confirmed.">
+          <span data-testid="paid-stock-shortage">{stockShort.text}</span>{' '}
+          <Link href={`/app/orders/${order.orderNumber}`} className="underline font-semibold">View your order</Link> ·{' '}
+          <Link href="/app/support" className="underline font-semibold">Contact support</Link>
+        </Banner>
+      )}
+
+      {isPaid && !stockShort && (
         <Banner tone="emerald" icon={<CheckCircle2 className="h-5 w-5" />} title={verState === 'VERIFIED' ? 'Payment verified.' : 'Payment received.'}>
           {order.status === 'SHIPPED' ? 'Your order has shipped.' : order.status === 'DELIVERED' ? 'Your order was delivered.' : 'Your order is being prepared for shipping.'}{' '}
           No further payment is needed. <Link href={`/app/orders/${order.orderNumber}`} className="underline font-semibold">Track it</Link>.
@@ -434,12 +459,19 @@ export default async function PaymentWorkspacePage({
           <p className="text-xs text-muted-foreground border-t border-border pt-3">
             Quote <span className="font-mono font-semibold">{docs.proforma?.number ?? proformaNumber}</span> as the transfer reference. These are the details printed on your proforma{docs.proforma ? ` (issued ${fmtDueDate(docs.proforma.issueDate)})` : ''}.
           </p>
+          {referenceHint && <p className="text-xs text-foreground [overflow-wrap:anywhere]" dir="auto" data-testid="reference-hint">{referenceHint}</p>}
         </section>
       )}
 
       {/* === Pay on invoice (approved credit customers only) === */}
       {canSubmit && credit?.eligible && !detailsBlock && (
         <div className="mb-6"><InvoiceTermsRequest orderNumber={order.orderNumber} termDays={credit.termDays} summary={credit.reason} /></div>
+      )}
+      {/* Approved for credit, but not for this order (another currency, over the limit): say why. */}
+      {canSubmit && credit && credit.enabled && credit.approved && !credit.eligible && (
+        <p className="mb-6 rounded-2xl border border-border bg-card p-4 text-sm text-muted-foreground inline-flex items-start gap-2" data-testid="terms-unavailable">
+          <FileClock className="h-4 w-4 mt-0.5 flex-shrink-0" /> <span><span className="font-semibold text-foreground">Pay on invoice is not available for this order.</span> {credit.reason}</span>
+        </p>
       )}
 
       {/* === Upload the receipt === */}
@@ -496,10 +528,45 @@ export default async function PaymentWorkspacePage({
         </section>
       )}
 
-      {payable && partPaid && !!sourcing && buyerCanCancelUnpaid() && (
+      {payable && partPaid && (
         <section className="rounded-2xl border border-border bg-card p-4 sm:p-6 mb-6 space-y-2" data-testid="cancel-blocked">
           <h2 className="text-sm font-bold">Changed your mind?</h2>
           <p className="text-xs text-muted-foreground">We already received {money2(netReceived)} for this order, so it can not be canceled online. <Link href="/app/support" className="underline font-semibold">Contact support</Link> — we cancel it and refund what you paid.</p>
+        </section>
+      )}
+
+      {cancelHelp && (
+        <section className="rounded-2xl border border-border bg-card p-4 sm:p-6 mb-6 space-y-2" data-testid="cancel-help">
+          <h2 className="text-sm font-bold">Changed your mind?</h2>
+          <p className="text-xs text-muted-foreground whitespace-pre-line [overflow-wrap:anywhere]" dir="auto">{cancelHelp}</p>
+          <Link href="/app/support" className="inline-flex items-center h-9 px-4 rounded-full border border-border text-xs font-bold hover:bg-foreground/5">Contact support</Link>
+        </section>
+      )}
+
+      {/* === Receipts you sent (each one stays viewable, also after a rejection) === */}
+      {myReceipts.length > 0 && (
+        <section className="rounded-2xl border border-border bg-card p-4 sm:p-5 mb-6 min-w-0" data-testid="my-receipts">
+          <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Receipts you sent</p>
+          <ul className="divide-y divide-border text-sm">
+            {myReceipts.map((r) => {
+              const href = proxyProofUrl(r.key);
+              const what = r.status === 'REJECTED' ? `needed a correction${r.reason ? `: ${r.reason}` : ''}`
+                : r.status === 'PART' ? `booked as a part payment${r.amountCents != null ? ` (${money2(r.amountCents)})` : ''}`
+                : r.status === 'VERIFIED' ? `verified${r.amountCents != null ? ` (${money2(r.amountCents)})` : ''}`
+                : r.status === 'AWAITING' ? 'being reviewed'
+                : r.status === 'REPLACED' ? 'replaced by a newer receipt'
+                : 'on file';
+              return (
+                <li key={r.key} className="py-2 flex items-start justify-between gap-3">
+                  <span className="min-w-0 [overflow-wrap:anywhere]" dir="auto">
+                    <span className="font-semibold">{r.fileName ?? 'Receipt'}</span>
+                    <span className="text-muted-foreground"> · {r.at ? `sent ${fmtDueDate(r.at)} · ` : ''}{what}</span>
+                  </span>
+                  {href && <a href={href} target="_blank" rel="noreferrer" className="text-xs font-semibold underline flex-shrink-0">Open</a>}
+                </li>
+              );
+            })}
+          </ul>
         </section>
       )}
 
