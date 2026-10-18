@@ -24,7 +24,7 @@ export function BuyerIntelCard({ intel, buyerName, buyerEmail, company, isGuest 
     <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
       {/* Header */}
       <div>
-        <p className="font-bold text-sm">{buyerName}</p>
+        <p className="font-bold text-sm [overflow-wrap:anywhere]">{buyerName}</p>
         <p className="text-[11px] text-muted-foreground truncate">{buyerEmail}</p>
         {company && (
           <p className="text-[11px] text-muted-foreground inline-flex items-center gap-1 mt-0.5">
@@ -45,14 +45,16 @@ export function BuyerIntelCard({ intel, buyerName, buyerEmail, company, isGuest 
         </p>
         {total > 0 ? (
           <>
-            {/* Tri-color bar */}
+            {/* Outcome bar: won (paid) · accepted, not paid · open · lost */}
             <div className="flex h-2 rounded-full overflow-hidden border border-border">
               <span className="bg-emerald-400" style={{ width: `${(intel.rfqsByOutcome.won / total) * 100}%` }} />
+              <span className="bg-purple-400" style={{ width: `${(intel.rfqsByOutcome.awaitingPayment / total) * 100}%` }} />
               <span className="bg-amber-400" style={{ width: `${(intel.rfqsByOutcome.open / total) * 100}%` }} />
               <span className="bg-slate-300" style={{ width: `${(intel.rfqsByOutcome.lost / total) * 100}%` }} />
             </div>
-            <div className="grid grid-cols-3 gap-2 mt-2 text-[10px]">
-              <Mini icon={<CheckCircle2 className="h-3 w-3 text-emerald-700 dark:text-emerald-300" />} label="Won" value={intel.rfqsByOutcome.won} />
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2 text-[10px]">
+              <Mini icon={<CheckCircle2 className="h-3 w-3 text-emerald-700 dark:text-emerald-300" />} label="Won (paid)" value={intel.rfqsByOutcome.won} />
+              <Mini icon={<CreditCard className="h-3 w-3 text-purple-700 dark:text-purple-300" />} label="Accepted, unpaid" value={intel.rfqsByOutcome.awaitingPayment} />
               <Mini icon={<Clock className="h-3 w-3 text-amber-700 dark:text-amber-300" />} label="Open" value={intel.rfqsByOutcome.open} />
               <Mini icon={<XCircle className="h-3 w-3 text-muted-foreground" />} label="Lost" value={intel.rfqsByOutcome.lost} />
             </div>

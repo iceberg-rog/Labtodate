@@ -1,25 +1,31 @@
 import {
   ArrowUpRight, FileText, Lock, MessageSquare, ShieldAlert, ShoppingBag,
-  Check, X, Inbox, UserPlus, RefreshCw,
+  Check, X, Inbox, UserPlus, RefreshCw, Store, Clock, Upload, Truck, PackageCheck,
 } from 'lucide-react';
 import type { TimelineEvent } from '@/lib/quotes/activity-timeline';
+import { businessTimeZone } from '@/lib/documents/numbering';
 
 const ICON: Record<TimelineEvent['kind'], JSX.Element> = {
   submitted:             <Inbox className="h-3.5 w-3.5" />,
   assigned:              <UserPlus className="h-3.5 w-3.5" />,
   staff_reply:           <MessageSquare className="h-3.5 w-3.5" />,
+  supplier_reply:        <Store className="h-3.5 w-3.5" />,
   buyer_reply:           <ArrowUpRight className="h-3.5 w-3.5" />,
   internal_note:         <Lock className="h-3.5 w-3.5" />,
   offer_sent:            <FileText className="h-3.5 w-3.5" />,
-  offer_valid_until:     <FileText className="h-3.5 w-3.5" />,
+  offer_valid_until:     <Clock className="h-3.5 w-3.5" />,
   proforma_sent:         <FileText className="h-3.5 w-3.5" />,
-  proforma_valid_until:  <FileText className="h-3.5 w-3.5" />,
   sla_breached:          <ShieldAlert className="h-3.5 w-3.5" />,
   accepted:              <Check className="h-3.5 w-3.5" />,
   declined:              <X className="h-3.5 w-3.5" />,
   closed:                <X className="h-3.5 w-3.5" />,
   order_created:         <ShoppingBag className="h-3.5 w-3.5" />,
+  payment_due:           <Clock className="h-3.5 w-3.5" />,
+  payment_submitted:     <Upload className="h-3.5 w-3.5" />,
   order_paid:            <ShoppingBag className="h-3.5 w-3.5" />,
+  order_shipped:         <Truck className="h-3.5 w-3.5" />,
+  order_delivered:       <PackageCheck className="h-3.5 w-3.5" />,
+  order_canceled:        <X className="h-3.5 w-3.5" />,
   magic_link_reissued:   <RefreshCw className="h-3.5 w-3.5" />,
 };
 
@@ -27,27 +33,31 @@ const TONE: Record<TimelineEvent['kind'], string> = {
   submitted:             'bg-muted text-muted-foreground',
   assigned:              'bg-primary/15 text-primary',
   staff_reply:           'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
+  supplier_reply:        'bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300',
   buyer_reply:           'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
   internal_note:         'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800',
   offer_sent:            'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
   offer_valid_until:     'bg-muted text-muted-foreground',
   proforma_sent:         'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
-  proforma_valid_until:  'bg-muted text-muted-foreground',
   sla_breached:          'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   accepted:              'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
   declined:              'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   closed:                'bg-muted text-muted-foreground',
   order_created:         'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
+  payment_due:           'bg-muted text-muted-foreground',
+  payment_submitted:     'bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300',
   order_paid:            'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300',
+  order_shipped:         'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
+  order_delivered:       'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-300',
+  order_canceled:        'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
   magic_link_reissued:   'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
 };
 
-function dtFmt(d: Date): string {
-  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
+/** Server component: times in the business time zone (Settings → Invoicing & numbering). */
 export function ActivityTimeline({ events }: { events: TimelineEvent[] }) {
   if (events.length === 0) return null;
+  const timeZone = businessTimeZone();
+  const dtFmt = (d: Date) => d.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone });
   return (
     <ol className="relative ml-3 border-l-2 border-border space-y-3 py-1">
       {events.map((e, i) => (
@@ -57,9 +67,9 @@ export function ActivityTimeline({ events }: { events: TimelineEvent[] }) {
           >
             {ICON[e.kind]}
           </span>
-          <div className="text-[12px]">
-            <p className="font-semibold">{e.title}</p>
-            {e.detail && <p className="text-muted-foreground line-clamp-2">{e.detail}</p>}
+          <div className="text-[12px] min-w-0">
+            <p className="font-semibold [overflow-wrap:anywhere]">{e.title}</p>
+            {e.detail && <p className="text-muted-foreground line-clamp-2 [overflow-wrap:anywhere]">{e.detail}</p>}
             <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">{dtFmt(e.at)}</p>
           </div>
         </li>

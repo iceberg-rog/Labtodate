@@ -350,7 +350,7 @@ export default async function ProductDetailPage(props: PageProps) {
                     </p>
                   </div>
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
-                    <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Source a similar unit</Link>
+                    <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}&similar=1`}>Source a similar unit</Link>
                   </Button>
                   <StartThreadButton productSlug={product.slug} productTitle={product.title} {...contact} />
                   <WishlistButton productSlug={product.slug} initiallySaved={saved} />

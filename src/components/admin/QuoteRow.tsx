@@ -45,7 +45,7 @@ export type QuoteRowProps = {
   offerTotalCents: number | null;
   /** The offer's VAT is decided at acceptance — the amount is excl. VAT. */
   offerTotalExclVat?: boolean;
-  /** A supplier price is waiting for lab2date review. */
+  /** A supplier price is waiting for our review. */
   proposalPending?: boolean;
   /** Why the deal was lost (decline reason, cancellation). */
   lostReason?: string | null;
@@ -59,6 +59,12 @@ export type QuoteRowProps = {
   linkedOrderProof?: boolean;
   /** Available admins for transfer popover. */
   admins?: Array<{ id: string; name: string | null; email: string }>;
+  /** quotes:assign — claim / transfer from the row. */
+  canAssign?: boolean;
+  /** quotes:archive — archive / restore from the row. */
+  canArchive?: boolean;
+  /** "€2,825 received, €200 open" — a part-paid order. */
+  partPaidLabel?: string | null;
   // Bulk-mode props
   selectable?: boolean;
   selected?: boolean;
@@ -88,7 +94,7 @@ function timeAgo(iso: string): string {
   return `${Math.floor(diff / 86400_000)}d ago`;
 }
 
-/** The reply SLA only runs while the request waits on lab2date: never on an
+/** The reply SLA only runs while the request waits on us: never on an
  *  open offer (the buyer decides), an accepted / paid / lost deal. */
 function SlaBadge({ dueAtISO, status, mounted, waitingOnUs }: { dueAtISO: string | null; status: string; mounted: boolean; waitingOnUs: boolean }) {
   if (!dueAtISO || !waitingOnUs || ['ACCEPTED','DECLINED','CLOSED'].includes(status)) return null;
@@ -283,6 +289,7 @@ export function QuoteRow(p: QuoteRowProps) {
               <p className={`text-2xl font-bold tabular-nums tracking-tight leading-none text-right ${amountColor}`}>
                 {fmtMoney(p.offerTotalCents ?? p.quotedPriceCents, p.quotedCurrency ?? 'EUR')}
                 {p.offerTotalExclVat && <span className="block text-[10px] font-normal text-muted-foreground mt-0.5">excl. VAT</span>}
+                {p.partPaidLabel && <span className="block text-[10px] font-semibold text-amber-700 dark:text-amber-300 mt-0.5">{p.partPaidLabel}</span>}
               </p>
             ) : (
               <p className="text-xs text-muted-foreground italic">no offer yet</p>
@@ -295,8 +302,9 @@ export function QuoteRow(p: QuoteRowProps) {
                 myUserId={p.myUserId}
                 admins={p.admins ?? []}
                 variant="compact"
+                canAssign={p.canAssign !== false}
               />
-              {!p.archived ? (
+              {p.canArchive === false ? null : !p.archived ? (
                 <button
                   type="button"
                   disabled={pending}

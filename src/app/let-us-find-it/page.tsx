@@ -8,6 +8,8 @@ import { prisma } from '@/lib/db';
 import { getServerSession } from '@/lib/auth-server';
 import { getMarketing } from '@/lib/marketing';
 import { formCaptchaFlag } from '@/lib/security/captcha';
+import { countryOptions } from '@/lib/compliance/country';
+import { offerIncoterms } from '@/lib/quotes/policy';
 
 export const metadata = { title: 'Let Us Find It' };
 export const dynamic = 'force-dynamic';
@@ -89,6 +91,8 @@ export default async function LetUsFindItPage({ searchParams }: { searchParams: 
               buyer={{ name: session.user.name ?? '', email: session.user.email }}
               note={mk.noObligation}
               captcha={captcha}
+              countries={(await countryOptions()).map((c) => ({ code: c.code, name: c.name }))}
+              incoterms={offerIncoterms()}
             />
           </Suspense>
         ) : (

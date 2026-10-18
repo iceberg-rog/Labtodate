@@ -5,13 +5,15 @@ import { useRouter } from 'next/navigation';
 import { Loader2, XCircle, Undo2, ExternalLink } from 'lucide-react';
 import { adminCancelQuoteOrder } from '@/app/admin/quote-payment-actions';
 import { announceAdminResult } from './AdminResultToast';
+import type { DealStage } from '@/components/quotes/quote-view';
 
-export type DealStage = 'UNPAID' | 'PROOF' | 'TERMS' | 'PAID' | 'SHIPPED' | 'CANCELED' | 'REFUNDED';
+export type { DealStage };
 
 /**
  * Admin "Deal" panel on an accepted quote: what the order is, and the ONE
  * correct way to undo it at its current stage (owner report 6):
  *  unpaid → cancel (voids the proforma, releases the unit, emails the buyer);
+ *  part paid → money is held: cancel & refund on the order page, never a plain cancel;
  *  receipt in review → verify / reject first (order page);
  *  on invoice terms, unpaid → cancel with a credit note;
  *  paid, not shipped → cancel & refund on the order page (credit note + refund ledger);
@@ -25,6 +27,8 @@ export function QuoteDealPanel(p: {
   statusLabel: string;
   dueLabel: string | null;
   canRefund: boolean;
+  /** "€2,825 received, €200 open" (PART_PAID). */
+  receivedLabel?: string | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -52,11 +56,16 @@ export function QuoteDealPanel(p: {
   const cancelable = p.stage === 'UNPAID' || p.stage === 'TERMS';
   return (
     <div className="space-y-2 text-[12px]" data-testid="quote-deal-panel">
-      <p>
+      <p className="[overflow-wrap:anywhere]">
         <a href={`/admin/orders/${p.orderId}`} className="font-mono font-semibold hover:text-primary inline-flex items-center gap-1">{p.orderNumber} <ExternalLink className="h-3 w-3" /></a>
         <span className="text-muted-foreground"> · {p.statusLabel} · {p.totalLabel}</span>
       </p>
       {p.dueLabel && <p className="text-muted-foreground">{p.dueLabel}</p>}
+      {p.stage === 'PART_PAID' && (
+        <p className="text-amber-800 dark:text-amber-300" data-testid="quote-deal-part-paid">
+          Part paid{p.receivedLabel ? `: ${p.receivedLabel}` : ''}. The money received must be refunded before the order can be canceled — use the order page.
+        </p>
+      )}
       {p.stage === 'PROOF' && <p className="text-amber-800 dark:text-amber-300">A payment receipt is waiting — verify or reject it on the order page before anything else.</p>}
       {(p.stage === 'CANCELED' || p.stage === 'REFUNDED') && <p className="text-muted-foreground">This deal is finished ({p.stage.toLowerCase()}).</p>}
 
@@ -67,7 +76,7 @@ export function QuoteDealPanel(p: {
               <XCircle className="h-3.5 w-3.5" /> {p.stage === 'TERMS' ? 'Cancel order (credit note)' : 'Cancel order'}
             </button>
           )}
-          {(p.stage === 'PAID' || p.stage === 'SHIPPED') && p.canRefund && (
+          {(p.stage === 'PAID' || p.stage === 'SHIPPED' || p.stage === 'PART_PAID') && p.canRefund && (
             <a href={`/admin/orders/${p.orderId}#money`} className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300 font-semibold hover:bg-red-50 dark:hover:bg-red-950/40">
               <Undo2 className="h-3.5 w-3.5" /> {p.stage === 'SHIPPED' ? 'Return / refund (order page)' : 'Cancel & refund (order page)'}
             </a>

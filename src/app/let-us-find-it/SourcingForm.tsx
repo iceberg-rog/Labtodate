@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Loader2, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,6 +14,8 @@ export function SourcingForm({
   buyer,
   note = '',
   captcha: captchaOn = false,
+  countries = [],
+  incoterms = [],
 }: {
   anchor: { slug: string; title: string; brand: string | null } | null;
   facility?: { slug: string; name: string; location: string } | null;
@@ -21,10 +24,18 @@ export function SourcingForm({
   note?: string;
   /** Bot check for signed-in customers (Settings → Security; off by default). */
   captcha?: boolean;
+  /** Delivery countries (countryOptions()); without them the field takes a 2-letter code. */
+  countries?: Array<{ code: string; name: string }>;
+  /** Incoterms the buyer may ask for (Settings → Quotes & offers → OFFER_INCOTERMS); none = the field is hidden. */
+  incoterms?: string[];
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const captcha = useCaptcha('quote', { required: captchaOn, start: 'focus' });
+  // "Source a similar unit" on a sold / reserved listing (…&similar=1): the
+  // request is for a unit LIKE that one, not for that unit.
+  const searchParams = useSearchParams();
+  const similar = !!anchor && searchParams.get('similar') === '1';
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -41,6 +52,12 @@ export function SourcingForm({
       productSlug: anchor?.slug ?? null,
       facilitySlug: facility?.slug ?? null,
       company_url: String(fd.get('hp_x7') ?? ''),
+      // What the offer is priced for: destination, quantity, delivery terms and the VAT ID.
+      deliveryCountry: String(fd.get('deliveryCountry') ?? '').trim().toUpperCase() || null,
+      quantity: Math.min(999, Math.max(1, parseInt(String(fd.get('quantity') ?? '1'), 10) || 1)),
+      incoterm: String(fd.get('incoterm') ?? '').trim().toUpperCase() || null,
+      vatId: String(fd.get('vatId') ?? '').replace(/\s+/g, '').toUpperCase() || null,
+      similar: similar || null,
     };
 
     startTransition(async () => {
@@ -77,12 +94,13 @@ export function SourcingForm({
       </div>
 
       {anchor && (
-        <div className="rounded-xl bg-foreground/[0.03] border border-border p-4">
+        <div className="rounded-xl bg-foreground/[0.03] border border-border p-4 min-w-0">
           <p className="text-[10px] uppercase tracking-[0.15em] font-bold text-muted-foreground mb-1">
-            Quote about
+            {similar ? 'Looking for a unit like' : 'Quote about'}
           </p>
-          <p className="font-semibold">{anchor.title}</p>
+          <p dir="auto" className="font-semibold [overflow-wrap:anywhere]">{anchor.title}</p>
           {anchor.brand && <Badge variant="secondary" className="mt-2">{anchor.brand}</Badge>}
+          {similar && <p className="text-xs text-muted-foreground mt-2">This unit is sold or reserved — we look for a similar one for you.</p>}
         </div>
       )}
       {facility && (
@@ -114,13 +132,48 @@ export function SourcingForm({
         <Field label="Timeframe" name="timeframe" placeholder={facility ? 'Dates or duration you need' : 'Within 4 weeks'} maxLength={120} />
       </div>
 
+      {!facility && (
+        <div className="grid sm:grid-cols-2 gap-4">
+          <label className="block min-w-0">
+            <span className="block text-sm font-semibold mb-1.5">Delivery country</span>
+            {countries.length ? (
+              <select name="deliveryCountry" defaultValue="" className="w-full h-10 px-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary">
+                <option value="">— choose (freight and VAT depend on it) —</option>
+                {countries.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+              </select>
+            ) : (
+              <input name="deliveryCountry" maxLength={2} pattern="[A-Za-z]{2}" placeholder="2-letter code, e.g. DE" className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+            )}
+          </label>
+          <label className="block min-w-0">
+            <span className="block text-sm font-semibold mb-1.5">Quantity</span>
+            <input name="quantity" type="number" min={1} max={999} step={1} defaultValue={1} className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+          </label>
+          {incoterms.length > 0 && (
+            <label className="block min-w-0">
+              <span className="block text-sm font-semibold mb-1.5">Delivery terms (Incoterm)</span>
+              <select name="incoterm" defaultValue="" className="w-full h-10 px-2 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary">
+                <option value="">No preference</option>
+                {incoterms.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+          )}
+          <label className="block min-w-0">
+            <span className="block text-sm font-semibold mb-1.5">VAT ID <span className="font-normal text-muted-foreground">(EU businesses, optional)</span></span>
+            <input name="vatId" maxLength={32} autoComplete="off" placeholder="e.g. DE123456789" className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary" />
+          </label>
+        </div>
+      )}
+
       <Field label={facility ? 'What do you need the lab for?' : 'What are you looking for?'} required textarea minLength={20} maxLength={4000}
         name="description"
         placeholder={anchor
-          ? `What specifically about ${anchor.title} do you want quoted? Quantity, condition preference, location, accessories…`
+          ? similar
+            ? `What should a unit like ${anchor.title} have? Condition, configuration, accessories, budget…`
+            : `What specifically about ${anchor.title} do you want quoted? Condition preference, accessories, installation…`
           : facility
             ? `Which instruments at ${facility.name}, how long, and what you plan to run…`
-            : 'Make / model / specs / condition / quantity / location — anything relevant.'} />
+            : 'Make / model / specs / condition — anything relevant.'} />
 
       {captcha.widget}
 

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, Send, Lock, Mail, EyeOff, ChevronUp, ChevronDown, Paperclip, X } from 'lucide-react';
+import { Loader2, Send, Lock, Mail, EyeOff, ChevronUp, ChevronDown, Paperclip, X, FileText } from 'lucide-react';
 import { replyToQuote, type QuoteActionResult } from '@/lib/quotes/actions';
 import { OfferForm, type OfferFormProps } from '@/components/quotes/OfferForm';
 
@@ -14,13 +14,18 @@ type Att = { url: string; name: string; type: string };
  * the OFFER. Every outcome message is the one the server action returned —
  * "Offer sent…", "Offer saved, but the email to x could not be delivered…",
  * or a readable refusal — never a generic "Not sent" for an action that
- * actually went through.
+ * actually went through. Tabs show only with the permission their action
+ * needs (quotes:reply for replies and notes, quotes:proforma for offers), so
+ * staff are never sent to a "forbidden" page after typing.
  */
 export function QuoteComposer({
   quoteId,
   buyerEmail,
   offer,
   priceLocked,
+  canReply = true,
+  canSendOffer = true,
+  quotationHref = null,
 }: {
   quoteId: string;
   buyerEmail: string;
@@ -28,9 +33,15 @@ export function QuoteComposer({
   offer: Omit<OfferFormProps, 'quoteId' | 'onResult'> | null;
   /** Set once the buyer accepted: why the price can no longer change. */
   priceLocked?: string | null;
+  /** quotes:reply — replies to the buyer and internal notes. */
+  canReply?: boolean;
+  /** quotes:proforma — send / update the offer. */
+  canSendOffer?: boolean;
+  /** The current revision's quotation PDF (what the buyer was sent). */
+  quotationHref?: string | null;
 }) {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>('reply');
+  const [mode, setMode] = useState<Mode>(canReply ? 'reply' : 'offer');
   const [open, setOpen] = useState(false);   // start COLLAPSED — workspace is conversation-first
   const [pending, start] = useTransition();
   const [body, setBody] = useState('');
@@ -39,7 +50,13 @@ export function QuoteComposer({
   const [err, setErr] = useState<string | null>(null);
   // Last outcome — stays visible on the collapsed bar too.
   const [outcome, setOutcome] = useState<QuoteActionResult | null>(null);
-  const canOffer = !!offer || !!priceLocked;
+  const offerExists = !!offer || !!priceLocked;
+  const canOffer = canSendOffer && offerExists;
+  const missing = [
+    !canReply ? 'replying and internal notes need the “Reply on quote threads” permission (quotes:reply)' : '',
+    !canSendOffer && offerExists ? 'sending offers needs the “Send offers / proformas” permission (quotes:proforma)' : '',
+  ].filter(Boolean);
+  const missingNote = missing.length ? `Your role can not do everything here: ${missing.join('; ')}.` : null;
 
   async function onFiles(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -70,12 +87,15 @@ export function QuoteComposer({
       try {
         if (body.trim().length < 2) { setErr('Message too short.'); return; }
         const internal = mode === 'internal';
-        const r = await replyToQuote({
+        // Built as a value first: a server that does not store the names yet drops them.
+        const input = {
           sourcingRequestId: quoteId,
           body: body.trim(),
           attachments: atts.map((a) => a.url),
+          attachmentNames: atts.map((a) => a.name),
           internal,
-        });
+        };
+        const r = await replyToQuote(input);
         if (r?.error) { setErr(r.error); return; }
         setBody(''); setAtts([]);
         setOutcome(r?.warning ? { warning: r.warning } : { notice: internal ? 'Internal note posted.' : `Reply sent to ${buyerEmail}.` });
@@ -106,30 +126,50 @@ export function QuoteComposer({
     </p>
   ) : null;
 
+  const quotationLink = quotationHref ? (
+    <a href={quotationHref} className="inline-flex items-center gap-1 h-7 px-3 rounded-full border border-border bg-card text-[11px] font-semibold hover:bg-foreground/5" data-testid="composer-quotation-pdf">
+      <FileText className="h-3 w-3" /> Download quotation (PDF)
+    </a>
+  ) : null;
+
+  // Nothing this role may do here: say so instead of offering dead tabs.
+  if (!canReply && !canOffer) {
+    return (
+      <div className="rounded-2xl border border-border bg-card p-4 text-xs text-muted-foreground space-y-2" data-testid="composer-view-only">
+        <p><Lock className="inline h-3.5 w-3.5 mr-1 -mt-0.5" />View only. {missingNote}</p>
+        {quotationLink}
+      </div>
+    );
+  }
+
   // COLLAPSED: a calm bar with quick-reply prompts. Click expands the full composer.
   if (!open) {
     return (
       <div className="rounded-2xl border border-border bg-card overflow-hidden">
-        <button
-          type="button"
-          onClick={() => { setMode('reply'); setOpen(true); }}
-          className="w-full p-3 text-left text-sm text-muted-foreground inline-flex items-center gap-3 hover:bg-foreground/[0.03] transition"
-        >
-          <span className="h-7 w-7 rounded-full bg-primary text-primary-foreground inline-flex items-center justify-center shrink-0">
-            <Mail className="h-3.5 w-3.5" />
-          </span>
-          <span className="flex-1">Reply to {buyerEmail}…</span>
-          <ChevronUp className="h-4 w-4 opacity-50" />
-        </button>
-        {outcomeBox && <div className="px-3 pb-2">{outcomeBox}</div>}
-        <div className="px-3 pb-3 flex items-center gap-2 flex-wrap">
+        {canReply && (
           <button
             type="button"
-            onClick={() => { setMode('internal'); setOpen(true); }}
-            className="inline-flex items-center gap-1 h-7 px-3 rounded-full border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 text-[11px] font-bold hover:bg-amber-100 dark:hover:bg-amber-900/40"
+            onClick={() => { setMode('reply'); setOpen(true); }}
+            className="w-full p-3 text-left text-sm text-muted-foreground inline-flex items-center gap-3 hover:bg-foreground/[0.03] transition min-w-0"
           >
-            <Lock className="h-3 w-3" /> Internal note
+            <span className="h-7 w-7 rounded-full bg-primary text-primary-foreground inline-flex items-center justify-center shrink-0">
+              <Mail className="h-3.5 w-3.5" />
+            </span>
+            <span className="flex-1 min-w-0 truncate">Reply to {buyerEmail}…</span>
+            <ChevronUp className="h-4 w-4 opacity-50" />
           </button>
+        )}
+        {outcomeBox && <div className="px-3 pb-2">{outcomeBox}</div>}
+        <div className={`px-3 pb-3 flex items-center gap-2 flex-wrap ${canReply ? '' : 'pt-3'}`}>
+          {canReply && (
+            <button
+              type="button"
+              onClick={() => { setMode('internal'); setOpen(true); }}
+              className="inline-flex items-center gap-1 h-7 px-3 rounded-full border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-300 text-[11px] font-bold hover:bg-amber-100 dark:hover:bg-amber-900/40"
+            >
+              <Lock className="h-3 w-3" /> Internal note
+            </button>
+          )}
           {canOffer && (
             <button
               type="button"
@@ -139,7 +179,9 @@ export function QuoteComposer({
               {priceLocked ? <Lock className="h-3 w-3" /> : <Send className="h-3 w-3" />} {priceLocked ? 'Offer · price locked' : offer?.current ? 'Update offer' : 'Send offer'}
             </button>
           )}
+          {quotationLink}
         </div>
+        {missingNote && <p className="px-3 pb-3 text-[11px] text-muted-foreground">{missingNote}</p>}
       </div>
     );
   }
@@ -154,9 +196,9 @@ export function QuoteComposer({
           : 'rounded-2xl border-2 border-primary/40 bg-card overflow-hidden'
       }
     >
-      <div className={`grid ${canOffer ? 'grid-cols-[1fr_1fr_1fr_auto]' : 'grid-cols-[1fr_1fr_auto]'} border-b border-border`}>
-        <ModeTab active={mode === 'reply'} onClick={() => setMode('reply')} tone="primary" icon={<Mail className="h-4 w-4" />} label="Reply to buyer" />
-        <ModeTab active={isInternal} onClick={() => setMode('internal')} tone="amber" icon={<Lock className="h-4 w-4" />} label="Internal note" />
+      <div className={`grid ${canReply && canOffer ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]' : canReply ? 'grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]' : 'grid-cols-[minmax(0,1fr)_auto]'} border-b border-border`}>
+        {canReply && <ModeTab active={mode === 'reply'} onClick={() => setMode('reply')} tone="primary" icon={<Mail className="h-4 w-4" />} label="Reply to buyer" />}
+        {canReply && <ModeTab active={isInternal} onClick={() => setMode('internal')} tone="amber" icon={<Lock className="h-4 w-4" />} label="Internal note" />}
         {canOffer && (
           <ModeTab active={isOffer} onClick={() => setMode('offer')} tone="accent" icon={priceLocked ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />} label={priceLocked ? 'Offer (locked)' : offer?.current ? 'Update offer' : 'Offer'} />
         )}
@@ -200,6 +242,7 @@ export function QuoteComposer({
 
       {isOffer ? (
         <div className="p-5 space-y-3">
+          {quotationLink}
           {priceLocked ? (
             <>
               {/* The page may have refreshed into the locked state right as a
@@ -214,6 +257,7 @@ export function QuoteComposer({
           ) : offer ? (
             <OfferForm quoteId={quoteId} {...offer} onResult={setOutcome} />
           ) : null}
+          {missingNote && <p className="text-[11px] text-muted-foreground">{missingNote}</p>}
         </div>
       ) : (
       <form onSubmit={submit} className="p-5 space-y-3">
@@ -245,7 +289,8 @@ export function QuoteComposer({
               <span className={body.length > 3800 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}>{body.length} / 4000</span>
             </div>
 
-        {err && <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">{err}</p>}
+        {err && <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2 [overflow-wrap:anywhere]">{err}</p>}
+        {missingNote && <p className="text-[11px] text-muted-foreground">{missingNote}</p>}
 
         <div className="flex items-center gap-2 flex-wrap">
           <label

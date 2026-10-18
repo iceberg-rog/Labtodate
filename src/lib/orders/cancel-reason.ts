@@ -27,11 +27,15 @@ export function buyerCancelExplanation(i: CancelReasonInput): { title: string; d
   if (/^Not paid by the due date/i.test(lost) || /^Not paid by the due date/i.test(voidWhy ?? '')) {
     return { title: 'This order was canceled because it was not paid in time.', detail: voidWhy ? sentence(voidWhy) : null };
   }
-  if (/^Canceled by lab2date/i.test(lost)) {
+  // Staff cancel ("Canceled by <site name> after acceptance") — whatever the brand is called.
+  if (/^Canceled by /i.test(lost)) {
     return { title: 'Our team canceled this order.', detail: note ? sentence(`Reason: ${note}`) : voidWhy ? sentence(`Reason: ${voidWhy}`) : null };
   }
   if (i.quote?.status === 'CLOSED') {
-    return { title: 'The quote was closed, so this order was canceled.', detail: note ? sentence(`Reason: ${note}`) : null };
+    // The close reason staff picked ("Bought elsewhere") and their note — never a generic "Closed by …".
+    const reason = lost && !/^Closed by /i.test(lost) ? lost : null;
+    const why = [reason, note].filter(Boolean).join(' — ');
+    return { title: 'The quote was closed, so this order was canceled.', detail: why ? sentence(`Reason: ${why}`) : null };
   }
   return { title: 'This order was canceled.', detail: voidWhy ? sentence(`Reason: ${voidWhy}`) : null };
 }

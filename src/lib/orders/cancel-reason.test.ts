@@ -16,6 +16,16 @@ test('cancel explanation names the real reason', () => {
     { title: 'Our team canceled this order.', detail: 'Reason: Unit failed our final inspection — sorry.' },
   );
   assert.equal(buyerCancelExplanation({ quote: { status: 'DECLINED', lostReason: 'Price too high', lostNote: null } }).title, 'You declined the offer, so this order was canceled.');
+  // The staff cancel under the configured brand, and a staff close with its reason (QUOTE_CLOSE_REASONS) and note.
+  assert.equal(buyerCancelExplanation({ quote: { status: 'CLOSED', lostReason: 'Canceled by Labtodate after acceptance', lostNote: 'Wrong unit.' } }).title, 'Our team canceled this order.');
+  assert.deepEqual(
+    buyerCancelExplanation({ quote: { status: 'CLOSED', lostReason: 'Bought elsewhere', lostNote: 'Ordered from the manufacturer' } }),
+    { title: 'The quote was closed, so this order was canceled.', detail: 'Reason: Bought elsewhere — Ordered from the manufacturer.' },
+  );
+  assert.deepEqual(
+    buyerCancelExplanation({ quote: { status: 'CLOSED', lostReason: 'Closed by Labtodate', lostNote: null } }),
+    { title: 'The quote was closed, so this order was canceled.', detail: null },
+  );
   assert.deepEqual(buyerCancelExplanation({ quote: null, proformaVoidReason: null }), { title: 'This order was canceled.', detail: null });
   // checkout order canceled by the buyer (no quote): admin notes carry it
   assert.equal(buyerCancelExplanation({ quote: null, adminNotes: '[2026-10-03] Canceled by the buyer: x' }).title, 'You canceled this order.');

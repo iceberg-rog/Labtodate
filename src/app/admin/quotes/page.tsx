@@ -1,4 +1,4 @@
-import { FileText, Inbox, LifeBuoy } from 'lucide-react';
+import { FileText, Inbox, LifeBuoy, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireCapability, getServerSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
@@ -9,6 +9,8 @@ import type { QuoteRowProps } from '@/components/admin/QuoteRow';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { offerAmounts } from '@/lib/quotes/pricing';
 import { QUOTE_REF, isQuoteRef } from '@/lib/quotes/offer';
+import { LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
+import { partPaidLine, queuePage, sortQueue, type QueueSort } from '@/components/quotes/quote-view';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Quote requests' };
@@ -97,28 +99,24 @@ const TAB_STATUSES: Array<{
 ];
 // The statuses the signal chips count (= the 'active' tab).
 const ACTIVE_STATUSES: QuoteStatus[] = ['PENDING', 'RESPONDED'];
-// The reference shown on a row: the proforma number, or "RFQ-XXXXXX" (last 6 of the id).
-// Document / order references (proforma PF-…/PRO-…, invoice INV-…, credit note CN-…, order L2D-…).
-const isRefSearch = (q: string) => /^(PRO|PF|INV|CN|L2D)-/i.test(q) || isQuoteRef(q);
 
 const SORT_OPTIONS = [
   { key: 'urgency', label: 'Urgency' },
   { key: 'sla',     label: 'SLA · soonest' },
   { key: 'newest',  label: 'Newest' },
   { key: 'oldest',  label: 'Oldest' },
-] as const;
-type SortKey = (typeof SORT_OPTIONS)[number]['key'];
+] as const satisfies ReadonlyArray<{ key: QueueSort; label: string }>;
+type SortKey = QueueSort;
 const PRIORITY_WEIGHT: Record<string, number> = { VIP: 0, URGENT: 1, HIGH: 2, NORMAL: 3, LOW: 4 };
 // The "VIP/Urgent" chip: one definition for its count and its list.
 const HOT_PRIORITIES = ['VIP', 'URGENT'];
-const STATUS_WEIGHT: Record<string, number> = {
-  PENDING: 0, RESPONDED: 1, ACCEPTED: 2, DECLINED: 3, CLOSED: 4,
-};
+/** Rows per page of the queue. */
+const PER_PAGE = 50;
 
 export default async function AdminQuotesPage(
   props: {
     searchParams: Promise<{
-      tab?: string; q?: string; view?: string; assignee?: string; priority?: string; sort?: string;
+      tab?: string; q?: string; view?: string; assignee?: string; priority?: string; sort?: string; page?: string;
     }>;
   }
 ) {
@@ -127,14 +125,13 @@ export default async function AdminQuotesPage(
   await ensureSettingsLoaded();
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();
-  // A reference (PRO-… proforma or RFQ-XXXXXX) names one deal wherever it is,
-  // so searched from the default view it is looked up across every tab — the
-  // Open default excludes every quote with a proforma, so a PRO- search there
-  // could never match. A tab picked explicitly still applies (its match count
-  // below shows where the hits are).
+  // A search looks at every deal: a new search (the form never carries the
+  // tab) lists the matches of all tabs — a buyer's e-mail finds their closed
+  // and won quotes too, a PRO- reference the accepted one. Each tab shows how
+  // many matches it holds; clicking one narrows the search to it.
   const tab =
     TAB_STATUSES.find((t) => t.key === searchParams.tab) ??
-    (isRefSearch(q) ? TAB_STATUSES.find((t) => t.key === 'all')! : TAB_STATUSES[0]);
+    (q ? TAB_STATUSES.find((t) => t.key === 'all')! : TAB_STATUSES[0]);
   const view = searchParams.view === 'archived' ? 'archived' : '';
   const assignee = searchParams.assignee ?? '';
   // One or more priorities, comma-separated (the VIP/Urgent chip sends both);
@@ -189,22 +186,41 @@ export default async function AdminQuotesPage(
   });
   const where: Prisma.SourcingRequestWhereInput = { AND: [filterWhere(view === 'archived'), tabWhere(tab)] };
 
-  // For urgency/sla, fetch wider then sort post-fetch
-  const orderByForFetch =
-    sort === 'oldest' ? [{ createdAt: 'asc' as const }] : [{ createdAt: 'desc' as const }];
-  const fetchTake = sort === 'urgency' || sort === 'sla' ? 200 : 100;
-
-  const itemsRaw = await prisma.sourcingRequest.findMany({
-    where,
-    orderBy: orderByForFetch,
-    take: fetchTake,
-    include: {
-      product: { select: { title: true } },
-      assignedTo: { select: { id: true, name: true, email: true } },
-      submittedBy: { select: { id: true } },
-      messages: { select: { fromStaff: true, attachments: true, isInternalNote: true } },
-    },
-  });
+  // Pages of PER_PAGE over every match. Newest / oldest page in SQL; urgency
+  // and SLA (priority + status weights) sort the light keys of every match,
+  // then load the rows of one page — so page 3 is right however many there are.
+  const include = {
+    product: { select: { title: true } },
+    assignedTo: { select: { id: true, name: true, email: true } },
+    submittedBy: { select: { id: true } },
+    messages: { select: { fromStaff: true, attachments: true, isInternalNote: true } },
+  } satisfies Prisma.SourcingRequestInclude;
+  const requestedPage = Number(searchParams.page ?? '1');
+  let total: number;
+  let pg: ReturnType<typeof queuePage>;
+  let itemsRaw: Prisma.SourcingRequestGetPayload<{ include: typeof include }>[];
+  if (sort === 'urgency' || sort === 'sla') {
+    const keys = sortQueue(
+      await prisma.sourcingRequest.findMany({ where, select: { id: true, priority: true, status: true, dueAt: true, createdAt: true } }),
+      sort,
+    );
+    total = keys.length;
+    pg = queuePage(total, requestedPage, PER_PAGE);
+    const ids = keys.slice(pg.skip, pg.skip + PER_PAGE).map((k) => k.id);
+    const rows = ids.length ? await prisma.sourcingRequest.findMany({ where: { id: { in: ids } }, include }) : [];
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    itemsRaw = ids.map((id) => byId.get(id)).filter((r): r is NonNullable<typeof r> => !!r);
+  } else {
+    total = await prisma.sourcingRequest.count({ where });
+    pg = queuePage(total, requestedPage, PER_PAGE);
+    itemsRaw = await prisma.sourcingRequest.findMany({
+      where,
+      orderBy: [{ createdAt: sort === 'oldest' ? 'asc' : 'desc' }, { id: 'asc' }],
+      skip: pg.skip,
+      take: PER_PAGE,
+      include,
+    });
+  }
 
   // Batch: paid-order counts + lifetime per buyer, and linked-order status per quote.
   const buyerIds = Array.from(new Set(itemsRaw.map((q) => q.submittedBy?.id).filter(Boolean) as string[]));
@@ -224,12 +240,17 @@ export default async function AdminQuotesPage(
   const linkedOrders = quoteIds.length > 0
     ? await prisma.order.findMany({
         where: { sourcingRequestId: { in: quoteIds } },
-        select: { sourcingRequestId: true, status: true, paymentSubmittedAt: true, totalCents: true },
+        select: { sourcingRequestId: true, status: true, paymentSubmittedAt: true, totalCents: true, currency: true, amountPaidCents: true, refunds: LIVE_REFUNDS_SELECT },
       })
     : [];
-  const linkedByQuote = new Map<string, { status: string; proof: boolean; totalCents: number }>();
+  const linkedByQuote = new Map<string, { status: string; proof: boolean; totalCents: number; partPaid: string | null }>();
   for (const lo of linkedOrders) {
-    if (lo.sourcingRequestId) linkedByQuote.set(lo.sourcingRequestId, { status: lo.status, proof: !!lo.paymentSubmittedAt, totalCents: lo.totalCents });
+    if (lo.sourcingRequestId) {
+      linkedByQuote.set(lo.sourcingRequestId, {
+        status: lo.status, proof: !!lo.paymentSubmittedAt, totalCents: lo.totalCents,
+        partPaid: lo.status === 'PENDING_PAYMENT' ? partPaidLine(lo) : null,
+      });
+    }
   }
   const adminCandidates = await prisma.user.findMany({
     where: { OR: [{ role: 'ADMIN' }, { role: 'SELLER' }] },
@@ -238,31 +259,8 @@ export default async function AdminQuotesPage(
     take: 30,
   });
 
-  const sortedItems = (() => {
-    if (sort === 'urgency') {
-      return [...itemsRaw].sort((a, b) => {
-        const pa = PRIORITY_WEIGHT[a.priority] ?? 9;
-        const pb = PRIORITY_WEIGHT[b.priority] ?? 9;
-        if (pa !== pb) return pa - pb;
-        const sa = STATUS_WEIGHT[a.status] ?? 9;
-        const sb = STATUS_WEIGHT[b.status] ?? 9;
-        if (sa !== sb) return sa - sb;
-        const da = a.dueAt?.getTime() ?? Infinity;
-        const db = b.dueAt?.getTime() ?? Infinity;
-        if (da !== db) return da - db;
-        return b.createdAt.getTime() - a.createdAt.getTime();
-      });
-    }
-    if (sort === 'sla') {
-      return [...itemsRaw].sort((a, b) => {
-        const da = a.dueAt?.getTime() ?? Infinity;
-        const db = b.dueAt?.getTime() ?? Infinity;
-        return da - db;
-      });
-    }
-    return itemsRaw;
-  })();
-  const items = sortedItems.slice(0, 100);
+  const items = itemsRaw;
+  const [canAssign, canArchive] = await Promise.all([hasCapability('quotes:assign'), hasCapability('quotes:archive')]);
 
   const [archivedCount, myCount, unassignedCount, urgentVipCount] = await Promise.all([
     prisma.sourcingRequest.count({ where: { archivedAt: { not: null } } }),
@@ -283,7 +281,8 @@ export default async function AdminQuotesPage(
       ])
     : [null, null];
 
-  function href(over: Partial<{ tab: string; view: string; assignee: string; priority: string; q: string; sort: string }>) {
+  // Any other change starts again at page 1; only the pager passes a page.
+  function href(over: Partial<{ tab: string; view: string; assignee: string; priority: string; q: string; sort: string; page: number }>) {
     const sp = new URLSearchParams();
     const merged = {
       tab: over.tab !== undefined ? over.tab : (searchParams.tab ?? ''),
@@ -293,15 +292,18 @@ export default async function AdminQuotesPage(
       q: over.q !== undefined ? over.q : q,
       sort: over.sort !== undefined ? over.sort : (sort === 'urgency' ? '' : sort),
     };
-    // 'open' is the default — except for a reference search, whose default is 'all'.
-    if (merged.tab && (merged.tab !== 'open' || isRefSearch(merged.q))) sp.set('tab', merged.tab);
+    // 'open' is the default — except while searching, whose default is 'all'.
+    if (merged.tab && (merged.tab !== 'open' || merged.q)) sp.set('tab', merged.tab);
     if (merged.view) sp.set('view', merged.view);
     if (merged.assignee) sp.set('assignee', merged.assignee);
     if (merged.priority) sp.set('priority', merged.priority);
     if (merged.q) sp.set('q', merged.q);
     if (merged.sort) sp.set('sort', merged.sort);
+    if (over.page && over.page > 1) sp.set('page', String(over.page));
     return sp.toString() ? `/admin/quotes?${sp}` : '/admin/quotes';
   }
+  const shownFrom = total === 0 ? 0 : pg.skip + 1;
+  const shownTo = pg.skip + items.length;
 
   return (
     <div className="space-y-6">
@@ -313,7 +315,7 @@ export default async function AdminQuotesPage(
             <FileText className="h-7 w-7 text-primary" /> Quote requests
           </h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            {`${items.length} request${items.length === 1 ? '' : 's'} ${view === 'archived' ? 'archived' : `· ${tab.label.toLowerCase()}`}${q ? ` · matching "${q}"` : ''}`}
+            {`${total} request${total === 1 ? '' : 's'} ${view === 'archived' ? 'archived' : `· ${tab.label.toLowerCase()}`}${q ? ` · matching "${q}"` : ''}${pg.pages > 1 ? ` · ${shownFrom}–${shownTo} shown (page ${pg.page} of ${pg.pages})` : ''}`}
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs flex-wrap">
@@ -325,8 +327,8 @@ export default async function AdminQuotesPage(
         </div>
       </div>
 
+      {/* A search always starts across every tab (no tab field); the tab chips then narrow it. */}
       <form method="GET" className="flex gap-2 flex-wrap items-center">
-        {searchParams.tab && <input type="hidden" name="tab" value={searchParams.tab} />}
         {view && <input type="hidden" name="view" value={view} />}
         {assignee && <input type="hidden" name="assignee" value={assignee} />}
         {priority && <input type="hidden" name="priority" value={priority} />}
@@ -334,7 +336,7 @@ export default async function AdminQuotesPage(
           name="q"
           defaultValue={q}
           placeholder="Search buyer, email, item, RFQ- / PF- / INV- / L2D- ref…"
-          className="flex-1 min-w-[260px] h-10 px-3 rounded-lg border border-input bg-background text-sm"
+          className="flex-1 min-w-0 basis-[16rem] h-10 px-3 rounded-lg border border-input bg-background text-sm"
         />
         <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="hidden sm:inline">Sort:</span>
@@ -459,12 +461,49 @@ export default async function AdminQuotesPage(
               buyerLifetimeCents: stats?.lifetimeCents ?? 0,
               linkedOrderStatus: linkedByQuote.get(sr.id)?.status ?? null,
               linkedOrderProof: linkedByQuote.get(sr.id)?.proof ?? false,
+              partPaidLabel: linkedByQuote.get(sr.id)?.partPaid ?? null,
               admins: adminCandidates,
+              canAssign,
+              canArchive,
             };
           })}
           view={view === 'archived' ? 'archived' : 'active'}
           canDelete={await hasCapability('quotes:delete')}
         />
+      )}
+
+      {pg.pages > 1 && (
+        <nav aria-label="Pages" className="flex items-center justify-between gap-3 flex-wrap text-xs" data-testid="quotes-pager">
+          <span className="text-muted-foreground tabular-nums">{shownFrom}–{shownTo} of {total}</span>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {pg.page > 1 ? (
+              <a href={href({ page: pg.page - 1 })} className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-border bg-card font-semibold hover:bg-foreground/5">
+                <ChevronLeft className="h-3.5 w-3.5" /> Previous
+              </a>
+            ) : null}
+            {Array.from({ length: pg.pages }, (_, i) => i + 1)
+              .filter((n) => n === 1 || n === pg.pages || Math.abs(n - pg.page) <= 2)
+              .map((n, i, arr) => (
+                <span key={n} className="inline-flex items-center gap-1.5">
+                  {i > 0 && n - arr[i - 1] > 1 && <span className="text-muted-foreground">…</span>}
+                  <a
+                    href={href({ page: n })}
+                    aria-current={n === pg.page ? 'page' : undefined}
+                    className={`inline-flex items-center justify-center h-8 min-w-8 px-2.5 rounded-full border font-semibold tabular-nums ${
+                      n === pg.page ? 'bg-primary text-primary-foreground border-primary' : 'bg-card border-border hover:bg-foreground/5'
+                    }`}
+                  >
+                    {n}
+                  </a>
+                </span>
+              ))}
+            {pg.page < pg.pages ? (
+              <a href={href({ page: pg.page + 1 })} className="inline-flex items-center gap-1 h-8 px-3 rounded-full border border-border bg-card font-semibold hover:bg-foreground/5">
+                Next <ChevronRight className="h-3.5 w-3.5" />
+              </a>
+            ) : null}
+          </div>
+        </nav>
       )}
     </div>
   );

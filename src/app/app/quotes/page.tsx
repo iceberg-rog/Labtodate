@@ -14,6 +14,8 @@ import { formatPrice } from '@/lib/utils';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { offerAmounts } from '@/lib/quotes/pricing';
 import { documentHref } from '@/lib/documents';
+import { LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
+import { receivedCents } from '@/components/quotes/quote-view';
 import { QUOTE_REF } from '@/lib/quotes/offer';
 
 export const dynamic = 'force-dynamic';
@@ -168,7 +170,10 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
   const linked = items.length > 0
     ? await prisma.order.findMany({
         where: { sourcingRequestId: { in: items.map((q) => q.id) } },
-        select: { sourcingRequestId: true, status: true, orderNumber: true, paymentSubmittedAt: true, totalCents: true, currency: true },
+        select: {
+          sourcingRequestId: true, status: true, orderNumber: true, paymentSubmittedAt: true, totalCents: true, currency: true,
+          amountPaidCents: true, refunds: LIVE_REFUNDS_SELECT,
+        },
       })
     : [];
   const linkedByQuote = new Map(linked.map((o) => [o.sourcingRequestId!, o]));
@@ -192,7 +197,12 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
       : q.quotedPriceCents != null
         ? { cents: offerAmounts(q).totalCents, currency: q.quotedCurrency ?? 'EUR', exclVat: !offerAmounts(q).vatDecided }
         : null;
-    return { q, deal, orderNumber: lo && lo.status !== 'CANCELED' ? lo.orderNumber : null, amount };
+    // A part payment is already in: say what is still due, not the full amount.
+    const got = lo && lo.status === 'PENDING_PAYMENT' ? receivedCents(lo) : 0;
+    const partPaid = lo && got > 0 && got < lo.totalCents
+      ? { receivedLabel: fmtMoney(got, lo.currency), openLabel: fmtMoney(lo.totalCents - got, lo.currency) }
+      : null;
+    return { q, deal, orderNumber: lo && lo.status !== 'CANCELED' ? lo.orderNumber : null, amount, partPaid };
   });
 
   const isActive = (s: DealState) =>
@@ -289,7 +299,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
         </div>
       ) : (
         <ul className="space-y-3">
-          {visible.map(({ q, deal, orderNumber, amount }) => {
+          {visible.map(({ q, deal, orderNumber, amount, partPaid }) => {
             const vis = STATE_VISUAL[deal.state];
             const Icon = vis.Icon;
             const ref = q.proformaNumber ?? QUOTE_REF(q.id);
@@ -309,7 +319,9 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
             } else if (deal.state === 'offer_expired') {
               statusLine = `Offer expired ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : ''} · ask the supplier for a new one`;
             } else if (deal.state === 'won_payment_pending') {
-              statusLine = `Order ${orderNumber} · proforma ${ref} · awaiting your bank transfer`;
+              statusLine = partPaid
+                ? `Order ${orderNumber} · ${partPaid.receivedLabel} received · ${partPaid.openLabel} still due`
+                : `Order ${orderNumber} · proforma ${ref} · awaiting your bank transfer`;
             } else if (deal.state === 'won_payment_review') {
               statusLine = `Order ${orderNumber} · your payment proof is being verified`;
             } else if (deal.state === 'won_paid') {
@@ -371,6 +383,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
                       <p className="text-lg font-bold tabular-nums leading-none">
                         {fmtMoney(amount.cents, amount.currency)}
                         {amount.exclVat && <span className="block text-[10px] font-normal text-muted-foreground mt-0.5">excl. VAT</span>}
+                        {partPaid && <span className="block text-[10px] font-semibold text-amber-700 dark:text-amber-300 mt-0.5">{partPaid.openLabel} still due</span>}
                       </p>
                     ) : (
                       <p className="text-xs text-muted-foreground italic">awaiting offer</p>

@@ -57,6 +57,17 @@ export interface OfferCardProps {
   decline?: { reasons: string[] } | null;
   /** Buyer may cancel the accepted, unpaid order. */
   cancel?: { orderNumber: string; reasons: string[] } | null;
+  // ── Set by the quote pages (not by offerCardProps) ──
+  /** The site name (siteName()). */
+  brand?: string;
+  /** SourcingRequest.status — says who ended an offer the buyer was accepting. */
+  quoteStatus?: string | null;
+  /** The quotation PDF of this revision (buyer and staff only). */
+  quotationHref?: string | null;
+  /** The listed unit was taken by another buyer: why the offer can not be accepted. */
+  unavailable?: string | null;
+  /** The previous revision was in another currency (its code). */
+  currencyChangedFrom?: string | null;
 }
 
 function day(iso: string): string {
@@ -78,6 +89,8 @@ export function OfferCard(p: OfferCardProps) {
   const money = (c: number) => formatPrice(c, p.currency);
   const isBuyer = p.viewer === 'BUYER';
   const a = p.amounts;
+  const brand = p.brand || 'our team';
+  const unavailable = isBuyer && p.phase === 'open' && !!p.unavailable;
 
   // Staff updated the offer while the buyer was confirming: close the step, say so.
   const seenVersion = useRef(p.offerVersion);
@@ -86,10 +99,34 @@ export function OfferCard(p: OfferCardProps) {
       seenVersion.current = p.offerVersion;
       if (mode !== 'idle') {
         setMode('idle');
-        setInfo('The offer was just updated — review the new offer before accepting.');
+        setInfo('The offer was just updated — review the new offer before accepting or declining.');
       }
     }
   }, [p.offerVersion, mode]);
+
+  // The offer ended while the buyer was accepting / declining (staff closed the
+  // request, it expired, the unit went to another buyer): close the step and
+  // say why, instead of the panel just disappearing.
+  const seenPhase = useRef(p.phase);
+  const seenUnavailable = useRef(!!p.unavailable);
+  useEffect(() => {
+    const was = seenPhase.current;
+    const wasUnavailable = seenUnavailable.current;
+    seenPhase.current = p.phase;
+    seenUnavailable.current = !!p.unavailable;
+    if (mode === 'idle') return;
+    if (was === 'open' && p.phase !== 'open' && p.phase !== 'accepted') {
+      setMode('idle');
+      setInfo(
+        p.phase === 'void' && p.quoteStatus === 'CLOSED' ? `This request was closed by ${brand} — no order was created.`
+          : p.phase === 'expired' ? 'The offer expired while you were confirming — no order was created. Ask us for a new offer below.'
+          : 'This offer can no longer be accepted — no order was created.',
+      );
+    } else if (!wasUnavailable && p.unavailable && mode === 'accept') {
+      setMode('idle');
+      setInfo('The unit was just taken by another order — no order was created. Ask us for a similar one below.');
+    }
+  }, [p.phase, p.unavailable, p.quoteStatus, mode, brand]);
 
   const tone =
     p.phase === 'open' ? 'border-primary/50 bg-primary/[0.04]'
@@ -106,6 +143,7 @@ export function OfferCard(p: OfferCardProps) {
         : isBuyer ? 'Offer accepted · awaiting your payment' : 'Offer accepted · awaiting payment')
       : p.phase === 'expired' ? 'Offer expired'
       : p.phase === 'void' ? 'Offer void · no deal'
+      : unavailable ? 'Offer · unit no longer available'
       : isBuyer ? 'Offer received — your decision' : 'Offer sent — awaiting buyer';
   const struck = p.phase === 'void' || p.paymentState === 'canceled' || p.paymentState === 'refunded';
 
@@ -176,10 +214,20 @@ export function OfferCard(p: OfferCardProps) {
           </span>
         )}
         {p.sentAtISO && <span>Sent {day(p.sentAtISO)}</span>}
-        {p.previousLabel && p.phase === 'open' && <span>Previous offer: <s>{p.previousLabel}</s></span>}
+        {p.previousLabel && p.phase === 'open' && (
+          <span>
+            Previous offer: <s>{p.previousLabel}</s>
+            {p.currencyChangedFrom && p.currencyChangedFrom !== p.currency && <> (in {p.currencyChangedFrom} — this offer is in {p.currency})</>}
+          </span>
+        )}
         {p.proformaNumber && <span>Proforma <span className="font-mono font-semibold text-foreground">{p.proformaNumber}</span></span>}
         {p.invoiceNumber && <span>Invoice <span className="font-mono font-semibold text-foreground">{p.invoiceNumber}</span></span>}
         {p.orderNumber && <span>Order <span className="font-mono font-semibold text-foreground">{p.orderNumber}</span></span>}
+        {p.quotationHref && (
+          <a href={p.quotationHref} className="inline-flex items-center gap-1 font-semibold text-primary hover:underline" data-testid="offer-quotation-pdf">
+            <FileText className="h-3 w-3" /> Download quotation (PDF)
+          </a>
+        )}
       </div>
 
       {p.note && (
@@ -192,15 +240,23 @@ export function OfferCard(p: OfferCardProps) {
       )}
 
       {/* ─── Buyer decision ─── */}
+      {unavailable && (
+        <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 px-4 py-3 text-sm [overflow-wrap:anywhere]" role="status" data-testid="offer-unavailable">
+          <p className="font-bold">Unit no longer available — ask us for a similar one.</p>
+          <p className="mt-0.5">{p.unavailable} Write to us in the conversation below and we look for another unit for you.</p>
+        </div>
+      )}
       {isBuyer && p.phase === 'open' && mode === 'idle' && (
         <div className="mt-5 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => { setInfo(null); setMode('accept'); }}
-            className="inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90 shadow-sm"
-          >
-            <Check className="h-4 w-4" /> Accept offer
-          </button>
+          {!unavailable && (
+            <button
+              type="button"
+              onClick={() => { setInfo(null); setMode('accept'); }}
+              className="inline-flex items-center gap-1.5 rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90 shadow-sm"
+            >
+              <Check className="h-4 w-4" /> Accept offer
+            </button>
+          )}
           {p.decline && (
             <button
               type="button"
@@ -210,10 +266,10 @@ export function OfferCard(p: OfferCardProps) {
               <X className="h-4 w-4" /> Decline
             </button>
           )}
-          <span className="text-xs text-muted-foreground basis-full sm:basis-auto">Questions? Reply in the conversation below — nothing is ordered until you accept.</span>
+          {!unavailable && <span className="text-xs text-muted-foreground basis-full sm:basis-auto">Questions? Reply in the conversation below — nothing is ordered until you accept.</span>}
         </div>
       )}
-      {isBuyer && p.phase === 'open' && mode === 'accept' && p.accept && (
+      {isBuyer && p.phase === 'open' && mode === 'accept' && p.accept && !unavailable && (
         <AcceptOfferPanel
           quoteId={p.quoteId}
           revision={p.revision}
@@ -227,6 +283,7 @@ export function OfferCard(p: OfferCardProps) {
       {isBuyer && p.phase === 'open' && mode === 'decline' && p.decline && (
         <DeclineOfferDialog
           quoteId={p.quoteId}
+          revision={p.revision}
           reasons={p.decline.reasons}
           onCancel={() => setMode('idle')}
           onDone={(msg) => { setMode('idle'); setNotice(msg); }}
@@ -239,7 +296,7 @@ export function OfferCard(p: OfferCardProps) {
       )}
       {!isBuyer && p.phase === 'accepted' && p.paymentState !== 'canceled' && p.paymentState !== 'refunded' && (
         <p className="mt-4 text-xs text-muted-foreground inline-flex items-start gap-1.5">
-          <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /> Price locked — the buyer accepted. A change means canceling the order (lab2date staff only) and a new offer.
+          <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" /> Price locked — the buyer accepted. A change means canceling the order ({brand} staff only) and a new offer.
         </p>
       )}
       {isBuyer && p.phase === 'accepted' && p.orderNumber && (

@@ -2,7 +2,8 @@ import { prisma } from '@/lib/db';
 
 export interface BuyerIntel {
   totalRfqs: number;
-  rfqsByOutcome: { won: number; lost: number; open: number };
+  /** won = the order is paid; awaitingPayment = accepted, order not paid yet. */
+  rfqsByOutcome: { won: number; awaitingPayment: number; lost: number; open: number };
   paidOrders: number;
   lifetimeCents: number;
   avgDealCents: number;          // mean of won orders
@@ -26,7 +27,7 @@ export async function buildBuyerIntel(
 ): Promise<BuyerIntel> {
   const empty: BuyerIntel = {
     totalRfqs: 0,
-    rfqsByOutcome: { won: 0, lost: 0, open: 0 },
+    rfqsByOutcome: { won: 0, awaitingPayment: 0, lost: 0, open: 0 },
     paidOrders: 0,
     lifetimeCents: 0,
     avgDealCents: 0,
@@ -46,31 +47,38 @@ export async function buildBuyerIntel(
         ...(buyerUserId ? [{ submittedById: buyerUserId }] : []),
       ],
     },
-    select: { id: true, status: true, assignedToId: true, createdAt: true, updatedAt: true },
+    select: { id: true, status: true, assignedToId: true, createdAt: true, updatedAt: true, order: { select: { status: true } } },
   });
   if (rfqs.length === 0 && !buyerUserId) return empty;
 
-  const wonStatuses = new Set(['ACCEPTED']);
-  const lostStatuses = new Set(['DECLINED', 'CLOSED']);
-  const openStatuses = new Set(['PENDING', 'RESPONDED']);
+  // Won only once the order is paid: an accepted quote whose order is still
+  // unpaid is not a sale yet, and one whose order was canceled is lost.
+  const paidLike = new Set(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED']);
+  const outcome = (r: (typeof rfqs)[number]): 'won' | 'awaitingPayment' | 'lost' | 'open' | null => {
+    if (r.order && paidLike.has(r.order.status)) return 'won';
+    if (r.status === 'DECLINED' || r.status === 'CLOSED') return 'lost';
+    if (r.order && (r.order.status === 'CANCELED' || r.order.status === 'REFUNDED')) return 'lost';
+    if (r.status === 'ACCEPTED') return 'awaitingPayment';
+    if (r.status === 'PENDING' || r.status === 'RESPONDED') return 'open';
+    return null;
+  };
 
   const rfqsByOutcome = rfqs.reduce(
     (acc, r) => {
-      if (wonStatuses.has(r.status)) acc.won++;
-      else if (lostStatuses.has(r.status)) acc.lost++;
-      else if (openStatuses.has(r.status)) acc.open++;
+      const o = outcome(r);
+      if (o) acc[o]++;
       return acc;
     },
-    { won: 0, lost: 0, open: 0 },
+    { won: 0, awaitingPayment: 0, lost: 0, open: 0 },
   );
 
   const suppliersInteracted = new Set(rfqs.map((r) => r.assignedToId).filter(Boolean)).size;
 
   // Last outcome — sort by updatedAt desc and pick first non-open if any.
   const sorted = [...rfqs].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  const lastTerminal = sorted.find((r) => wonStatuses.has(r.status) || lostStatuses.has(r.status));
+  const lastTerminal = sorted.find((r) => outcome(r) === 'won' || outcome(r) === 'lost');
   const lastOutcome: BuyerIntel['lastOutcome'] = lastTerminal
-    ? wonStatuses.has(lastTerminal.status) ? 'won' : 'lost'
+    ? outcome(lastTerminal) === 'won' ? 'won' : 'lost'
     : sorted[0]
     ? 'open'
     : null;
@@ -88,7 +96,6 @@ export async function buildBuyerIntel(
       where: { buyerId: buyerUserId },
       select: { id: true, status: true, totalCents: true, paidAt: true, createdAt: true, shippingAddress: true },
     });
-    const paidLike = new Set(['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED']);
     const paid = orders.filter((o) => paidLike.has(o.status));
     paidOrders = paid.length;
     lifetimeCents = paid.reduce((s, o) => s + o.totalCents, 0);

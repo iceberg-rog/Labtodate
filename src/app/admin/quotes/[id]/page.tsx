@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import {
   ChevronLeft, Crown, ShieldAlert, AlertCircle, ShoppingBag, ExternalLink,
-  Building2, FileText, Mail, Hourglass, TrendingUp, ArrowRight,
+  Building2, FileText, Hourglass, ArrowRight, Package, MailWarning,
 } from 'lucide-react';
 import { requireCapability, getServerSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
@@ -17,11 +17,20 @@ import { DealStateBadge } from '@/components/quotes/DealStateBadge';
 import { AssigneeBadge } from '@/components/quotes/AssigneeBadge';
 import { DealStepper } from '@/components/quotes/DealStepper';
 import { OfferCard } from '@/components/quotes/OfferCard';
+import { dealStageOf, messageAuthorLabel, partPaidLine, withFulfilment } from '@/components/quotes/quote-view';
 import { offerCardProps, offerFormProps, orderPaymentState, priceLockedMessage } from '@/lib/quotes/offer-view';
 import { offerFormContextFor } from '@/lib/quotes/page-data';
+import { parseOfferTerms } from '@/lib/quotes/pricing';
+import { autoArchiveOnClose } from '@/lib/quotes/policy';
 import { documentHref } from '@/lib/documents';
-import { ensureSettingsLoaded } from '@/lib/settings';
-import { QuoteDealPanel, type DealStage } from '@/components/admin/QuoteDealPanel';
+import { quotationPath } from '@/lib/documents/quotation';
+import { countryOptions } from '@/lib/compliance/country';
+import { LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
+import { SUPPRESS_ALL_SCOPE } from '@/lib/email-guard';
+import { siteName } from '@/lib/brand/identity';
+import { businessTimeZone } from '@/lib/documents/numbering';
+import { ensureSettingsLoaded, settingList } from '@/lib/settings';
+import { QuoteDealPanel } from '@/components/admin/QuoteDealPanel';
 import { SellerProposalReject } from '@/components/admin/SellerProposalReject';
 import { fmtDueDate } from '@/lib/orders/payment-due';
 import { creditStatusFor } from '@/lib/credit/terms';
@@ -63,22 +72,33 @@ function fmtMoney(cents: number, ccy = 'EUR'): string {
   return formatPrice(cents, ccy); // shows cents when present — must match the proforma
 }
 
+/** EmailLog statuses that mean the mail did not leave (sent = handed to the mail server). */
+const MAIL_NOT_SENT: Record<string, string> = {
+  failed: 'the mail server refused it',
+  blocked: 'the address or its domain is refused',
+  suppressed: 'the address bounced before, so mails to it are stopped',
+  throttled: 'too many mails to this address',
+  not_configured: 'e-mail is not configured on this server',
+};
+
 export default async function AdminQuoteDetailPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   await requireCapability('quotes:view');
   await ensureSettingsLoaded();
   const session = await getServerSession();
+  const brand = siteName();
+  const timeZone = businessTimeZone();
 
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id: params.id },
     include: {
       messages: {
         orderBy: { createdAt: 'asc' },
-        include: { author: { select: { id: true, name: true, email: true } } },
+        include: { author: { select: { id: true, name: true, email: true, role: true } } },
       },
       assignedTo: { select: { id: true, name: true, email: true } },
       submittedBy: { select: { id: true, name: true, email: true, createdAt: true, company: { select: { name: true } } } },
-      product: { select: { id: true, title: true, slug: true, vatScheme: true } },
+      product: { select: { id: true, title: true, slug: true, vatScheme: true, status: true } },
     },
   });
   if (!sr) notFound();
@@ -88,13 +108,17 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
     select: {
       id: true, orderNumber: true, status: true, totalCents: true, currency: true, paidAt: true,
       paymentSubmittedAt: true, paymentVerificationStatus: true, subtotalCents: true, shippingCents: true, taxCents: true,
-      vatTreatment: true, vatRateBp: true, dueAt: true, financialStatus: true, shippedAt: true,
+      vatTreatment: true, vatRateBp: true, dueAt: true, financialStatus: true, shippedAt: true, deliveredAt: true,
+      amountPaidCents: true, refunds: LIVE_REFUNDS_SELECT,
       items: { select: { quantity: true, priceCentsSnapshot: true }, take: 1 },
       documents: { where: { kind: 'INVOICE' }, select: { number: true }, take: 1 },
     },
   });
 
-  const [intel, timeline, admins] = await Promise.all([
+  // What this staff member may do here: a control shows only with the
+  // permission its action needs (an OPS role with quotes:view only reads).
+  const buyerAddr = sr.buyerEmail.trim();
+  const [intel, timeline, admins, canStatus, canSendOffer, canReply, canArchive, canAssign, canRefund, lastMail, suppression] = await Promise.all([
     buildBuyerIntel(sr.buyerEmail, sr.submittedBy?.id ?? null),
     buildActivityTimeline(sr.id),
     prisma.user.findMany({
@@ -103,41 +127,81 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
       orderBy: { name: 'asc' },
       take: 30,
     }),
+    hasCapability('quotes:status'),
+    hasCapability('quotes:proforma'),
+    hasCapability('quotes:reply'),
+    hasCapability('quotes:archive'),
+    hasCapability('quotes:assign'),
+    hasCapability('orders:refund'),
+    // The last e-mail to the buyer: a failure (bad domain, bounce) must not
+    // stay hidden in the e-mail log while staff wait for an answer.
+    prisma.emailLog.findFirst({
+      where: { toAddr: { in: Array.from(new Set([buyerAddr, buyerAddr.toLowerCase()])) } },
+      orderBy: { createdAt: 'desc' },
+      select: { status: true, error: true, subject: true, createdAt: true },
+    }),
+    prisma.emailSuppression.findUnique({
+      where: { email_scope: { email: buyerAddr.toLowerCase(), scope: SUPPRESS_ALL_SCOPE } },
+      select: { reason: true, createdAt: true },
+    }),
   ]);
+  const fmtWhen = (d: Date) => d.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone });
 
-  const deal = computeDealState({
+  const deal = withFulfilment(computeDealState({
     status: sr.status,
     lastReplyByStaff: sr.lastReplyByStaff,
     proformaNumber: sr.proformaNumber,
     quotedPriceCents: sr.quotedPriceCents,
     validUntilAt: sr.validUntilAt,
     linkedOrder,
-  }, 'staff');
-  const offerCard = offerCardProps(sr, linkedOrder, 'STAFF', { invoiceNumber: linkedOrder?.documents[0]?.number ?? null });
+  }, 'staff'), linkedOrder);
+  const quotationHref = (sr.offerRevision ?? 0) > 0 && sr.quotedPriceCents != null ? quotationPath(sr.id, sr.offerRevision) : null;
+  const baseCard = offerCardProps(sr, linkedOrder, 'STAFF', { invoiceNumber: linkedOrder?.documents[0]?.number ?? null });
+  const offerCard = baseCard && {
+    ...baseCard,
+    brand,
+    quoteStatus: sr.status,
+    quotationHref,
+    currencyChangedFrom: parseOfferTerms(sr.offerTerms)?.previous?.currency ?? null,
+  };
   const invoiceNumber = linkedOrder?.documents[0]?.number ?? null;
   const payState = linkedOrder ? orderPaymentState(linkedOrder) : null;
-  const dealStage: DealStage | null = !linkedOrder ? null
-    : linkedOrder.status === 'CANCELED' ? 'CANCELED'
-    : linkedOrder.status === 'REFUNDED' ? 'REFUNDED'
-    : linkedOrder.status === 'PENDING_PAYMENT' ? (linkedOrder.paymentSubmittedAt ? 'PROOF' : 'UNPAID')
-    : payState === 'terms' ? (linkedOrder.shippedAt ? 'SHIPPED' : 'TERMS')
-    : linkedOrder.status === 'SHIPPED' || linkedOrder.status === 'DELIVERED' ? 'SHIPPED'
-    : 'PAID';
+  const dealStage = linkedOrder ? dealStageOf(linkedOrder, payState === 'terms') : null;
+  // Money already received on an unpaid order: never shown as the full amount due.
+  const partPaid = linkedOrder && linkedOrder.status === 'PENDING_PAYMENT' ? partPaidLine(linkedOrder) : null;
   const credit = sr.submittedById ? await creditStatusFor(sr.submittedById, offerCard?.amounts.totalCents ?? 0, offerCard?.currency ?? 'EUR') : null;
-  const canRefund = await hasCapability('orders:refund');
   const dealTone = toneClasses(deal.tone);
-  const ref = sr.proformaNumber ?? QUOTE_REF(sr.id);
+  // Both references: the request's own and, once accepted, the proforma's.
+  const quoteRef = QUOTE_REF(sr.id);
   const title = sr.product?.title ?? sr.productCategory ?? 'General sourcing request';
-  // Replies stay possible after acceptance (payment / shipping questions); the
-  // offer tab then shows why the price is locked instead of a price form.
-  const canCompose = !sr.archivedAt && sr.status !== 'CLOSED' && sr.status !== 'DECLINED';
-  const offerForm = offerFormProps(sr, linkedOrder, await offerFormContextFor(sr, 'STAFF', `Emailed to ${sr.buyerEmail}.`));
+  // Replies stay possible after acceptance (payment / shipping questions) and
+  // after a decline (a counter-offer is a new revision); the offer tab then
+  // shows why the price is locked instead of a price form. A closed request
+  // takes a new quote ("New quote for this buyer").
+  const canCompose = !sr.archivedAt && sr.status !== 'CLOSED';
+  const formCtx = await offerFormContextFor(sr, 'STAFF', `Emailed to ${sr.buyerEmail}.`);
+  const baseForm = offerFormProps(sr, linkedOrder, formCtx);
+  const offerForm = baseForm && {
+    ...baseForm,
+    brand,
+    countries: (await countryOptions()).map((c) => ({ code: c.code, name: c.name })),
+    listingUnpublished: sr.product && sr.product.status !== 'PUBLISHED' ? sr.product.status.toLowerCase().replace(/_/g, ' ') : null,
+  };
   const priceLocked = priceLockedMessage(sr, linkedOrder);
+  const dealOpen = sr.status === 'PENDING' || sr.status === 'RESPONDED';
+  // The listed unit went elsewhere (sold, or held for another order): red in the hero, not only in the composer.
+  const stockBad = dealOpen && formCtx.stock?.tone === 'bad' ? formCtx.stock.text : null;
   // Closing is for deals that went nowhere. An accepted deal is undone in the
   // Deal panel (cancel / refund), a paid order on the order page.
-  const canClose =
+  const canClose = canStatus &&
     sr.status !== 'CLOSED' && sr.status !== 'DECLINED' && sr.status !== 'ACCEPTED' &&
     (!linkedOrder || linkedOrder.status === 'PENDING_PAYMENT' || linkedOrder.status === 'CANCELED');
+  const canClone = canSendOffer && (sr.status === 'CLOSED' || (sr.status === 'ACCEPTED' && linkedOrder?.status === 'CANCELED'));
+  const mailProblem = suppression
+    ? `E-mails to ${sr.buyerEmail} are stopped since ${fmtWhen(suppression.createdAt)} (${suppression.reason === 'BOUNCE' ? 'the address bounced' : suppression.reason === 'COMPLAINT' ? 'spam complaint' : 'stopped by an admin'}). The buyer only sees this quote in their dashboard — ask for another address.`
+    : lastMail && lastMail.status !== 'sent'
+      ? `The last e-mail to ${sr.buyerEmail} was not delivered — “${lastMail.subject}”, ${fmtWhen(lastMail.createdAt)}: ${MAIL_NOT_SENT[lastMail.status] ?? lastMail.status}${lastMail.error ? ` (${lastMail.error.slice(0, 200)})` : ''}.`
+      : null;
 
   return (
     <div className="space-y-4">
@@ -160,18 +224,30 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
             <p className="font-bold text-red-900 dark:text-red-300">This quote is accepted but no order exists.</p>
             <p className="text-sm text-red-800 dark:text-red-300 mt-1">
               Legacy state: the quote was marked accepted without an order (acceptance now
-              always creates the order and the proforma in one step). Close this quote and
-              open a new one for the buyer, then send them an offer to accept.
+              always creates the order and the proforma in one step). Send the buyer an offer
+              on a new request instead.
             </p>
           </div>
         </div>
       )}
+      {mailProblem && (
+        <div role="alert" className="rounded-2xl border-2 border-red-300 bg-red-50 dark:bg-red-950/40 dark:border-red-800 p-4 flex items-start gap-3 text-sm text-red-900 dark:text-red-300" data-testid="quote-mail-failed">
+          <MailWarning className="h-5 w-5 flex-shrink-0 mt-0.5" />
+          <p className="min-w-0 [overflow-wrap:anywhere]">
+            {mailProblem}{' '}
+            <Link href="/admin/settings/security/email" className="font-semibold underline">E-mail log</Link>
+          </p>
+        </div>
+      )}
       {/* ============ HERO: amount + deal state + ownership ============ */}
       <div className={`rounded-2xl border-2 bg-card overflow-hidden ${dealTone.ring} ring-1 ring-inset`}>
-        <div className="p-6 grid lg:grid-cols-[1fr_auto] gap-6 items-start">
+        <div className="p-6 grid lg:grid-cols-[minmax(0,1fr)_minmax(0,28rem)] gap-6 items-start">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-2">
-              <span className="font-mono text-[11px] text-muted-foreground">{ref}</span>
+              <span className="font-mono text-[11px] text-muted-foreground">{quoteRef}</span>
+              {sr.proformaNumber && (
+                <span className="font-mono text-[11px] text-muted-foreground" title="Proforma of the accepted offer">· {sr.proformaNumber}</span>
+              )}
               {priorityChip(sr.priority)}
               {sr.customerType === 'GUEST' && (
                 <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
@@ -185,7 +261,7 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               )}
             </div>
             <h1 dir="auto" className="text-2xl font-bold tracking-tight [overflow-wrap:anywhere]">{title}</h1>
-            <p className="text-sm text-muted-foreground mt-1.5 inline-flex items-center gap-1.5 flex-wrap">
+            <p className="text-sm text-muted-foreground mt-1.5 inline-flex items-center gap-1.5 flex-wrap min-w-0">
               <span dir="auto" className="font-medium text-foreground">{sr.buyerName}</span>
               <span>·</span>
               <EmailText email={sr.buyerEmail} className="hover:text-foreground" asLink />
@@ -204,8 +280,8 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
           </div>
 
           {/* Right rail of hero — DOMINANT amount */}
-          <div className="flex flex-col items-end gap-3 lg:min-w-[260px]">
-            <div className="text-right">
+          <div className="flex flex-col items-end gap-3 min-w-0">
+            <div className="text-right min-w-0">
               <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">
                 {sr.status === 'ACCEPTED' ? 'Accepted amount' : sr.status === 'DECLINED' || sr.status === 'CLOSED' ? (sr.quotedPriceCents ? 'Last offer (void)' : 'No deal') : sr.quotedPriceCents ? (offerCard?.amounts.vatDecided ? 'Offer incl. VAT' : 'Offer excl. VAT') : 'No offer yet'}
               </p>
@@ -222,13 +298,13 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
                 <p className="text-2xl text-muted-foreground italic mt-1">—</p>
               )}
               {sr.quotedPriceCents != null && (
-                <p className="text-[10px] text-muted-foreground mt-1">
+                <p className="text-[10px] text-muted-foreground mt-1 [overflow-wrap:anywhere]">
                   {sr.status === 'ACCEPTED'
                     ? payState === 'paid' ? `${invoiceNumber ? `Invoice ${invoiceNumber}` : sr.proformaNumber ?? ''} · paid`
                       : payState === 'terms' ? `Invoice ${invoiceNumber ?? ''} · on NET terms`
                       : payState === 'canceled' ? 'Order canceled · no payment due'
                       : payState === 'refunded' ? 'Order refunded'
-                      : `${sr.proformaNumber ?? 'Proforma'}${linkedOrder?.dueAt ? ` · payment due ${fmtDueDate(linkedOrder.dueAt)}` : ''}`
+                      : `${sr.proformaNumber ?? 'Proforma'}${partPaid ? ` · ${partPaid}` : ''}${linkedOrder?.dueAt ? ` · payment due ${fmtDueDate(linkedOrder.dueAt)}` : ''}`
                     : sr.status === 'DECLINED' || sr.status === 'CLOSED'
                       ? `${sr.status === 'DECLINED' ? 'Declined by the buyer' : 'Closed'}${sr.lostReason ? ` — ${sr.lostReason}` : ''}`
                       : sr.validUntilAt ? `${sr.validUntilAt.getTime() < Date.now() ? 'expired' : 'valid until'} ${fmtDueDate(sr.validUntilAt)}` : ''}
@@ -236,18 +312,30 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               )}
             </div>
             <DealStateBadge badge={deal} />
+            {stockBad && (
+              <p className="max-w-full text-right text-[11px] font-semibold rounded-lg border border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 px-2.5 py-1.5 inline-flex items-start gap-1.5 [overflow-wrap:anywhere]" data-testid="quote-hero-stock">
+                <Package className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" /> {stockBad}
+              </p>
+            )}
             <AssigneeBadge
               quoteId={sr.id}
               assignee={sr.assignedTo}
               myUserId={session?.user.id ?? null}
               admins={admins}
               variant="block"
+              canAssign={canAssign}
             />
             <QuoteHeaderControls
               quoteId={sr.id}
               priority={sr.priority}
               archived={!!sr.archivedAt}
               canClose={canClose}
+              closeReasons={settingList('QUOTE_CLOSE_REASONS')}
+              autoArchive={autoArchiveOnClose()}
+              hasOpenOffer={offerCard?.phase === 'open' || offerCard?.phase === 'expired'}
+              canSetPriority={canStatus}
+              canArchive={canArchive}
+              canClone={canClone}
             />
             {linkedOrder && (invoiceNumber || (sr.proformaNumber && linkedOrder.status === 'PENDING_PAYMENT')) && (
               <div className="flex items-center gap-1.5">
@@ -280,9 +368,9 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
         </div>
       </div>
       {/* ============ MAIN: conversation-centric + sidebar ============ */}
-      <div className="grid xl:grid-cols-[1fr_340px] gap-4 items-start">
+      <div className="grid xl:grid-cols-[minmax(0,1fr)_340px] gap-4 items-start">
         {/* LEFT — original request, conversation, composer */}
-        <div className="space-y-4">
+        <div className="space-y-4 min-w-0">
           <section className="rounded-2xl border border-border bg-card p-5">
             <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-2 inline-flex items-center gap-1">
               <FileText className="h-3 w-3" /> Original request
@@ -303,7 +391,7 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
             <section className="rounded-2xl border-2 border-sky-300 dark:border-sky-800 bg-sky-50/60 dark:bg-sky-950/30 p-4 text-sm space-y-1" data-testid="admin-proposal-pending">
               <p className="font-bold">Supplier proposal waiting for review: {fmtMoney(sr.sellerProposalCents ?? 0, sr.sellerProposalCurrency ?? 'EUR')} excl. VAT</p>
               <p className="text-xs text-muted-foreground">The buyer has not seen an offer yet. Open the composer below → “Offer”: the suggested buyer price (margin from Settings) is ready to use. Sending the offer approves the proposal.</p>
-              <SellerProposalReject quoteId={sr.id} />
+              {canSendOffer && <SellerProposalReject quoteId={sr.id} />}
             </section>
           )}
 
@@ -334,17 +422,16 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
                             : 'bg-card border border-border'
                         }`}
                       >
-                        <p className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1">
+                        <p className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1 [overflow-wrap:anywhere]">
                           {m.isInternalNote
                             ? `Internal note · ${m.author?.name ?? m.author?.email ?? 'staff'}`
-                            : m.fromStaff
-                            ? (m.author?.name ?? m.author?.email ?? 'Staff')
-                            : sr.buyerName}
+                            // Our side by brand ("Labtodate · Anna"), the supplier as "Supplier · …".
+                            : messageAuthorLabel(m, { kind: 'STAFF', userId: '', brand, buyerName: sr.buyerName })}
                           {' · '}
-                          {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          {fmtWhen(m.createdAt)}
                         </p>
                         <p dir="auto" className="whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">{m.body}</p>
-                        <MessageAttachments urls={m.attachments} />
+                        <MessageAttachments urls={m.attachments} names={m.attachmentNames} />
                       </div>
                     </li>
                   ))}
@@ -355,12 +442,20 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
 
           {/* Composer — collapsed by default; expands to compose */}
           {canCompose && (
-            <QuoteComposer quoteId={sr.id} buyerEmail={sr.buyerEmail} offer={offerForm} priceLocked={priceLocked} />
+            <QuoteComposer
+              quoteId={sr.id}
+              buyerEmail={sr.buyerEmail}
+              offer={offerForm}
+              priceLocked={priceLocked}
+              canReply={canReply}
+              canSendOffer={canSendOffer}
+              quotationHref={quotationHref}
+            />
           )}
         </div>
 
         {/* RIGHT — sidebar: customer intelligence, linked commerce, activity, magic-link */}
-        <aside className="space-y-3 xl:sticky xl:top-20 xl:self-start xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto pb-6">
+        <aside className="space-y-3 xl:sticky xl:top-20 xl:self-start xl:max-h-[calc(100vh-6rem)] xl:overflow-y-auto pb-6 min-w-0">
           <BuyerIntelCard
             intel={intel}
             buyerName={sr.buyerName}
@@ -385,8 +480,14 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
                 orderNumber={linkedOrder.orderNumber}
                 stage={dealStage}
                 totalLabel={fmtMoney(linkedOrder.totalCents, linkedOrder.currency)}
-                statusLabel={payState === 'terms' ? 'approved on invoice terms' : payState === 'review' ? 'receipt to verify' : linkedOrder.status.toLowerCase().replace(/_/g, ' ')}
+                statusLabel={
+                  payState === 'terms' ? 'approved on invoice terms'
+                    : payState === 'review' ? 'receipt to verify'
+                    : dealStage === 'PART_PAID' ? 'part paid'
+                    : linkedOrder.status.toLowerCase().replace(/_/g, ' ')
+                }
                 dueLabel={linkedOrder.status === 'PENDING_PAYMENT' && linkedOrder.dueAt ? `Payment due ${fmtDueDate(linkedOrder.dueAt)}` : null}
+                receivedLabel={partPaid}
                 canRefund={canRefund}
               />
             ) : sr.quotedPriceCents && offerCard ? (
@@ -406,7 +507,7 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
             {credit && credit.approved && (
               <p className="text-[11px] mt-1.5 text-muted-foreground">Buyer credit: NET {credit.termDays}, {fmtMoney(credit.availableCents, 'EUR')} of {fmtMoney(credit.limitCents, 'EUR')} available{credit.enabled ? '' : ' (invoice payment is off in Settings)'}.</p>
             )}
-            {sr.customerType === 'GUEST' && <QuoteReissueMagicLink quoteId={sr.id} />}
+            {sr.customerType === 'GUEST' && canReply && <QuoteReissueMagicLink quoteId={sr.id} />}
           </SidebarCard>
 
           {/* Activity log */}
@@ -421,9 +522,9 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div>
+    <div className="min-w-0">
       <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground">{label}</p>
-      <p className="font-bold text-sm mt-0.5">{value}</p>
+      <p className="font-bold text-sm mt-0.5 [overflow-wrap:anywhere]">{value}</p>
     </div>
   );
 }
