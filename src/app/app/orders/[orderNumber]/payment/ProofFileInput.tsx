@@ -16,7 +16,7 @@ export function ProofFileInput() {
       <input
         type="file"
         name="proof"
-        accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+        accept="application/pdf,image/jpeg,image/png,image/webp"
         className="block mx-auto text-sm"
         onChange={(e) => {
           const input = e.currentTarget;

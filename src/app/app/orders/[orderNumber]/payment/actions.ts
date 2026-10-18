@@ -5,7 +5,6 @@ import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { requireSession } from '@/lib/auth-server';
-import { uploadObject } from '@/lib/storage/s3';
 import { audit, notifyAdmins } from '@/lib/observability';
 import { evaluateAddressChange, hasPrePaymentHold, recordAddressChange } from '@/lib/checkout/holds';
 import { ensureSettingsLoaded } from '@/lib/settings';
@@ -19,9 +18,13 @@ import { autoCancelUnpaid, buyerCanCancelUnpaid, cancelReasons, paymentGraceDays
 import { cancelUnpaidOrder } from '@/lib/fulfilment/cancel';
 import { creditStatusFor } from '@/lib/credit/terms';
 import { mailLayout, siteBase } from '@/lib/quotes/mail';
+import { fmtDocMoney } from '@/lib/documents/render';
+import { heldMoneyCents, LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
+import { paymentsInboxAddress } from '@/lib/orders/recipients';
+import { recordReceiptEvent, storeReceiptFile } from '@/lib/payments/receipts';
+import { receiptAmountLabel } from '@/lib/payments/rules';
 
 const ALLOWED_METHODS = ['BANK_TRANSFER', 'OTHER'] as const;
-const ALLOWED_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'] as const;
 
 export type PaymentActionResult = { error?: string; notice?: string; warning?: string; fieldErrors?: DetailsFieldErrors };
 
@@ -31,6 +34,7 @@ async function loadOwnOrder(orderNumber: string, userId: string) {
     include: {
       items: { include: { product: { select: { vatScheme: true } } }, orderBy: { id: 'asc' } },
       sourcingRequest: { select: { id: true, status: true, validUntilAt: true } },
+      refunds: LIVE_REFUNDS_SELECT,
     },
   });
   if (!order || order.buyerId !== userId) return null;
@@ -88,46 +92,64 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
     redirect(`/app/orders/${orderNumber}/payment?err=method`);
   }
 
-  // The receipt is required: without it there is nothing to verify.
+  // The receipt is required: without it there is nothing to verify. Its type
+  // is taken from the bytes (a text file renamed .pdf is refused), and every
+  // upload is kept (PaymentProof), not only the latest one.
   const file = formData.get('proof');
-  let proofUrl: string | null = null;
-  if (file && typeof file !== 'string' && (file as File).size > 0) {
-    const f = file as File;
-    if (f.size > 8_000_000) redirect(`/app/orders/${orderNumber}/payment?err=large`);
-    if (!ALLOWED_MIME.includes(f.type as (typeof ALLOWED_MIME)[number])) {
-      redirect(`/app/orders/${orderNumber}/payment?err=type`);
-    }
-    const ext = (f.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
-    const buf = Buffer.from(await f.arrayBuffer());
-    const up = await uploadObject(`order-proofs/${order.orderNumber}-${Date.now()}.${ext}`, buf, f.type);
-    proofUrl = up.url;
-  }
-  if (!proofUrl) redirect(`/app/orders/${orderNumber}/payment?err=proofreq`);
+  if (!(file instanceof File) || file.size === 0) redirect(`/app/orders/${orderNumber}/payment?err=proofreq`);
+  const stored = await storeReceiptFile(file, order.orderNumber);
+  if (!stored.ok) redirect(`/app/orders/${orderNumber}/payment?err=${stored.code}`);
 
   // BUG-038: the PENDING_PAYMENT precondition lives in the write's WHERE, so a
   // cancel / verify that landed meanwhile is never overwritten.
-  const claim = await prisma.order.updateMany({
-    where: { id: order.id, status: 'PENDING_PAYMENT', holdReason: null },
-    data: {
-      paymentSubmittedAt: new Date(),
-      paymentVerificationStatus: 'AWAITING_VERIFICATION',
-      paymentVerifiedAt: null,
-      paymentVerifiedById: null,
-      paymentRejectionReason: null,
-      paymentMethodManual: method,
-      paymentNote: note,
-      paymentProofUrl: proofUrl,
-    },
+  const claim = await prisma.$transaction(async (tx) => {
+    const res = await tx.order.updateMany({
+      where: { id: order.id, status: 'PENDING_PAYMENT', holdReason: null },
+      data: {
+        paymentSubmittedAt: new Date(),
+        paymentVerificationStatus: 'AWAITING_VERIFICATION',
+        paymentVerifiedAt: null,
+        paymentVerifiedById: null,
+        paymentRejectionReason: null,
+        paymentMethodManual: method,
+        paymentNote: note,
+        paymentProofUrl: stored.url,
+      },
+    });
+    if (res.count === 1) await recordReceiptEvent(tx, { orderId: order.id, urlOrKey: stored.key, kind: 'SUBMITTED', fileName: stored.fileName, actorId: session.user.id });
+    return res;
   });
   if (claim.count !== 1) redirect(`/app/orders/${orderNumber}/payment?err=closed`);
 
+  // Staff: what this receipt is for — the rest of a part-paid order, not the full total.
+  const open = Math.max(0, order.totalCents - heldMoneyCents(order.amountPaidCents, order.refunds));
+  const money = (c: number) => fmtDocMoney(c, order.currency);
+  const forWhat = receiptAmountLabel(open, order.totalCents, money);
+  const how = method === 'BANK_TRANSFER' ? 'bank transfer' : 'payment (other — see the note)';
   await notifyAdmins(
     `Payment proof submitted — order ${order.orderNumber}`,
-    `Buyer uploaded a ${method.toLowerCase().replace('_', ' ')} receipt for ${formatPrice(order.totalCents, order.currency)}. Verify it from the orders queue.`,
+    `Buyer uploaded a ${how} receipt for ${forWhat}. Verify it on the order page.`,
     `/admin/orders/${order.id}`,
     'PAYMENT_SUBMITTED',
   );
-  await audit('order.payment.submit', order.orderNumber, `buyer=${session.user.email} method=${method} +proof`);
+  const inbox = paymentsInboxAddress();
+  if (inbox) {
+    await sendInternalEmail({
+      to: inbox,
+      subject: `[action] Payment receipt to verify — order ${order.orderNumber} (${money(open || order.totalCents)})`,
+      html: mailLayout({
+        heading: 'Payment receipt to verify',
+        body: [
+          `The buyer of order <strong>${escapeHtml(order.orderNumber)}</strong> uploaded a ${escapeHtml(how)} receipt for ${escapeHtml(forWhat)}.`,
+          ...(note ? [`<p style="margin:0 0 12px;white-space:pre-wrap;" dir="auto"><strong>Buyer note:</strong> ${escapeHtml(note)}</p>`] : []),
+          'Check the bank statement, then verify the payment (amount and value date) or reject the receipt with a reason.',
+        ],
+        cta: { href: `${siteBase()}/admin/orders/${order.id}#verify`, label: 'Open the order' },
+      }),
+      text: `Order ${order.orderNumber}: the buyer uploaded a ${how} receipt for ${forWhat}. Verify or reject it: ${siteBase()}/admin/orders/${order.id}#verify`,
+    }, 'orders:receipt-submitted');
+  }
+  await audit('order.payment.submit', order.orderNumber, `buyer=${session.user.email} method=${method} +proof open=${open}`);
 
   revalidatePath(`/app/orders/${orderNumber}`);
   revalidatePath(`/app/orders/${orderNumber}/payment`);

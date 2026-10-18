@@ -19,9 +19,11 @@ const STATUS_CLS: Record<string, string> = {
 
 /**
  * Admin order page, right column: how to stop this order at its stage (owner
- * report 6). Unpaid → cancel (proforma void, unit released, email). Paid / on
- * terms, nothing shipped → cancel & refund (credit note, refund ledger, restock
- * per setting). Shipped → a return (RMA) or a refund in “Money back”.
+ * report 6). Unpaid → cancel (proforma void, unit released, email). Unpaid but
+ * part paid → the money received is refunded / credited first (“Money back”),
+ * never kept by a plain cancel. Paid / on terms, nothing shipped → cancel &
+ * refund (credit note, refund ledger, restock per setting). Shipped → a return
+ * (RMA) or a refund in “Money back”.
  */
 export function AdminCancelCard({ v, canRefund }: { v: OrderFulfilmentView; canRefund: boolean }) {
   const o = v.order;
@@ -37,6 +39,17 @@ export function AdminCancelCard({ v, canRefund }: { v: OrderFulfilmentView; canR
       <div className="p-5 text-sm space-y-3">
         {unpaid && o.paymentSubmittedAt ? (
           <p className="text-amber-800 dark:text-amber-300">A payment receipt is waiting — verify or reject it first; then the order can be canceled.</p>
+        ) : unpaid && v.partPaidUnpaid ? (
+          <div className="space-y-2" data-testid="cancel-part-paid">
+            <p className="text-amber-800 dark:text-amber-300">
+              <strong>Part payment received</strong> ({v.paidLabel}). A plain cancel would keep that money: refund or credit it first, then cancel — or wait for the rest of the payment.
+            </p>
+            {canRefund ? (
+              <a href="#money" className="inline-flex items-center justify-center w-full h-9 rounded-full border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40">Refund / credit the part payment…</a>
+            ) : (
+              <p className="text-xs text-muted-foreground">Refunding needs the “Refund and cancel paid orders” permission.</p>
+            )}
+          </div>
         ) : unpaid ? (
           <OrderActionForm action={cancelOrderAction} className="space-y-2" confirmText="Cancel this unpaid order? The proforma becomes void, the reserved unit is released and the buyer is emailed with the reason." announce>
             <input type="hidden" name="orderId" value={o.id} />

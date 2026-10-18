@@ -50,6 +50,7 @@ export async function OrderPaymentPanels({ orderId }: { orderId: string }) {
   const defaults = creditDefaults();
   const outstanding = o.totalCents - o.amountPaidCents;
   const input = 'h-9 px-2 rounded-md border border-input bg-background text-xs';
+  const stockNote = (o.holdNote ?? '').split(' | ').find((p) => p.startsWith('STOCK_SHORTAGE:'))?.replace(/^STOCK_SHORTAGE:\s*/, '') ?? null;
 
   return (
     <div className="space-y-5" data-testid="order-payment-panels">
@@ -99,6 +100,18 @@ export async function OrderPaymentPanels({ orderId }: { orderId: string }) {
             The buyer sees “please do not pay yet” and no bank details. {canClear && unpaid
               ? 'Clear it under “Pricing, VAT & holds” above (what was checked is kept as the record): the payment term restarts today and the proforma is emailed.'
               : 'Clearing needs the compliance:clear permission.'}
+          </p>
+        </section>
+      )}
+
+      {/* Paid, but the unit is gone (verify / mark paid found no stock): the
+          decision is with staff — the resolution actions follow (PKG-23). */}
+      {(o.holdReason === 'STOCK_SHORTAGE' || o.openHolds.includes('STOCK_SHORTAGE')) && (
+        <section id="stock-shortage" className="rounded-2xl border-2 border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30 p-4 text-sm space-y-2 scroll-mt-28" data-testid="admin-stock-shortage">
+          <h2 className="text-sm font-bold inline-flex items-center gap-2 text-red-900 dark:text-red-300"><ShieldAlert className="h-4 w-4" /> Stock shortage — paid, but the unit is no longer in stock</h2>
+          {stockNote && <p className="text-red-900 dark:text-red-300 [overflow-wrap:anywhere]">{stockNote}</p>}
+          <p className="text-xs text-muted-foreground">
+            Shipping is blocked and no invoice was issued. Agree with the buyer on a refund (Cancel &amp; refund), a backorder with a new date or another unit; the invoice follows that decision.
           </p>
         </section>
       )}

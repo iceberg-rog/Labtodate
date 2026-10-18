@@ -11,7 +11,8 @@ export const dynamic = 'force-dynamic';
  * Auth-gated proxy for buyer-uploaded payment receipts (S3 prefix
  * `order-proofs/*`). Receipts are stored in the private side of the bucket;
  * direct S3 fetches return 403. Only the buyer who uploaded it or an admin
- * (with orders:fulfil / orders:view) can stream it through this route.
+ * with orders:view can stream it through this route — every receipt of the
+ * order, not only the latest (PaymentProof rows).
  *
  * On success: streams the bytes with a private cache header.
  * Otherwise:  404 (never reveal whether the key exists vs is forbidden).
@@ -33,35 +34,55 @@ export async function GET(_req: NextRequest, props: { params: Promise<{ key: str
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
-  // We don't trust the URL — look the key up in both tables that legitimately
+  // We don't trust the URL — look the key up in the records that legitimately
   // store private receipts under this prefix:
-  //   1. Order.paymentProofUrl  → buyer uploaded a bank-transfer receipt to PAY us
-  //   2. SellSubmission.paymentReceiptUrl → we uploaded a transfer receipt to PAY the seller
-  // First match wins; the owner is whoever submitted the relevant record.
-  const order = await prisma.order.findFirst({
-    where: { paymentProofUrl: { endsWith: key } },
-    select: { buyerId: true },
+  //   1. PaymentProof → every receipt event of an order (uploads, rejected and
+  //      part-payment receipts, staff-attached proofs), kept after a new upload
+  //   2. Payment.proofKey → the receipt a ledger payment was booked with
+  //   3. Order.paymentProofUrl → the latest receipt (orders from before 1.)
+  //   4. SellSubmission.paymentReceiptUrl → we uploaded a transfer receipt to PAY the seller
+  // The buyer may open what they uploaded themselves; a proof staff attached
+  // when booking a payment (it can be a bank statement) is for staff only.
+  const proofs = await prisma.paymentProof.findMany({
+    where: { key },
+    select: { kind: true, order: { select: { buyerId: true } } },
+    take: 10,
   });
-  const sellSubmission = order
+  const payment = proofs.length
+    ? null
+    : await prisma.payment.findFirst({ where: { proofKey: { endsWith: key } }, select: { order: { select: { buyerId: true } } } });
+  const order = proofs.length || payment
+    ? null
+    : await prisma.order.findFirst({
+        where: { paymentProofUrl: { endsWith: key } },
+        select: { buyerId: true },
+      });
+  const sellSubmission = proofs.length || payment || order
     ? null
     : await prisma.sellSubmission.findFirst({
         where: { paymentReceiptUrl: { endsWith: key } },
         select: { submittedById: true, email: true },
       });
 
-  if (!order && !sellSubmission) {
+  if (!proofs.length && !payment && !order && !sellSubmission) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }
 
-  const isOwner = order
-    ? order.buyerId === session.user.id
-    : sellSubmission!.submittedById === session.user.id
-      || (sellSubmission!.email?.toLowerCase() === session.user.email?.toLowerCase());
+  const userId = session.user.id;
+  const isOwner = proofs.length
+    ? proofs.some((p) => p.kind !== 'MANUAL' && p.order.buyerId === userId)
+    : payment
+      ? payment.order.buyerId === userId
+      : order
+        ? order.buyerId === userId
+        : sellSubmission!.submittedById === userId
+          || (sellSubmission!.email?.toLowerCase() === session.user.email?.toLowerCase());
 
   // Staff need the permission for the record the receipt belongs to (A31):
   // payment receipts are financial documents, not for every admin.
   const staffAllowed =
-    session.user.role === 'ADMIN' && (await hasCapability(order ? 'orders:view' : 'sell:view'));
+    session.user.role === 'ADMIN' && (await hasCapability(sellSubmission ? 'sell:view' : 'orders:view'));
+
   if (!staffAllowed && !isOwner) {
     return NextResponse.json({ error: 'not found' }, { status: 404 });
   }

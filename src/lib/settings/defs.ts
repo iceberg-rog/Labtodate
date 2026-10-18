@@ -423,7 +423,7 @@ const DEFS: DefInput[] = [
     validate: (v) => (/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(v.replace(/\s+/g, '').toUpperCase()) ? null : 'a BIC has 8 or 11 letters/digits, e.g. INGBNL2A.'),
     hint: 'e.g. INGBNL2A. For international transfers.' },
   { key: 'BANK_REFERENCE_HINT', label: 'Transfer reference hint', group: 'Payments & credit terms', type: 'string',
-    hint: 'Tells the buyer what to put in the transfer reference.' },
+    hint: 'Tells the buyer what to put in the transfer reference; shown on the payment page under the bank details (the proforma number is always named there). Empty = only the proforma number.' },
   { key: 'PAYMENT_TERM_DAYS', label: 'Payment term (days)', group: 'Payments & credit terms', type: 'int', default: '14', min: 1, max: 120, effect: 'new-documents',
     hint: 'Days a buyer has to pay a proforma: from acceptance for a quote order (staff can change it per offer), from the order date for a checkout order. The due date is printed on the proforma and shown on the payment page; reminders and auto-cancel follow it.' },
   { key: 'PAYMENT_GRACE_DAYS', label: 'Grace before auto-cancel (days)', group: 'Payments & credit terms', type: 'int', default: '3', min: 0, max: 60,
@@ -446,9 +446,9 @@ const DEFS: DefInput[] = [
     hint: 'Part of “Billing & delivery details before payment”: whether the details count as complete without the buyer’s VAT ID. Outside the EU most buyers have no EU VAT ID, so “Required for EU buyers” is the usual choice; “Optional” lets EU buyers without one pay (they are charged VAT).' },
   { key: 'PAYMENT_VERIFY_TURNAROUND', label: 'Payment verification promise', group: 'Payments & credit terms', type: 'string', default: '1 business day',
     hint: 'Shown on the payment page (“we verify within …”). Only promise what the team really does.' },
-  { key: 'BUYER_CANCEL_DISABLED_TEXT', label: 'Payment page — how to cancel when buyers cannot', group: 'Payments & credit terms', type: 'text', multiline: true, pending: 'the payment page update (PKG-04)',
+  { key: 'BUYER_CANCEL_DISABLED_TEXT', label: 'Payment page — how to cancel when buyers cannot', group: 'Payments & credit terms', type: 'text', multiline: true,
     default: DEFAULT_BUYER_CANCEL_DISABLED_TEXT,
-    hint: 'Shown on the payment page of an unpaid order, with a link to support, while buyers cannot cancel themselves (Quotes & offers → “Buyer can cancel an unpaid order” off).' },
+    hint: 'Shown on the payment page of an unpaid order, with a link to support, where the buyer cannot cancel it online: the switch Quotes & offers → “Buyer can cancel an unpaid order” is off, or it is a checkout order.' },
   { key: 'CREDIT_TERMS_ENABLED', label: 'Allow invoice payment (NET terms)', group: 'Payments & credit terms', type: 'bool', default: 'false', options: yesNo,
     hint: 'Yes: buyers you approved for credit (with a credit limit — on the order page → Credit terms) can ask to pay on invoice. Staff then approve the order on terms: an UNPAID invoice with a due date is issued — never “paid” without money. Everyone else prepays.' },
   { key: 'CREDIT_DEFAULT_TERM_DAYS', label: 'Default NET term (days)', group: 'Payments & credit terms', type: 'int', default: '30', min: 1, max: 120, effect: 'new-documents',
@@ -467,6 +467,8 @@ const DEFS: DefInput[] = [
     hint: 'Yes: staff enter the amount and the value date from the bank statement (and the bank reference) when verifying or marking a payment; the invoice prints that date, and a short payment is never booked as paid in full. No: the order total and today are recorded.' },
   { key: 'UNDERPAYMENT_TOLERANCE_CENTS', label: 'Accept underpayment up to', group: 'Payments & credit terms', type: 'money', default: '0', min: 0,
     hint: 'Bank fees: a payment short by at most this amount still counts as paid in full (the difference is noted on the order). A bigger shortfall is booked as a part payment and the buyer is asked for the rest.' },
+  { key: 'PAYMENT_LOW_AMOUNT_CONFIRM_PCT', label: 'Confirm a part payment below (% of the amount due)', group: 'Payments & credit terms', type: 'int', default: '50', min: 0, max: 100,
+    hint: 'Verifying a receipt for less than this share of the amount still open needs an extra tick (“part payment — confirmed”): it catches typing mistakes such as 1.210 for 1,210.00. 0 = never ask.' },
 
   // ── Shipping ──
   { key: 'DEFAULT_SHIPPING_CENTS', label: 'Flat shipping amount', group: 'Shipping', type: 'money', default: '0', min: 0,
@@ -658,6 +660,9 @@ const DEFS: DefInput[] = [
   { key: 'EMAIL_INVOICE_DELAYED_TEXT', label: 'Payment verified — invoice not issued yet', group: 'Email texts', type: 'text', multiline: true,
     default: 'Your invoice is not issued yet: our team first completes the VAT and billing details of this order. You receive it by e-mail as soon as it is issued; we contact you if we need anything from you.',
     hint: 'Told to the buyer (e-mail and order page) while a paid order waits for a VAT decision or missing invoice details.' },
+  { key: 'EMAIL_PAYMENT_STOCK_CHECK_TEXT', label: 'Payment received — the unit is no longer in stock', group: 'Email texts', type: 'text', multiline: true,
+    default: 'We received your payment of {AMOUNT} for order {ORDER} (value date {DATE}). Unfortunately the item is no longer available from stock. Our team contacts you shortly to agree on another unit, a new delivery date or a full refund; your invoice follows once that is agreed.',
+    hint: 'Sent instead of the invoice when a payment arrives for a unit that was sold meanwhile (the order goes on the stock-shortage hold). {AMOUNT} {ORDER} {DATE} (value date).' },
   { key: 'EMAIL_PART_PAYMENT_BODY', label: 'Part payment received — text', group: 'Email texts', type: 'text', multiline: true,
     default: 'We received {PAID} for order {ORDER} on {DATE}. The order total is {TOTAL}, so {OPEN} is still due. Please transfer the remaining amount quoting {REFERENCE}.',
     hint: 'A payment that is short by more than the tolerance. {PAID} {ORDER} {DATE} {TOTAL} {OPEN} {REFERENCE}.' },
@@ -705,7 +710,7 @@ const DEFS: DefInput[] = [
     hint: 'Inbox that receives new support tickets / contact messages.' },
   { key: 'TRANSACTIONAL_REPLY_TO', label: 'Replies to customer e-mails go to', group: 'Email', type: 'email', verify: 'email', optional: true, pending: 'the branded e-mail update (PKG-07)',
     hint: 'Reply-To of every order, quote and account e-mail, so a customer who presses Reply reaches a person. Set: those e-mails invite a reply. Empty: the Reply-To is the public support e-mail (Brand) and the e-mails point to the support page instead of asking for a reply.' },
-  { key: 'PAYMENTS_INBOX_EMAIL', label: 'Payment receipts are announced to', group: 'Email', type: 'email', verify: 'email', optional: true, pending: 'the payment-receipt staff e-mail (PKG-04)',
+  { key: 'PAYMENTS_INBOX_EMAIL', label: 'Payment receipts are announced to', group: 'Email', type: 'email', verify: 'email', optional: true,
     hint: 'Staff inbox told about every payment receipt a buyer uploads (with the amount still due and a link to the order), next to the in-app notice. Empty = the billing e-mail (Company).' },
 
   // ── Security (security team: src/lib/security/policy-defs.ts) ──

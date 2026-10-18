@@ -19,7 +19,6 @@ import {
   Receipt,
   Archive,
   ArchiveRestore,
-  Trash2,
   ShieldCheck,
   ShieldAlert,
   AlertTriangle,
@@ -28,7 +27,6 @@ import {
   setOrderFulfillment,
   cancelOrder,
   rejectPayment,
-  archiveOrder,
   unarchiveOrder,
   deleteOrderPermanently,
 } from '@/app/admin/actions';
@@ -92,7 +90,7 @@ export type OrderRowProps = {
   buyerCountry?: string | null;
   priority?: Priority;
   // Slice A: buyer-submitted payment proof awaiting admin review.
-  paymentVerificationStatus?: 'AWAITING_VERIFICATION' | 'VERIFIED' | 'REJECTED' | null;
+  paymentVerificationStatus?: 'AWAITING_VERIFICATION' | 'VERIFIED' | 'REJECTED' | 'TERMS_REQUESTED' | null;
   paymentSubmittedAtISO?: string | null;
   // BUG-009 (RB) path C: when the order has no complete shipping address,
   // the inline status select hides SHIPPED + DELIVERED. The server-side
@@ -106,9 +104,17 @@ export type OrderRowProps = {
   archived?: boolean;
   selected?: boolean;
   onToggleSelect?: (id: string, checked: boolean) => void;
-  onOpenManualPaid?: (id: string, openCents?: number) => void;
-  /** Amount still open (total − received), prefilled when marking paid. */
+  onOpenManualPaid?: (id: string, openCents?: number, opts?: { currency?: string; receivedCents?: number; totalCents?: number }) => void;
+  /** Amount still open (total − received and kept), prefilled when marking paid. */
   openCents?: number;
+  /** Received and kept on an unpaid order (a part payment), in cents. */
+  receivedCents?: number;
+  totalCents?: number;
+  currency?: string;
+  /** The viewer books payments (finance:manage): mark paid, verify / reject receipts. */
+  canBookPayments?: boolean;
+  /** Why this unpaid order can not be marked paid now (hold, receipt waiting, terms request). */
+  manualPayBlocker?: string | null;
   /** Open holds (VAT review, invoice not issued, compliance, …) — shown as a marker. */
   holds?: string[];
   /** Bank refunds approved but not sent yet. */
@@ -122,6 +128,9 @@ const HOLD_CHIP: Record<string, string> = {
   ADDRESS_REVIEW: 'Address review',
   SHIPPING_PENDING: 'Freight to confirm',
   PAYMENT_REVIEW: 'Payment review',
+  STOCK_SHORTAGE: 'Stock shortage',
+  SUPPLIER_CONFIRMATION: 'Supplier to confirm',
+  FRAUD: 'Fraud hold',
 };
 
 function flagFromCountry(code: string | null | undefined): string {
@@ -166,12 +175,18 @@ export function OrderRow(p: OrderRowProps) {
 
   const canFulfil = p.status === 'PAID' || p.status === 'PROCESSING' || p.status === 'SHIPPED';
   const isAwaitingVerify = p.paymentVerificationStatus === 'AWAITING_VERIFICATION';
+  // A part payment came in: plain “cancel” would keep that money — it is
+  // refunded / credited first (order page), and “mark as paid” books the rest.
+  const partPaid = p.status === 'PENDING_PAYMENT' && (p.receivedCents ?? 0) > 0;
+  const money = (c: number) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: p.currency || 'EUR' }).format(c / 100);
   // When a buyer has submitted proof, the operator's primary action is verify/
   // reject — not the legacy "mark paid manually" (that's the back-channel for
-  // off-platform payments the buyer never uploaded). Archived rows only offer
+  // off-platform payments the buyer never uploaded). Booking money is Finance
+  // work, and never past a hold or a terms request. Archived rows only offer
   // Restore / Delete.
-  const canManualPay = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify && !p.archived;
-  const canCancel = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify && !p.archived;
+  const unpaidFooter = p.status === 'PENDING_PAYMENT' && !isAwaitingVerify && !p.archived;
+  const canManualPay = unpaidFooter && !!p.canBookPayments && !p.manualPayBlocker;
+  const canCancel = unpaidFooter && !partPaid;
   const canRefund = p.status === 'PAID' || p.status === 'PROCESSING' || p.status === 'SHIPPED' || p.status === 'DELIVERED';
   const trackUrl = p.trackingLink ?? null;
   const [rejectReason, setRejectReason] = useState('');
@@ -391,7 +406,7 @@ export function OrderRow(p: OrderRowProps) {
                 {p.shipTo.name && <span className="text-muted-foreground"> · </span>}
                 <span className="text-muted-foreground">{p.shipTo.line}</span>
               </p>
-            ) : (canFulfil || canCancel) ? (
+            ) : (canFulfil || unpaidFooter) ? (
               <p className="text-[11px] text-red-700 dark:text-red-300 font-semibold inline-flex items-center gap-1">
                 <CircleAlert className="h-3 w-3" /> no shipping address
               </p>
@@ -535,6 +550,10 @@ export function OrderRow(p: OrderRowProps) {
             {p.paymentSubmittedAtISO ? `Uploaded ${new Date(p.paymentSubmittedAtISO).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}.` : ''} Verify or reject.
           </span>
           {/* Verifying records the amount and value date from the bank statement: on the order page. */}
+          {!p.canBookPayments ? (
+            <span className="text-[11px] font-semibold text-sky-900 dark:text-sky-300">Finance verifies it (finance:manage).</span>
+          ) : (
+          <>
           <Link
             href={`/admin/orders/${p.id}#verify`}
             onClick={(e) => e.stopPropagation()}
@@ -584,28 +603,48 @@ export function OrderRow(p: OrderRowProps) {
               </button>
             </div>
           )}
+          </>
+          )}
         </div>
       )}
 
-      {canManualPay && (
+      {unpaidFooter && (
         <div
           className="border-t border-amber-200 dark:border-amber-800 bg-amber-50/40 dark:bg-amber-950/30 px-5 py-2.5 flex items-center gap-3 text-xs flex-wrap"
           data-noopen
           onClick={(e) => e.stopPropagation()}
         >
           <CircleAlert className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
-          <span className="flex-1 text-amber-900 dark:text-amber-300">
-            <strong>Awaiting payment.</strong> If buyer has paid off-platform (bank transfer / invoice), mark it paid manually.
+          <span className="flex-1 text-amber-900 dark:text-amber-300 [overflow-wrap:anywhere]">
+            {partPaid
+              ? <><strong>Part payment received</strong> — {money(p.receivedCents ?? 0)} received, {money(p.openCents ?? 0)} still due.</>
+              : <><strong>Awaiting payment.</strong></>}{' '}
+            {p.manualPayBlocker
+              ? p.manualPayBlocker
+              : !p.canBookPayments
+                ? 'Payments are booked by Finance (finance:manage).'
+                : partPaid
+                  ? 'Rest received off-platform? Record it with the receipt. A refund or credit is on the order page.'
+                  : 'If the buyer paid off-platform (bank transfer), mark it paid with the receipt.'}
           </span>
-          {p.onOpenManualPaid && (
+          {canManualPay && p.onOpenManualPaid && (
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); p.onOpenManualPaid?.(p.id, p.openCents); }}
+              onClick={(e) => { e.stopPropagation(); p.onOpenManualPaid?.(p.id, p.openCents, { currency: p.currency, receivedCents: p.receivedCents, totalCents: p.totalCents }); }}
               className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-amber-700 text-white text-xs font-bold hover:bg-amber-800"
               data-noopen
             >
-              <CreditCard className="h-3.5 w-3.5" /> Mark as paid
+              <CreditCard className="h-3.5 w-3.5" /> {partPaid ? 'Record the remaining payment' : 'Mark as paid'}
             </button>
+          )}
+          {partPaid && (
+            <Link
+              href={`/admin/orders/${p.id}#money`}
+              className="inline-flex items-center h-8 px-3 rounded-md border border-red-300 text-red-700 dark:border-red-800 dark:text-red-300 text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/40"
+              data-noopen
+            >
+              Refund / credit…
+            </Link>
           )}
           {canCancel && (
             <DestructiveAction

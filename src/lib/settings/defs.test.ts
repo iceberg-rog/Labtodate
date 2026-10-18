@@ -181,8 +181,6 @@ test('release v2 keys say “not applied yet” until the package that reads the
   // Each W1 package removes the `pending` of its keys (and its line here) when it adds the reader.
   const readers: Record<string, string> = {
     TRANSACTIONAL_REPLY_TO: 'PKG-07',
-    PAYMENTS_INBOX_EMAIL: 'PKG-04',
-    BUYER_CANCEL_DISABLED_TEXT: 'PKG-04',
     CONSUMER_WITHDRAWAL_TEXT: 'PKG-19',
     ABOUT_PAGE_TEXT: 'PKG-15',
     FAQ_TEXT: 'PKG-15',
@@ -213,4 +211,16 @@ test('domain lists spread into the registry (support, homepage)', async () => {
   const { SUPPORT_SETTING_DEFS } = await import('../support/settings-defs');
   const { HOME_SETTING_DEFS } = await import('../home/settings-defs');
   for (const d of [...SUPPORT_SETTING_DEFS, ...HOME_SETTING_DEFS]) assert.equal(settingDef(d.key)?.group, d.group, d.key);
+});
+
+test('payment booking keys: the part-payment confirmation, the stock-shortage text and the applied PKG-04 keys', () => {
+  assert.equal(settingDef('PAYMENT_LOW_AMOUNT_CONFIRM_PCT')?.group, 'Payments & credit terms');
+  assert.equal(settingDef('PAYMENT_LOW_AMOUNT_CONFIRM_PCT')?.default, '50');
+  assert.equal(v('PAYMENT_LOW_AMOUNT_CONFIRM_PCT', '0'), null);
+  assert.ok(v('PAYMENT_LOW_AMOUNT_CONFIRM_PCT', '101'));
+  const text = settingDef('EMAIL_PAYMENT_STOCK_CHECK_TEXT')?.default ?? '';
+  for (const t of ['{AMOUNT}', '{ORDER}', '{DATE}']) assert.ok(text.includes(t), t);
+  assert.doesNotMatch(text, /lab2date|Labtodate/i);
+  // Read now by the payment page and the receipt notice: no longer “not applied yet”.
+  for (const k of ['PAYMENTS_INBOX_EMAIL', 'BUYER_CANCEL_DISABLED_TEXT']) assert.equal(settingDef(k)?.pending, undefined, k);
 });

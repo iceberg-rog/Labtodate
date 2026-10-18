@@ -25,13 +25,14 @@ import {
 } from '@/lib/security/user-access';
 import { stepUpRequired, type StepUpRequired } from '@/lib/security/stepup';
 import { alertSuperAdmins } from '@/lib/security/alerts';
-import { Prisma, UserRole } from '@prisma/client';
+import { Prisma, UserRole, type OrderHoldReason } from '@prisma/client';
 import { saveSettings as persistSettings, SETTING_DEFS, isSiteRelativePath, settingBool, settingInt, revertSettingChange, getEffectiveSettings, normaliseInput, settingDef, isSecurityPolicyKey, type SettingActor } from '@/lib/settings';
 import { getSecurityPolicy, invalidatePolicyCache, planPolicySave, POLICY_DEFS } from '@/lib/security/policy';
-import { documentAttachment, markDocumentSent, issueProforma, reissueProforma } from '@/lib/documents/issue';
+import { documentAttachment, markDocumentSent, issueProforma, prePaymentHoldMessage, reissueProforma } from '@/lib/documents/issue';
 import { orderDeletionBlockers } from '@/lib/documents/retention';
 import { headers } from 'next/headers';
 import { uploadObject } from '@/lib/storage/s3';
+import { recordReceiptEvent, storeReceiptFile } from '@/lib/payments/receipts';
 import { readVerifiedUpload } from '@/lib/storage/file-type';
 import { emailTransportStatus, isDeliverableEmail, sendEmail, trySendEmail } from '@/lib/email';
 import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
@@ -52,9 +53,17 @@ import { consentFromForm, hasConsent, CONSENT_MISSING_MESSAGE } from '@/lib/cata
 import { getCatalogPolicy } from '@/lib/catalog/policy';
 import { orderDetailsProblems } from '@/lib/orders/details';
 
-import { sellQuoteUnit } from '@/lib/quotes/stock';
+import { takeQuoteUnit } from '@/lib/quotes/stock';
 import { requireDetailsBeforePayment, vatIdRule } from '@/lib/quotes/policy';
-import { mailLayout } from '@/lib/quotes/mail';
+import { mailLayout, siteBase } from '@/lib/quotes/mail';
+import { notifySupplierOfSale } from '@/lib/sellers/sale-notice';
+import { PRE_PAYMENT_HOLDS } from '@/lib/checkout/holds';
+import { holdTitle } from '@/lib/checkout/notify';
+import { businessTimeZone } from '@/lib/documents/numbering';
+import {
+  announcementLinkProblem, countryPolicyValue, fmtValueDay, lowAmountNeedsConfirm, manualPaymentBlocker, MANUAL_PAY_BLOCKING_VERIFICATION,
+  PAYMENT_REVIEW_HOLD, proofKeyOf, readReceived, shippingRateValue, shippingZoneValue,
+} from '@/lib/payments/rules';
 import { cancelPaidOrder, cancelUnpaidOrder } from '@/lib/fulfilment/cancel';
 import { heldMoneyCents, LIVE_REFUNDS_SELECT, requestRefundTx } from '@/lib/finance/refunds';
 import { markDelivered, markOrderProcessing, recordShipment, updateShipmentTracking } from '@/lib/fulfilment/shipments';
@@ -515,6 +524,8 @@ export async function getOrderQuickDetail(id: string): Promise<{
   currency: string;
   createdAtISO: string;
   paidAtISO: string | null;
+  /** paidAt is a value date from the bank statement (a day, no time) — not a card payment's timestamp. */
+  paidAtIsValueDate: boolean;
   shippedAtISO: string | null;
   deliveredAtISO: string | null;
   buyer: {
@@ -552,12 +563,27 @@ export async function getOrderQuickDetail(id: string): Promise<{
   paymentVerifiedAt: string | null;
   paymentVerifiedByEmail: string | null;
   paymentRejectionReason: string | null;
+  /** Open holds with their staff title (compliance, VAT, address, freight, stock …). */
+  holds: { code: string; title: string }[];
+  holdNote: string | null;
+  /** Why “Mark as paid” is not offered now (receipt waiting, hold, terms request), or null. */
+  manualPayBlocker: string | null;
+  /** The viewer may book payments (finance:manage). */
+  canBookPayments: boolean;
+  /** Received and kept (part payments minus approved / sent refunds). */
+  receivedCents: number;
+  /** Still open on an unpaid order. */
+  openCents: number;
+  financialStatus: string;
+  billingCompany: string | null;
+  billingVat: string | null;
   items: { id: string; titleSnapshot: string; brandSnapshot: string | null; priceCentsSnapshot: number; quantity: number; image: string | null; productSlug: string | null; supplierName: string | null }[];
 } | null> {
   await requireCap('orders:view');
   const o = await prisma.order.findUnique({
     where: { id },
     include: {
+      refunds: LIVE_REFUNDS_SELECT,
       buyer: { select: { id: true, name: true, email: true, company: { select: { name: true } } } },
       items: {
         include: {
@@ -584,6 +610,9 @@ export async function getOrderQuickDetail(id: string): Promise<{
     _sum: { totalCents: true },
   });
   const ship = (o.shippingAddress as { phone?: string; company?: string; vat?: string } | null) ?? null;
+  const bill = (o.billingAddress as { company?: string; vat?: string } | null) ?? null;
+  const received = heldMoneyCents(o.amountPaidCents, o.refunds);
+  const holdCodes = Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])]));
   return {
     id: o.id,
     orderNumber: o.orderNumber,
@@ -595,6 +624,7 @@ export async function getOrderQuickDetail(id: string): Promise<{
     currency: o.currency,
     createdAtISO: o.createdAt.toISOString(),
     paidAtISO: o.paidAt?.toISOString() ?? null,
+    paidAtIsValueDate: !o.stripePaymentIntentId,
     shippedAtISO: o.shippedAt?.toISOString() ?? null,
     deliveredAtISO: o.deliveredAt?.toISOString() ?? null,
     buyer: {
@@ -638,6 +668,17 @@ export async function getOrderQuickDetail(id: string): Promise<{
       ? (await prisma.user.findUnique({ where: { id: o.paymentVerifiedById }, select: { email: true } }))?.email ?? null
       : null,
     paymentRejectionReason: o.paymentRejectionReason,
+    holds: holdCodes.map((code) => ({ code, title: holdTitle(code) })),
+    holdNote: o.holdNote,
+    manualPayBlocker: o.status === 'PENDING_PAYMENT'
+      ? manualPaymentBlocker({ holdMessage: prePaymentHoldMessage(o), holdReason: o.holdReason, openHolds: o.openHolds, paymentVerificationStatus: o.paymentVerificationStatus })
+      : null,
+    canBookPayments: await hasCapability('finance:manage'),
+    receivedCents: received,
+    openCents: Math.max(0, o.totalCents - received),
+    financialStatus: o.financialStatus,
+    billingCompany: (typeof bill?.company === 'string' && bill.company.trim()) || null,
+    billingVat: (typeof bill?.vat === 'string' && bill.vat.trim()) || null,
     items: o.items.map((it) => ({
       id: it.id,
       titleSnapshot: it.titleSnapshot,
@@ -917,14 +958,16 @@ export async function bulkSuspendUsers(
   if (!ids.length) return { ok: false, count: 0, message: 'Admins can only be suspended from their own user card.' };
   const step = await stepUpRequired('users.delete');
   if (step) return { ...step, count: 0 };
+  // Who is suspended now (for the audit trail: one row per account).
+  const toSuspend = await prisma.user.findMany({ where: { id: { in: ids }, suspendedAt: null }, select: { id: true, email: true } });
   const [updated] = await prisma.$transaction([
     prisma.user.updateMany({
-      where: { id: { in: ids }, suspendedAt: null },
+      where: { id: { in: toSuspend.map((u) => u.id) }, suspendedAt: null },
       data: { suspendedAt: new Date(), suspendedReason: 'Suspended by admin (bulk)' },
     }),
     prisma.session.deleteMany({ where: { userId: { in: ids } } }),
   ]);
-  await audit('user.suspend', undefined, `bulk:${updated.count}`);
+  for (const u of toSuspend) await audit('user.suspend', u.id, `bulk · ${u.email}`);
   revalidatePath('/admin/users');
   const skippedAdmins = admins.length ? ` Skipped ${admins.length} admin${admins.length === 1 ? '' : 's'} — suspend admins from their card.` : '';
   return {
@@ -1054,21 +1097,90 @@ export async function resetTwoFactorForUser(formData: FormData): Promise<AccessR
   return resetUserTwoFactor(userId);
 }
 
-export async function setProductStatus(slug: string, status: 'PUBLISHED' | 'ARCHIVED' | 'DRAFT') {
-  await requireCap('products:approve');
+const LISTING_STATUS_TEXT: Record<string, { subject: string; line: string }> = {
+  PUBLISHED: { subject: 'is live', line: 'Our team published your listing — buyers can now find it in the marketplace.' },
+  PENDING_REVIEW: { subject: 'is back in review', line: 'Our team took your listing offline for another review; it is not visible to buyers until it is published again.' },
+  DRAFT: { subject: 'was returned to draft', line: 'Our team took your listing offline and returned it to draft; it is not visible to buyers. You can correct it and submit it again.' },
+  ARCHIVED: { subject: 'was archived', line: 'Our team archived your listing; it is no longer visible to buyers.' },
+};
+
+/**
+ * Staff changed the status of a supplier's listing (publish, back to draft or
+ * review, archive): the supplier is told in-app and by e-mail, with the reason
+ * when one was given. Own-inventory listings (seller not a SELLER account)
+ * notify nobody. Returns a sentence for the staff message; never throws.
+ */
+async function noticeListingModeration(product: { slug: string; title: string; sellerId: string }, status: string, reason: string | null): Promise<string> {
+  const text = LISTING_STATUS_TEXT[status];
+  if (!text) return '';
+  try {
+    const seller = await prisma.user.findUnique({ where: { id: product.sellerId }, select: { id: true, role: true, email: true, name: true } });
+    if (!seller || seller.role !== 'SELLER') return '';
+    await ensureSettingsLoaded();
+    const subject = `Your listing “${product.title.slice(0, 80)}” ${text.subject}`;
+    await notifyUser(seller.id, subject, `${text.line}${reason ? ` Reason: ${reason.slice(0, 200)}` : ''}`, '/app/seller/products');
+    const mail = await trySendEmail({
+      to: seller.email,
+      subject,
+      html: mailLayout({
+        heading: subject,
+        body: [
+          `Hi <span dir="auto">${escapeHtml(seller.name || 'there')}</span>,`,
+          escapeHtml(text.line),
+          ...(reason ? [`<p style="margin:0 0 12px;padding:10px 14px;border-left:3px solid #0E4F40;background:#f3f4f6;" dir="auto"><strong>Reason:</strong> ${escapeHtmlLines(reason)}</p>`] : []),
+        ],
+        cta: status === 'PUBLISHED'
+          ? { href: `${siteBase()}/marketplace/${product.slug}`, label: 'View the listing' }
+          : { href: `${siteBase()}/app/seller/products`, label: 'Open your listings' },
+      }),
+      text: `${text.line}${reason ? `\n\nReason: ${reason}` : ''}`,
+    }, 'products:moderation');
+    return mail.ok ? ' The supplier was notified.' : ` The supplier was notified in-app; the e-mail could not be delivered (${mail.error}).`;
+  } catch {
+    return '';
+  }
+}
+
+/** Publishing or unpublishing a listing is moderation: products:approve. */
+function moderationNeeded(from: string, to: string): boolean {
+  return from !== to && (to === 'PUBLISHED' || from === 'PUBLISHED');
+}
+const NEEDS_APPROVE = 'Publishing or unpublishing a listing needs the “Approve / reject listings” permission (products:approve). Save it as Draft or Pending review instead — a moderator publishes it.';
+
+/** Moderation: publish, archive or send back to draft / review, with an optional reason for the supplier. */
+export async function setProductStatus(
+  slug: string,
+  status: 'PUBLISHED' | 'ARCHIVED' | 'DRAFT' | 'PENDING_REVIEW',
+  reason?: string | null,
+): Promise<{ ok: boolean; message: string }> {
+  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  if (!(await hasCapability('products:approve'))) return { ok: false, message: NEEDS_APPROVE };
+  if (!['PUBLISHED', 'ARCHIVED', 'DRAFT', 'PENDING_REVIEW'].includes(status)) return { ok: false, message: 'Unknown status.' };
+  const cur = await prisma.product.findUnique({ where: { slug }, select: { slug: true, title: true, sellerId: true, status: true } });
+  if (!cur) return { ok: false, message: 'Product not found.' };
+  if (cur.status === status) return { ok: true, message: 'Nothing changed.' };
+  const why = (reason ?? '').trim().slice(0, 500) || null;
   await prisma.product.update({ where: { slug }, data: { status } });
+  await audit('product.status', slug, `${cur.status} → ${status}${why ? ` · ${why}` : ''}`.slice(0, 500));
+  const told = await noticeListingModeration(cur, status, why);
   revalidatePath('/admin/products');
   revalidatePath(`/marketplace/${slug}`);
+  return { ok: true, message: `Status set to ${status.toLowerCase().replace('_', ' ')}.${told}` };
 }
 
 /** In-place price / quantity / status edit from the admin product popup.
  *  Returns {ok,message} so the modal can render a confirmation without a
- *  full-page reload. */
+ *  full-page reload. Price / quantity are edits (products:edit); publishing or
+ *  unpublishing is moderation (products:approve) and tells the supplier. */
 export async function quickUpdateProduct(
   slug: string,
-  patch: { priceCents?: number | null; quantity?: number; status?: 'DRAFT' | 'PENDING_REVIEW' | 'PUBLISHED' | 'ARCHIVED' },
+  patch: { priceCents?: number | null; quantity?: number; status?: 'DRAFT' | 'PENDING_REVIEW' | 'PUBLISHED' | 'ARCHIVED'; reason?: string | null },
 ): Promise<{ ok: boolean; message: string }> {
-  await requireCap('products:edit');
+  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  const editsData = patch.priceCents !== undefined || patch.quantity !== undefined;
+  const [canEdit, canApprove] = await Promise.all([hasCapability('products:edit'), hasCapability('products:approve')]);
+  if (editsData && !canEdit) return { ok: false, message: 'Changing the price or quantity needs the products:edit permission.' };
+  if (!canEdit && !canApprove) return { ok: false, message: 'Changing a listing needs the products:edit or products:approve permission.' };
   const data: Record<string, unknown> = {};
   if (patch.priceCents !== undefined) {
     if (patch.priceCents === null) {
@@ -1092,22 +1204,33 @@ export async function quickUpdateProduct(
     data.status = patch.status;
   }
   if (Object.keys(data).length === 0) return { ok: false, message: 'Nothing to update.' };
-  // A manual price on a supplier-synced product locks the price (field ownership).
-  if (data.priceCents !== undefined) {
-    const cur = await prisma.product.findUnique({ where: { slug }, select: { externalId: true, lockedFields: true, priceCents: true } });
-    if (cur?.externalId && cur.priceCents !== data.priceCents && !cur.lockedFields.includes('price')) {
-      data.lockedFields = [...cur.lockedFields, 'price'];
+  const cur = await prisma.product.findUnique({
+    where: { slug },
+    select: { slug: true, title: true, sellerId: true, status: true, externalId: true, lockedFields: true, priceCents: true, pendingPriceCents: true, priceOnHold: true },
+  });
+  if (!cur) return { ok: false, message: 'Product not found.' };
+  const nextStatus = typeof data.status === 'string' && data.status !== cur.status ? data.status : null;
+  if (!nextStatus) delete data.status;
+  if (nextStatus && moderationNeeded(cur.status, nextStatus) && !canApprove) return { ok: false, message: NEEDS_APPROVE };
+  if (data.priceCents !== undefined && data.priceCents !== cur.priceCents) {
+    // A manual price on a supplier-synced product locks the price (field ownership).
+    if (cur.externalId && !cur.lockedFields.includes('price')) data.lockedFields = [...cur.lockedFields, 'price'];
+    // Staff setting the price decide a pending supplier price change too (as on the edit page).
+    if (cur.pendingPriceCents !== null || cur.priceOnHold) {
+      Object.assign(data, { pendingPriceCents: null, pendingPriceCurrency: null, pendingPriceAt: null, pendingPriceNote: null, priceOnHold: false });
     }
   }
+  if (Object.keys(data).length === 0) return { ok: true, message: 'Nothing changed.' };
   try {
     await prisma.product.update({ where: { slug }, data });
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message.slice(0, 200) : 'Update failed.' };
   }
-  await audit('product.quickupdate', slug, Object.keys(data).join(','));
+  await audit('product.quickupdate', slug, `${Object.keys(data).join(',')}${nextStatus ? ` ${cur.status} → ${nextStatus}` : ''}`);
+  const told = nextStatus ? await noticeListingModeration(cur, nextStatus, (patch.reason ?? '').trim().slice(0, 500) || null) : '';
   revalidatePath('/admin/products');
   revalidatePath(`/marketplace/${slug}`);
-  return { ok: true, message: 'Saved.' };
+  return { ok: true, message: `Saved.${told}` };
 }
 
 /** Un-verify in one click. Verifying needs a written note of what was
@@ -1387,6 +1510,7 @@ export async function saveAdminSettings(
       'SYSTEM',
     );
   }
+  await alertIdentityChange(actor.email ?? null, saved.changedKeys);
   revalidatePath('/admin/settings');
   // Say what actually happened: "Saved ✓" only when something was written,
   // and name fields that now use (or can only be removed in) the server .env.
@@ -1406,10 +1530,25 @@ export async function saveAdminSettings(
   return { ok: true, message: parts.join(' ') };
 }
 
+/**
+ * Bank and identity changes (BANK_*, COMPANY_* — what every new proforma and
+ * invoice prints, and where buyers send money) also e-mail the super-admins,
+ * not only the in-app notice: a changed IBAN nobody agreed is the classic
+ * payment fraud. Never throws.
+ */
+async function alertIdentityChange(actorEmail: string | null, keys: string[]): Promise<void> {
+  const hit = keys.filter((k) => /^(BANK_|COMPANY_)/.test(k));
+  if (!hit.length) return;
+  await alertSuperAdmins('Bank or company details changed', [
+    `${actorEmail ?? 'An admin'} changed: ${hit.map((k) => settingDef(k)?.label ?? k).join(', ')}.`,
+    'These details are printed on new proformas, invoices and credit notes. If the change was not agreed, revert it in Settings → Change history and check that admin account.',
+  ], '/admin/settings?tab=Change%20history');
+}
+
 export async function uploadCompanyLogo(
   _prev: { ok: boolean; message: string } | null,
   formData: FormData,
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; message: string } | StepUpRequired> {
   // Same gate as saveAdminSettings: a missing cap is a message, not a redirect.
   await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   if (!(await hasCapability('settings:write'))) {
@@ -1421,16 +1560,31 @@ export async function uploadCompanyLogo(
   // script, and a non-image would show as a broken logo on every invoice.
   const checked = await readVerifiedUpload(file, { allow: ['png', 'jpeg', 'webp'], maxBytes: 2 * 1024 * 1024, label: 'Logo' });
   if (!checked.ok) return { ok: false, message: checked.error };
+  // The logo is printed on every proforma, invoice and credit note (a Company
+  // setting): the same fresh authenticator code as the other Company fields.
+  const step = await stepUpRequired('settings.sensitive');
+  if (step) return step;
   const { buf, mime, ext } = checked.upload;
+  const s2 = await getServerSession();
+  const actor = await settingActor(s2?.user.id ?? null, s2?.user.email ?? null);
+  let changed: string[] = [];
   try {
     // Under products/ because that is the prefix the bucket policy makes
     // public; invoices and emails load the logo anonymously.
     const { url } = await uploadObject(`products/branding/logo-${Date.now()}.${ext}`, buf, mime);
-    const s2 = await getServerSession();
-    await persistSettings({ COMPANY_LOGO_URL: url }, await settingActor(s2?.user.id ?? null, s2?.user.email ?? null));
+    changed = (await persistSettings({ COMPANY_LOGO_URL: url }, actor)).changedKeys;
     await audit('settings.logo', undefined, url);
   } catch (e) {
     return { ok: false, message: e instanceof Error ? `Upload failed: ${e.message.slice(0, 140)}` : 'Upload failed.' };
+  }
+  if (changed.length) {
+    await notifyAdmins(
+      `Sensitive settings changed by ${actor.email ?? 'an admin'}`,
+      'COMPANY_LOGO_URL (the logo on proformas, invoices and credit notes) — see Settings → Change history.',
+      '/admin/settings?tab=Change%20history',
+      'SYSTEM',
+    );
+    await alertIdentityChange(actor.email ?? null, changed);
   }
   revalidatePath('/admin/settings');
   return { ok: true, message: 'Logo updated ✓' };
@@ -1535,9 +1689,8 @@ export async function sendAnnouncement(formData: FormData): Promise<{ ok: boolea
   }
   if (!['OFFER', 'ANNOUNCEMENT', 'SYSTEM'].includes(kind)) return { ok: false, message: 'Unknown announcement type.' };
   if (!['ALL', 'BUYER', 'SELLER'].includes(audience)) return { ok: false, message: 'Unknown audience.' };
-  if (href && !href.startsWith('/') && !/^https:\/\//i.test(href)) {
-    return { ok: false, message: 'The link must be a page on this site (starting with /) or an https:// address.' };
-  }
+  const linkProblem = href ? announcementLinkProblem(href) : null;
+  if (linkProblem) return { ok: false, message: `${linkProblem} Nothing was sent.` };
   if (alsoEmail) {
     if (!(await hasCapability('marketing:send'))) {
       return { ok: false, message: 'E-mailing customers needs the marketing:send permission — send it in-app only, or ask a super-admin.' };
@@ -1710,11 +1863,115 @@ export async function setOrderNotes(formData: FormData): Promise<{ ok: boolean; 
   return { ok: true, message: notes ? 'Notes saved.' : 'Notes cleared.' };
 }
 
-/** Manually mark a non-Stripe order as PAID — for quote/invoice/bank-transfer
- *  flows where money landed off-platform. Accepts an optional proof file. */
-export async function markOrderPaidManually(formData: FormData): Promise<{ ok: boolean; message: string }> {
+/** Booking money — verifying or rejecting a receipt, marking an order paid,
+ *  issuing its tax invoice — is Finance work: finance:manage (“Register
+ *  payments and credit terms”), not orders:fulfil (operations pack and ship). */
+async function financeRefusal(): Promise<{ ok: false; message: string } | null> {
+  if (await hasCapability('finance:manage')) return null;
+  return { ok: false, message: 'Booking payments needs the “Register payments and credit terms” permission (finance:manage) — ask Finance or a super-admin. Nothing was changed.' };
+}
+
+/** Holds under which no money is booked by hand (manualPaymentBlocker, repeated in the claim's WHERE). */
+const MANUAL_PAY_BLOCKING_HOLDS = [...PRE_PAYMENT_HOLDS, PAYMENT_REVIEW_HOLD] as OrderHoldReason[];
+
+/** The atomic claim of “mark as paid”: still unpaid, no blocking hold, no receipt or terms request pending. */
+function manualPayClaimWhere(id: string): Prisma.OrderWhereInput {
+  return {
+    id,
+    status: 'PENDING_PAYMENT',
+    NOT: { openHolds: { hasSome: [...MANUAL_PAY_BLOCKING_HOLDS] } },
+    AND: [
+      { OR: [{ holdReason: null }, { holdReason: { notIn: MANUAL_PAY_BLOCKING_HOLDS } }] },
+      // A nullable column: “not in” alone would also drop the NULL rows.
+      { OR: [{ paymentVerificationStatus: null }, { paymentVerificationStatus: { notIn: [...MANUAL_PAY_BLOCKING_VERIFICATION] } }] },
+    ],
+  };
+}
+
+/** The value-date / amount checks of every payment booking (verify, mark paid). */
+function receivedFromForm(formData: FormData, openCents: number, orderCreatedAt: Date) {
+  return readReceived({
+    amount: String(formData.get('amount') ?? ''),
+    date: String(formData.get('receivedAt') ?? ''),
+    bankRef: String(formData.get('bankRef') ?? ''),
+    required: settingBool('PAYMENT_REQUIRE_AMOUNT_ON_VERIFY'),
+    openCents,
+    orderCreatedAt,
+    confirmEarlierDate: formData.get('confirmEarlierDate') === 'on',
+    now: new Date(),
+    timeZone: businessTimeZone(),
+  });
+}
+
+/**
+ * Paid, but the unit is gone (takeQuoteUnit came back short — e.g. sold to
+ * another buyer under STOCK_RESERVE_ON = PAYMENT_VERIFIED). The order stays
+ * PAID (the money arrived) and goes on the STOCK_SHORTAGE hold — dispatch is
+ * blocked (lib/fulfilment/rules.ts) — with a line in the internal notes. No
+ * invoice is issued until staff decide: refund, backorder or another unit.
+ */
+async function takeUnitOrHold(
+  tx: Prisma.TransactionClient,
+  order: { id: string; sourcingRequestId: string | null; items: Array<{ productId: string | null; quantity: number }> },
+  by: string,
+): Promise<{ short: boolean; warning: string }> {
+  const unit = await takeQuoteUnit(tx, order);
+  if (!unit.short) return { short: false, warning: unit.warning };
+  const o = await tx.order.findUnique({ where: { id: order.id }, select: { openHolds: true, holdReason: true, holdNote: true, adminNotes: true } });
+  if (o) {
+    const detail = unit.warning.replace(/^\s*Warning:\s*/i, '').trim() || 'the unit could not be taken from stock';
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        openHolds: Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : []), 'STOCK_SHORTAGE'])),
+        holdReason: o.holdReason ?? 'STOCK_SHORTAGE',
+        holdNote: [o.holdNote, `STOCK_SHORTAGE: ${detail}`].filter(Boolean).join(' | ').slice(0, 2000),
+        holdAt: new Date(),
+        adminNotes: `${o.adminNotes ? `${o.adminNotes}\n` : ''}[${new Date().toISOString().slice(0, 10)}] Paid, but the unit is no longer in stock (${detail}). No invoice was issued — decide: refund, backorder or another unit. (${by})`.slice(0, 4000),
+      },
+    });
+  }
+  return { short: true, warning: unit.warning };
+}
+
+/** After a STOCK_SHORTAGE: staff are alerted, the buyer is told the truth (no “we prepare your order”). */
+async function announceStockShortage(
+  o: { id: string; orderNumber: string; buyer: { id: string; email: string; name: string | null } },
+  amount: string,
+  valueDay: string,
+  warning: string,
+): Promise<string> {
+  await notifyAdmins(
+    `Order ${o.orderNumber} paid — the unit is no longer in stock`,
+    `${amount} received (value date ${valueDay}). ${warning.trim()} No invoice was issued: decide refund, backorder or another unit on the order page.`.slice(0, 500),
+    `/admin/orders/${o.id}`,
+    'ORDER_PAID',
+  );
+  const { settingText } = await import('@/lib/finance/texts');
+  const t = settingText('EMAIL_PAYMENT_STOCK_CHECK_TEXT', { AMOUNT: amount, ORDER: o.orderNumber, DATE: valueDay }, ['AMOUNT', 'ORDER']);
+  await notifyUser(o.buyer.id, `Payment received — order ${o.orderNumber}`, t.text.slice(0, 300), `/app/orders/${o.orderNumber}`);
+  const mail = await trySendEmail({
+    to: o.buyer.email,
+    subject: `Payment received — order ${o.orderNumber}`,
+    html: mailLayout({
+      heading: 'Payment received',
+      body: [`Hi <span dir="auto">${escapeHtml(o.buyer.name ?? 'there')}</span>,`, t.html],
+      cta: { href: `${siteBase()}/app/orders/${o.orderNumber}`, label: 'View your order' },
+    }),
+    text: t.text,
+  }, 'orders:stock-shortage');
+  return ` The unit is no longer in stock: the order is on the STOCK SHORTAGE hold (no shipping) and NO invoice was issued — decide refund, backorder or another unit. ${mail.ok ? 'The buyer was e-mailed that the payment arrived and that we contact them.' : `The e-mail to the buyer could not be delivered (${mail.error}).`}`;
+}
+
+/** Manually mark a non-Stripe order as PAID — money that landed off-platform
+ *  (bank transfer, other), with the bank statement's amount and value date.
+ *  Never while the buyer's own receipt waits for review, on a pre-payment
+ *  hold (export compliance, VAT, address, freight), under a payment review or
+ *  an invoice-terms request: those have their own decision first. */
+export async function markOrderPaidManually(formData: FormData): Promise<{ ok: boolean; message: string; confirm?: 'EARLIER_DATE' }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  await requireCap('orders:fulfil');
+  const refused = await financeRefusal();
+  if (refused) return refused;
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
   const method = String(formData.get('method') ?? '').toUpperCase();
@@ -1729,21 +1986,27 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
   }
   const order = await prisma.order.findUnique({
     where: { id },
-    select: { id: true, orderNumber: true, status: true, totalCents: true, amountPaidCents: true, refunds: LIVE_REFUNDS_SELECT, currency: true, shippingAddress: true, billingAddress: true, proformaNumber: true, sourcingRequestId: true, items: { select: { productId: true, quantity: true }, take: 1 }, buyer: { select: { id: true, email: true, name: true } } },
+    select: {
+      id: true, orderNumber: true, status: true, totalCents: true, amountPaidCents: true, refunds: LIVE_REFUNDS_SELECT, currency: true, shippingAddress: true, billingAddress: true,
+      proformaNumber: true, sourcingRequestId: true, createdAt: true, holdReason: true, openHolds: true, paymentVerificationStatus: true,
+      items: { select: { productId: true, quantity: true }, take: 1 }, buyer: { select: { id: true, email: true, name: true } },
+    },
   });
   if (!order) return { ok: false, message: 'Order not found.' };
   if (['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'].includes(order.status)) {
     return { ok: false, message: `Order is already ${order.status.toLowerCase()}.` };
   }
+  if (order.status !== 'PENDING_PAYMENT') return { ok: false, message: `Order ${order.orderNumber} is ${order.status.toLowerCase()} — no payment is due on it.` };
+  const blocked = manualPaymentBlocker({ holdMessage: prePaymentHoldMessage(order), holdReason: order.holdReason, openHolds: order.openHolds, paymentVerificationStatus: order.paymentVerificationStatus });
+  if (blocked) return { ok: false, message: `Not marked paid: ${blocked}` };
   const missingDetails = orderDetailsProblems(order, { vatIdRule: vatIdRule() });
   if (requireDetailsBeforePayment() && missingDetails.length) {
     return { ok: false, message: `Add the buyer’s billing and delivery details first (missing: ${missingDetails.join(', ')}) — they are needed for the invoice and the shipment. Use “Billing & delivery details” on the order page.` };
   }
-  const onTerms = false;
   // What is still open: the total minus what was received and kept (a part payment that is
   // refunded — or approved to be refunded — is not counted).
   const open = Math.max(0, order.totalCents - heldMoneyCents(order.amountPaidCents, order.refunds));
-  const rec = receivedFromForm(formData, open);
+  const rec = receivedFromForm(formData, open, order.createdAt);
   if (!rec.ok) return rec;
   const tolerance = settingInt('UNDERPAYMENT_TOLERANCE_CENTS', 0);
   // Money in payment messages always with cents ("€400.00", not "€400").
@@ -1756,41 +2019,31 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
   }
   const overpaid = rec.amountCents > open ? rec.amountCents - open : 0;
 
-  // Manual-mode integrity (per launch posture): a receipt/proof file MUST
-  // accompany every admin-marked PAID transition for BANK_TRANSFER and
-  // RECEIPT methods. INVOICE / OTHER are operator-attested but still
-  // strongly encouraged. Without proof for BANK_TRANSFER/RECEIPT, refuse.
-  // Every PAID transition leaves an audit row (line below).
+  // Manual-mode integrity: a bank-transfer or receipt booking needs the
+  // receipt file (checked by its bytes, stored privately, kept as a
+  // PaymentProof row); “other” is operator-attested. Every PAID transition
+  // leaves an audit row (below).
   const file = formData.get('proof');
-  let proofUrl: string | null = null;
-  if (file && typeof file !== 'string' && (file as File).size > 0) {
-    const f = file as File;
-    if (f.size > 8_000_000) return { ok: false, message: 'Proof file too large (max 8 MB).' };
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
-    if (!allowed.includes(f.type)) return { ok: false, message: 'Proof must be image or PDF.' };
-    const ext = (f.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
-    const buf = Buffer.from(await f.arrayBuffer());
-    const { url } = await uploadObject(
-      `order-proofs/${order.orderNumber}-${Date.now()}.${ext}`,
-      buf,
-      f.type,
-    );
-    proofUrl = url;
+  let proof: { key: string; url: string; fileName: string | null } | null = null;
+  if (file instanceof File && file.size > 0) {
+    const stored = await storeReceiptFile(file, order.orderNumber);
+    if (!stored.ok) return { ok: false, message: stored.message };
+    proof = stored;
   }
-  if ((method === 'BANK_TRANSFER' || method === 'RECEIPT') && !proofUrl) {
+  if ((method === 'BANK_TRANSFER' || method === 'RECEIPT') && !proof) {
     return {
       ok: false,
-      message: `${method.toLowerCase().replace('_', ' ')} payments require a receipt upload — please attach the bank-transfer PDF or screenshot.`,
+      message: `A ${method === 'RECEIPT' ? 'receipt' : 'bank-transfer'} payment needs the receipt — attach the bank’s transfer confirmation (PDF or image).`,
     };
   }
 
   // Atomic conditional update — concurrent admin clicks both decrement;
-  // only one wins. Lost-race admin sees a clean message rather than
-  // double-firing the audit + email + notification.
-  let stockNote = '';
+  // only one wins. The WHERE repeats every condition above (status, holds,
+  // a receipt or terms request that arrived meanwhile).
+  let stock = { short: false, warning: '' };
   const updateRes = await prisma.$transaction(async (tx) => {
     const res = await tx.order.updateMany({
-      where: { id, status: 'PENDING_PAYMENT' },
+      where: manualPayClaimWhere(id),
       data: {
         status: 'PAID',
         // The value date of the money (bank statement), not the click.
@@ -1799,48 +2052,53 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
         paidByAdminId: session.user.id,
         paymentMethodManual: method,
         paymentNote: note,
-        ...(proofUrl ? { paymentProofUrl: proofUrl } : {}),
-        ...(onTerms ? { financialStatus: 'INVOICED_ON_TERMS' as const } : {}),
+        ...(proof ? { paymentProofUrl: proof.url } : {}),
       },
     });
-    if (res.count === 1 && !onTerms) {
-      await recordPayment(tx, {
-        orderId: id,
-        amountCents: rec.amountCents,
-        currency: order.currency,
-        method,
-        receivedAt: rec.receivedAt,
-        reference: rec.bankRef ?? order.proformaNumber ?? order.orderNumber,
-        proofKey: proofUrl,
-        verifiedById: session.user.id,
-        note: `Marked paid by ${session.user.email}: ${cur(rec.amountCents)}, value date ${rec.receivedAt.toISOString().slice(0, 10)}${note ? ` — ${note}` : ''}.`,
-      });
-      if (overpaid > 0) {
-        // Paid too much: the difference goes back (approved now, sent by staff) — the refund ledger.
-        await requestRefundTx(tx, { orderId: id, amountCents: overpaid, currency: order.currency, method: 'BANK_TRANSFER', reason: `Overpayment: received ${cur(rec.amountCents)} for ${cur(open)} due.`, actorId: session.user.id });
-      }
+    if (res.count !== 1) return res;
+    await recordPayment(tx, {
+      orderId: id,
+      amountCents: rec.amountCents,
+      currency: order.currency,
+      method,
+      receivedAt: rec.receivedAt,
+      reference: rec.bankRef ?? order.proformaNumber ?? order.orderNumber,
+      proofKey: proof?.url ?? null,
+      verifiedById: session.user.id,
+      note: `Marked paid by ${session.user.email}: ${cur(rec.amountCents)}, value date ${rec.receivedAt.toISOString().slice(0, 10)}${note ? ` — ${note}` : ''}.`,
+    });
+    if (proof) await recordReceiptEvent(tx, { orderId: id, urlOrKey: proof.key, kind: 'MANUAL', fileName: proof.fileName, amountCents: rec.amountCents, actorId: session.user.id });
+    if (overpaid > 0) {
+      // Paid too much: the difference goes back (approved now, sent by staff) — the refund ledger.
+      await requestRefundTx(tx, { orderId: id, amountCents: overpaid, currency: order.currency, method: 'BANK_TRANSFER', reason: `Overpayment: received ${cur(rec.amountCents)} for ${cur(open)} due.`, actorId: session.user.id });
     }
-    if (res.count === 1 && order.sourcingRequestId) stockNote = await sellQuoteUnit(tx, order.sourcingRequestId, id, order.items[0]);
+    stock = await takeUnitOrHold(tx, order, session.user.email);
     return res;
   });
   if (updateRes.count !== 1) {
-    return { ok: false, message: 'Order is no longer pending — refresh and check the current status.' };
+    return { ok: false, message: 'The order changed meanwhile (paid, a receipt arrived, a hold or a cancellation) — refresh and check the current status. Nothing was booked.' };
   }
-  const valueDay = rec.receivedAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const valueDay = fmtValueDay(rec.receivedAt);
+  await audit('order.paid.manual', order.orderNumber, `${method} ${rec.amountCents} value=${rec.receivedAt.toISOString().slice(0, 10)}${proof ? ' +proof' : ''}${note ? ` "${note.slice(0, 60)}"` : ''}${stock.short ? ' STOCK_SHORTAGE' : ''}`);
+  revalidatePath('/admin/orders');
+  revalidatePath(`/admin/orders/${id}`);
+  const overNote = overpaid ? ` Overpaid by ${cur(overpaid)}: refund REQUESTED — transfer it back and mark it sent.` : '';
+  if (stock.short) {
+    const shortNote = await announceStockShortage(order, cur(rec.amountCents), valueDay, stock.warning);
+    return { ok: true, message: `Marked as paid (${cur(rec.amountCents)}, value date ${valueDay}).${overNote}${shortNote}` };
+  }
   await notifyUser(
     order.buyer.id,
     `Payment received — order ${order.orderNumber}`,
     `We received your payment of ${cur(rec.amountCents)} (${valueDay}). We'll prepare your order for shipping.`,
     `/app/orders/${order.orderNumber}`,
   );
-  // The buyer's e-mail is the invoice e-mail below; a separate one only when no invoice could go out.
   await notifyAdmins(
-    `Order ${order.orderNumber} marked PAID manually — ${(order.totalCents / 100).toFixed(2)} ${order.currency}`,
-    `Method: ${method.toLowerCase().replace('_', ' ')}${proofUrl ? ' · receipt attached' : ''}${note ? ` · note: ${note.slice(0, 80)}` : ''}`,
+    `Order ${order.orderNumber} marked PAID manually — ${cur(rec.amountCents)}`,
+    `Method: ${method.toLowerCase().replace('_', ' ')}, value date ${valueDay}${proof ? ' · receipt attached' : ''}${note ? ` · note: ${note.slice(0, 80)}` : ''} (by ${session.user.email}).`,
     `/admin/orders/${id}`,
     'ORDER_PAID',
   );
-  await audit('order.paid.manual', order.orderNumber, `${method}${proofUrl ? ' +proof' : ''}${note ? ` "${note.slice(0, 60)}"` : ''}`);
   // Issue + email the invoice (the checkout success page promises it). Never
   // blocks — the outcome, incl. "not issued: VAT review", is reported.
   const invoiceMail = await sendOrderInvoice(order.id, { actorId: session.user.id });
@@ -1850,13 +2108,13 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     const delayed = settingText('EMAIL_INVOICE_DELAYED_TEXT', { ORDER: order.orderNumber });
     await emailBuyerOrderUpdate(order.buyer.email, order.orderNumber, `Payment received — order ${order.orderNumber}`, `${v.text} ${invoiceMail.issued ? `Your invoice ${invoiceMail.number ?? ''} is on your order page.` : delayed.text}`);
   }
-  revalidatePath('/admin/orders');
-  revalidatePath(`/admin/orders/${id}`);
+  // The supplier who owns the unit prepares it for dispatch (never throws).
+  await notifySupplierOfSale(order.id, 'PAID').catch(() => {});
   return {
     ok: true,
-    message: `${onTerms ? 'Approved on invoice terms (no payment recorded).' : `Marked as paid (${cur(rec.amountCents)}, value date ${valueDay}).`}${overpaid ? ` Overpaid by ${cur(overpaid)}: refund REQUESTED — transfer it back and mark it sent.` : ''} ${invoiceMailSummary(invoiceMail)}${
+    message: `Marked as paid (${cur(rec.amountCents)}, value date ${valueDay}).${overNote} ${invoiceMailSummary(invoiceMail)}${
       shippingAddressIsComplete(order.shippingAddress) ? '' : ' No complete shipping address on file yet — add it on the order page before shipping.'
-    }${stockNote}`,
+    }${stock.warning}`,
   };
 }
 
@@ -2045,11 +2303,18 @@ export async function setOrderShippingAddress(formData: FormData): Promise<{ ok:
   };
 }
 
+/**
+ * Generic status change of a sell-to-us offer (not in its payout lifecycle).
+ * The seller is told in-app (when they have an account) AND by e-mail — the
+ * only channel a guest seller has — with the reason when one is given.
+ */
 export async function setSellStatus(
   id: string,
   status: 'PENDING' | 'RESPONDED' | 'ACCEPTED' | 'DECLINED' | 'CLOSED',
+  opts: { reason?: string | null } = {},
 ): Promise<{ ok: boolean; message: string }> {
   await requireCap('sell:status');
+  await ensureSettingsLoaded();
   // A22: a deal whose payout lifecycle runs (acquisitionStage set) only moves
   // through its own guarded steps — a generic status write (stale tab, crafted
   // POST) must never land on it.
@@ -2059,24 +2324,46 @@ export async function setSellStatus(
   if (cur.status === status) return { ok: true, message: 'Nothing changed.' };
   const r = await prisma.sellSubmission.updateMany({ where: { id, acquisitionStage: null, status: cur.status }, data: { status } });
   if (r.count !== 1) return { ok: false, message: 'The submission changed meanwhile — reload.' };
-  const sub = await prisma.sellSubmission.findUnique({ where: { id }, select: { submittedById: true, itemTitle: true } });
+  const sub = await prisma.sellSubmission.findUnique({ where: { id }, select: { submittedById: true, itemTitle: true, email: true, contactName: true } });
   if (!sub) return { ok: false, message: 'Submission not found.' };
+  const reason = (opts.reason ?? '').trim().slice(0, 500) || null;
+  const ref = `SS-${id.slice(-6).toUpperCase()}`;
   const msg =
     status === 'ACCEPTED'
       ? 'accepted — our team will follow up with next steps.'
       : status === 'DECLINED'
         ? 'declined. Thank you for the offer.'
-        : `updated to ${status.toLowerCase()}.`;
+        : status === 'CLOSED'
+          ? 'closed — we will not continue with this offer.'
+          : `updated to ${status.toLowerCase()}.`;
   await notifyUser(
     sub.submittedById,
     `Your equipment submission was ${status.toLowerCase()}`,
-    `"${sub.itemTitle}" was ${msg}`,
+    `"${sub.itemTitle}" was ${msg}${reason ? ` Reason: ${reason.slice(0, 200)}` : ''}`,
     `/app/sell-submissions/${id}`,
   );
-  await audit('sell.status', `SS-${id.slice(-6).toUpperCase()}`, `${cur.status} → ${status}`);
+  const subject = `[${ref}] Your offer “${sub.itemTitle.slice(0, 80)}” was ${status.toLowerCase()}`;
+  const mail = await trySendEmail({
+    to: sub.email,
+    subject,
+    html: mailLayout({
+      heading: `Your offer was ${status.toLowerCase()}`,
+      body: [
+        `Hi <span dir="auto">${escapeHtml(sub.contactName || 'there')}</span>,`,
+        `Your offer <strong dir="auto">${escapeHtml(sub.itemTitle)}</strong> (${ref}) was ${escapeHtml(msg)}`,
+        ...(reason ? [`<p style="margin:0 0 12px;padding:10px 14px;border-left:3px solid #0E4F40;background:#f3f4f6;" dir="auto"><strong>Reason:</strong> ${escapeHtmlLines(reason)}</p>`] : []),
+        sub.submittedById ? 'The details are in your dashboard.' : `Questions? Contact us and quote ${ref}.`,
+      ],
+      cta: sub.submittedById
+        ? { href: `${siteBase()}/app/sell-submissions/${id}`, label: 'Open your offer' }
+        : { href: `${siteBase()}/support`, label: 'Contact us' },
+    }),
+    text: `Your offer "${sub.itemTitle}" (${ref}) was ${msg}${reason ? `\n\nReason: ${reason}` : ''}`,
+  }, 'sell:status');
+  await audit('sell.status', ref, `${cur.status} → ${status}${reason ? ` · ${reason.slice(0, 200)}` : ''}`);
   revalidatePath('/admin/sell');
   revalidatePath(`/app/sell-submissions/${id}`);
-  return { ok: true, message: `Status set to ${status.toLowerCase()}.` };
+  return { ok: true, message: `Status set to ${status.toLowerCase()}. ${mail.ok ? `The seller was e-mailed (${sub.email}).` : `The e-mail to ${sub.email} could not be delivered (${mail.error}).`}` };
 }
 
 export async function setCompanyFeatured(slug: string, featured: boolean) {
@@ -2269,6 +2556,10 @@ const AdminProductInput = z.object({
   // deductible VAT) — the margin VAT is computed from the purchase cost.
   vatScheme: z.enum(['STANDARD', 'MARGIN']).default('STANDARD'),
   purchaseCostCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullish(),
+  // Search title / meta description overrides (empty = derived from the listing).
+  // Not sent = unchanged, so older forms never wipe them.
+  seoTitle: z.string().trim().max(120, 'at most 120 characters').nullish(),
+  seoDescription: z.string().trim().max(320, 'at most 320 characters').nullish(),
 }).superRefine((p, ctx) => {
   if (p.vatScheme === 'MARGIN' && p.condition === 'NEW') {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['vatScheme'], message: 'The margin scheme is only for second-hand goods (Refurbished / Used).' });
@@ -2307,6 +2598,8 @@ const ADMIN_PRODUCT_LABELS: Record<string, string> = {
   mpn: 'Manufacturer part number',
   vatScheme: 'VAT scheme',
   purchaseCostCents: 'Purchase cost',
+  seoTitle: 'SEO title',
+  seoDescription: 'SEO description',
 };
 
 /** The per-unit truth fields as Prisma data (shared by create + update). */
@@ -2323,6 +2616,8 @@ function truthData(p: AdminProductInputType) {
     mpn: p.mpn?.trim() || null,
     vatScheme: p.vatScheme,
     purchaseCostCents: p.vatScheme === 'MARGIN' ? p.purchaseCostCents ?? null : p.purchaseCostCents ?? null,
+    ...(p.seoTitle !== undefined ? { seoTitle: p.seoTitle?.trim() || null } : {}),
+    ...(p.seoDescription !== undefined ? { seoDescription: p.seoDescription?.trim() || null } : {}),
   };
 }
 
@@ -2351,6 +2646,10 @@ export async function adminCreateProduct(input: AdminProductInputType): Promise<
   await requireCap('products:edit');
   const result = parseAdminProduct(input);
   if ('error' in result) return result.error;
+  // Going live is moderation: an edit-only admin creates drafts or review requests.
+  if (result.data.status === 'PUBLISHED' && !(await hasCapability('products:approve'))) {
+    return { ok: false, message: NEEDS_APPROVE, fieldErrors: { status: 'Choose Draft or Pending review — publishing needs products:approve.' } };
+  }
   const parsed = { ...result.data, images: storedImages(result.data.images) };
   let slug = parsed.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 80);
   if (slug.length < 3) slug = `product-${Date.now().toString(36)}`;
@@ -2396,10 +2695,14 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
     where: { slug },
     select: {
       id: true, externalId: true, lockedFields: true, title: true, summary: true, description: true,
-      images: true, priceCents: true, currency: true, pendingPriceCents: true, priceOnHold: true,
+      images: true, priceCents: true, currency: true, pendingPriceCents: true, priceOnHold: true, status: true, sellerId: true,
     },
   });
   if (!existing) return { ok: false, message: 'Product not found.' };
+  const statusChanged = parsed.status !== existing.status;
+  if (statusChanged && moderationNeeded(existing.status, parsed.status) && !(await hasCapability('products:approve'))) {
+    return { ok: false, message: NEEDS_APPROVE, fieldErrors: { status: `Keep it ${existing.status.toLowerCase().replace('_', ' ')} — publishing or unpublishing needs products:approve.` } };
+  }
   // Field ownership: an admin edit of a synced product locks the edited
   // fields, so the next supplier sync cannot silently undo it.
   const locks = new Set(existing.lockedFields);
@@ -2445,15 +2748,16 @@ export async function adminUpdateProduct(slug: string, input: AdminProductInputT
     },
   });
   const newLocks = [...locks].filter((f) => !existing.lockedFields.includes(f));
-  await audit('product.admin.update', slug, newLocks.length ? `locked=${newLocks.join(',')}` : undefined);
+  await audit('product.admin.update', slug, [newLocks.length ? `locked=${newLocks.join(',')}` : '', statusChanged ? `${existing.status} → ${parsed.status}` : ''].filter(Boolean).join(' ') || undefined);
+  const told = statusChanged ? await noticeListingModeration({ slug, title: parsed.title, sellerId: existing.sellerId }, parsed.status, null) : '';
   revalidatePath('/admin/products');
   revalidatePath(`/admin/products/${slug}`);
   revalidatePath(`/marketplace/${slug}`);
   return {
     ok: true,
-    message: newLocks.length
+    message: `${newLocks.length
       ? `Saved. Supplier syncs will no longer change: ${newLocks.join(', ')} (unlock on this page).`
-      : 'Saved.',
+      : 'Saved.'}${told}`,
   };
 }
 
@@ -3262,7 +3566,7 @@ export async function bulkUnarchiveOrders(formData: FormData): Promise<{ ok: boo
  *  super-admin `*`). The orderNumber + items snapshot is preserved in
  *  AuditLog.meta so the forensic trail survives even after row deletion. */
 export async function deleteOrderPermanently(formData: FormData): Promise<{ ok: boolean; message: string } | StepUpRequired> {
-  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
+  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   await requireCap('orders:delete');
   const id = String(formData.get('orderId') ?? '');
   if (!id) return { ok: false, message: 'Missing order id.' };
@@ -3400,53 +3704,29 @@ export async function bulkDeleteOrders(
 }
 
 /**
- * Admin verifies a buyer-submitted payment proof → status PAID.
+ * Admin verifies a buyer-submitted payment proof → status PAID (or a part
+ * payment), with the amount and value date from the bank statement.
  *
  * BUG-019 fix: race-protection. Concurrent admin Verify clicks used to
  * both fire side effects (audit + email + notification). Now wraps the
  * write in updateMany with the AWAITING_VERIFICATION precondition;
  * only one wins (count===1), the other gets a friendly message.
+ *
+ * A receipt for less than PAYMENT_LOW_AMOUNT_CONFIRM_PCT of the open amount
+ * (usually a typing mistake) and a value date before the order date are only
+ * booked with their confirmation tick (confirmLowAmount / confirmEarlierDate).
  */
-/**
- * What staff read from the bank statement when confirming a payment: amount,
- * value date and the bank's reference (PAYMENT_REQUIRE_AMOUNT_ON_VERIFY). Off:
- * the open amount and today are recorded.
- */
-function receivedFromForm(formData: FormData, openCents: number): { ok: true; amountCents: number; receivedAt: Date; bankRef: string | null } | { ok: false; message: string } {
-  const required = settingBool('PAYMENT_REQUIRE_AMOUNT_ON_VERIFY');
-  const rawAmount = String(formData.get('amount') ?? '').replace(/[€\s]/g, '');
-  const rawDate = String(formData.get('receivedAt') ?? '');
-  const bankRef = String(formData.get('bankRef') ?? '').trim().slice(0, 120) || null;
-  if (required && (!rawAmount || !rawDate)) {
-    return { ok: false, message: 'Enter the amount received and the value date from the bank statement — the invoice prints them, and a short payment is never booked as paid in full.' };
-  }
-  let amountCents = openCents;
-  if (rawAmount) {
-    const norm = /,\d{1,2}$/.test(rawAmount) ? rawAmount.replace(/\./g, '').replace(',', '.') : rawAmount.replace(/,/g, '');
-    const n = Number(norm);
-    if (!Number.isFinite(n) || n <= 0) return { ok: false, message: 'The amount received is not a valid amount (e.g. 1210.00).' };
-    amountCents = Math.round(n * 100);
-  }
-  let receivedAt = new Date();
-  if (rawDate) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) return { ok: false, message: 'Choose the value date.' };
-    receivedAt = new Date(`${rawDate}T12:00:00Z`);
-    if (receivedAt.getTime() > Date.now() + 86_400_000) return { ok: false, message: 'The value date can not be in the future.' };
-    if (receivedAt.getTime() < Date.now() - 400 * 86_400_000) return { ok: false, message: 'The value date is more than a year ago — check it.' };
-  }
-  return { ok: true, amountCents, receivedAt, bankRef };
-}
-
-export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; message: string }> {
+export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; message: string; confirm?: 'EARLIER_DATE' | 'LOW_AMOUNT' }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  await requireCap('orders:fulfil');
+  const refused = await financeRefusal();
+  if (refused) return refused;
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
   if (!id) return { ok: false, message: 'Missing order id.' };
   const order = await prisma.order.findUnique({
     where: { id },
     select: {
-      id: true, orderNumber: true, status: true, totalCents: true, currency: true,
+      id: true, orderNumber: true, status: true, totalCents: true, currency: true, createdAt: true,
       paymentVerificationStatus: true, paymentSubmittedAt: true,
       paymentMethodManual: true,
       paymentProofUrl: true,
@@ -3482,12 +3762,21 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
   // What is still open: the total minus what was received and kept (a part payment that is
   // refunded — or approved to be refunded — is not counted).
   const open = Math.max(0, order.totalCents - heldMoneyCents(order.amountPaidCents, order.refunds));
-  const rec = receivedFromForm(formData, open);
+  const rec = receivedFromForm(formData, open, order.createdAt);
   if (!rec.ok) return rec;
   const tolerance = settingInt('UNDERPAYMENT_TOLERANCE_CENTS', 0);
   // Money in payment messages always with cents ("€400.00", not "€400").
   const cur = (c: number) => fmtDocMoney(c, order.currency);
-  const valueDay = rec.receivedAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const valueDay = fmtValueDay(rec.receivedAt);
+  const lowPct = settingInt('PAYMENT_LOW_AMOUNT_CONFIRM_PCT', 50);
+  if (lowAmountNeedsConfirm(rec.amountCents, open, lowPct) && formData.get('confirmLowAmount') !== 'on') {
+    return {
+      ok: false,
+      confirm: 'LOW_AMOUNT',
+      message: `${cur(rec.amountCents)} is less than ${lowPct}% of the ${cur(open)} open on this order. Check the amount on the bank statement (1.210 is not 1,210.00); if it is right, tick “Part payment below ${lowPct}% — confirmed” and verify again. Nothing was booked.`,
+    };
+  }
+  const proofKey = proofKeyOf(order.paymentProofUrl);
 
   // ── Short by more than the tolerance: a part payment, not "paid" ──
   if (rec.amountCents + tolerance < open) {
@@ -3496,6 +3785,8 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
       const res = await tx.order.updateMany({
         where: { id, paymentVerificationStatus: 'AWAITING_VERIFICATION', status: 'PENDING_PAYMENT' },
         data: {
+          // The receipt was booked (financialStatus PARTIALLY_PAID): the buyer
+          // uploads the next one for the rest. The texts say “part payment”.
           paymentVerificationStatus: 'REJECTED',
           paymentRejectionReason: `Part payment received: ${cur(rec.amountCents)} on ${valueDay}. Still due: ${cur(stillOpen)} — please transfer the rest and upload that receipt.`,
           paymentSubmittedAt: null,
@@ -3508,6 +3799,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
           receivedAt: rec.receivedAt, reference: rec.bankRef ?? order.proformaNumber ?? order.orderNumber, proofKey: order.paymentProofUrl,
           verifiedById: session.user.id, note: `Part payment verified by ${session.user.email}: ${cur(rec.amountCents)} of ${cur(open)} open.`,
         });
+        await recordReceiptEvent(tx, { orderId: id, urlOrKey: proofKey, kind: 'PART', amountCents: rec.amountCents, actorId: session.user.id });
       }
       return res;
     });
@@ -3516,7 +3808,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     const mail = await trySendEmail({
       to: order.buyer.email,
       subject: `Part payment received — ${cur(stillOpen)} still due for order ${order.orderNumber}`,
-      html: mailLayout({ heading: 'Part payment received', body: [`Hi <span dir="auto">${escapeHtml(order.buyer.name ?? 'there')}</span>,`, t.html], cta: { href: `${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment`, label: 'Go to the payment page' } }),
+      html: mailLayout({ heading: 'Part payment received', body: [`Hi <span dir="auto">${escapeHtml(order.buyer.name ?? 'there')}</span>,`, t.html], cta: { href: `${siteBase()}/app/orders/${order.orderNumber}/payment`, label: 'Go to the payment page' } }),
       text: t.text,
     }, 'orders:part-payment');
     await notifyUser(order.buyer.id, `Part payment received — order ${order.orderNumber}`, t.text.slice(0, 300), `/app/orders/${order.orderNumber}/payment`);
@@ -3531,8 +3823,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
 
   const overpaid = rec.amountCents > open ? rec.amountCents - open : 0;
   const short = rec.amountCents < open ? open - rec.amountCents : 0;
-  const onTerms = false;
-  let stockNote = '';
+  let stock = { short: false, warning: '' };
   const verifyRes = await prisma.$transaction(async (tx) => {
     const res = await tx.order.updateMany({
       where: {
@@ -3552,33 +3843,33 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
         // verified order always records a method so it never renders '—'.
         paymentMethodManual: order.paymentMethodManual ?? 'BANK_TRANSFER',
         financialStatus: 'PAID',
-        ...(onTerms ? { financialStatus: 'INVOICED_ON_TERMS' as const } : {}),
       },
     });
-    if (res.count === 1 && !onTerms) {
-      await recordPayment(tx, {
-        orderId: id,
-        amountCents: rec.amountCents,
-        currency: order.currency,
-        method: (order.paymentMethodManual ?? 'BANK_TRANSFER').toUpperCase(),
-        receivedAt: rec.receivedAt,
-        reference: rec.bankRef ?? order.proformaNumber ?? order.orderNumber,
-        proofKey: order.paymentProofUrl,
-        verifiedById: session.user.id,
-        note: `Verified by ${session.user.email} from the bank statement: ${cur(rec.amountCents)}, value date ${rec.receivedAt.toISOString().slice(0, 10)}${short ? ` (short ${cur(short)} — within the tolerance)` : ''}.`,
-      });
-      if (overpaid > 0) {
-        // Paid too much: the difference goes back (approved now, sent by staff) — the refund ledger.
-        await requestRefundTx(tx, { orderId: id, amountCents: overpaid, currency: order.currency, method: 'BANK_TRANSFER', reason: `Overpayment: received ${cur(rec.amountCents)} for ${cur(open)} due.`, actorId: session.user.id });
-      }
+    if (res.count !== 1) return res;
+    await recordPayment(tx, {
+      orderId: id,
+      amountCents: rec.amountCents,
+      currency: order.currency,
+      method: (order.paymentMethodManual ?? 'BANK_TRANSFER').toUpperCase(),
+      receivedAt: rec.receivedAt,
+      reference: rec.bankRef ?? order.proformaNumber ?? order.orderNumber,
+      proofKey: order.paymentProofUrl,
+      verifiedById: session.user.id,
+      note: `Verified by ${session.user.email} from the bank statement: ${cur(rec.amountCents)}, value date ${rec.receivedAt.toISOString().slice(0, 10)}${short ? ` (short ${cur(short)} — within the tolerance)` : ''}.`,
+    });
+    if (overpaid > 0) {
+      // Paid too much: the difference goes back (approved now, sent by staff) — the refund ledger.
+      await requestRefundTx(tx, { orderId: id, amountCents: overpaid, currency: order.currency, method: 'BANK_TRANSFER', reason: `Overpayment: received ${cur(rec.amountCents)} for ${cur(open)} due.`, actorId: session.user.id });
     }
-    if (res.count === 1 && order.sourcingRequestId) {
+    if (order.sourcingRequestId) {
       await tx.sourcingRequest.updateMany({
         where: { id: order.sourcingRequestId, status: { in: ['PENDING', 'RESPONDED'] } },
         data: { status: 'ACCEPTED' },
       });
-      stockNote = await sellQuoteUnit(tx, order.sourcingRequestId, id, order.items[0]);
     }
+    // The unit is sold to this order — or, when it is gone, the order is
+    // held (STOCK_SHORTAGE) and no invoice is issued below.
+    stock = await takeUnitOrHold(tx, order, session.user.email);
     return res;
   });
   if (verifyRes.count !== 1) {
@@ -3586,6 +3877,22 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
       ok: false,
       message: 'Verification race — another admin acted on this order. Refresh to see the current state.',
     };
+  }
+  await audit('order.payment.verify', order.orderNumber, `verifier=${session.user.email} amount=${rec.amountCents} value=${rec.receivedAt.toISOString().slice(0, 10)} ref=${rec.bankRef ?? '-'}${overpaid ? ` overpaid=${overpaid}` : ''}${short ? ` short=${short}` : ''}${stock.short ? ' STOCK_SHORTAGE' : ''}`);
+  revalidatePath('/admin/orders');
+  revalidatePath(`/admin/orders/${id}`);
+  revalidatePath('/app/quotes');
+  revalidatePath('/admin/quotes');
+  if (order.sourcingRequestId) {
+    revalidatePath(`/app/quotes/${order.sourcingRequestId}`);
+    revalidatePath(`/admin/quotes/${order.sourcingRequestId}`);
+  }
+  const moneyNote = overpaid
+    ? ` Received ${cur(rec.amountCents)} for ${cur(open)} due: the overpayment of ${cur(overpaid)} is recorded as a refund REQUESTED — transfer it back and mark it sent.`
+    : short ? ` Received ${cur(rec.amountCents)} — ${cur(short)} short, within the tolerance of ${cur(tolerance)} (counts as paid in full).` : '';
+  if (stock.short) {
+    const shortNote = await announceStockShortage(order, cur(rec.amountCents), valueDay, stock.warning);
+    return { ok: true, message: `Payment verified (${cur(rec.amountCents)}, value date ${valueDay}).${moneyNote}${shortNote}` };
   }
   await notifyUser(
     order.buyer.id,
@@ -3612,7 +3919,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
           v.html,
           invoiceMail.issued ? `Your invoice ${escapeHtml(invoiceMail.number ?? '')} is available on your order page.` : delayed.html,
         ],
-        cta: { href: `${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}`, label: 'View your order' },
+        cta: { href: `${siteBase()}/app/orders/${order.orderNumber}`, label: 'View your order' },
       }),
       text: `${v.text}\n${invoiceMail.issued ? `Your invoice ${invoiceMail.number ?? ''} is available on your order page.` : delayed.text}`,
     }, 'orders:verified');
@@ -3624,30 +3931,22 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     `/admin/orders/${id}`,
     overpaid ? 'ORDER_REFUNDED' : 'PAYMENT_VERIFIED',
   );
-  await audit('order.payment.verify', order.orderNumber, `verifier=${session.user.email} amount=${rec.amountCents} value=${rec.receivedAt.toISOString().slice(0, 10)} ref=${rec.bankRef ?? '-'}${overpaid ? ` overpaid=${overpaid}` : ''}${short ? ` short=${short}` : ''}`);
-  revalidatePath('/admin/orders');
-  revalidatePath(`/admin/orders/${id}`);
-  revalidatePath('/app/quotes');
-  revalidatePath('/admin/quotes');
-  if (order.sourcingRequestId) {
-    revalidatePath(`/app/quotes/${order.sourcingRequestId}`);
-    revalidatePath(`/admin/quotes/${order.sourcingRequestId}`);
-  }
-  const moneyNote = overpaid
-    ? ` Received ${cur(rec.amountCents)} for ${cur(open)} due: the overpayment of ${cur(overpaid)} is recorded as a refund REQUESTED — transfer it back and mark it sent.`
-    : short ? ` Received ${cur(rec.amountCents)} — ${cur(short)} short, within the tolerance of ${cur(tolerance)} (counts as paid in full).` : '';
+  // The supplier who owns the unit prepares it for dispatch (never throws).
+  await notifySupplierOfSale(order.id, 'PAID').catch(() => {});
   return {
     ok: true,
-    message: `${onTerms ? 'Approved on invoice terms (no payment recorded).' : `Payment verified (${cur(rec.amountCents)}, value date ${valueDay}).`}${moneyNote} ${invoiceMailSummary(invoiceMail)}${verifiedMailNote}${
+    message: `Payment verified (${cur(rec.amountCents)}, value date ${valueDay}).${moneyNote} ${invoiceMailSummary(invoiceMail)}${verifiedMailNote}${
       shippingAddressIsComplete(order.shippingAddress) ? '' : ' No complete shipping address on file yet — add it on the order page before shipping.'
-    }${stockNote}`,
+    }${stock.warning}`,
   };
 }
 
-/** Admin rejects a buyer-submitted payment proof; buyer can resubmit. */
+/** Admin rejects a buyer-submitted payment proof; buyer can resubmit. The
+ *  rejected receipt stays on file (PaymentProof REJECTED) and viewable. */
 export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; message: string }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  await requireCap('orders:fulfil');
+  const refused = await financeRefusal();
+  if (refused) return refused;
   await ensureSettingsLoaded();
   const id = String(formData.get('orderId') ?? '');
   const reason = String(formData.get('reason') ?? '').trim().slice(0, 500);
@@ -3658,6 +3957,7 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
     select: {
       id: true, orderNumber: true, status: true,
       paymentVerificationStatus: true,
+      paymentProofUrl: true,
       buyer: { select: { id: true, email: true, name: true } },
     },
   });
@@ -3670,24 +3970,29 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
   // buyer-resubmit / double-click reject. Re-encode the precondition in the
   // write's WHERE and gate ALL side effects on count===1 so reject can never
   // overwrite a just-verified PAID order (F15 regression) or double-notify.
-  const rejectRes = await prisma.order.updateMany({
-    where: {
-      id,
-      paymentVerificationStatus: 'AWAITING_VERIFICATION',
-      status: 'PENDING_PAYMENT',
-    },
-    data: {
-      paymentVerificationStatus: 'REJECTED',
-      paymentRejectionReason: reason,
-      paymentSubmittedAt: null,
-      paymentVerifiedAt: null,
-      paymentVerifiedById: null,
-    },
+  const rejectRes = await prisma.$transaction(async (tx) => {
+    const res = await tx.order.updateMany({
+      where: {
+        id,
+        paymentVerificationStatus: 'AWAITING_VERIFICATION',
+        status: 'PENDING_PAYMENT',
+        paymentProofUrl: order.paymentProofUrl,
+      },
+      data: {
+        paymentVerificationStatus: 'REJECTED',
+        paymentRejectionReason: reason,
+        paymentSubmittedAt: null,
+        paymentVerifiedAt: null,
+        paymentVerifiedById: null,
+      },
+    });
+    if (res.count === 1) await recordReceiptEvent(tx, { orderId: id, urlOrKey: order.paymentProofUrl, kind: 'REJECTED', actorId: session.user.id, rejectedReason: reason });
+    return res;
   });
   if (rejectRes.count !== 1) {
     return {
       ok: false,
-      message: 'Rejection race — another admin already acted on this order (likely verified it). Refresh to see the current state.',
+      message: 'Rejection race — another admin already acted on this order (likely verified it), or the buyer sent a new receipt. Refresh to see the current state.',
     };
   }
   await notifyUser(
@@ -3696,11 +4001,21 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
     `Your receipt was reviewed and we need to ask for a corrected proof. Reason: ${reason.slice(0, 120)}`,
     `/app/orders/${order.orderNumber}/payment`,
   );
+  const payUrl = `${siteBase()}/app/orders/${order.orderNumber}/payment`;
   const rejectMail = await trySendEmail({
       to: order.buyer.email,
       subject: `Payment proof needs attention — order ${order.orderNumber}`,
-      html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${escapeHtmlLines(reason)}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
-      text: `We need a corrected receipt for order ${order.orderNumber}. Reason: ${reason}\nResubmit: ${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment`,
+      html: mailLayout({
+        heading: 'Your payment receipt needs attention',
+        body: [
+          `Hi <span dir="auto">${escapeHtml(order.buyer.name ?? 'there')}</span>,`,
+          `We reviewed the receipt you uploaded for order <strong>${escapeHtml(order.orderNumber)}</strong> and need a corrected one:`,
+          `<p style="margin:0 0 12px;padding:10px 14px;border-left:3px solid #d97706;background:#fffbeb;color:#78350f;" dir="auto">${escapeHtmlLines(reason)}</p>`,
+          'Please upload the bank’s transfer confirmation for this order on the payment page.',
+        ],
+        cta: { href: payUrl, label: 'Upload a corrected receipt' },
+      }),
+      text: `We need a corrected receipt for order ${order.orderNumber}.\n\nReason: ${reason}\n\nUpload a corrected receipt: ${payUrl}`,
     }, 'orders:reject-proof');
   await notifyAdmins(
     `Payment rejected — order ${order.orderNumber}`,
@@ -3722,12 +4037,19 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
 // ─── Business-core admin actions (4_business_core) ──────────────────────────
 
 /** Issue (or retry issuing) the invoice of a paid order — e.g. after the VAT
- *  settings or the buyer's billing details were corrected. */
+ *  settings or the buyer's billing details were corrected. Finance work; never
+ *  while the unit is missing (STOCK_SHORTAGE: refund, backorder or another
+ *  unit is decided first). */
 export async function issueOrderInvoiceAction(formData: FormData): Promise<{ ok: boolean; message: string }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  await requireCap('orders:fulfil');
+  const refused = await financeRefusal();
+  if (refused) return refused;
   const id = String(formData.get('orderId') ?? '');
   if (!id) return { ok: false, message: 'Missing order id.' };
+  const held = await prisma.order.findUnique({ where: { id }, select: { holdReason: true, openHolds: true } });
+  if (held && (held.holdReason === 'STOCK_SHORTAGE' || held.openHolds.includes('STOCK_SHORTAGE'))) {
+    return { ok: false, message: 'Not issued: the unit of this order is no longer in stock (STOCK SHORTAGE hold). Decide refund, backorder or another unit first — the invoice follows that decision.' };
+  }
   const r = await sendOrderInvoice(id, { actorId: session.user.id });
   await audit('order.invoice.issue', id, r.issued ? `${r.number}` : `not issued: ${(r.notIssuedReason ?? '').slice(0, 200)}`);
   revalidatePath(`/admin/orders/${id}`);
@@ -3866,9 +4188,52 @@ const CountryInput = z.object({
   note: z.string().trim().max(300).optional(),
 });
 
-export async function saveCountryPolicy(formData: FormData): Promise<{ ok: boolean; message: string }> {
+/**
+ * The country table (VAT rate, EU membership, ship policy) and the shipping
+ * zones / rates decide the VAT and freight of every order: the same gate as
+ * the Tax & VAT settings — settings:write plus a fresh authenticator code
+ * (settings.sensitive) — and every change is listed in Change history (a
+ * SettingChange row with source COUNTRY_POLICY / SHIPPING) and announced to
+ * the admins.
+ */
+async function fiscalTableGate(): Promise<{ ok: false; message: string } | StepUpRequired | { ok: true; actor: SettingActor }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
   if (!(await hasCapability('settings:write'))) return { ok: false, message: 'Missing settings:write permission.' };
+  const step = await stepUpRequired('settings.sensitive');
+  if (step) return step;
+  return { ok: true, actor: await settingActor(session.user.id, session.user.email) };
+}
+
+async function recordTableChange(
+  actor: SettingActor,
+  source: 'COUNTRY_POLICY' | 'SHIPPING',
+  key: string,
+  oldValue: string | null,
+  newValue: string | null,
+  title: string,
+): Promise<void> {
+  if (oldValue === newValue) return;
+  await prisma.settingChange.create({
+    data: {
+      key: key.slice(0, 190),
+      oldValue,
+      newValue,
+      source,
+      actorId: actor.id ?? null,
+      actorEmail: actor.email ?? null,
+      ip: actor.ip ? actor.ip.slice(0, 80) : null,
+      userAgent: actor.userAgent ? actor.userAgent.slice(0, 300) : null,
+    },
+  }).catch(() => {});
+  await notifyAdmins(
+    `${title} changed by ${actor.email ?? 'an admin'}`,
+    `${oldValue ?? '(new)'} → ${newValue ?? '(removed)'} — see Settings → Change history.`.slice(0, 500),
+    '/admin/settings?tab=Change%20history',
+    'SYSTEM',
+  );
+}
+
+export async function saveCountryPolicy(formData: FormData): Promise<{ ok: boolean; message: string } | StepUpRequired> {
   const parsed = CountryInput.safeParse({
     country: String(formData.get('country') ?? ''),
     name: String(formData.get('name') ?? ''),
@@ -3877,28 +4242,35 @@ export async function saveCountryPolicy(formData: FormData): Promise<{ ok: boole
     mode: String(formData.get('mode') ?? ''),
     note: String(formData.get('note') ?? ''),
   });
+  // Permission first: a crafted call never learns more than “no”.
+  const gate = await fiscalTableGate();
+  if (!gate.ok) return gate;
   if (!parsed.success) return { ok: false, message: zodMessage(parsed.error) };
   const d = parsed.data;
   const bp = d.vatRatePct ? Math.round(Number(d.vatRatePct) * 100) : null;
   if (d.isEu && bp == null) return { ok: false, message: 'An EU member state needs its standard VAT rate (used for OSS).' };
   const before = await prisma.countryPolicy.findUnique({ where: { country: d.country } });
-  await prisma.countryPolicy.upsert({
+  const after = await prisma.countryPolicy.upsert({
     where: { country: d.country },
-    create: { country: d.country, name: d.name, isEu: d.isEu, vatStandardRateBp: bp, mode: d.mode, note: d.note || null, updatedById: session.user.id },
-    update: { name: d.name, isEu: d.isEu, vatStandardRateBp: bp, mode: d.mode, note: d.note || null, updatedById: session.user.id },
+    create: { country: d.country, name: d.name, isEu: d.isEu, vatStandardRateBp: bp, mode: d.mode, note: d.note || null, updatedById: gate.actor.id ?? null },
+    update: { name: d.name, isEu: d.isEu, vatStandardRateBp: bp, mode: d.mode, note: d.note || null, updatedById: gate.actor.id ?? null },
   });
   await audit('settings.country', d.country, `${before ? `${before.mode}${before.isEu ? '/EU' : ''}/${before.vatStandardRateBp ?? '-'}` : 'new'} → ${d.mode}${d.isEu ? '/EU' : ''}/${bp ?? '-'}`);
+  await recordTableChange(gate.actor, 'COUNTRY_POLICY', `COUNTRY_POLICY:${d.country}`, countryPolicyValue(before), countryPolicyValue(after), `Country policy ${d.country}`);
   revalidatePath('/admin/settings');
-  return { ok: true, message: `${d.name} (${d.country}) saved: ${d.mode.toLowerCase()}${d.isEu ? ', EU member' : ''}${bp != null ? `, VAT ${d.vatRatePct}%` : ''}.` };
+  return { ok: true, message: `${d.name} (${d.country}) saved: ${d.mode.toLowerCase()}${d.isEu ? ', EU member' : ', not an EU member'}${bp != null ? `, VAT ${d.vatRatePct}%` : ''}. Listed in Change history.` };
 }
 
-export async function deleteCountryPolicy(formData: FormData): Promise<{ ok: boolean; message: string }> {
-  const country = String(formData.get('country') ?? '');
-  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  if (!(await hasCapability('settings:write'))) return { ok: false, message: 'Missing settings:write permission.' };
-  const c = String(country ?? '').toUpperCase();
+export async function deleteCountryPolicy(formData: FormData): Promise<{ ok: boolean; message: string } | StepUpRequired> {
+  const c = String(formData.get('country') ?? '').toUpperCase();
+  const gate = await fiscalTableGate();
+  if (!gate.ok) return gate;
+  const before = await prisma.countryPolicy.findUnique({ where: { country: c } });
   const r = await prisma.countryPolicy.deleteMany({ where: { country: c } });
-  if (r.count) await audit('settings.country.delete', c);
+  if (r.count) {
+    await audit('settings.country.delete', c);
+    await recordTableChange(gate.actor, 'COUNTRY_POLICY', `COUNTRY_POLICY:${c}`, countryPolicyValue(before), null, `Country policy ${c}`);
+  }
   revalidatePath('/admin/settings');
   return r.count ? { ok: true, message: `${c} removed — it now follows the “countries not in the table” policy.` } : { ok: false, message: `${c} was not in the table.` };
 }
@@ -3910,9 +4282,9 @@ const eurToCents = (v: FormDataEntryValue | null): number | null => {
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) : NaN;
 };
 
-export async function saveShippingZone(formData: FormData): Promise<{ ok: boolean; message: string }> {
-  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  if (!(await hasCapability('settings:write'))) return { ok: false, message: 'Missing settings:write permission.' };
+export async function saveShippingZone(formData: FormData): Promise<{ ok: boolean; message: string } | StepUpRequired> {
+  const gate = await fiscalTableGate();
+  if (!gate.ok) return gate;
   const id = String(formData.get('id') ?? '').trim();
   const name = String(formData.get('name') ?? '').trim().slice(0, 80);
   const countries = String(formData.get('countries') ?? '').split(/[,\s]+/).map((c) => c.trim().toUpperCase()).filter(Boolean);
@@ -3926,27 +4298,31 @@ export async function saveShippingZone(formData: FormData): Promise<{ ok: boolea
     active: formData.get('active') !== 'false',
     sortOrder: Number.parseInt(String(formData.get('sortOrder') ?? '0'), 10) || 0,
   };
+  const before = id ? await prisma.shippingZone.findUnique({ where: { id } }) : null;
+  if (id && !before) return { ok: false, message: 'Zone not found — it may have been removed.' };
   const zone = id ? await prisma.shippingZone.update({ where: { id }, data }) : await prisma.shippingZone.create({ data });
   await audit('settings.shipping.zone', zone.id, `${zone.name}: ${zone.countries.join(',')}`);
+  await recordTableChange(gate.actor, 'SHIPPING', `SHIPPING_ZONE:${zone.name}`, shippingZoneValue(before), shippingZoneValue(zone), `Shipping zone “${zone.name}”`);
   revalidatePath('/admin/settings');
   return { ok: true, message: `Zone “${zone.name}” saved (${zone.countries.join(', ')}).` };
 }
 
-export async function deleteShippingZone(formData: FormData): Promise<{ ok: boolean; message: string }> {
+export async function deleteShippingZone(formData: FormData): Promise<{ ok: boolean; message: string } | StepUpRequired> {
   const id = String(formData.get('id') ?? '');
-  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  if (!(await hasCapability('settings:write'))) return { ok: false, message: 'Missing settings:write permission.' };
-  const z0 = await prisma.shippingZone.findUnique({ where: { id: String(id ?? '') }, select: { name: true } });
+  const gate = await fiscalTableGate();
+  if (!gate.ok) return gate;
+  const z0 = await prisma.shippingZone.findUnique({ where: { id } });
   if (!z0) return { ok: false, message: 'Zone not found.' };
   await prisma.shippingZone.delete({ where: { id } });
   await audit('settings.shipping.zone.delete', id, z0.name);
+  await recordTableChange(gate.actor, 'SHIPPING', `SHIPPING_ZONE:${z0.name}`, shippingZoneValue(z0), null, `Shipping zone “${z0.name}”`);
   revalidatePath('/admin/settings');
   return { ok: true, message: `Zone “${z0.name}” and its rates removed.` };
 }
 
-export async function saveShippingRate(formData: FormData): Promise<{ ok: boolean; message: string }> {
-  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  if (!(await hasCapability('settings:write'))) return { ok: false, message: 'Missing settings:write permission.' };
+export async function saveShippingRate(formData: FormData): Promise<{ ok: boolean; message: string } | StepUpRequired> {
+  const gate = await fiscalTableGate();
+  if (!gate.ok) return gate;
   const id = String(formData.get('id') ?? '').trim();
   const zoneId = String(formData.get('zoneId') ?? '').trim();
   const name = String(formData.get('name') ?? '').trim().slice(0, 80);
@@ -3961,7 +4337,8 @@ export async function saveShippingRate(formData: FormData): Promise<{ ok: boolea
   };
   const minKg = kg('minKg');
   const maxKg = kg('maxKg');
-  if (!zoneId || !(await prisma.shippingZone.findUnique({ where: { id: zoneId }, select: { id: true } }))) return { ok: false, message: 'Choose a zone.' };
+  const zone = zoneId ? await prisma.shippingZone.findUnique({ where: { id: zoneId }, select: { id: true, name: true } }) : null;
+  if (!zone) return { ok: false, message: 'Choose a zone.' };
   if (name.length < 2) return { ok: false, message: 'Give the rate a name (e.g. “DHL parcel”).' };
   if (!['PARCEL', 'PALLET', 'FREIGHT_QUOTE'].includes(shippingClass)) return { ok: false, message: 'Choose a shipping class.' };
   if (!['FLAT', 'PER_ITEM', 'PER_KG'].includes(basis)) return { ok: false, message: 'Choose how the rate is charged.' };
@@ -3982,18 +4359,25 @@ export async function saveShippingRate(formData: FormData): Promise<{ ok: boolea
     leadTimeText: String(formData.get('leadTime') ?? '').trim().slice(0, 80) || null,
     active: formData.get('active') !== 'false',
   };
+  const before = id ? await prisma.shippingRate.findUnique({ where: { id } }) : null;
+  if (id && !before) return { ok: false, message: 'Rate not found — it may have been removed.' };
   const rate = id ? await prisma.shippingRate.update({ where: { id }, data }) : await prisma.shippingRate.create({ data });
   await audit('settings.shipping.rate', rate.id, `${rate.name} ${rate.shippingClass} ${rate.basis} ${rate.amountCents}`);
+  await recordTableChange(gate.actor, 'SHIPPING', `SHIPPING_RATE:${zone.name}/${rate.name}`, shippingRateValue(before), shippingRateValue(rate), `Shipping rate “${rate.name}” (${zone.name})`);
   revalidatePath('/admin/settings');
   return { ok: true, message: `Rate “${rate.name}” saved.` };
 }
 
-export async function deleteShippingRate(formData: FormData): Promise<{ ok: boolean; message: string }> {
+export async function deleteShippingRate(formData: FormData): Promise<{ ok: boolean; message: string } | StepUpRequired> {
   const id = String(formData.get('id') ?? '');
-  await requireSession({ roles: ['ADMIN'], redirectTo: '/admin' });
-  if (!(await hasCapability('settings:write'))) return { ok: false, message: 'Missing settings:write permission.' };
-  const r = await prisma.shippingRate.deleteMany({ where: { id: String(id ?? '') } });
-  if (r.count) await audit('settings.shipping.rate.delete', id);
+  const gate = await fiscalTableGate();
+  if (!gate.ok) return gate;
+  const before = await prisma.shippingRate.findUnique({ where: { id }, include: { zone: { select: { name: true } } } });
+  const r = await prisma.shippingRate.deleteMany({ where: { id } });
+  if (r.count) {
+    await audit('settings.shipping.rate.delete', id);
+    if (before) await recordTableChange(gate.actor, 'SHIPPING', `SHIPPING_RATE:${before.zone.name}/${before.name}`, shippingRateValue(before), null, `Shipping rate “${before.name}” (${before.zone.name})`);
+  }
   revalidatePath('/admin/settings');
   return r.count ? { ok: true, message: 'Rate removed.' } : { ok: false, message: 'Rate not found.' };
 }
