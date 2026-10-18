@@ -128,28 +128,81 @@ export function sentence(s: string | null | undefined): string {
 /** Incoterms whose named place is the destination (C- and D-terms); E/F-terms name the origin. */
 const PLACE_IS_DESTINATION = new Set(['CPT', 'CIP', 'CFR', 'CIF', 'DAP', 'DPU', 'DDP']);
 
+/** A country of the country list (CountryPolicy): ISO code and name. */
+export type CountryRef = { code: string; name: string };
+
 /**
- * The delivery country an offer is priced for, read from its Incoterm place
- * ("DAP Berlin, DE", "DDP Basel (CH)", "CIP Leuven, Belgium"). Null when the
- * rule names the origin (EXW, FCA …) or the place has no recognisable country.
- * `countryCode` maps a country name ("Germany") to its ISO code.
+ * Two-letter state / province codes written after a city ("Boston, MA",
+ * "Toronto, ON", "Perth, WA") — many are ISO country codes too (MA Morocco,
+ * CA Canada, DE Germany), so such a suffix may mean either.
+ */
+const SUBDIVISION_CODES: ReadonlyArray<[string, ReadonlySet<string>]> = [
+  ['US', new Set('AL AK AZ AR CA CO CT DE DC FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY PR GU VI AS MP'.split(' '))],
+  ['CA', new Set('AB BC MB NB NL NS NT NU ON PE QC SK YT'.split(' '))],
+  ['AU', new Set('SA WA NT'.split(' '))],
+];
+
+/** Country names written otherwise than in the country list. */
+const COUNTRY_ALIASES: Record<string, string> = {
+  usa: 'US', 'u.s.a.': 'US', 'united states of america': 'US', uk: 'GB', 'u.k.': 'GB', 'great britain': 'GB', england: 'GB', scotland: 'GB', wales: 'GB',
+  holland: 'NL', 'the netherlands': 'NL', nederland: 'NL', deutschland: 'DE', 'czech republic': 'CZ', turkey: 'TR', schweiz: 'CH', suisse: 'CH', svizzera: 'CH',
+  österreich: 'AT', belgië: 'BE', belgique: 'BE', italia: 'IT', españa: 'ES',
+};
+
+/** Country names that are also a US state. */
+const NAME_ALSO_US_STATE = new Set(['georgia']);
+
+const normName = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * Every country an offer's Incoterm place may name, the ISO reading first:
+ * "Leuven, Belgium" → [BE]; "Basel (CH)" → [CH]; "Paris, FR" → [FR];
+ * "Toronto, ON" → [CA]; "Berlin, DE" → [DE, US] (DE is also Delaware);
+ * "San Diego, CA" → [CA, US]. Only countries of the list count ("Boston, MA"
+ * is [US] while Morocco is not on it). Null when the rule names the origin
+ * (EXW, FCA …) or the place names no country ("Berlin", "Lab 3, Building IT").
+ */
+export function placeCountries(
+  incoterm: string | null | undefined,
+  place: string | null | undefined,
+  countries: readonly CountryRef[],
+): string[] | null {
+  if (!incoterm || !PLACE_IS_DESTINATION.has(incoterm.trim().toUpperCase()) || !place?.trim()) return null;
+  const known = new Set(countries.map((c) => c.code.trim().toUpperCase()));
+  const out = new Set<string>();
+  const add = (code: string) => { if (known.has(code)) out.add(code); };
+  const p = place.trim();
+  const paren = /\(\s*([A-Za-z]{2})\s*\)\s*$/.exec(p);
+  const parts = p.split(/[,;/]|\s+[-–]\s+/).map((s) => s.trim()).filter(Boolean);
+  const last = parts.at(-1) ?? '';
+  // "(CH)": an ISO country code. ", MA" after a city: a country or a state / province.
+  const code = paren ? paren[1].toUpperCase() : parts.length > 1 && /^[A-Za-z]{2}$/.test(last) ? last.toUpperCase() : null;
+  if (code) {
+    add(code === 'UK' ? 'GB' : code);
+    if (!paren) for (const [country, codes] of SUBDIVISION_CODES) if (codes.has(code)) add(country);
+  } else {
+    const name = normName(last);
+    const byName = countries.find((c) => normName(c.name) === name)?.code.trim().toUpperCase() ?? COUNTRY_ALIASES[name];
+    if (byName) add(byName);
+    if (NAME_ALSO_US_STATE.has(name)) add('US');
+  }
+  return out.size ? Array.from(out) : null;
+}
+
+/**
+ * The delivery country an offer is priced for when its Incoterm place names
+ * exactly one country of the list (see placeCountries); null when the rule
+ * names the origin, the place names no country, or it may mean several
+ * ("Newark, DE"). An offer with freight names its destination explicitly —
+ * this reading is only a default and the composer's prefill.
  */
 export function destinationFromPlace(
   incoterm: string | null | undefined,
   place: string | null | undefined,
-  countryCode: (name: string) => string | null = () => null,
+  countries: readonly CountryRef[],
 ): string | null {
-  if (!incoterm || !PLACE_IS_DESTINATION.has(incoterm.trim().toUpperCase()) || !place?.trim()) return null;
-  const p = place.trim();
-  const iso = (c: string) => (c.toUpperCase() === 'UK' ? 'GB' : c.toUpperCase());
-  const paren = /\(([A-Za-z]{2})\)\s*$/.exec(p);
-  if (paren) return iso(paren[1]);
-  const parts = p.split(/[,;/]|\s+[-–]\s+/).map((s) => s.trim()).filter(Boolean);
-  const last = parts.at(-1) ?? '';
-  if (/^[A-Za-z]{2}$/.test(last) && parts.length > 1) return iso(last);
-  const word = /\s([A-Z]{2})$/.exec(last);
-  if (word) return iso(word[1]);
-  return parts.length > 1 ? countryCode(last) : null;
+  const c = placeCountries(incoterm, place, countries);
+  return c && c.length === 1 ? c[0] : null;
 }
 
 // ── Buyer–supplier mediation (Settings → Suppliers → MESSAGE_MEDIATION_MODE) ──
@@ -223,6 +276,38 @@ export function mediateSupplierMessage(
     return { body: m.text, held: false, removed: m.kinds };
   }
   return { body, held: false, removed: [] };
+}
+
+/** The free-text fields of a supplier's offer that reach the buyer (thread, offer mail, documents). */
+export const SUPPLIER_OFFER_TEXT_FIELDS = ['note', 'leadTime', 'warranty', 'incotermPlace', 'itemTitle', 'itemDescription', 'itemSerial'] as const;
+export type SupplierOfferText = Partial<Record<(typeof SUPPLIER_OFFER_TEXT_FIELDS)[number], string | null>>;
+
+/**
+ * What becomes of a supplier's direct offer (supplier review off) under a
+ * mediation mode — the same rules as their messages: STAFF_REVIEW sends the
+ * price to staff as a proposal (staff publish the offer); MASK_CONTACTS
+ * publishes it with the contact details removed from every free-text field;
+ * OFF publishes it as written. Fields not sent stay unset (an update keeps them).
+ */
+export function mediateSupplierOffer<T extends SupplierOfferText>(
+  mode: 'MASK_CONTACTS' | 'STAFF_REVIEW' | 'OFF',
+  fields: T,
+): { route: 'PROPOSAL' | 'PUBLISH'; fields: T; removed: ContactKind[]; maskedFields: Array<keyof T & string> } {
+  if (mode === 'STAFF_REVIEW') return { route: 'PROPOSAL', fields, removed: [], maskedFields: [] };
+  if (mode === 'OFF') return { route: 'PUBLISH', fields, removed: [], maskedFields: [] };
+  const out = { ...fields };
+  const removed = new Set<ContactKind>();
+  const maskedFields: Array<keyof T & string> = [];
+  for (const k of SUPPLIER_OFFER_TEXT_FIELDS) {
+    const v = fields[k];
+    if (typeof v !== 'string' || !v) continue;
+    const m = maskContactDetails(v);
+    if (!m.masked) continue;
+    (out as SupplierOfferText)[k] = m.text;
+    m.kinds.forEach((kind) => removed.add(kind));
+    maskedFields.push(k);
+  }
+  return { route: 'PUBLISH', fields: out, removed: Array.from(removed), maskedFields };
 }
 
 // ── Decline / close claims ───────────────────────────────────────────────────

@@ -25,27 +25,29 @@ import { documentAttachment, issueProforma, markDocumentSent, voidProformas } fr
 import { quoteDeletionBlockers } from '@/lib/documents/retention';
 import {
   CONTACT_REMOVED, HELD_SUPPLIER_MESSAGE_PREFIX, QUOTE_REF, contactKindsLabel, destinationFromPlace, offerMaxCents, endOfDayUtc, fmtDay, isoDay, mediateSupplierMessage,
-  offerPhase, quoteRef, sentence, statusClaimFilter, PAID_ORDER_STATES,
+  mediateSupplierOffer, offerPhase, placeCountries, quoteRef, sentence, statusClaimFilter, PAID_ORDER_STATES, type ContactKind, type CountryRef, type SupplierOfferText,
 } from '@/lib/quotes/offer';
 import { vatTreatmentLabel, type VatDecision, type VatTreatmentCode } from '@/lib/tax/determine';
 import { billingAddressJson, parseDetailsInput, shippingAddressJson, type DetailsFieldErrors, type OrderDetails } from '@/lib/orders/details';
 import {
-  autoArchiveOnClose, closeReasons, declineReasons, mediationMode, offerCurrencies, offerDefaults, offerIncoterms, openOfferHoldDays, quoteSlaHours,
-  requireTermsAcceptance, sellerMarkupBp, sellerOffersRequireApproval, sellerPriceRounding, sellerSeesSellPrice, stockReserveOn, termsOfSaleHref,
-  termsOfSaleUrl, termsTextVersion, vatIdRule, vatReviewBuyerText,
+  acceptedTermsVersion, autoArchiveOnClose, closeReasons, declineReasons, mediationMode, offerCurrencies, offerDefaults, offerIncoterms, openOfferHoldDays,
+  quoteSlaHours, requireTermsAcceptance, sellerMarkupBp, sellerOffersGoDirect, sellerPriceRounding, sellerSeesSellPrice, stockReserveOn, termsOfSaleHref,
+  termsOfSaleUrl, vatIdRule, vatReviewBuyerText,
 } from '@/lib/quotes/policy';
 import {
-  applyMarkup, daysFrom, fillPaymentTermsText, incotermLabel, offerAmounts, parseOfferTerms, pctLabel, type OfferTerms,
+  applyMarkup, daysFrom, fillPaymentTermsText, offerAmounts, parseOfferTerms, pctLabel, type OfferTerms,
 } from '@/lib/quotes/pricing';
 import { decideVatForDetails, offerVatAtSend, offerVatLines } from '@/lib/quotes/engine';
 import { holdUnitForQuote, releaseQuoteHold, unitAvailability } from '@/lib/quotes/stock';
 import { mailLayout, mailTable } from '@/lib/quotes/mail';
-import { buyerVatExplanation, offerItemTitle, parseOfferItem, type OfferItem } from '@/lib/quotes/offer-view';
+import {
+  buyerVatExplanation, offerItemTitle, offerMail, offerMailRows, offerThreadBody, parseOfferItem, type OfferAnnouncement, type OfferItem,
+} from '@/lib/quotes/offer-view';
 import { siteName } from '@/lib/brand/identity';
 import { documentRecipients } from '@/lib/orders/recipients';
 import { quotationAttachment } from '@/lib/documents/quotation';
 import { primaryHold, type HoldCode } from '@/lib/checkout/engine';
-import { checkCountry, countryOptions } from '@/lib/compliance/country';
+import { checkCountry } from '@/lib/compliance/country';
 import { getConditionGrades } from '@/lib/catalog/policy';
 import { decodeEntities } from '@/lib/marketplace/import-clean';
 
@@ -667,30 +669,15 @@ class OfferBlockedError extends Error {}
 
 const clean = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null);
 
-function offerMailRows(o: {
-  qty: number; unitCents: number; goodsCents: number; shippingCents: number; vatDecided: boolean; vatRateBp: number | null;
-  vatCents: number | null; vatLabel: string | null; totalCents: number; currency: string;
-}): string {
-  const m = (c: number) => escapeHtml(formatPrice(c, o.currency));
-  const rows: Array<[string, string, boolean?]> = [];
-  rows.push([o.qty > 1 ? `Price (${o.qty} × ${m(o.unitCents)})` : 'Price', m(o.goodsCents)]);
-  if (o.shippingCents > 0) rows.push(['Freight / shipping', m(o.shippingCents)]);
-  if (o.vatDecided) rows.push([`VAT ${pctLabel(o.vatRateBp)}${o.vatLabel ? ` <span style="color:#6b7280;font-size:12px;">(${escapeHtml(o.vatLabel)})</span>` : ''}`, m(o.vatCents ?? 0)]);
-  else rows.push(['VAT', '<span style="color:#6b7280;">determined from your billing details when you accept</span>']);
-  rows.push([o.vatDecided ? 'Total' : 'Total excl. VAT', m(o.totalCents), true]);
-  return mailTable(rows);
+/** The country list (CountryPolicy, every mode) for reading a destination from an Incoterm place. */
+async function countryRefs(): Promise<CountryRef[]> {
+  const rows = await prisma.countryPolicy.findMany({ select: { country: true, name: true } });
+  return rows.map((r) => ({ code: r.country, name: r.name }));
 }
 
-function termsMailRows(t: OfferTerms, validUntil: Date): string {
-  const rows: Array<[string, string]> = [];
-  const inc = incotermLabel(t);
-  if (inc) rows.push(['Delivery terms', escapeHtml(inc)]);
-  if (t.leadTime) rows.push(['Lead time', `<span dir="auto">${escapeHtml(t.leadTime)}</span>`]);
-  if (t.warranty) rows.push(['Warranty', `<span dir="auto">${escapeHtml(t.warranty)}</span>`]);
-  rows.push(['Payment', escapeHtml(t.paymentTerms.text)]);
-  rows.push(['Valid until', `<strong>${escapeHtml(fmtDay(validUntil))}</strong>`]);
-  return mailTable(rows);
-}
+const SUPPLIER_FIELD_LABEL: Record<keyof SupplierOfferText, string> = {
+  note: 'Note', leadTime: 'Lead time', warranty: 'Warranty', incotermPlace: 'Incoterm place', itemTitle: 'Item title', itemDescription: 'Item description', itemSerial: 'Serial number',
+};
 
 type OfferCtx = {
   sr: NonNullable<Awaited<ReturnType<typeof loadQuoteForOffer>>>;
@@ -716,6 +703,11 @@ type OfferCtx = {
   bySupplierDirect: boolean;
   /** What is offered and where to (offerTerms). */
   item: OfferItem;
+  /** Name of item.destinationCountry, and the Incoterm place it was read from (not chosen). */
+  destinationName: string | null;
+  destinationDerivedFrom: string | null;
+  /** A supplier's texts as written, when MESSAGE_MEDIATION_MODE removed contact details from them. */
+  mediation: { removed: ContactKind[]; original: SupplierOfferText; maskedFields: Array<keyof SupplierOfferText> } | null;
 };
 
 async function loadQuoteForOffer(id: string) {
@@ -798,6 +790,17 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   let detachedOrder: string | null = null;
   let detachedWasPayable = false;
   const nextRevision = (sr.offerRevision ?? 0) + 1;
+  // What the buyer reads (thread message + offer mail) — built from the texts
+  // as published (a supplier's already mediated, see sendOffer).
+  const announcement: OfferAnnouncement = {
+    quoteId: sr.id, revision: nextRevision, isUpdate, itemTitle, item: c.item, destinationName: c.destinationName, currency: c.currency,
+    qty: c.qty, unitCents: c.unitCents, goodsCents, shippingCents: c.shippingCents,
+    vat: d ? { treatment: d.treatment, rateBp: d.rateBp, cents: vatCents ?? 0 } : null, totalCents, validUntil: c.validUntil,
+    previous: previousAmounts
+      ? { cents: previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, currency: sr.quotedCurrency || 'EUR', exclVat: !previousAmounts.vatDecided }
+      : null,
+    terms, note: c.note,
+  };
   try {
     await prisma.$transaction(async (tx) => {
       // Guarded write: a buyer who accepted / declined in the meantime wins
@@ -870,17 +873,21 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
           // but the buyer price incl. margin is ours): no supplier as author.
           authorId: c.bySupplierDirect ? null : c.actorId,
           fromStaff: true,
-          body: [
-            `${isUpdate ? 'Updated offer' : 'Offer'} (revision ${nextRevision}) for "${itemTitle}": ${c.qty > 1 ? `${c.qty} × ${money(c.unitCents)} = ` : ''}${money(goodsCents)}${c.shippingCents ? ` + freight ${money(c.shippingCents)}` : ''} excl. VAT${d ? `; VAT ${pctLabel(d.rateBp)}: ${money(vatCents ?? 0)}; total ${money(totalCents)}` : '; VAT is determined from your billing details when you accept'}. Valid until ${fmtDay(c.validUntil)}.`,
-            [c.item.itemCondition ? `Condition: ${c.item.itemCondition.toLowerCase()}` : '', c.item.itemSerial ? `Serial number: ${c.item.itemSerial}` : '', c.item.destinationCountry ? `Priced for delivery to ${c.item.destinationCountry}` : ''].filter(Boolean).join(' · '),
-            c.item.itemDescription ?? '',
-            isUpdate && previousAmounts ? `Previous offer: ${formatPrice(previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, sr.quotedCurrency || 'EUR')}${previousAmounts.vatDecided ? '' : ' excl. VAT'}.` : '',
-            [incotermLabel(terms), terms.leadTime ? `Lead time: ${terms.leadTime}` : '', terms.warranty ? `Warranty: ${terms.warranty}` : '', terms.paymentTerms.text].filter(Boolean).join(' · '),
-            'Accept or decline it at the top of this page. Nothing is ordered until you accept.',
-            c.note ? `\nNote: ${c.note}` : '',
-          ].filter(Boolean).join('\n'),
+          body: offerThreadBody(announcement),
         },
       });
+      if (c.mediation) {
+        // What the supplier really wrote — for staff only (MASK_CONTACTS, as for their messages).
+        await tx.quoteMessage.create({
+          data: {
+            sourcingRequestId: sr.id,
+            authorId: c.actorId,
+            isInternalNote: true,
+            fromStaff: true,
+            body: `Supplier offer as written (only staff see this; the buyer got it with ${CONTACT_REMOVED} in place of ${contactKindsLabel(c.mediation.removed)}):\n\n${c.mediation.maskedFields.map((k) => `${SUPPLIER_FIELD_LABEL[k]}: ${c.mediation!.original[k] ?? ''}`).join('\n')}`.slice(0, 5000),
+          },
+        });
+      }
     });
   } catch (e) {
     if (e instanceof OfferBlockedError) return { error: e.message };
@@ -896,44 +903,18 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   }
 
   // ─── After commit: notify (never fatal) ───
-  const buyerLink = buyerQuoteLink(sr);
-  const itemRows: Array<[string, string]> = [];
-  if (c.item.itemCondition) itemRows.push(['Condition', escapeHtml(c.item.itemCondition.charAt(0) + c.item.itemCondition.slice(1).toLowerCase())]);
-  if (c.item.itemSerial) itemRows.push(['Serial number', `<span dir="auto">${escapeHtml(c.item.itemSerial)}</span>`]);
-  if (c.item.destinationCountry) itemRows.push(['Priced for delivery to', escapeHtml((await checkCountry(c.item.destinationCountry)).name ?? c.item.destinationCountry)]);
   // The quotation PDF of this revision (a document a purchasing office can raise a PO on), when one exists.
   const quotation = await quotationAttachment(sr.id).catch(async (e) => { await logError('quotes:quotation-pdf', e); return null; });
-  const amounts = {
-    qty: c.qty, unitCents: c.unitCents, goodsCents, shippingCents: c.shippingCents, vatDecided: !!d, vatRateBp: d?.rateBp ?? null,
-    vatCents, vatLabel: d ? vatTreatmentLabel(d.treatment) : null, totalCents, currency: c.currency,
-  };
-  const prevLine = isUpdate && previousAmounts
-    ? `<p style="margin:0 0 12px;color:#4b5563;">Previous offer: <s>${escapeHtml(formatPrice(previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, sr.quotedCurrency || 'EUR'))}${previousAmounts.vatDecided ? '' : ' excl. VAT'}</s></p>`
-    : '';
-  const sent = await trySendEmail({
-    to: sr.buyerEmail,
-    subject: `[${QUOTE_REF(sr.id)}] ${isUpdate ? 'Updated offer' : 'Your offer'} for ${headerText(itemTitle, 90)}: ${money(totalCents)}${d ? '' : ' excl. VAT'}`,
-    html: mailLayout({
-      heading: isUpdate ? 'Your offer was updated' : 'Your offer is ready',
-      body: [
-        `Hi <span dir="auto">${escapeHtml(sr.buyerName)}</span>,`,
-        `${isUpdate ? 'We updated our offer' : 'Here is our offer'} for <strong dir="auto">${escapeHtml(itemTitle)}</strong>:`,
-        c.item.itemDescription ? `<p dir="auto" style="margin:0 0 12px;color:#374151;">${escapeHtmlLines(c.item.itemDescription)}</p>` : '',
-        itemRows.length ? mailTable(itemRows) : '',
-        offerMailRows(amounts),
-        prevLine,
-        termsMailRows(terms, c.validUntil),
-        c.note ? `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;color:#374151;">${escapeHtmlLines(c.note)}</blockquote>` : '',
-        quotation ? 'The quotation is attached as a PDF (for your purchase order).' : '',
-      ].filter(Boolean),
-      cta: { href: buyerLink, label: 'Review and accept the offer' },
-      footer: [
-        'Nothing is ordered yet. When you accept, you confirm your billing and delivery details; we then create your order and email you the proforma invoice (PDF) with the bank details.',
-        `This offer is subject to our <a href="${escapeHtml(termsOfSaleHref(siteBase()))}">General Terms of Sale</a> · Reference ${QUOTE_REF(sr.id)}`,
-      ],
-    }),
-    attachments: quotation ? [quotation] : [],
-  }, 'quotes:offer');
+  const mail = offerMail(announcement, { buyerName: sr.buyerName, buyerLink: buyerQuoteLink(sr), termsHref: termsOfSaleHref(siteBase()), quotationAttached: !!quotation });
+  const sent = await trySendEmail({ to: sr.buyerEmail, subject: mail.subject, html: mail.html, attachments: quotation ? [quotation] : [] }, 'quotes:offer');
+  if (c.mediation) {
+    await notifyAdmins(
+      `Contact details removed from a supplier offer — ${QUOTE_REF(sr.id)}`,
+      `The supplier's offer reached the buyer without its ${contactKindsLabel(c.mediation.removed)}. The original texts are kept as an internal note.`,
+      `/admin/quotes/${sr.id}`,
+      'SYSTEM',
+    );
+  }
 
   await notifyUser(
     sr.submittedById,
@@ -973,18 +954,28 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   const what = c.bySupplierDirect && !sellerSeesSellPrice()
     ? `Offer sent to the buyer based on your price ${money(c.supplierCostCents ?? goodsCents)} (excl. VAT), valid until ${fmtDay(c.validUntil)}.`
     : `${isUpdate ? 'Offer updated' : 'Offer sent'}: ${money(totalCents)}${d ? '' : ' excl. VAT (VAT at acceptance)'}, valid until ${fmtDay(c.validUntil)}.`;
+  // A destination read from the Incoterm place is named, so a wrong reading is caught now.
+  const extra = [
+    c.destinationDerivedFrom && c.destinationName
+      ? `Priced for delivery to ${c.destinationName} — read from “${c.destinationDerivedFrom}”; if that is wrong, choose the destination country and update the offer.`
+      : '',
+    c.mediation ? `The ${contactKindsLabel(c.mediation.removed)} in your texts were removed — buyers deal with ${site} only.` : '',
+  ].filter(Boolean).join(' ');
   if (!sent.ok) {
-    return { warning: `${what} It is saved and the buyer sees it in their dashboard, but the email to ${who} could not be delivered (${sent.error}).` };
+    return { warning: `${what} It is saved and the buyer sees it in their dashboard, but the email to ${who} could not be delivered (${sent.error}).${extra ? ` ${extra}` : ''}` };
   }
-  return { notice: `${what} Emailed to ${who}${detachedOrder ? `; ${detachedWasPayable ? `old unpaid order ${detachedOrder} was canceled` : `canceled order ${detachedOrder} was unlinked`}` : ''}.` };
+  return { notice: `${what} Emailed to ${who}${detachedOrder ? `; ${detachedWasPayable ? `old unpaid order ${detachedOrder} was canceled` : `canceled order ${detachedOrder} was unlinked`}` : ''}.${extra ? ` ${extra}` : ''}` };
 }
 
 /**
  * Staff / assigned supplier "Send offer". Staff publish the offer to the buyer.
  * A supplier's price is a PROPOSAL to the team when SELLER_OFFERS_REQUIRE_APPROVAL
- * is on (staff review it and add the margin); with review off it goes to the
- * buyer at the supplier price + SELLER_OFFER_MARKUP_PCT. No order or proforma
- * exist until the buyer accepts; after acceptance the price is locked.
+ * is on or MESSAGE_MEDIATION_MODE holds supplier texts for staff (STAFF_REVIEW):
+ * staff review it and add the margin. Otherwise it goes to the buyer at the
+ * supplier price + SELLER_OFFER_MARKUP_PCT, its free texts mediated like the
+ * supplier's messages (MASK_CONTACTS: contact details removed, the original kept
+ * as an internal note, admins told). No order or proforma exist until the buyer
+ * accepts; after acceptance the price is locked.
  */
 export async function sendOffer(input: z.input<typeof OfferInput>): Promise<QuoteActionResult> {
   const result = OfferInput.safeParse(input);
@@ -1068,27 +1059,44 @@ export async function sendOffer(input: z.input<typeof OfferInput>): Promise<Quot
   if (incoterm && !incoterms.includes(incoterm)) return { error: `Choose one of the Incoterms: ${incoterms.join(', ')}.` };
 
   // ─── Supplier (assigned seller, not staff) ───
+  // A supplier's price reaches the buyer directly only with review off and their
+  // texts not held for staff (STAFF_REVIEW): otherwise it is a proposal staff publish.
   const supplier = isAssignee && !isAdmin;
-  if (supplier && sellerOffersRequireApproval()) {
+  if (supplier && !sellerOffersGoDirect()) {
     return submitSellerProposal(sr, session.user.id, {
       priceCents: p.priceCents * p.qty, currency: p.currency, note: clean(p.note), leadTime: clean(p.leadTime), warranty: clean(p.warranty),
+      offered: {
+        qty: p.qty, unitCents: p.priceCents, shippingCents: p.shippingCents, incoterm, incotermPlace: clean(p.incotermPlace), validUntil: isoDay(validUntil),
+        itemTitle: clean(p.itemTitle), itemDescription: clean(p.itemDescription), itemCondition: p.itemCondition ?? null, itemSerial: clean(p.itemSerial),
+        destinationCountry: clean(p.destinationCountry)?.toUpperCase() ?? null,
+      },
     });
   }
+  // Supplier texts reach the buyer mediated, like their messages (MASK_CONTACTS:
+  // contact details removed from every free-text field; OFF: as written).
+  const original: SupplierOfferText = {
+    note: p.note, leadTime: p.leadTime, warranty: p.warranty, incotermPlace: p.incotermPlace, itemTitle: p.itemTitle, itemDescription: p.itemDescription, itemSerial: p.itemSerial,
+  };
+  const mediated = supplier ? mediateSupplierOffer(mediationMode(), original) : null;
+  const q = mediated ? { ...p, ...mediated.fields } : p;
+  const mediation = mediated && mediated.removed.length ? { removed: mediated.removed, original, maskedFields: mediated.maskedFields } : null;
+
   const finalIncoterm = supplier ? incoterm ?? defaults.incoterm : incoterm;
-  const finalPlace = supplier ? clean(p.incotermPlace) ?? defaults.incotermPlace : clean(p.incotermPlace);
-  const item = await offerItemFrom(sr, p, { incoterm: finalIncoterm, place: finalPlace, staff: isAdmin });
-  if ('error' in item) return { error: item.error };
+  const finalPlace = supplier ? clean(q.incotermPlace) ?? defaults.incotermPlace : clean(q.incotermPlace);
+  const offered = await offerItemFrom(sr, q, { incoterm: finalIncoterm, place: finalPlace, staff: isAdmin });
+  if ('error' in offered) return { error: offered.error };
+  const { item, destinationName, destinationDerivedFrom } = offered;
 
   if (supplier) {
     // Review off: the buyer gets the supplier price + our margin.
     const sellUnit = applyMarkup(p.priceCents, sellerMarkupBp(), sellerPriceRounding());
     return publishOffer({
       sr, actorId: session.user.id, actorEmail: session.user.email, isAdmin: false,
-      unitCents: sellUnit, qty: p.qty, currency: p.currency, shippingCents: p.shippingCents, note: clean(p.note), validUntil,
+      unitCents: sellUnit, qty: p.qty, currency: p.currency, shippingCents: p.shippingCents, note: clean(q.note), validUntil,
       incoterm: finalIncoterm, incotermPlace: finalPlace,
-      leadTime: clean(p.leadTime) ?? clean(defaults.leadTime), warranty: clean(p.warranty),
+      leadTime: clean(q.leadTime) ?? clean(defaults.leadTime), warranty: clean(q.warranty),
       paymentDays: p.paymentDays ?? defaults.paymentTermDays,
-      supplierCostCents: p.priceCents * p.qty, approvesProposal: false, bySupplierDirect: true, item,
+      supplierCostCents: p.priceCents * p.qty, approvesProposal: false, bySupplierDirect: true, item, destinationName, destinationDerivedFrom, mediation,
     });
   }
 
@@ -1100,7 +1108,7 @@ export async function sendOffer(input: z.input<typeof OfferInput>): Promise<Quot
     paymentDays: p.paymentDays ?? defaults.paymentTermDays,
     // A pending supplier proposal is approved by this offer (its cost is the margin basis).
     supplierCostCents: proposalPending ? sr.sellerProposalCents : sr.offerSupplierCostCents ?? null,
-    approvesProposal: proposalPending, bySupplierDirect: false, item,
+    approvesProposal: proposalPending, bySupplierDirect: false, item, destinationName, destinationDerivedFrom, mediation: null,
   });
 }
 
@@ -1108,38 +1116,72 @@ export async function sendOffer(input: z.input<typeof OfferInput>): Promise<Quot
  * The item part of an offer: title / description / condition / serial (the
  * title is required when the request has no listing of its own — "Let us find
  * it" or "similar to …" — since it becomes the goods line of the proforma and
- * the invoice), and the destination country it is priced for: as chosen, else
- * the Incoterm place of a C/D-term ("DAP Berlin, DE"); required with freight.
+ * the invoice), and the destination country it is priced for. An update keeps
+ * what the composer did not send (undefined); an empty value clears it.
+ *
+ * Destination: as chosen (a country of the list); else, while the Incoterm and
+ * its place stay the same, the one chosen for the current offer. An offer with
+ * freight is refused without one. An offer without freight takes the country
+ * its C/D-term place names when that is unambiguous ("DAP Leuven, Belgium";
+ * not "DAP Newark, DE") — named in the send result so staff catch a wrong reading.
  */
 async function offerItemFrom(
-  sr: { productId: string | null; similarToProductId: string | null; product: { title: string } | null },
+  sr: { status: string; quotedPriceCents: number | null; offerTerms: Prisma.JsonValue; productId: string | null; similarToProductId: string | null },
   p: { itemTitle?: string | null; itemDescription?: string | null; itemCondition?: OfferItem['itemCondition']; itemSerial?: string | null; destinationCountry?: string | null; allowUnpublished?: boolean; shippingCents: number },
   ctx: { incoterm: string | null; place: string | null; staff: boolean },
-): Promise<OfferItem | { error: string }> {
-  const title = clean(p.itemTitle) ? decodeEntities(clean(p.itemTitle)!).replace(/\s+/g, ' ').trim() : null;
+): Promise<{ item: OfferItem; destinationName: string | null; destinationDerivedFrom: string | null } | { error: string }> {
+  const cur = sr.quotedPriceCents != null && (sr.status === 'RESPONDED' || sr.status === 'DECLINED') ? parseOfferItem(sr.offerTerms) : null;
+  const curTerms = cur ? parseOfferTerms(sr.offerTerms) : null;
+  const keep = (v: string | null | undefined, current: string | null | undefined) => (v === undefined ? current ?? null : clean(v));
+  const rawTitle = keep(p.itemTitle, cur?.itemTitle);
+  const title = rawTitle ? decodeEntities(rawTitle).replace(/\s+/g, ' ').trim() || null : null;
   if (!title && (!sr.productId || sr.similarToProductId)) {
     return { error: 'Enter the item title (make, model, year) — it is printed on the proforma and the invoice.' };
   }
-  let destination = clean(p.destinationCountry)?.toUpperCase() ?? null;
-  if (destination === 'UK') destination = 'GB';
-  if (!destination && ctx.incoterm && ctx.place) {
-    const names = new Map((await countryOptions()).map((c) => [c.name.trim().toLowerCase(), c.code]));
-    destination = destinationFromPlace(ctx.incoterm, ctx.place, (n) => names.get(n.trim().toLowerCase()) ?? null);
+
+  let destination: string | null = null;
+  let source: OfferItem['destinationSource'] = null;
+  if (p.destinationCountry !== undefined) {
+    destination = clean(p.destinationCountry)?.toUpperCase() ?? null;
+    if (destination === 'UK') destination = 'GB';
+    source = destination ? 'CHOSEN' : null;
+  } else if (
+    cur?.destinationSource === 'CHOSEN' && curTerms &&
+    (curTerms.incoterm ?? null) === ctx.incoterm && (curTerms.incotermPlace ?? null) === (ctx.incoterm ? ctx.place : null)
+  ) {
+    destination = cur.destinationCountry;
+    source = 'CHOSEN';
   }
   if (!destination && p.shippingCents > 0) {
     return { error: 'Choose the destination country: the freight in this offer is priced for it (the buyer can accept only with delivery there).' };
   }
+  let destinationDerivedFrom: string | null = null;
+  if (!destination && ctx.incoterm && ctx.place) {
+    destination = destinationFromPlace(ctx.incoterm, ctx.place, await countryRefs());
+    if (destination) {
+      source = 'PLACE';
+      destinationDerivedFrom = `${ctx.incoterm} ${ctx.place}`;
+    }
+  }
+  let destinationName: string | null = null;
   if (destination) {
     const c = await checkCountry(destination);
+    if (!c.known) return { error: `“${destination}” is not a country of the country list (Settings → Compliance & countries). Choose the destination country from the list.` };
     if (c.mode === 'BLOCK') return { error: `We do not deliver to ${c.name ?? destination}: ${c.reason}` };
+    destinationName = c.name ?? destination;
   }
   return {
-    itemTitle: title,
-    itemDescription: clean(p.itemDescription),
-    itemCondition: p.itemCondition ?? null,
-    itemSerial: clean(p.itemSerial),
-    destinationCountry: destination,
-    allowUnpublished: ctx.staff && p.allowUnpublished === true,
+    item: {
+      itemTitle: title,
+      itemDescription: keep(p.itemDescription, cur?.itemDescription),
+      itemCondition: p.itemCondition === undefined ? cur?.itemCondition ?? null : p.itemCondition,
+      itemSerial: keep(p.itemSerial, cur?.itemSerial),
+      destinationCountry: destination,
+      destinationSource: source,
+      allowUnpublished: ctx.staff && (p.allowUnpublished ?? cur?.allowUnpublished ?? false),
+    },
+    destinationName,
+    destinationDerivedFrom,
   };
 }
 
@@ -1147,7 +1189,11 @@ async function offerItemFrom(
 async function submitSellerProposal(
   sr: NonNullable<Awaited<ReturnType<typeof loadQuoteForOffer>>>,
   sellerId: string,
-  p: { priceCents: number; currency: string; note: string | null; leadTime: string | null; warranty: string | null },
+  p: {
+    priceCents: number; currency: string; note: string | null; leadTime: string | null; warranty: string | null;
+    /** The rest of what the supplier filled in (quantity, freight, Incoterm, item, destination) — for staff, kept with the proposal. */
+    offered?: Record<string, string | number | null>;
+  },
 ): Promise<QuoteActionResult> {
   const now = new Date();
   const claim = await prisma.sourcingRequest.updateMany({
@@ -1157,7 +1203,7 @@ async function submitSellerProposal(
       sellerProposalCents: p.priceCents,
       sellerProposalCurrency: p.currency,
       sellerProposalNote: p.note,
-      sellerProposalTerms: { leadTime: p.leadTime, warranty: p.warranty } as Prisma.InputJsonValue,
+      sellerProposalTerms: { ...(p.offered ?? {}), leadTime: p.leadTime, warranty: p.warranty } as Prisma.InputJsonValue,
       sellerProposalAt: now,
       sellerProposalById: sellerId,
       sellerProposalReviewNote: null,
@@ -1166,6 +1212,7 @@ async function submitSellerProposal(
   if (claim.count !== 1) return { error: 'This quote changed meanwhile (accepted or closed). Reload the page.' };
   const itemTitle = offerItemTitle(sr);
   const money = formatPrice(p.priceCents, p.currency);
+  const o = p.offered;
   await notifyAdmins(
     `Supplier proposal to review — ${QUOTE_REF(sr.id)}`,
     `${itemTitle}: supplier price ${money}. Review it, add the margin and send the offer to the buyer.`,
@@ -1179,6 +1226,15 @@ async function submitSellerProposal(
       heading: 'Supplier proposal to review',
       body: [
         `The supplier proposed <strong>${escapeHtml(money)}</strong> (excl. VAT) for <strong dir="auto">${escapeHtml(itemTitle)}</strong>.`,
+        o && (Number(o.qty) > 1 || Number(o.shippingCents) > 0 || o.incoterm || o.itemTitle)
+          ? mailP(escapeHtml([
+              Number(o.qty) > 1 ? `Quantity ${o.qty}` : '',
+              Number(o.shippingCents) > 0 ? `freight ${formatPrice(Number(o.shippingCents), p.currency)}` : '',
+              o.incoterm ? `${o.incoterm}${o.incotermPlace ? ` ${o.incotermPlace}` : ''}` : '',
+              o.destinationCountry ? `to ${o.destinationCountry}` : '',
+              o.itemTitle ? `item: ${o.itemTitle}` : '',
+            ].filter(Boolean).join(' · ')))
+          : '',
         p.leadTime ? `Lead time: <span dir="auto">${escapeHtml(p.leadTime)}</span>` : '',
         p.warranty ? `Warranty: <span dir="auto">${escapeHtml(p.warranty)}</span>` : '',
         p.note ? `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(p.note)}</blockquote>` : '',
@@ -1291,8 +1347,10 @@ type Prepared = {
   terms: OfferTerms | null;
   item: OfferItem;
   complianceNote: string | null;
-  /** VAT review before payment: why (staff) — the buyer text is preview.vatReview. */
+  /** VAT review before payment: why (staff) — the buyer text is preview.vatReview on the
+   *  acceptance step and vatReviewPlaced once the order exists. */
   vatReviewNote: string | null;
+  vatReviewPlaced: string | null;
 };
 
 async function loadQuoteForAcceptance(id: string) {
@@ -1375,6 +1433,7 @@ async function prepareAcceptance(
   const details = parsed.details;
 
   // The offer's freight and VAT are priced for one destination.
+  const amounts = offerAmounts(sr);
   if (item.destinationCountry && details.delivery.country !== item.destinationCountry) {
     const name = (await checkCountry(item.destinationCountry)).name ?? item.destinationCountry;
     return {
@@ -1385,8 +1444,23 @@ async function prepareAcceptance(
       },
     };
   }
+  // An offer sent before offers named their destination: its freight was priced
+  // for the C/D-term place — refused when the delivery country can not be that
+  // place's ("DAP Berlin, DE" is Germany or Delaware, never Australia).
+  if (!item.destinationCountry && amounts.shippingCents > 0 && terms?.incoterm && terms.incotermPlace) {
+    const possible = placeCountries(terms.incoterm, terms.incotermPlace, await countryRefs());
+    if (possible && !possible.includes(details.delivery.country)) {
+      const where = `${terms.incotermPlace} (${terms.incoterm})`;
+      return {
+        ok: false,
+        result: {
+          error: `This offer and its freight were priced for delivery to ${where}. Ask us for a new offer to deliver to another country.`,
+          fieldErrors: { d_country: `this offer is for delivery to ${terms.incotermPlace}` },
+        },
+      };
+    }
+  }
 
-  const amounts = offerAmounts(sr);
   const unitCents = terms?.unitCents || Math.round(amounts.goodsCents / qty);
   const vat = await decideVatForDetails(details, offerVatLines({ goodsCents: amounts.goodsCents, shippingCents: amounts.shippingCents, scheme: sr.product?.vatScheme ?? null }));
   for (const c of [vat.shipTo, vat.billing]) {
@@ -1411,7 +1485,9 @@ async function prepareAcceptance(
   // another company, …): the order is still placed, on a pre-payment VAT
   // review — no proforma until staff confirm the VAT (like the COMPLIANCE hold).
   const vatReviewNote = d.reviewRequired ? d.reasons.join(' ').slice(0, 900) : null;
-  const vatReview = d.reviewRequired ? vatReviewBuyerText(viesDown ? 'VIES_UNAVAILABLE' : 'REVIEW') : null;
+  // Before the buyer confirms nothing is ordered yet ("if you accept …"); the order mail says it is placed.
+  const vatReview = d.reviewRequired ? vatReviewBuyerText(viesDown ? 'VIES_UNAVAILABLE' : 'REVIEW', 'PREVIEW') : null;
+  const vatReviewPlaced = d.reviewRequired ? vatReviewBuyerText(viesDown ? 'VIES_UNAVAILABLE' : 'REVIEW', 'PLACED') : null;
   const goodsLine = d.lines.find((l) => l.lineType === 'GOODS');
   const totalCents = amounts.goodsCents + amounts.shippingCents + d.taxCents;
   const review = [vat.shipTo, vat.billing].find((c) => c?.mode === 'REVIEW');
@@ -1430,6 +1506,7 @@ async function prepareAcceptance(
       vatIdEvidence: vat.vatId,
       complianceNote: review ? review.reason : null,
       vatReviewNote,
+      vatReviewPlaced,
       preview: {
         currency: sr.quotedCurrency || 'EUR',
         qty,
@@ -1551,9 +1628,11 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
   const hold = holdCodes.length
     ? { holdReason: primaryHold(holdCodes), holdNote: holdNotes.join(' | ').slice(0, 2000), holdAt: now, openHolds: holdCodes as string[], payableSince: null }
     : { openHolds: [] as string[], payableSince: now };
-  // The Terms of Sale the buyer ticked: which link, which text version, when, from where.
+  // The Terms of Sale the buyer ticked: which link, which text version (the
+  // rendered text as /legal/terms shows it now), when, from where.
+  const termsVersion = p.acceptTerms ? await acceptedTermsVersion(siteBase()) : null;
   const termsAccepted = p.acceptTerms
-    ? { termsUrl: termsOfSaleUrl(), termsVersion: termsTextVersion(), termsAcceptedAt: now, termsAcceptedIp: ip }
+    ? { termsUrl: termsOfSaleUrl(), termsVersion, termsAcceptedAt: now, termsAcceptedIp: ip }
     : {};
   const orderTerms = { kind: 'PREPAY', days: preview.dueDays, text: terms?.paymentTerms.text ?? fillPaymentTermsText(offerDefaults().paymentTermsText, preview.dueDays), incoterm: terms?.incoterm ?? null, incotermPlace: terms?.incotermPlace ?? null, leadTime: terms?.leadTime ?? null };
 
@@ -1697,7 +1776,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
   await audit(
     'quote.offer.accept',
     order.number ?? order.orderNumber,
-    `order=${order.orderNumber} r${sr.offerRevision} total=${money(preview.totalCents)} vat=${preview.vatTreatment} ${pctLabel(preview.vatRateBp)} by ${session.user.email} ip=${ip ?? '-'} ua="${(ua ?? '-').slice(0, 120)}" terms=${p.acceptTerms ? `${termsOfSaleUrl()} ${termsTextVersion().slice(0, 19)} accepted` : requireTermsAcceptance() ? 'MISSING' : 'not required'}${r.prep.complianceNote ? ' · compliance hold' : ''}${vatReview ? ' · VAT review (no proforma yet)' : ''}${item.allowUnpublished && sr.product?.status !== 'PUBLISHED' ? ' · unpublished listing (staff override on the offer)' : ''}`,
+    `order=${order.orderNumber} r${sr.offerRevision} total=${money(preview.totalCents)} vat=${preview.vatTreatment} ${pctLabel(preview.vatRateBp)} by ${session.user.email} ip=${ip ?? '-'} ua="${(ua ?? '-').slice(0, 120)}" terms=${p.acceptTerms ? `${termsOfSaleUrl()} ${termsVersion?.slice(0, 19) ?? '(external link)'} accepted` : requireTermsAcceptance() ? 'MISSING' : 'not required'}${r.prep.complianceNote ? ' · compliance hold' : ''}${vatReview ? ' · VAT review (no proforma yet)' : ''}${item.allowUnpublished && sr.product?.status !== 'PUBLISHED' ? ' · unpublished listing (staff override on the offer)' : ''}`,
   );
 
   const sendAll = async () => {
@@ -1732,7 +1811,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
           ['Pay by', `<strong>${escapeHtml(fmtDay(dueDate))}</strong>`],
         ]
       : [['Reference', escapeHtml(reference)], ['Amount', escapeHtml(money(preview.totalCents)), true], ['Pay by', escapeHtml(fmtDay(dueDate))]];
-    const holdText = [r.prep.complianceNote, preview.vatReview].filter(Boolean).join(' ');
+    const holdText = [r.prep.complianceNote, r.prep.vatReviewPlaced].filter(Boolean).join(' ');
     const html = mailLayout({
       heading: onHold ? 'Order received — check before payment' : `Thank you — your order ${order.orderNumber} is confirmed`,
       body: [

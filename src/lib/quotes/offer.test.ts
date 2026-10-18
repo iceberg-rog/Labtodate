@@ -2,8 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CONTACT_REMOVED, HELD_SUPPLIER_MESSAGE_PREFIX, contactKindsLabel, destinationFromPlace, isHeldSupplierMessage, maskContactDetails,
-  mediateSupplierMessage, sentence, statusClaimFilter,
+  mediateSupplierMessage, mediateSupplierOffer, placeCountries, sentence, statusClaimFilter, type CountryRef,
 } from './offer';
+
+// The country list as seeded (CountryPolicy): no Morocco, no "ON".
+const COUNTRIES: CountryRef[] = [
+  ['DE', 'Germany'], ['BE', 'Belgium'], ['CH', 'Switzerland'], ['FR', 'France'], ['GB', 'United Kingdom'], ['IT', 'Italy'], ['NL', 'Netherlands'],
+  ['US', 'United States'], ['CA', 'Canada'], ['AU', 'Australia'], ['RU', 'Russia'],
+].map(([code, name]) => ({ code, name }));
 
 test('supplier contact details are removed; prices, dates, serials and VAT IDs stay', () => {
   const m = maskContactDetails('Buy directly for EUR 9,500: call me on +49 151 2345 6789 or 030 1234567, mail sales@biolab-refurb.de, see www.biolab-refurb.de/deal or biolab.com, IBAN DE89 3704 0044 0532 0130 00.');
@@ -40,17 +46,67 @@ test('mediation modes: mask, hold for review, or deliver as written', () => {
   assert.equal(contactKindsLabel(['link']), 'links');
 });
 
-test('the destination of an offer comes from the place of a C/D-term only', () => {
-  const byName = (n: string) => ({ germany: 'DE', belgium: 'BE' } as Record<string, string>)[n.toLowerCase()] ?? null;
-  assert.equal(destinationFromPlace('DAP', 'Berlin, DE'), 'DE');
-  assert.equal(destinationFromPlace('dap', 'Berlin DE'), 'DE');
-  assert.equal(destinationFromPlace('DDP', 'Basel (CH)'), 'CH');
-  assert.equal(destinationFromPlace('CIP', 'Leuven, Belgium', byName), 'BE');
-  assert.equal(destinationFromPlace('DPU', 'London, UK'), 'GB');
-  assert.equal(destinationFromPlace('DAP', 'Berlin'), null, 'a city alone names no country');
-  assert.equal(destinationFromPlace('EXW', 'Zoetermeer, NL'), null, 'EXW names the origin');
-  assert.equal(destinationFromPlace('FCA', 'Schiphol, NL'), null, 'FCA names the origin');
-  assert.equal(destinationFromPlace(null, 'Berlin, DE'), null);
+test('the destination of an offer comes from the place of a C/D-term, only when it names one country of the list', () => {
+  const dest = (inc: string | null, place: string, list = COUNTRIES) => destinationFromPlace(inc, place, list);
+  assert.equal(dest('DDP', 'Basel (CH)'), 'CH');
+  assert.equal(dest('CIP', 'Leuven, Belgium'), 'BE');
+  assert.equal(dest('dap', 'Paris, FR'), 'FR');
+  assert.equal(dest('DPU', 'London, UK'), 'GB');
+  assert.equal(dest('DAP', 'Boston, MA, USA'), 'US');
+  // A state / province after the city is not a country.
+  assert.equal(dest('DAP', 'Boston, MA'), 'US', 'MA is Massachusetts (Morocco is not on the list)');
+  assert.equal(dest('DAP', 'Boston, MA', [...COUNTRIES, { code: 'MA', name: 'Morocco' }]), null, 'with Morocco on the list MA may mean either');
+  assert.equal(dest('DAP', 'Toronto, ON'), 'CA', 'ON is Ontario, not a country');
+  assert.equal(dest('DAP', 'San Diego, CA'), null, 'CA is California or Canada');
+  assert.equal(dest('DAP', 'Newark, DE'), null, 'DE is Delaware or Germany');
+  assert.equal(dest('DAP', 'Berlin, DE'), null, 'the same suffix — staff choose the destination');
+  assert.equal(dest('DAP', 'Lab 3, Building IT'), null, 'a word in the address is no country');
+  assert.equal(dest('dap', 'Berlin DE'), null, 'no separator, no country');
+  assert.equal(dest('DAP', 'Casablanca, MA'), 'US', 'documented limit: read as a US state while Morocco is not on the list');
+  assert.equal(dest('DAP', 'Berlin'), null, 'a city alone names no country');
+  assert.equal(dest('DAP', 'Somewhere, XX'), null, 'an unknown code');
+  assert.equal(dest('EXW', 'Zoetermeer, NL'), null, 'EXW names the origin');
+  assert.equal(dest('FCA', 'Schiphol, NL'), null, 'FCA names the origin');
+  assert.equal(dest(null, 'Berlin, DE'), null);
+  assert.equal(dest('DAP', 'Berlin, DE', []), null, 'nothing is read without the country list');
+
+  // Every country a place may name (the check of offers sent before they named a destination).
+  assert.deepEqual(placeCountries('DAP', 'Berlin, DE', COUNTRIES), ['DE', 'US']);
+  assert.deepEqual(placeCountries('DAP', 'San Diego, CA', COUNTRIES), ['CA', 'US']);
+  assert.deepEqual(placeCountries('DAP', 'Toronto, ON', COUNTRIES), ['CA']);
+  assert.deepEqual(placeCountries('DAP', 'Perth, WA', COUNTRIES), ['US', 'AU']);
+  assert.deepEqual(placeCountries('DAP', 'Atlanta, Georgia', COUNTRIES), ['US']);
+  assert.equal(placeCountries('DAP', 'Lab 3, Building IT', COUNTRIES), null);
+  assert.equal(placeCountries('EXW', 'Berlin, DE', COUNTRIES), null);
+});
+
+test('a supplier offer: held for staff, published with contact details removed, or as written', () => {
+  const fields = {
+    note: 'Buy directly for EUR 9,500: call +49 151 2345 6789 or mail sales@biolab-refurb.de',
+    leadTime: '2 weeks', warranty: '6 months, ask anna [at] biolab [dot] de', incotermPlace: 'Berlin, DE',
+    itemTitle: 'Zeiss LSM 980 — see www.biolab-refurb.de', itemDescription: undefined, itemSerial: '2802001234',
+  };
+  const held = mediateSupplierOffer('STAFF_REVIEW', fields);
+  assert.equal(held.route, 'PROPOSAL');
+  assert.deepEqual(held.fields, fields);
+
+  const masked = mediateSupplierOffer('MASK_CONTACTS', fields);
+  assert.equal(masked.route, 'PUBLISH');
+  assert.deepEqual(new Set(masked.removed), new Set(['phone', 'email', 'link']));
+  assert.deepEqual(new Set(masked.maskedFields), new Set(['note', 'warranty', 'itemTitle']));
+  assert.equal(masked.fields.note, `Buy directly for EUR 9,500: call ${CONTACT_REMOVED} or mail ${CONTACT_REMOVED}`);
+  assert.equal(masked.fields.warranty, `6 months, ask ${CONTACT_REMOVED}`);
+  assert.equal(masked.fields.itemTitle, `Zeiss LSM 980 — see ${CONTACT_REMOVED}`);
+  assert.equal(masked.fields.leadTime, '2 weeks');
+  assert.equal(masked.fields.incotermPlace, 'Berlin, DE');
+  assert.equal(masked.fields.itemSerial, '2802001234', 'a serial number is no phone number');
+  assert.equal(masked.fields.itemDescription, undefined, 'a field not sent stays unset (an update keeps it)');
+  assert.equal(fields.note.includes('+49'), true, 'the original is not changed');
+
+  const off = mediateSupplierOffer('OFF', fields);
+  assert.equal(off.route, 'PUBLISH');
+  assert.deepEqual(off.fields, fields);
+  assert.deepEqual(off.removed, []);
 });
 
 test('sentence(): one full stop, never two', () => {

@@ -87,7 +87,7 @@ export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   {
     key: 'TERMS_OF_SALE_URL', label: 'Terms of Sale link', group: 'Quotes & offers', type: 'string', default: '/legal/terms',
     validate: termsLink,
-    hint: 'Linked as “General Terms of Sale” from the acceptance step and the offer email. Default /legal/terms (the Terms text under Documents & legal texts); the version the buyer accepted is stored on the order.',
+    hint: 'Linked as “General Terms of Sale” from the acceptance step and the offer email. Default /legal/terms (the Terms text under Documents & legal texts). The order stores the link, the time and IP of the acceptance and — for /legal/terms — the version of the text exactly as the buyer read it (placeholders filled); another link is stored as the link only.',
   },
   {
     key: 'PROFORMA_REVISION_EMAIL', label: 'Email a revised proforma when the buyer changes details', group: 'Quotes & offers', type: 'bool', default: 'true', options: ON_OFF,
@@ -145,14 +145,24 @@ export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
     hint: 'Shown in the “Close (no deal)” dialog. The reason (and the optional note) is stored on the quote, posted in the conversation and included in the e-mail to the buyer.',
   },
   {
-    key: 'QUOTE_MSG_VAT_ID_UNCHECKED', label: 'Acceptance while the EU VAT ID check (VIES) is down', group: 'Quotes & offers', type: 'string',
-    default: 'We could not check your VAT ID with the EU service right now. Your order is placed; we confirm the VAT before asking for payment.',
-    hint: 'Shown to the buyer on the acceptance step and in the order e-mail when VIES does not answer (Tax & VAT → VIES down policy “manual review”). The order waits on a VAT review: no proforma or payment request until staff confirm the VAT.',
+    key: 'QUOTE_MSG_VAT_ID_UNCHECKED_PREVIEW', label: 'Acceptance step while the EU VAT ID check (VIES) is down', group: 'Quotes & offers', type: 'string',
+    default: 'We could not check your VAT ID with the EU service right now. If you accept, your order is placed and we confirm the VAT before asking for payment.',
+    hint: 'Shown on the acceptance step, before the buyer confirms (nothing is ordered yet), when VIES does not answer (Tax & VAT → VIES down policy “manual review”). After the acceptance the order e-mail uses the text below.',
   },
   {
-    key: 'QUOTE_MSG_VAT_REVIEW', label: 'Acceptance when the VAT needs a staff decision', group: 'Quotes & offers', type: 'string',
+    key: 'QUOTE_MSG_VAT_ID_UNCHECKED', label: 'Order placed while the EU VAT ID check (VIES) is down', group: 'Quotes & offers', type: 'string',
+    default: 'We could not check your VAT ID with the EU service right now. Your order is placed; we confirm the VAT before asking for payment.',
+    hint: 'Shown to the buyer in the order e-mail and notification after accepting while VIES does not answer. The order waits on a VAT review: no proforma or payment request until staff confirm the VAT.',
+  },
+  {
+    key: 'QUOTE_MSG_VAT_REVIEW_PREVIEW', label: 'Acceptance step when the VAT needs a staff decision', group: 'Quotes & offers', type: 'string',
+    default: 'We need to confirm the VAT for these billing details. If you accept, your order is placed and we confirm the VAT before asking for payment.',
+    hint: 'Shown on the acceptance step, before the buyer confirms, when the VAT rules cannot decide on their own (e.g. the VAT ID is registered to another company name). After the acceptance the order e-mail uses the text below.',
+  },
+  {
+    key: 'QUOTE_MSG_VAT_REVIEW', label: 'Order placed when the VAT needs a staff decision', group: 'Quotes & offers', type: 'string',
     default: 'We need to confirm the VAT for these billing details. Your order is placed; we confirm the VAT before asking for payment.',
-    hint: 'Shown to the buyer when the VAT rules cannot decide on their own (e.g. the VAT ID is registered to another company name). The order waits on a VAT review before the proforma is sent.',
+    hint: 'Shown to the buyer in the order e-mail and notification after accepting when the VAT rules cannot decide on their own. The order waits on a VAT review before the proforma is sent.',
   },
   {
     key: 'BUYER_CAN_CANCEL_UNPAID_ORDER', label: 'Buyer can cancel an unpaid order', group: 'Quotes & offers', type: 'bool', default: 'true', options: ON_OFF,
