@@ -1,22 +1,14 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import {
-  ChevronLeft, Sparkles, Headphones, ShieldCheck, MessageCircle,
-  CheckCheck, Star, UserCircle2, Mail, Clock, Hourglass, Paperclip,
+  ChevronLeft, Sparkles, ShieldCheck, MessageCircle,
+  Star, UserCircle2, Mail, Clock, Hourglass, Paperclip, Lock,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { requireCapability, getServerSession } from '@/lib/auth-server';
-import { prisma } from '@/lib/db';
-import {
-  adminClaimConversation,
-  adminReplyConversation,
-  adminCloseConversation,
-} from '@/lib/assistant/actions';
-import { AutoRefresh } from '@/components/util/AutoRefresh';
-import { ReplyForm } from '@/components/util/ReplyForm';
+import { requireCapability } from '@/lib/auth-server';
+import { ARCHIVE_OUTCOME_LABEL, archiveOutcome, getArchivedConversation, type ArchiveOutcome } from '@/lib/assistant/actions';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Assistant conversation' };
+export const metadata = { title: 'Chat transcript' };
 
 function smartDate(d: Date | null | undefined): string {
   if (!d) return '';
@@ -29,52 +21,44 @@ function smartDate(d: Date | null | undefined): string {
   }
   if (days === 1) return 'yesterday';
   if (days < 7) return `${days} days ago`;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-const STATUS_VIS: Record<string, { ring: string; pill: string; label: string }> = {
-  AI:             { ring: 'ring-violet-200 dark:ring-violet-800',  pill: 'bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800',     label: 'AI handling' },
-  AWAITING_HUMAN: { ring: 'ring-amber-300 dark:ring-amber-800',   pill: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',       label: 'Waiting for you' },
-  WITH_HUMAN:     { ring: 'ring-emerald-200 dark:ring-emerald-800', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',  label: 'Live · with human' },
-  CLOSED:         { ring: 'ring-ring',   pill: 'bg-muted text-muted-foreground border-border',       label: 'Closed' },
-  ARCHIVED:       { ring: 'ring-ring',   pill: 'bg-muted text-muted-foreground border-border',        label: 'Archived' },
+const OUTCOME_VIS: Record<ArchiveOutcome, { ring: string; pill: string }> = {
+  unanswered: { ring: 'ring-amber-300 dark:ring-amber-800',     pill: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800' },
+  team:       { ring: 'ring-emerald-200 dark:ring-emerald-800', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800' },
+  ai:         { ring: 'ring-violet-200 dark:ring-violet-800',   pill: 'bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800' },
+  closed:     { ring: 'ring-ring', pill: 'bg-muted text-muted-foreground border-border' },
+  ended:      { ring: 'ring-ring', pill: 'bg-muted text-muted-foreground border-border' },
 };
 
-export default async function AdminConversationDetailPage(props: { params: Promise<{ id: string }> }) {
+type ArchivedMessage = { id: string; role: string; authorId: string | null; body: string; attachments: string[]; createdAt: Date };
+
+/**
+ * One transcript of the former on-site chat, read-only: no reply box, no
+ * claim and no close — the chat was removed (support runs on tickets only).
+ */
+export default async function AdminChatTranscriptPage(props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
   await requireCapability('messages:view');
-  const session = await getServerSession();
 
-  const conv = await prisma.assistantConversation.findUnique({
-    where: { id: params.id },
-    include: {
-      user: { select: { id: true, name: true, email: true, createdAt: true } },
-      messages: { orderBy: { createdAt: 'asc' } },
-    },
-  });
-  // assignedTo / closedBy resolved separately (we don't have explicit
-  // relations on the model — these are loose FK strings).
-  const [assignedTo, closedBy] = conv
-    ? await Promise.all([
-        conv.assignedToId ? prisma.user.findUnique({ where: { id: conv.assignedToId }, select: { id: true, name: true } }) : null,
-        conv.closedById ? prisma.user.findUnique({ where: { id: conv.closedById }, select: { name: true } }) : null,
-      ])
-    : [null, null];
-  if (!conv) notFound();
+  const found = await getArchivedConversation(params.id);
+  if (!found) notFound();
+  const { conv, staffNames } = found;
 
-  const vis = STATUS_VIS[conv.status] ?? STATUS_VIS.AI;
+  const outcome = archiveOutcome(conv);
+  const vis = OUTCOME_VIS[outcome];
   const ref = `CHT-${conv.id.slice(-6).toUpperCase()}`;
   const customerName = conv.user?.name || conv.guestName || conv.guestEmail || 'Anonymous guest';
   const customerEmail = conv.user?.email || conv.guestEmail || null;
   const isGuest = !conv.user;
-  const canReply = conv.status === 'AWAITING_HUMAN' || conv.status === 'WITH_HUMAN' || conv.status === 'AI';
-  const canClose = conv.status === 'WITH_HUMAN' || conv.status === 'AI' || conv.status === 'AWAITING_HUMAN';
+  const assignedTo = conv.assignedToId ? staffNames[conv.assignedToId] ?? 'a former team member' : null;
+  const closedBy = conv.closedById ? staffNames[conv.closedById] ?? 'a former team member' : null;
 
   return (
     <div className="space-y-4">
-      <AutoRefresh />
       <Link href="/admin/messages" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ChevronLeft className="h-4 w-4" /> Back to messages
+        <ChevronLeft className="h-4 w-4" /> Back to chat archive
       </Link>
 
       {/* Hero */}
@@ -84,7 +68,7 @@ export default async function AdminConversationDetailPage(props: { params: Promi
             <div className="flex items-center gap-2 flex-wrap mb-2">
               <span className="font-mono text-[11px] text-muted-foreground">{ref}</span>
               <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${vis.pill}`}>
-                {vis.label}
+                {ARCHIVE_OUTCOME_LABEL[outcome]}
               </span>
               {isGuest && (
                 <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
@@ -97,7 +81,7 @@ export default async function AdminConversationDetailPage(props: { params: Promi
                 </span>
               )}
             </div>
-            <h1 className="text-xl font-bold tracking-tight">{conv.subject ?? 'New conversation'}</h1>
+            <h1 className="text-xl font-bold tracking-tight">{conv.subject ?? 'Untitled conversation'}</h1>
             <p className="text-sm text-muted-foreground mt-1.5 inline-flex items-center gap-1.5 flex-wrap">
               <UserCircle2 className="h-3.5 w-3.5" />
               <strong className="text-foreground">{customerName}</strong>
@@ -106,61 +90,41 @@ export default async function AdminConversationDetailPage(props: { params: Promi
               <Clock className="h-3 w-3" /> started {smartDate(conv.startedAt)}
             </p>
           </div>
-          <div className="flex flex-col items-end gap-2 lg:min-w-[200px]">
-            {assignedTo && (
-              <p className="text-xs text-muted-foreground">
-                Owned by <strong className="text-foreground">{assignedTo.name}</strong>
-              </p>
-            )}
-            {conv.status === 'AWAITING_HUMAN' && (
-              <form action={adminClaimConversation}>
-                <input type="hidden" name="conversationId" value={conv.id} />
-                <Button type="submit" className="rounded-full font-semibold bg-amber-600 hover:bg-amber-700 text-white">
-                  <Headphones className="h-4 w-4" /> Claim conversation
-                </Button>
-              </form>
-            )}
-            {canClose && conv.status !== 'CLOSED' && conv.status !== 'ARCHIVED' && (
-              <form action={adminCloseConversation}>
-                <input type="hidden" name="conversationId" value={conv.id} />
-                <Button type="submit" variant="outline" size="sm" className="rounded-full font-medium">
-                  <CheckCheck className="h-3.5 w-3.5" /> Close conversation
-                </Button>
-              </form>
-            )}
-          </div>
+          {assignedTo && (
+            <p className="text-xs text-muted-foreground lg:text-right lg:min-w-[200px]">
+              Handled by <strong className="text-foreground">{assignedTo}</strong>
+            </p>
+          )}
         </div>
       </section>
 
       <div className="grid xl:grid-cols-[1fr_320px] gap-4 items-start">
-        {/* CONVERSATION */}
+        {/* TRANSCRIPT */}
         <section className="rounded-2xl border border-border bg-card overflow-hidden">
           <div className="px-5 py-3 border-b border-border bg-foreground/[0.02] flex items-center gap-2">
             <MessageCircle className="h-3.5 w-3.5 text-primary" />
-            <h2 className="text-xs font-bold uppercase tracking-wider">Conversation</h2>
+            <h2 className="text-xs font-bold uppercase tracking-wider">Transcript</h2>
             <span className="text-xs text-muted-foreground">{conv.messages.length} message{conv.messages.length === 1 ? '' : 's'}</span>
           </div>
           <div className="p-5 space-y-3 max-h-[660px] overflow-y-auto bg-foreground/[0.02]">
-            {conv.messages.map((m) => <Bubble key={m.id} m={m} customerName={customerName} />)}
+            {conv.messages.map((m) => (
+              <Bubble key={m.id} m={m} customerName={customerName} staffName={m.authorId ? staffNames[m.authorId] : undefined} />
+            ))}
             {conv.messages.length === 0 && (
-              <p className="text-sm text-muted-foreground text-center py-6">No messages yet.</p>
+              <p className="text-sm text-muted-foreground text-center py-6">This conversation has no messages.</p>
             )}
           </div>
-          {canReply && (
-            <div className="border-t border-border bg-card px-5 py-4">
-              <ReplyForm
-                action={adminReplyConversation}
-                hidden={{ conversationId: conv.id }}
-                placeholder={`Reply as ${session?.user.name ?? 'admin'}…`}
-                label="Send reply"
-              />
-              <p className="text-[11px] text-muted-foreground mt-2">
-                {conv.status === 'AI'
-                  ? 'Sending a reply takes over from the AI — the conversation moves into "With me".'
-                  : 'Your reply is delivered to the customer in real time + emailed (throttled).'}
-              </p>
-            </div>
-          )}
+          <div className="border-t border-border bg-card px-5 py-4 text-xs text-muted-foreground flex gap-2 items-start">
+            <Lock className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <p>
+              Read-only archive: the on-site chat is switched off, so this conversation cannot be continued.{' '}
+              {customerEmail ? (
+                <>To follow up, e-mail <a href={`mailto:${customerEmail}`} className="underline">{customerEmail}</a>.</>
+              ) : (
+                'The customer left no e-mail address.'
+              )}
+            </p>
+          </div>
         </section>
 
         {/* SIDEBAR */}
@@ -170,7 +134,7 @@ export default async function AdminConversationDetailPage(props: { params: Promi
               <p className="font-semibold">{customerName}</p>
               {customerEmail && <p className="text-xs"><Mail className="h-3 w-3 inline mr-1" />{customerEmail}</p>}
               <p className="text-xs text-muted-foreground">
-                {isGuest ? 'Anonymous guest (browser-cookie identified)' : 'Signed-in account'}
+                {isGuest ? 'Guest without an account' : 'Signed-in account'}
               </p>
               {conv.user && (
                 <p className="text-xs">
@@ -183,8 +147,8 @@ export default async function AdminConversationDetailPage(props: { params: Promi
           <SidebarCard title="Timeline" icon={<Hourglass className="h-3.5 w-3.5 text-primary" />}>
             <ul className="text-xs space-y-1.5">
               <li><strong>Started</strong> · {smartDate(conv.startedAt)}</li>
-              <li><strong>Last activity</strong> · {smartDate(conv.lastMessageAt)}</li>
-              {conv.closedAt && <li><strong>Closed</strong> · {smartDate(conv.closedAt)} by {closedBy?.name ?? 'admin'}</li>}
+              <li><strong>Last message</strong> · {smartDate(conv.lastMessageAt)}</li>
+              {conv.closedAt && <li><strong>Closed</strong> · {smartDate(conv.closedAt)}{closedBy ? ` by ${closedBy}` : ''}</li>}
               {conv.ratedAt && <li><strong>Rated</strong> · {smartDate(conv.ratedAt)} ({conv.rating}/5)</li>}
               <li><strong>Messages</strong> · {conv.messages.length}</li>
             </ul>
@@ -192,7 +156,7 @@ export default async function AdminConversationDetailPage(props: { params: Promi
 
           {conv.ratingNote && (
             <SidebarCard title="Customer feedback" icon={<Star className="h-3.5 w-3.5 text-amber-500" />}>
-              <p className="text-xs italic">"{conv.ratingNote}"</p>
+              <p className="text-xs italic">&ldquo;{conv.ratingNote}&rdquo;</p>
             </SidebarCard>
           )}
 
@@ -203,7 +167,7 @@ export default async function AdminConversationDetailPage(props: { params: Promi
   );
 }
 
-function Bubble({ m, customerName }: { m: any; customerName: string }) {
+function Bubble({ m, customerName, staffName }: { m: ArchivedMessage; customerName: string; staffName?: string }) {
   if (m.role === 'system') {
     return (
       <div className="flex items-center gap-3 my-2">
@@ -215,7 +179,6 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
   }
   const isUser = m.role === 'user';
   const isAdmin = m.role === 'admin';
-  const ts = new Date(m.createdAt);
   return (
     <div className={`flex gap-2.5 ${isAdmin ? 'flex-row-reverse' : ''}`}>
       <div className={`h-8 w-8 rounded-full inline-flex items-center justify-center text-[11px] font-bold flex-shrink-0 shadow-sm ${
@@ -229,9 +192,9 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
       </div>
       <div className={`flex flex-col gap-1 max-w-[80%] ${isAdmin ? 'items-end' : 'items-start'}`}>
         <div className={`text-[11px] font-semibold inline-flex items-center gap-2 ${isAdmin ? 'flex-row-reverse' : ''}`}>
-          <span>{isAdmin ? 'You' : isUser ? customerName : 'AI Assistant'}</span>
+          <span>{isAdmin ? staffName ?? 'Team' : isUser ? customerName : 'AI'}</span>
           <span className="text-muted-foreground font-normal">
-            {ts.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            {m.createdAt.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' })}
           </span>
         </div>
         <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${
@@ -242,14 +205,14 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
             : 'bg-violet-50 border border-violet-200 dark:bg-violet-950/40 dark:border-violet-800 rounded-tl-sm'
         }`}>
           {m.body}
-          {m.attachments?.length > 0 && (
+          {m.attachments.length > 0 && (
             <div className="mt-2 flex gap-2 flex-wrap">
-              {m.attachments.map((url: string) => (
+              {m.attachments.map((url) => (
                 /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url) ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  (<a key={url} href={url} target="_blank" rel="noreferrer">
+                  <a key={url} href={url} target="_blank" rel="noreferrer">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- auth-gated attachment proxy, not optimisable */}
                     <img src={url} alt="" className="h-20 w-20 rounded-md object-cover border border-border" />
-                  </a>)
+                  </a>
                 ) : (
                   <a key={url} href={url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[10px] underline">
                     <Paperclip className="h-3 w-3" /> attachment
@@ -264,7 +227,7 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
   );
 }
 
-function SidebarCard({ title, icon, children }: { title: string; icon?: JSX.Element; children: React.ReactNode }) {
+function SidebarCard({ title, icon, children }: { title: string; icon?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="rounded-2xl border border-border bg-card p-4">
       <p className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-2 inline-flex items-center gap-1">

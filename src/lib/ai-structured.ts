@@ -1,7 +1,7 @@
 /**
- * Structured (JSON) AI calls used by admin tools — separate from the
- * marketplace assistant in src/lib/ai.ts. Forces a strict JSON response so
- * the server can parse safely.
+ * Structured (JSON) AI calls used by admin tools — the provider settings come
+ * from src/lib/ai.ts. Forces a strict JSON response so the server can parse
+ * safely.
  */
 
 import { ensureSettingsLoaded } from '@/lib/settings';

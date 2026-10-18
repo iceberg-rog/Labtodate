@@ -95,7 +95,7 @@ const TAB_NOTE: Partial<Record<string, string>> = {
   Email:
     'Two ways to send real email: (1) a Resend API key (simplest — HTTPS, no SMTP ports), or (2) your own SMTP server (host/port/user/password below; a relay that needs no login only with “SMTP server needs no login” = true). Resend wins if its key is set; leave it blank to use SMTP. With neither, the live site sends NO email at all, every attempt is logged as “not configured” and the admin shows a red warning. After saving, use “Send test email” to confirm delivery.',
   Brand: 'Brand display values — used in headers, footers, page metadata and outbound emails.',
-  'AI assistant': 'Powers the on-site chat widget. OpenAI-compatible — any provider that follows OpenAI’s /v1/chat/completions shape works.',
+  'AI assistant': 'Powers the admin AI tools (supplier-shop suggestions and risk checks, the import fallback); the site has no chat. OpenAI-compatible — any provider that follows OpenAI’s /v1/chat/completions shape works.',
   'Catalog & claims':
     'What the site promises buyers. Every promise here is OFF until you fill it in — the site never shows a warranty, shipping or returns claim you did not set. Per-condition warranty defaults live in Admin → Catalog → Conditions & warranty; per-item warranty and inspection on each product.',
   'Import & suppliers':
