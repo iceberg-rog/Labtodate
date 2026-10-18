@@ -743,10 +743,7 @@ const DEFS: DefInput[] = [
   { key: 'SELLER_TERMS_TEXT', label: 'Supplier programme — how it works', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_TERMS_TEXT,
     hint: 'First part of /seller/pricing. Describe the real deal — by default a supplier receives their own price and never sees your sell price (Quotes & offers → “Suppliers see the buyer price”). “## ” starts a heading, an empty line a new paragraph.' + tokensHint(SELLER_TERMS_TOKENS) },
   { key: 'SELLER_PAYOUT_TERMS_TEXT', label: 'Supplier programme — how suppliers are paid', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_PAYOUT_TERMS_TEXT,
-    hint: 'When and how a supplier is paid for a sold unit: shown on /seller/pricing, on the supplier’s Payouts page and in the “delivered” notice to the supplier. Only state terms your supplier agreements really contain.' + tokensHint(SELLER_TERMS_TOKENS) },
-  { key: 'SELLER_DISPATCH_TEXT', label: 'Sold-unit notice — what the supplier does next', group: 'Suppliers', type: 'text', multiline: true,
-    default: 'Keep the unit reserved for this order and get it ready for dispatch. We contact you with the pick-up or delivery details.',
-    hint: 'Sent to a supplier (e-mail and notification) when a unit it supplies has been paid, under the unit and its agreed supplier price. Say what really happens next under your supplier agreements: who collects or ships the unit, and where to. The buyer’s name and our sell price are never included.' },
+    hint: 'Payout part of /seller/pricing: when and how a supplier is paid for a sold unit. Only state terms your supplier agreements really contain.' + tokensHint(SELLER_TERMS_TOKENS) },
   { key: 'MESSAGE_MEDIATION_MODE', label: 'Messages between buyers and suppliers', group: 'Suppliers', type: 'enum', default: 'MASK_CONTACTS', sensitive: true, pending: 'buyer–supplier message mediation (PKG-01, PKG-16)',
     options: [
       { value: 'MASK_CONTACTS', label: 'Remove contact details (e-mail addresses, phone numbers, links, IBANs) and notify staff (recommended)' },
@@ -754,6 +751,9 @@ const DEFS: DefInput[] = [
       { value: 'OFF', label: 'Deliver messages as written (buyers and suppliers can deal around you)' },
     ],
     hint: 'Applies to quote threads and “Message seller” conversations between a buyer and a supplier. Removed details show as “[contact details removed]”. Messages written by your own staff are never changed.' },
+  { key: 'SELLER_DISPATCH_TEXT', label: 'Sold-unit notice — what the supplier does next', group: 'Suppliers', type: 'text', multiline: true,
+    default: 'Keep the unit reserved for this order and get it ready for dispatch. We contact you with the pick-up or delivery details.',
+    hint: 'Sent to a supplier (e-mail and notification) when a unit it supplies has been paid, under the unit and its agreed supplier price. Say what really happens next under your supplier agreements: who collects or ships the unit, and where to. The buyer’s name and our sell price are never included. How suppliers are paid (the text above) is added to the “delivered” notice and shown on the supplier’s Payouts page.' },
 
   // ── Acquisitions ──
   { key: 'COMPANY_RECEIVING_ADDRESS', label: 'Receiving warehouse address', group: 'Acquisitions', type: 'text', multiline: true,
