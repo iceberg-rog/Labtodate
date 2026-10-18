@@ -11,7 +11,7 @@ import { addressCountry } from '@/lib/tax/order';
 import { audit, notifyUser } from '@/lib/observability';
 import { formatPrice } from '@/lib/utils';
 import { fillHoldText, primaryHold, type HoldCode } from './engine';
-import { sendHoldReleased, holdTitle } from './notify';
+import { sendHoldReleased, holdTitle, type HoldReleasedMail } from './notify';
 
 /**
  * Pre-payment holds of an order (A11 / A12 / VAT review) and how staff
@@ -54,12 +54,30 @@ export function hasPrePaymentHold(o: { openHolds?: string[] | null; holdReason?:
   return PRE_PAYMENT_HOLDS.some((h) => open.has(h));
 }
 
-/** Buyer-facing sentences for an order's open holds (Settings → Checkout & customers). */
-export async function buyerHoldMessages(o: { openHolds: string[]; holdReason: string | null; shippingAddress: unknown; vatNote?: string | null }): Promise<Array<{ code: string; title: string; message: string }>> {
-  await ensureSettingsLoaded();
-  const codes = Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])]));
-  const country = addressCountry(o.shippingAddress);
-  const name = country ? (await checkCountry(country)).name ?? country : null;
+/**
+ * The only pre-payment hold of an unpaid order is INVOICE_PENDING: its total is
+ * final, only the seller's payment details (Settings → Company / Payments) are
+ * missing — pages say "payment details being prepared", not "total being
+ * confirmed".
+ */
+export function sellerDetailsHoldOnly(o: { status: string; openHolds?: string[] | null; holdReason?: string | null }): boolean {
+  if (o.status !== 'PENDING_PAYMENT') return false;
+  const open = new Set([...(o.openHolds ?? []), ...(o.holdReason ? [o.holdReason] : [])]);
+  return open.has('INVOICE_PENDING') && PRE_PAYMENT_HOLDS.every((h) => h === 'INVOICE_PENDING' || !open.has(h));
+}
+
+/**
+ * Buyer title and text template of one hold (Settings → Checkout & customers).
+ * INVOICE_PENDING: on an unpaid order the proforma waits for the seller's own
+ * details (CHECKOUT_MSG_PAYMENT_DETAILS_PENDING); on a paid one the invoice is
+ * withheld (CHECKOUT_MSG_INVOICE_PENDING). Sync — after ensureSettingsLoaded().
+ */
+export function buyerHoldText(code: string, o: { status: string }): { title: string; template: string } {
+  if (code === 'INVOICE_PENDING') {
+    return o.status === 'PENDING_PAYMENT'
+      ? { title: 'Payment details being prepared', template: settingString('CHECKOUT_MSG_PAYMENT_DETAILS_PENDING') }
+      : { title: 'Invoice being prepared', template: settingString('CHECKOUT_MSG_INVOICE_PENDING') };
+  }
   const tpl: Record<string, string> = {
     SHIPPING_PENDING: settingString('CHECKOUT_MSG_SHIPPING_PENDING'),
     COMPLIANCE: settingString('CHECKOUT_MSG_COMPLIANCE_REVIEW'),
@@ -67,7 +85,19 @@ export async function buyerHoldMessages(o: { openHolds: string[]; holdReason: st
     ADDRESS_REVIEW: settingString('CHECKOUT_MSG_ADDRESS_REVIEW'),
     PAYMENT_REVIEW: 'Our team is checking your payment against the order. We contact you if anything is needed.',
   };
-  return codes.map((c) => ({ code: c, title: holdTitle(c), message: fillHoldText(tpl[c] ?? holdTitle(c), { COUNTRY: name, REASON: null }) }));
+  return { title: holdTitle(code), template: tpl[code] || holdTitle(code) };
+}
+
+/** Buyer-facing sentences for an order's open holds (Settings → Checkout & customers). */
+export async function buyerHoldMessages(o: { status: string; openHolds: string[]; holdReason: string | null; shippingAddress: unknown; vatNote?: string | null }): Promise<Array<{ code: string; title: string; message: string }>> {
+  await ensureSettingsLoaded();
+  const codes = Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])]));
+  const country = addressCountry(o.shippingAddress);
+  const name = country ? (await checkCountry(country)).name ?? country : null;
+  return codes.map((c) => {
+    const t = buyerHoldText(c, o);
+    return { code: c, title: t.title, message: fillHoldText(t.template, { COUNTRY: name, REASON: null }) };
+  });
 }
 
 function noteWithout(note: string | null, code: string): string | null {
@@ -123,10 +153,29 @@ export async function releaseHold(orderId: string, code: HoldCode, actor: Actor,
     return { ok: true, message: `${holdTitle(code)} released.${rest.length ? ` Still open: ${rest.map(holdTitle).join(', ')}.` : ''}` };
   }
   const mail = await sendHoldReleased(o.id);
-  await notifyUser(o.buyerId, `Order ${o.orderNumber}: final total ready`, 'Your order is confirmed. You can now pay — the payment details are on your order page.', `/app/orders/${o.orderNumber}/payment`);
+  const outcome = holdReleaseOutcome(code, mail);
+  if (outcome.payable) {
+    await notifyUser(o.buyerId, `Order ${o.orderNumber}: final total ready`, 'Your order is confirmed. You can now pay — the payment details are on your order page.', `/app/orders/${o.orderNumber}/payment`);
+  }
+  return { ok: true, releasedAll: outcome.payable, message: outcome.message };
+}
+
+/**
+ * What releasing the last pre-payment hold led to (staff message; `payable`:
+ * the buyer is told they can now pay). SELLER_INCOMPLETE: the proforma could
+ * not be issued because the seller's own details are incomplete — the order is
+ * back on the INVOICE_PENDING hold, not payable, nothing was mailed, and the
+ * buyer is NOT told to pay.
+ */
+export function holdReleaseOutcome(code: string, mail: Pick<HoldReleasedMail, 'emailed' | 'proforma' | 'note' | 'code'>): { payable: boolean; message: string } {
+  if (mail.code === 'SELLER_INCOMPLETE') {
+    return {
+      payable: false,
+      message: `${holdTitle(code)} released, but the order is on hold again: the proforma (payment request) waits for the company / payment details (Settings → Company / Payments & credit terms). Nothing is due for the buyer and nothing was e-mailed.${mail.note ? ` ${mail.note}` : ''}`,
+    };
+  }
   return {
-    ok: true,
-    releasedAll: true,
+    payable: true,
     message: `${holdTitle(code)} released — the order is now payable. ${mail.proforma ? `Proforma ${mail.proforma} ` : 'The proforma could not be issued' + (mail.note ? ` (${mail.note})` : '') + '; '}${mail.emailed ? 'emailed to the buyer.' : 'the email to the buyer could NOT be sent — contact them.'}`,
   };
 }

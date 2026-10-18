@@ -14,14 +14,14 @@ import {
   companyCopyAddress, isDeliverableEmail, sendInternalEmail, trySendEmail,
 } from '@/lib/email';
 import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
-import { ensureSettingsLoaded } from '@/lib/settings';
+import { ensureSettingsLoaded, settingString } from '@/lib/settings';
 import { formatPrice } from '@/lib/utils';
 import { rateLimit } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit, logError } from '@/lib/observability';
 import { guardPublicForm, PublicFormError } from '@/lib/security/captcha';
 import { createOrderWithUniqueNumber } from '@/lib/orders/internal';
 import { absoluteDocumentHref } from '@/lib/documents';
-import { documentAttachment, issueProforma, markDocumentSent, voidProformas } from '@/lib/documents/issue';
+import { alertSellerIncomplete, documentAttachment, issueProforma, markDocumentSent, voidProformas } from '@/lib/documents/issue';
 import { quoteDeletionBlockers } from '@/lib/documents/retention';
 import { QUOTE_REF, offerMaxCents, endOfDayUtc, fmtDay, isoDay, offerPhase, quoteRef, PAID_ORDER_STATES } from '@/lib/quotes/offer';
 import { vatTreatmentLabel, type VatTreatmentCode } from '@/lib/tax/determine';
@@ -1212,8 +1212,10 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
     : { openHolds: [] as string[], payableSince: now };
   const orderTerms = { kind: 'PREPAY', days: preview.dueDays, text: terms?.paymentTerms.text ?? fillPaymentTermsText(offerDefaults().paymentTermsText, preview.dueDays), incoterm: terms?.incoterm ?? null, incotermPlace: terms?.incotermPlace ?? null, leadTime: terms?.leadTime ?? null };
 
-  // proformaId / number null: no proforma yet — the seller's details are incomplete (the order waits on a hold).
-  let order: { id: string; orderNumber: string; proformaId: string | null; number: string | null };
+  // proformaId / number null: no proforma yet — the seller's details are incomplete (the order waits on a
+  // hold; `sellerMissing` says what is missing). The admins are alerted after the commit (sendAll), never
+  // inside this transaction: its default timeout is 5 s and notifyAdmins awaits the webhooks.
+  let order: { id: string; orderNumber: string; proformaId: string | null; number: string | null; sellerMissing: string[] };
   try {
     order = await prisma.$transaction(async (tx) => {
       const claim = await tx.sourcingRequest.updateMany({
@@ -1319,7 +1321,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         };
         await tx.billingProfile.upsert({ where: { userId: buyerId }, update: profile, create: { userId: buyerId, ...profile } });
       }
-      return { ...created, proformaId: pf.ok ? pf.document.id : null, number };
+      return { ...created, proformaId: pf.ok ? pf.document.id : null, number, sellerMissing: pf.ok ? [] : pf.missing ?? [] };
     });
   } catch (e) {
     const raced = e instanceof AcceptRaceError || (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002');
@@ -1345,13 +1347,15 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
   );
 
   const sendAll = async () => {
+    // No proforma (seller details incomplete): the admin alert, now that the acceptance is committed (hourly per order).
+    if (!order.proformaId) await alertSellerIncomplete(order, order.sellerMissing);
     const paymentUrl = `${siteBase()}/app/orders/${order.orderNumber}/payment`;
     const pdfUrl = absoluteDocumentHref('proforma', order.orderNumber, 'pdf');
     // Render the issued proforma ONCE from its snapshot and store it; the email attaches exactly those bytes.
     // Compliance hold (REVIEW country): no payment request until staff clear it —
     // the proforma goes out then (clearOrderHold), not now.
     // No proforma at all (seller details incomplete — the order waits on a hold): no payment request either.
-    const holdNote = r.prep.complianceNote ?? (order.proformaId ? null : 'Our team is completing the payment details for this order.');
+    const holdNote = r.prep.complianceNote ?? (order.proformaId ? null : settingString('CHECKOUT_MSG_PAYMENT_DETAILS_PENDING'));
     const onHold = !!holdNote;
     const doc = onHold || !order.proformaId ? { attachment: null, error: null } : await documentAttachment({ id: order.proformaId, number: order.number ?? order.orderNumber });
     const attachments = doc.attachment ? [doc.attachment] : [];
@@ -1378,7 +1382,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
           : `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong> and proforma invoice <strong>${order.number}</strong>${doc.attachment ? ' (attached as PDF)' : ''}.`,
         offerMailRows({ qty: preview.qty, unitCents: preview.unitCents, goodsCents: preview.goodsCents, shippingCents: preview.shippingCents, vatDecided: true, vatRateBp: preview.vatRateBp, vatCents: preview.vatCents, vatLabel: preview.vatLabel, totalCents: preview.totalCents, currency }),
         holdNote
-          ? `<p style="margin:0 0 12px;padding:10px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;"><strong>Please do not pay yet.</strong> ${escapeHtml(holdNote)} We email you as soon as ${r.prep.complianceNote ? 'the check is done' : 'it is ready'}.</p>`
+          ? `<p style="margin:0 0 12px;padding:10px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;"><strong>Please do not pay yet.</strong> ${escapeHtml(holdNote)}${r.prep.complianceNote ? ' We email you as soon as the check is done.' : ''}</p>`
           : `<h3 style="color:#0E4F40;margin:16px 0 6px;font-size:15px;">How to pay</h3>${mailTable(payRows)}${b ? '' : '<p style="margin:0 0 12px;">Our bank details are on the payment page.</p>'}`,
         onHold ? '' : 'After paying, upload your bank receipt on the payment page so we can verify it and ship.',
       ].filter(Boolean),
@@ -1413,7 +1417,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         cta: { href: `${siteBase()}${inbox.toSeller ? `/app/seller/inbox/${sr.id}` : `/admin/quotes/${sr.id}`}`, label: 'Open the quote' },
       }),
     }, 'quotes:accept-staff');
-    await notifyUser(buyerId, `Offer accepted — order ${order.orderNumber}`, order.number ? `Proforma ${order.number} is ready. Pay ${money(preview.totalCents)} by bank transfer by ${fmtDay(dueDate)} and upload the receipt.` : 'We email you the proforma (payment request) as soon as it is ready — nothing is due yet.', `/app/orders/${order.orderNumber}/payment`);
+    await notifyUser(buyerId, `Offer accepted — order ${order.orderNumber}`, order.number ? `Proforma ${order.number} is ready. Pay ${money(preview.totalCents)} by bank transfer by ${fmtDay(dueDate)} and upload the receipt.` : settingString('CHECKOUT_MSG_PAYMENT_DETAILS_PENDING'), `/app/orders/${order.orderNumber}/payment`);
     if (sr.assignedToId && sr.assignedTo?.role === 'SELLER') {
       await notifyUser(sr.assignedToId, `Offer accepted — ${QUOTE_REF(sr.id)}`, `The buyer accepted the offer for "${itemTitle}". Awaiting payment.`, `/app/seller/inbox/${sr.id}`);
     }

@@ -13,7 +13,7 @@ import { BuyerRefunds, BuyerReturns, BuyerShipments } from '@/components/orders/
 import { buyerSetShippingAddress } from './payment/actions';
 import { getOrderDocuments } from '@/lib/documents/issue';
 import { OrderDocumentsPanel } from '@/components/documents/OrderDocumentsPanel';
-import { buyerHoldMessages, hasPrePaymentHold } from '@/lib/checkout/holds';
+import { buyerHoldMessages, hasPrePaymentHold, sellerDetailsHoldOnly } from '@/lib/checkout/holds';
 import { countryOptions } from '@/lib/compliance/country';
 import { vatTreatmentWithRate } from '@/lib/tax/determine';
 import { ensureSettingsLoaded } from '@/lib/settings';
@@ -129,6 +129,8 @@ export default async function OrderDetailPage({
   const docs = await getOrderDocuments(order.id);
   // Pre-payment holds (shipping / VAT / compliance / address): nothing is due yet.
   const held = order.status === 'PENDING_PAYMENT' && hasPrePaymentHold(order);
+  // Only the seller's payment details are missing (the total is final): the proforma follows.
+  const sellerOnly = held && sellerDetailsHoldOnly(order);
   const holdMsgs = held || order.openHolds.length ? await buyerHoldMessages(order) : [];
   const shippingPending = order.openHolds.includes('SHIPPING_PENDING');
   const vatPending = order.vatTreatment === 'REVIEW_REQUIRED';
@@ -229,11 +231,11 @@ export default async function OrderDetailPage({
       )}
       {holdMsgs.length > 0 && (
         <div className="rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300 space-y-1.5" data-testid="order-holds">
-          <p className="font-bold">{held ? 'We confirm the final total before you pay — nothing is due yet' : 'Your order is being reviewed'}</p>
+          <p className="font-bold">{sellerOnly ? 'Payment details being prepared — nothing is due yet' : held ? 'We confirm the final total before you pay — nothing is due yet' : 'Your order is being reviewed'}</p>
           {holdMsgs.map((h) => (
             <p key={h.code}><span className="font-semibold">{h.title}:</span> {h.message}</p>
           ))}
-          {held && <p className="text-xs">Please do not transfer money for this order until you receive the final total by email.</p>}
+          {held && <p className="text-xs">Please do not transfer money for this order until you receive {sellerOnly ? 'the proforma invoice' : 'the final total'} by email.</p>}
         </div>
       )}
 

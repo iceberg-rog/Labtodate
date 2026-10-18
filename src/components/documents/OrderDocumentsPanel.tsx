@@ -191,7 +191,10 @@ export async function OrderDocumentsPanel({
       if (l.status !== 'sent') mailFailed.set(d.id, l.error || l.status);
     }
   }
+  // A proforma always goes to the account too; invoices / credit notes follow INVOICE_EMAIL_CC_ACCOUNT (lib/orders/internal.ts).
   const recipients = admin && live ? recipientsLabel(orderDocumentRecipients(live)) : null;
+  const proformaRecipients = admin && live ? recipientsLabel(orderDocumentRecipients(live, { alwaysCopyAccount: true })) : null;
+  const recipientsOf = (d: FiscalDocument) => (d.kind === 'PROFORMA' ? proformaRecipients : recipients);
   const resendable = (d: FiscalDocument) => d.kind !== 'PROFORMA' || (order.status === 'PENDING_PAYMENT' && !prePaymentHeld && !d.voidedAt && !d.supersededById);
   const sellerGaps = admin && sellerHold ? sellerDetailsMissing() : [];
 
@@ -209,7 +212,7 @@ export async function OrderDocumentsPanel({
             <p className="text-xs leading-relaxed">
               {sellerGaps.length
                 ? <>Missing: {sellerGaps.join(', ')}. Complete Settings → Company / Payments &amp; credit terms, then issue the proforma here. The buyer is told nothing is due yet.</>
-                : <>The details are complete now — issue the proforma: the order becomes payable and the proforma is e-mailed{recipients ? ` to ${recipients}` : ''}.</>}
+                : <>The details are complete now — issue the proforma: the order becomes payable and the proforma is e-mailed{proformaRecipients ? ` to ${proformaRecipients}` : ''}.</>}
             </p>
             <OrderActionForm action={issueHeldProformaAction} className="pt-1 flex items-center gap-2 flex-wrap">
               <input type="hidden" name="orderId" value={order.id} />
@@ -257,7 +260,7 @@ export async function OrderDocumentsPanel({
                 held={prePaymentHeld}
                 replacedBy={d.supersededById ? byId.get(d.supersededById) ?? null : null}
                 mailFailed={mailFailed.get(d.id) ?? null}
-                resendTo={admin && recipients && resendable(d) ? recipients : null}
+                resendTo={admin && resendable(d) ? recipientsOf(d) : null}
               />
             ))}
           </ul>

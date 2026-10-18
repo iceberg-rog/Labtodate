@@ -26,7 +26,7 @@ import { pctLabel } from '@/lib/quotes/pricing';
 import { vatTreatmentLabel } from '@/lib/tax/determine';
 import { buyerSubmitPaymentProof } from './actions';
 import { ProofFileInput } from './ProofFileInput';
-import { buyerHoldMessages, hasPrePaymentHold } from '@/lib/checkout/holds';
+import { buyerHoldMessages, hasPrePaymentHold, sellerDetailsHoldOnly } from '@/lib/checkout/holds';
 import { availablePaymentMethods } from '@/lib/checkout/server';
 import { CARD_FAIL_MESSAGE, type CardFailCode } from '@/lib/checkout/card';
 import { payOrderByCard } from '@/lib/checkout/actions';
@@ -48,7 +48,7 @@ const ERR_MSG: Record<string, string> = {
   expired: 'The payment deadline of this order has passed, so it can no longer be paid. Contact us or open a new request for a fresh offer.',
   notaccepted: 'Accept the offer first — the order is confirmed (and payable) only once you accept it.',
   details: 'Add your billing and delivery details first — we need them for the invoice and the delivery.',
-  hold: 'This order is not payable yet: our team confirms the final total or checks the export rules for the delivery country first (see above). Nothing is due — please do not transfer money yet; we email you when you can pay.',
+  hold: 'This order is not payable yet: our team completes the open point(s) shown above first. Nothing is due — please do not transfer money yet; we email you when you can pay.',
   terms: 'You asked to pay on invoice — our team is reviewing that request.',
   blocked: 'We cannot ship to that country. Nothing was submitted — please choose another delivery address or contact us.',
   countrychange: 'The delivery country cannot be changed while paying: it changes the shipping and VAT of this order. Nothing was submitted — contact us to change the destination.',
@@ -96,9 +96,7 @@ export default async function PaymentWorkspacePage({
   // not payable yet, no bank details / receipt / card. A payment that did not match
   // (Stripe) is being checked: never invite a second payment.
   const paymentReview = order.status === 'PENDING_PAYMENT' && (order.holdReason === 'PAYMENT_REVIEW' || order.openHolds.includes('PAYMENT_REVIEW'));
-  const held = order.status === 'PENDING_PAYMENT' && (hasPrePaymentHold(order) || paymentReview);
-  const openHoldCodes = new Set([...order.openHolds, ...(order.holdReason ? [order.holdReason] : [])]);
-  const complianceOnly = openHoldCodes.size === 1 && openHoldCodes.has('COMPLIANCE');
+  let held = order.status === 'PENDING_PAYMENT' && (hasPrePaymentHold(order) || paymentReview);
 
   // ONE due date (A25): what the proforma prints, reminders and auto-cancel use.
   const now = new Date();
@@ -119,9 +117,20 @@ export default async function PaymentWorkspacePage({
   // checkout order; bank details, reference, amount and due date come from it.
   let docs = await getOrderDocuments(order.id);
   if (payable && !held && !docs.proforma && !notAccepted) {
-    await issueProforma(order.id).catch(() => null);
+    const issued = await issueProforma(order.id).catch(() => null);
+    // Refused because the seller's own details are incomplete: the order is now on
+    // the INVOICE_PENDING hold — render it held (no pay-by date, no reference).
+    if (issued && !issued.ok && issued.code === 'SELLER_INCOMPLETE') {
+      const fresh = await prisma.order.findUnique({ where: { id: order.id }, select: { openHolds: true, holdReason: true, holdNote: true, payableSince: true } });
+      if (fresh) Object.assign(order, fresh);
+      held = true;
+    }
     docs = await getOrderDocuments(order.id);
   }
+  const openHoldCodes = new Set([...order.openHolds, ...(order.holdReason ? [order.holdReason] : [])]);
+  const complianceOnly = openHoldCodes.size === 1 && openHoldCodes.has('COMPLIANCE');
+  // Only the seller's payment details are missing: the total is final, the proforma follows.
+  const sellerOnly = held && !paymentReview && sellerDetailsHoldOnly(order);
   const pf = docs.proforma ? snapshotOf(docs.proforma) : null;
   const inv = docs.invoice ? snapshotOf(docs.invoice) : null;
   const lastPf = docs.proformaHistory.at(-1) ?? null;
@@ -193,7 +202,7 @@ export default async function PaymentWorkspacePage({
             : onTerms ? 'Approved — pay on invoice'
             : termsRequested ? 'Invoice payment requested'
             : paymentReview ? 'Payment being checked'
-            : held ? (complianceOnly ? 'Export check before payment' : 'Total being confirmed')
+            : held ? (complianceOnly ? 'Export check before payment' : sellerOnly ? 'Payment details being prepared' : 'Total being confirmed')
             : 'Complete your payment'}
         </h1>
         <p className="text-muted-foreground mt-1">
@@ -214,7 +223,7 @@ export default async function PaymentWorkspacePage({
             {holdMsgs.map((h) => (
               <p key={h.code}><span className="font-semibold">{h.title}:</span> {h.message}</p>
             ))}
-            {!paymentReview && <p>We email you the final total and the payment details as soon as you can pay; the payment term starts then. Please do not transfer money before that.</p>}
+            {!paymentReview && <p>{sellerOnly ? 'We email you the proforma invoice with the payment details as soon as it is ready' : 'We email you the final total and the payment details as soon as you can pay'}; the payment term starts then. Please do not transfer money before that.</p>}
           </div>
         </div>
       )}
@@ -228,7 +237,9 @@ export default async function PaymentWorkspacePage({
               {held
                 ? complianceOnly
                   ? 'Our team checks the export rules for the delivery country first — please do not pay yet. We email you the proforma invoice as soon as you can pay.'
-                  : 'Our team confirms the final total first (see above) — please do not pay yet. We email you the proforma invoice as soon as you can pay.'
+                  : sellerOnly
+                    ? 'The total is final. Our team is completing the payment details (see above) — please do not pay yet. We email you the proforma invoice as soon as it is ready.'
+                    : 'Our team confirms the final total first (see above) — please do not pay yet. We email you the proforma invoice as soon as you can pay.'
                 : <>Your proforma invoice <span className="font-mono">{proformaNumber}</span> is ready below{pfEmail?.tone === 'ok' ? ' and was emailed to you' : pfEmail?.tone === 'info' ? ' and is being emailed to you' : ''}. Pay by bank transfer by <strong>{fmtDueDate(due)}</strong>, then upload your receipt.</>}
             </p>
           </div>

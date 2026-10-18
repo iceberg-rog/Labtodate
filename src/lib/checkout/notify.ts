@@ -17,8 +17,10 @@ import { mailOrderDocument } from '@/lib/orders/internal';
  * pay-by date — all read from the issued proforma); an order on hold is told
  * exactly what is open and that nothing is due yet; a released hold gets the
  * final total and the proforma. One branded layout (mailLayout). The proforma
- * goes to the order's document recipients (accounts-payable address, a copy to
- * the account — lib/orders/internal.ts mailOrderDocument) and is marked sent.
+ * goes to the order's document recipients (accounts-payable address, always a
+ * copy to the account that ordered — lib/orders/internal.ts mailOrderDocument
+ * `alwaysCopyAccount`: these are order confirmations, not only documents) and
+ * is marked sent.
  * Consumers (customerType CONSUMER) also get the withdrawal information
  * (CONSUMER_WITHDRAWAL_TEXT).
  */
@@ -127,12 +129,16 @@ function noProformaText(o: OrderForMail, pf: ProformaForMail): string {
   return `Your proforma invoice (payment request, with the bank details and the transfer reference) is on your <a href="${siteBase()}/app/orders/${o.orderNumber}/payment">payment page</a>.`;
 }
 
-/** A payable bank-transfer order: proforma attached, bank details, next steps. */
-export async function sendCheckoutConfirmation(orderId: string): Promise<{ emailed: boolean; proforma: string | null }> {
+/**
+ * A payable bank-transfer order: proforma attached, bank details, next steps.
+ * `code`: why no proforma was issued (SELLER_INCOMPLETE: the order is on the
+ * INVOICE_PENDING hold — nothing is due), null when it was.
+ */
+export async function sendCheckoutConfirmation(orderId: string): Promise<{ emailed: boolean; proforma: string | null; code: IssueFailCode | null }> {
   try {
     await ensureSettingsLoaded();
     const o = await loadOrder(orderId);
-    if (!o) return { emailed: false, proforma: null };
+    if (!o) return { emailed: false, proforma: null, code: 'NOT_FOUND' };
     const pf = await proformaFor(o.id);
     const base = siteBase();
     const paymentPage = `${base}/app/orders/${o.orderNumber}/payment`;
@@ -155,7 +161,8 @@ export async function sendCheckoutConfirmation(orderId: string): Promise<{ email
         footer,
       });
       const subject = `Order ${o.orderNumber} received — pay ${formatPrice(o.totalCents, o.currency)} by bank transfer (proforma ${pf.doc.number})`;
-      sent = await mailOrderDocument({ doc: pf.doc, order: o, subject, html, attachment: pf.attachment, context: 'checkout:confirmation' });
+      // The order confirmation (withdrawal information included): the account that ordered always gets it too.
+      sent = await mailOrderDocument({ doc: pf.doc, order: o, subject, html, attachment: pf.attachment, context: 'checkout:confirmation', alwaysCopyAccount: true });
     } else {
       const html = mailLayout({
         heading: `Order ${o.orderNumber} received`,
@@ -180,10 +187,10 @@ export async function sendCheckoutConfirmation(orderId: string): Promise<{ email
         html: `<p>${escapeHtml(o.buyer.name)} (${escapeHtml(o.buyer.email)}) placed order <strong>${o.orderNumber}</strong>${pf.doc ? ` (proforma ${escapeHtml(pf.doc.number)})` : ''}.</p>${pf.note ? `<p>${escapeHtml(pf.note)}</p>` : ''}<p><a href="${base}/admin/orders/${o.id}">Open the order</a></p>`,
       }, 'checkout:confirmation-ops');
     }
-    return { emailed: sent.emailed, proforma: pf.doc?.number ?? null };
+    return { emailed: sent.emailed, proforma: pf.doc?.number ?? null, code: pf.code };
   } catch (e) {
     await logError('checkout.sendCheckoutConfirmation', e);
-    return { emailed: false, proforma: null };
+    return { emailed: false, proforma: null, code: 'ERROR' };
   }
 }
 
@@ -223,18 +230,30 @@ export async function sendCheckoutOnHold(orderId: string, messages: string[]): P
   }
 }
 
+export interface HoldReleasedMail {
+  emailed: boolean;
+  proforma: string | null;
+  note: string | null;
+  /**
+   * Why no proforma was issued, null when it was. SELLER_INCOMPLETE: the
+   * seller's details are incomplete — the order is back on a pre-payment hold
+   * (INVOICE_PENDING), not payable, and no mail was sent.
+   */
+  code: IssueFailCode | null;
+}
+
 /**
  * Every hold is resolved: the final total and the proforma. No mail when the
  * proforma still can not be issued because the seller's details are
  * incomplete (the order is back on hold; the buyer was told nothing is due).
  */
-export async function sendHoldReleased(orderId: string): Promise<{ emailed: boolean; proforma: string | null; note: string | null }> {
+export async function sendHoldReleased(orderId: string): Promise<HoldReleasedMail> {
   try {
     await ensureSettingsLoaded();
     const o = await loadOrder(orderId);
-    if (!o) return { emailed: false, proforma: null, note: 'order not found' };
+    if (!o) return { emailed: false, proforma: null, note: 'order not found', code: 'NOT_FOUND' };
     const pf = await proformaFor(o.id);
-    if (pf.code === 'SELLER_INCOMPLETE') return { emailed: false, proforma: null, note: pf.note };
+    if (pf.code === 'SELLER_INCOMPLETE') return { emailed: false, proforma: null, note: pf.note, code: pf.code };
     const base = siteBase();
     const html = mailLayout({
       heading: `Order ${o.orderNumber} confirmed — final total`,
@@ -252,12 +271,13 @@ export async function sendHoldReleased(orderId: string): Promise<{ emailed: bool
       cta: { href: `${base}/app/orders/${o.orderNumber}/payment`, label: 'Go to the payment page' },
     });
     const subject = `Order ${o.orderNumber}: final total ${formatPrice(o.totalCents, o.currency)} — ready for payment${pf.doc ? ` (proforma ${pf.doc.number})` : ''}`;
+    // "You can now pay" is an order update: the account that ordered always gets it too.
     const sent = pf.doc
-      ? await mailOrderDocument({ doc: pf.doc, order: o, subject, html, attachment: pf.attachment, context: 'checkout:hold-released' })
+      ? await mailOrderDocument({ doc: pf.doc, order: o, subject, html, attachment: pf.attachment, context: 'checkout:hold-released', alwaysCopyAccount: true })
       : await trySendEmail({ to: o.buyer.email, subject, html }, 'checkout:hold-released').then((r) => ({ emailed: r.ok }));
-    return { emailed: sent.emailed, proforma: pf.doc?.number ?? null, note: pf.note };
+    return { emailed: sent.emailed, proforma: pf.doc?.number ?? null, note: pf.note, code: pf.code };
   } catch (e) {
     await logError('checkout.sendHoldReleased', e);
-    return { emailed: false, proforma: null, note: e instanceof Error ? e.message : String(e) };
+    return { emailed: false, proforma: null, note: e instanceof Error ? e.message : String(e), code: 'ERROR' };
   }
 }

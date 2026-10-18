@@ -236,7 +236,7 @@ export async function saveOrderDetails(
       revision = re.document.number;
       if (emailProformaRevision() && !review && !order.holdReason) {
         const att = await documentAttachment(re.document);
-        // To the accounts-payable address just saved, a copy to the account (one rule for every document mail).
+        // To the accounts-payable address just saved, always a copy to the account (a proforma mail: the order changed).
         const mail = await mailOrderDocument({
           doc: re.document,
           order: { invoiceEmail: d.billing.invoiceEmail || null, billingAddress: billing, buyer: order.buyer },
@@ -254,6 +254,7 @@ export async function saveOrderDetails(
           }),
           attachment: att.attachment,
           context: 'orders:proforma-revision',
+          alwaysCopyAccount: true,
         });
         revisionMail = mail.emailed ? 'sent' : 'failed';
         revisionError = mail.error;

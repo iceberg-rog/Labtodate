@@ -7,7 +7,7 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { vatTreatmentWithRate } from '@/lib/tax/determine';
-import { buyerHoldMessages, hasPrePaymentHold } from '@/lib/checkout/holds';
+import { buyerHoldMessages, hasPrePaymentHold, sellerDetailsHoldOnly } from '@/lib/checkout/holds';
 
 export const metadata = { title: 'Order received' };
 export const dynamic = 'force-dynamic';
@@ -39,12 +39,14 @@ export default async function CheckoutSuccessPage(props: {
   const paymentReview = order.status === 'PENDING_PAYMENT' && (order.holdReason === 'PAYMENT_REVIEW' || order.openHolds.includes('PAYMENT_REVIEW'));
   const cardPending = order.status === 'PENDING_PAYMENT' && !!order.stripeSessionId && !held && !paymentReview;
   const canceled = order.status === 'CANCELED';
+  // Only the seller's payment details are missing (the total is final): the proforma follows.
+  const sellerOnly = held && sellerDetailsHoldOnly(order);
   const holdMsgs = held ? await buyerHoldMessages(order) : [];
   const shippingPending = order.openHolds.includes('SHIPPING_PENDING');
   const vatPending = order.vatTreatment === 'REVIEW_REQUIRED';
   const cur = order.currency;
 
-  const title = canceled ? 'Order canceled.' : isPaid ? 'Order placed and paid.' : paymentReview ? 'Payment received — being checked.' : held ? 'Order received — total to be confirmed.' : cardPending ? 'Confirming your payment…' : 'Order received.';
+  const title = canceled ? 'Order canceled.' : isPaid ? 'Order placed and paid.' : paymentReview ? 'Payment received — being checked.' : held ? (sellerOnly ? 'Order received — payment details follow.' : 'Order received — total to be confirmed.') : cardPending ? 'Confirming your payment…' : 'Order received.';
   const lead = canceled
     ? 'This order was canceled. No payment is due.'
     : paymentReview
@@ -52,7 +54,9 @@ export default async function CheckoutSuccessPage(props: {
       : isPaid
       ? 'Your payment is confirmed. Your invoice is below and was emailed to you.'
       : held
-        ? 'The items are reserved for you. Nothing is due yet: our team confirms the open point(s) below and emails you the final total and the payment details.'
+        ? sellerOnly
+          ? 'The items are reserved for you and the total is final. Nothing is due yet: our team is completing the payment details and emails you the proforma invoice as soon as it is ready.'
+          : 'The items are reserved for you. Nothing is due yet: our team confirms the open point(s) below and emails you the final total and the payment details.'
         : cardPending
           ? 'Stripe is confirming your card payment. This page shows “paid” once the confirmation arrives — usually within a minute. Refresh to check.'
           : 'Please pay by bank transfer using the details on your proforma (also on the payment page). We dispatch once your payment is received and verified.';
@@ -77,7 +81,7 @@ export default async function CheckoutSuccessPage(props: {
           {holdMsgs.map((h) => (
             <p key={h.code}><span className="font-semibold">{h.title}:</span> {h.message}</p>
           ))}
-          <p className="text-xs">Please do not transfer money for this order until you receive the final total.</p>
+          <p className="text-xs">Please do not transfer money for this order until you receive {sellerOnly ? 'the proforma invoice' : 'the final total'}.</p>
         </div>
       )}
 

@@ -66,3 +66,19 @@ test('documents go to the accounts-payable address with a copy to the account', 
     delete process.env.INVOICE_EMAIL_CC_ACCOUNT;
   }
 });
+
+test('with “Also send invoices to the account email” off, the order confirmation (proforma mails) still reaches the account', () => {
+  process.env.INVOICE_EMAIL_CC_ACCOUNT = 'false';
+  try {
+    const order = { invoiceEmail: 'ap@delft.example.org', billingAddress: null, buyer: { email: 'b1@delft.example.org' } };
+    // Invoices / credit notes: the AP address only.
+    assert.deepEqual(orderDocumentRecipients(order), { to: 'ap@delft.example.org', cc: [] });
+    // Checkout confirmation, “you can now pay”, revisions, a proforma resend: the account always in copy.
+    assert.deepEqual(orderDocumentRecipients(order, { alwaysCopyAccount: true }), { to: 'ap@delft.example.org', cc: ['b1@delft.example.org'] });
+    // The same address twice is one mail; no AP address: the account itself.
+    assert.deepEqual(orderDocumentRecipients({ ...order, invoiceEmail: 'B1@delft.example.org' }, { alwaysCopyAccount: true }), { to: 'B1@delft.example.org', cc: [] });
+    assert.deepEqual(orderDocumentRecipients({ ...order, invoiceEmail: null }, { alwaysCopyAccount: true }), { to: 'b1@delft.example.org', cc: [] });
+  } finally {
+    delete process.env.INVOICE_EMAIL_CC_ACCOUNT;
+  }
+});

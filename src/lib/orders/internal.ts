@@ -34,9 +34,20 @@ export interface DocumentMailOrder {
   buyer: { email: string };
 }
 
-/** Who gets an order's documents: the accounts-payable address, the account in copy (lib/orders/recipients.ts). Read after ensureSettingsLoaded(). */
-export function orderDocumentRecipients(o: DocumentMailOrder): DocumentRecipients {
-  return documentRecipients({ invoiceEmail: o.invoiceEmail, billingEmail: billingEmailOf(o.billingAddress), accountEmail: o.buyer.email });
+/**
+ * Who gets an order's documents: the accounts-payable address, the account in
+ * copy (lib/orders/recipients.ts). The account copy follows
+ * INVOICE_EMAIL_CC_ACCOUNT, except with `alwaysCopyAccount` — the proforma
+ * mails (order confirmation, "you can now pay", a revision, a resend): the
+ * account that ordered must always receive its order confirmation, with the
+ * consumer withdrawal information, not only the AP inbox. Read after
+ * ensureSettingsLoaded().
+ */
+export function orderDocumentRecipients(o: DocumentMailOrder, opts: { alwaysCopyAccount?: boolean } = {}): DocumentRecipients {
+  return documentRecipients(
+    { invoiceEmail: o.invoiceEmail, billingEmail: billingEmailOf(o.billingAddress), accountEmail: o.buyer.email },
+    opts.alwaysCopyAccount ? { ccAccount: true } : {},
+  );
 }
 
 /** "ap@lab.nl (copy to buyer@lab.nl)" — for staff messages. */
@@ -56,8 +67,9 @@ export interface DocumentMailResult {
  * E-mail one issued document — its STORED PDF (`attachment`, from
  * documentAttachment) — the same way for every document: to the order's
  * document recipients (AP address, a "[copy]" to the account e-mail when it
- * differs and INVOICE_EMAIL_CC_ACCOUNT is on) or only to `to` when staff typed
- * an address, plus a "[copy]" to the billing inbox (COMPANY_EMAIL) unless
+ * differs and INVOICE_EMAIL_CC_ACCOUNT is on — always with
+ * `alwaysCopyAccount`, see orderDocumentRecipients) or only to `to` when staff
+ * typed an address, plus a "[copy]" to the billing inbox (COMPANY_EMAIL) unless
  * `companyCopy` is false. Marks the document sent when the primary mail went
  * out (the first send time is kept). Never throws.
  */
@@ -70,8 +82,9 @@ export async function mailOrderDocument(p: {
   context: string;
   to?: string | null;
   companyCopy?: boolean;
+  alwaysCopyAccount?: boolean;
 }): Promise<DocumentMailResult> {
-  const r: DocumentRecipients = p.to ? { to: p.to, cc: [] } : orderDocumentRecipients(p.order);
+  const r: DocumentRecipients = p.to ? { to: p.to, cc: [] } : orderDocumentRecipients(p.order, { alwaysCopyAccount: p.alwaysCopyAccount });
   const attachments = p.attachment ? [p.attachment] : [];
   const sent = await trySendEmail({ to: r.to, subject: p.subject, html: p.html, attachments }, p.context);
   if (sent.ok) await markDocumentSent(p.doc.id);

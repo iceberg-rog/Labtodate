@@ -5,7 +5,7 @@ import { headers } from 'next/headers';
 import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/db';
 import { requireSession } from '@/lib/auth-server';
-import { ensureSettingsLoaded, settingInt } from '@/lib/settings';
+import { ensureSettingsLoaded, settingInt, settingString } from '@/lib/settings';
 import { getStripe } from '@/lib/stripe/client';
 import { safeExpire } from '@/lib/stripe/session-api';
 import { allowHit } from '@/lib/security/throttle';
@@ -153,8 +153,10 @@ export async function placeOrder(_prev: PlaceOrderState, formData: FormData): Pr
 
   // ── Bank transfer ──
   const mail = await sendCheckoutConfirmation(order.id);
-  await notifyAdmins(`New order ${order.orderNumber} — ${fmtTotal} awaiting bank transfer`, `${placed.itemSummary}${mail.proforma ? ` · proforma ${mail.proforma}` : ''}${mail.emailed ? '' : ' · the confirmation email could NOT be sent — contact the buyer'}.`, `/admin/orders/${order.id}`, 'ORDER_NEW');
-  await notifyUser(session.user.id, `Order ${order.orderNumber} received`, `Pay ${fmtTotal} by bank transfer${mail.proforma ? ` (reference ${mail.proforma})` : ''}; we dispatch once the payment is verified.`, `/app/orders/${order.orderNumber}`);
+  // No proforma because the seller's details are incomplete: the order waits on a hold — nothing is due yet.
+  const sellerHold = mail.code === 'SELLER_INCOMPLETE';
+  await notifyAdmins(`New order ${order.orderNumber} — ${fmtTotal} ${sellerHold ? 'on hold: no proforma (complete Settings → Company / Payments)' : 'awaiting bank transfer'}`, `${placed.itemSummary}${mail.proforma ? ` · proforma ${mail.proforma}` : ''}${mail.emailed ? '' : ' · the confirmation email could NOT be sent — contact the buyer'}.`, `/admin/orders/${order.id}`, 'ORDER_NEW');
+  await notifyUser(session.user.id, `Order ${order.orderNumber} received`, sellerHold ? settingString('CHECKOUT_MSG_PAYMENT_DETAILS_PENDING') : `Pay ${fmtTotal} by bank transfer${mail.proforma ? ` (reference ${mail.proforma})` : ''}; we dispatch once the payment is verified.`, `/app/orders/${order.orderNumber}`);
   redirect(`/checkout/success?order=${order.orderNumber}${mail.emailed ? '' : '&mail=0'}`);
 }
 

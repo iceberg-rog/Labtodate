@@ -39,7 +39,7 @@ import {
 import { fmtDocMoney, renderDocumentHtml } from './render';
 import { addDaysEndOfDay } from '@/lib/orders/payment-due';
 import { htmlToPdf, pdfPageCount } from './pdf';
-import { companyLogoDataUri, LogoUnavailableError } from './logo';
+import { companyLogoDataUri, documentLogo, LogoUnavailableError } from './logo';
 import { DOC_LABEL_KEYS, DOC_LOCALES, defaultDocLabel, docLabelSettingKey, fillLabel, type DocLabelKey, type DocLanguage } from './labels';
 import { orderDetailsProblems } from '@/lib/orders/details';
 import { QUOTE_REF as quoteReference } from '@/lib/quotes/offer';
@@ -143,12 +143,24 @@ export function sellerIncompleteMessage(orderNumber: string, missing: string[]):
 /**
  * Put an unpaid order whose proforma was refused for incomplete seller details
  * on the INVOICE_PENDING hold (not payable; lib/checkout/holds.ts treats it as
- * a pre-payment hold) and alert the admins — at most once an hour per order.
- * Inside the caller's transaction when `db` is one (offer acceptance).
+ * a pre-payment hold) and alert the admins (alertSellerIncomplete). Inside the
+ * caller's transaction when `db` is one (offer acceptance) — then `alert:
+ * false`: only the hold is written with `tx`, and the caller alerts after the
+ * commit (no network I/O or global-client query inside the transaction).
  */
-async function sellerIncompleteHold(db: Tx | typeof prisma, order: { id: string; orderNumber: string }, missing: string[]): Promise<string> {
-  const message = sellerIncompleteMessage(order.orderNumber, missing);
+async function sellerIncompleteHold(db: Tx | typeof prisma, order: { id: string; orderNumber: string }, missing: string[], opts: { alert?: boolean } = {}): Promise<string> {
   await writeHold(order.id, 'INVOICE_PENDING', `Proforma not issued — missing seller details: ${missing.join(', ')}. Complete Settings → Company / Payments & credit terms, then “Issue the proforma now”.`, db, { unpaid: true });
+  if (opts.alert !== false) await alertSellerIncomplete(order, missing);
+  return sellerIncompleteMessage(order.orderNumber, missing);
+}
+
+/**
+ * Alert the admins that an order's proforma waits for the seller's details —
+ * at most once an hour per order. Never inside a transaction (it reads with the
+ * global client and notifyAdmins awaits the webhooks); offer acceptance calls
+ * it after the commit. Never throws.
+ */
+export async function alertSellerIncomplete(order: { id: string; orderNumber: string }, missing: string[]): Promise<void> {
   try {
     const title = `Order ${order.orderNumber}: no proforma — complete Settings → Company / Payments`;
     const recent = await prisma.notification.findFirst({ where: { title, createdAt: { gte: new Date(Date.now() - 3_600_000) } }, select: { id: true } });
@@ -159,7 +171,6 @@ async function sellerIncompleteHold(db: Tx | typeof prisma, order: { id: string;
   } catch {
     /* the hold is the record; alerting is best effort */
   }
-  return message;
 }
 const QUOTE_REF = (id: string) => quoteReference(id);
 
@@ -671,7 +682,9 @@ function fail(e: unknown): IssueResult {
  * Never without the seller's legal and bank details (sellerDetailsMissing):
  * then nothing is issued, the order is put on the INVOICE_PENDING hold (not
  * payable) with the admins alerted, and the result is SELLER_INCOMPLETE — the
- * acceptance / checkout goes on without a payment request.
+ * acceptance / checkout goes on without a payment request. With `opts.tx` only
+ * the hold is written (with `tx`): the caller alerts the admins after its
+ * commit (alertSellerIncomplete with the result's `missing`).
  */
 export async function issueProforma(
   orderId: string,
@@ -686,7 +699,8 @@ export async function issueProforma(
       const current = await currentProforma(opts.tx, orderId);
       if (current) return { ok: true, document: current, created: false, warnings: [] };
       const sellerGaps = sellerDetailsMissing();
-      if (sellerGaps.length) return { ok: false, code: 'SELLER_INCOMPLETE', message: await sellerIncompleteHold(opts.tx, order, sellerGaps), missing: sellerGaps };
+      // Inside the caller's interactive transaction: no alert here (global client + webhooks could outlast its timeout).
+      if (sellerGaps.length) return { ok: false, code: 'SELLER_INCOMPLETE', message: await sellerIncompleteHold(opts.tx, order, sellerGaps, { alert: false }), missing: sellerGaps };
       const vat = await resolveOrderVat(order, { skipVies: true });
       const r = await issueProformaTx(opts.tx, orderId, { actorId: opts.actorId, dueDate: opts.dueDate, vat, ctx });
       return { ok: true, document: r.document, created: r.created, warnings: [] };
@@ -1412,13 +1426,15 @@ export function snapshotOf(doc: Pick<FiscalDocument, 'snapshot'>): DocumentSnaps
 }
 
 /**
- * HTML of an issued document (preview) — from its snapshot only. `strictLogo`
- * (the stored PDF): a configured logo that can not be loaded throws
- * LogoUnavailableError instead of falling back to the company name.
+ * HTML of an issued document (preview) — from its snapshot only. `logo`: the
+ * logo already resolved by the caller (the stored PDF, ensureDocumentPdf —
+ * null prints the company name); otherwise it is loaded here, falling back to
+ * the name.
  */
-export async function documentHtml(doc: Pick<FiscalDocument, 'snapshot'>, opts: { compact?: boolean; strictLogo?: boolean } = {}): Promise<string> {
+export async function documentHtml(doc: Pick<FiscalDocument, 'snapshot'>, opts: { compact?: boolean; logo?: string | null } = {}): Promise<string> {
   const snap = snapshotOf(doc);
-  return renderDocumentHtml(snap, { logoDataUri: await companyLogoDataUri(snap.seller.logoPath, { strict: opts.strictLogo }), compact: opts.compact });
+  const logo = opts.logo !== undefined ? opts.logo : await companyLogoDataUri(snap.seller.logoPath);
+  return renderDocumentHtml(snap, { logoDataUri: logo, compact: opts.compact });
 }
 
 export type PdfResult =
@@ -1454,14 +1470,24 @@ export async function ensureDocumentPdf(docId: string): Promise<PdfResult> {
   try {
     const snap = snapshotOf(doc);
     const pageLabel = (snap.labels?.PAGE_OF ?? 'Page {PAGE} of {PAGES}').trim();
-    // The stored PDF is the record: rendered with the logo or not at all (a
-    // logo that failed to load → RENDER, and the next request tries again).
-    let pdf = await htmlToPdf(await documentHtml(doc, { strictLogo: true }), { footerText: documentFooterText(snap), pageLabel });
+    // The stored PDF is the record. A logo that failed for a passing reason
+    // (timeout, network, storage) → RENDER, nothing stored, the next request
+    // tries again. One that can never load (missing file, wrong type, too
+    // large, address refused) → the company name, so a settings mistake does
+    // not block every fiscal PDF. Either way the admins are told what to fix.
+    const logo = await documentLogo(snap.seller.logoPath, { fresh: true });
+    if (logo.problem) {
+      await alertLogoProblem(doc.number, snap.seller.logoPath ?? '', logo.problem);
+      if (!logo.problem.permanent) {
+        throw new LogoUnavailableError(`The company logo (${snap.seller.logoPath}) could not be loaded (${logo.problem.reason}).`, logo.problem.reason, false);
+      }
+    }
+    let pdf = await htmlToPdf(await documentHtml(doc, { logo: logo.dataUri }), { footerText: documentFooterText(snap), pageLabel });
     // A few lines over one page (e.g. only the footer on page 2): try the
     // compact layout and keep it when it saves a page. Rendered once, stored.
     const pages = pdfPageCount(pdf);
     if (pages > 1) {
-      const compact = await documentHtml(doc, { compact: true, strictLogo: true })
+      const compact = await documentHtml(doc, { compact: true, logo: logo.dataUri })
         .then((html) => htmlToPdf(html, { footerText: documentFooterText(snap), pageLabel }))
         .catch(() => null);
       if (compact && pdfPageCount(compact) > 0 && pdfPageCount(compact) < pages) pdf = compact;
@@ -1479,10 +1505,29 @@ export async function ensureDocumentPdf(docId: string): Promise<PdfResult> {
     }
     return { ok: true, bytes: pdf, sha256: sum, key, rendered: true };
   } catch (e) {
-    if (e instanceof LogoUnavailableError) {
-      await import('@/lib/observability').then((m) => m.logError('documents.logo', new Error(`${doc.number}: ${e.message} The PDF was not stored; the next download retries.`))).catch(() => {});
-    }
+    // (A LogoUnavailableError was logged and alerted by alertLogoProblem.)
     return { ok: false, error: e instanceof Error ? e.message : String(e), reason: 'RENDER' };
+  }
+}
+
+/**
+ * The company logo could not be used for a stored PDF: logged every time, and
+ * the admins (who can change settings) are told what to fix — at most once an
+ * hour per logo address and kind. Never throws.
+ */
+async function alertLogoProblem(number: string, url: string, problem: { reason: string; permanent: boolean }): Promise<void> {
+  try {
+    const { logError, notifyAdmins } = await import('@/lib/observability');
+    await logError('documents.logo', new Error(`${number}: logo ${url}: ${problem.reason} — ${problem.permanent ? 'rendered with the company name (fix Settings → Company → Logo)' : 'the PDF was not stored; the next request retries'}`));
+    const title = problem.permanent ? 'Company logo cannot be used on documents' : 'Company logo could not be loaded for documents';
+    const recent = await prisma.notification.findFirst({ where: { title, body: { contains: url.slice(0, 200) }, createdAt: { gte: new Date(Date.now() - 3_600_000) } }, select: { id: true } });
+    if (recent) return;
+    const body = problem.permanent
+      ? `${url}: ${problem.reason} — fix Settings → Company → Logo (upload a png / jpeg / webp). Until then new PDFs (e.g. ${number}) are stored with the company name instead of the logo.`
+      : `${url}: ${problem.reason}. PDFs (e.g. ${number}) are not stored meanwhile — buyers are asked to try again and e-mails go without the PDF. Each request retries; if this persists, check the storage or the logo address in Settings → Company → Logo.`;
+    await notifyAdmins(title, body, '/admin/settings?tab=Company', 'SYSTEM');
+  } catch {
+    /* alerting must never break the request */
   }
 }
 

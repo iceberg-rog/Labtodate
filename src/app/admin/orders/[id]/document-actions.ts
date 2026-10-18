@@ -82,6 +82,8 @@ export async function resendDocumentAction(formData: FormData): Promise<R> {
     context: 'documents:resend',
     to: typed || null,
     companyCopy: false,
+    // A proforma always reaches the account that ordered too; invoices / credit notes follow INVOICE_EMAIL_CC_ACCOUNT.
+    alwaysCopyAccount: doc.kind === 'PROFORMA',
   });
   await audit('document.resend', doc.number, `order ${order.orderNumber} → ${recipientsLabel(mail)}${typed ? ' (address typed by staff)' : ''} by ${a.email}: ${mail.emailed ? 'sent' : `failed (${mail.error})`}`);
   return done(order, mail.emailed

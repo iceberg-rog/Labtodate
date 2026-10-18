@@ -1261,6 +1261,13 @@ export async function verifySetting(
         : { ok: false, message: `“${val}” is not a valid non-negative number.` };
     }
     if (verify === 'url' || verify === 'image') {
+      // The company logo is checked by the loader the PDFs use (lib/documents/logo.ts):
+      // Verify accepts exactly what documents can print (png / jpeg / webp / gif up to
+      // 2 MB, from our storage, /public or a public https address — never an SVG).
+      if (key === 'COMPANY_LOGO_URL') {
+        const { checkDocumentLogo } = await import('@/lib/documents/logo');
+        return await checkDocumentLogo(val);
+      }
       // A site-relative image path (an uploaded logo is stored as /media/…) is
       // accepted on Save — check it on this site, resolved exactly like the
       // invoice does (`${BETTER_AUTH_URL}${path}`), instead of rejecting it as

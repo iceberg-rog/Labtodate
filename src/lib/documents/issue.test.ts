@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { ensureSettingsLoaded } from '@/lib/settings';
 import {
+  issueProforma,
   legacyDocumentsAllowed,
   offerItemDetail,
   offerRemarks,
@@ -88,4 +90,36 @@ test('a replaced proforma names the head of the chain, and "pay it" only when it
   assert.deepEqual(await proformaChainHead(find, 'v2'), { number: 'PF-2026-00020-r2', payable: false });
   assert.deepEqual(await proformaChainHead(find, 'loop', 5), { number: 'PF-LOOP', payable: false });
   assert.equal(await proformaChainHead(find, 'missing'), null);
+});
+
+test('offer acceptance without seller details: only the hold is written, through the acceptance transaction — nothing issued', async () => {
+  await ensureSettingsLoaded(); // (loaded first: the env below is not overwritten by stored settings)
+  const saved = process.env.BANK_IBAN;
+  process.env.BANK_IBAN = '';
+  const calls: string[] = [];
+  let held: Record<string, unknown> | null = null;
+  const order = { id: 'o1', orderNumber: 'L2D-2026-K7Q2M4', status: 'PENDING_PAYMENT', openHolds: [] as string[], holdReason: null, holdNote: null, holdAt: null };
+  // The interactive transaction of acceptOffer: every read and write of this step goes through it.
+  const tx = {
+    order: {
+      findUnique: async () => { calls.push('order.findUnique'); return order; },
+      update: async (a: { data: Record<string, unknown> }) => { calls.push('order.update'); held = a.data; return order; },
+    },
+    fiscalDocument: { findFirst: async () => { calls.push('fiscalDocument.findFirst'); return null; } },
+  };
+  try {
+    const r = await issueProforma('o1', { tx: tx as never });
+    assert.equal(r.ok, false);
+    assert.equal(!r.ok && r.code, 'SELLER_INCOMPLETE');
+    assert.ok(!r.ok && r.missing?.includes('IBAN (Settings → Payments & credit terms)'));
+    assert.deepEqual(calls.filter((c) => c === 'order.update'), ['order.update']);
+    const data = held as unknown as { openHolds: string[]; holdReason: string; payableSince: null; holdNote: string };
+    assert.deepEqual(data.openHolds, ['INVOICE_PENDING']);
+    assert.equal(data.holdReason, 'INVOICE_PENDING');
+    assert.equal(data.payableSince, null);
+    assert.match(data.holdNote, /^INVOICE_PENDING: Proforma not issued — missing seller details: .*IBAN/);
+  } finally {
+    if (saved === undefined) delete process.env.BANK_IBAN;
+    else process.env.BANK_IBAN = saved;
+  }
 });

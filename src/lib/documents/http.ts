@@ -5,6 +5,7 @@ import { getServerSession } from '@/lib/auth-server';
 import { capsAllow } from '@/lib/capabilities';
 import { escapeHtml } from '@/lib/email-html';
 import { logError } from '@/lib/observability';
+import { settingString } from '@/lib/settings';
 import { documentHref, documentNumberHref } from './index';
 import {
   documentFilename,
@@ -148,8 +149,9 @@ export async function handleDocumentRequest(
         const issued = await issueProforma(order.id);
         if (!issued.ok) {
           // The seller's own details are incomplete: the order now waits on a hold — tell the buyer what is true.
+          // (issueProforma loaded the settings.)
           const message = issued.code === 'SELLER_INCOMPLETE'
-            ? `Your proforma invoice for order ${order.orderNumber} is being prepared — our team is completing the payment details. Nothing is due yet; we email it to you as soon as it is ready.`
+            ? `Order ${order.orderNumber}: ${settingString('CHECKOUT_MSG_PAYMENT_DETAILS_PENDING')}`
             : issued.message;
           return textPage(409, 'Proforma not available yet', message, [{ href: back, label: 'Go back' }]);
         }
