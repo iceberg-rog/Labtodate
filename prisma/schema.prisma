@@ -210,6 +210,8 @@ model SupportMessage {
   authorId    String?
   body        String
   attachments String[] @default([])
+  /// Original file names, index-aligned with `attachments` (the stored keys are hashes).
+  attachmentNames String[] @default([])
   // Internal notes are admin-only — never sent to the customer's email and
   // never rendered in the magic-link guest viewer.
   isInternalNote Boolean @default(false)
@@ -662,6 +664,14 @@ model Category {
   children    Category[] @relation("CategoryTree")
   products    Product[]
   sortOrder   Int        @default(0)
+  /// Category landing page: search title / description overrides (null = derived from the name).
+  seoTitle       String?
+  seoDescription String?
+  /// Picture of the category on the homepage (URL or site path; null = a product photo).
+  imageUrl       String?
+  /// Listed on the homepage instruments station, in homeOrder (null = after the ordered ones).
+  showOnHome     Boolean    @default(true)
+  homeOrder      Int?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -756,6 +766,10 @@ model Product {
   pendingPriceNote     String?
   priceOnHold          Boolean   @default(false)
 
+  /// Search title / meta description overrides (null = derived from the listing).
+  seoTitle       String?
+  seoDescription String?
+
   categoryId String
   category   Category @relation(fields: [categoryId], references: [id])
 
@@ -769,6 +783,8 @@ model Product {
   company   Company? @relation(fields: [companyId], references: [id])
 
   sourcingRequests SourcingRequest[]
+  /// Quotes asking for a unit like this one ("Source a similar unit" on a sold / reserved listing).
+  similarQuotes    SourcingRequest[] @relation("SimilarQuoteProduct")
   orderItems       OrderItem[]
   threads          MessageThread[]
   wishlistedBy     WishlistItem[]
@@ -910,13 +926,23 @@ model SourcingRequest {
   sellerProposalReviewNote String?
   /// Supplier cost behind the current offer (internal margin view; never shown to the buyer).
   offerSupplierCostCents   Int?
+  /// Currency of offerSupplierCostCents (the supplier may quote in another currency than the offer).
+  offerSupplierCostCurrency String?
   /// Why the deal ended without a sale (buyer decline reason, cancellation reason).
   lostReason               String?
   lostNote                 String?
 
+  /// The listing a "Source a similar unit" request refers to — the request is
+  /// NOT anchored to that unit (productId stays null), so it can be offered
+  /// although the listing is sold or reserved.
+  similarToProductId String?
+  similarTo          Product? @relation("SimilarQuoteProduct", fields: [similarToProductId], references: [id], onDelete: SetNull)
+
   /// The order created when the offer was accepted (Order.sourcingRequestId,
   /// FK ON DELETE RESTRICT: a quote with an order can't be hard-deleted).
   order Order?
+  /// Quotation PDFs, one per offer revision (non-fiscal).
+  quotationDocuments QuotationDocument[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -925,6 +951,7 @@ model SourcingRequest {
   @@index([submittedById])
   @@index([assignedToId])
   @@index([priority])
+  @@index([similarToProductId])
   // Partial raw DB indexes (WHERE col IS NOT NULL) on [archivedAt],[dueAt],
   // [lastReplyAt] — managed in the baseline migration, not declared here.
 }
@@ -935,6 +962,8 @@ model QuoteMessage {
   id          String @id @default(cuid())
   body        String
   attachments String[]
+  /// Original file names, index-aligned with `attachments` (the stored keys are hashes).
+  attachmentNames String[] @default([])
 
   sourcingRequestId String
   sourcingRequest   SourcingRequest @relation(fields: [sourcingRequestId], references: [id], onDelete: Cascade)
@@ -950,6 +979,28 @@ model QuoteMessage {
   createdAt DateTime @default(now())
 
   @@index([sourcingRequestId])
+}
+
+/// The quotation (offer) PDF of one offer revision, e.g. Q-2026-00001-r2. A
+/// commercial document, NOT a fiscal one: it has its own numbering and is not
+/// covered by the FiscalDocument series or its immutability trigger. The
+/// stored bytes never change; sha256 proves it.
+model QuotationDocument {
+  id                String          @id @default(cuid())
+  sourcingRequestId String
+  sourcingRequest   SourcingRequest @relation(fields: [sourcingRequestId], references: [id], onDelete: Cascade)
+  /// SourcingRequest.offerRevision this PDF shows.
+  revision          Int
+  number            String          @unique
+  /// Object key of the stored PDF.
+  pdfKey            String
+  sha256            String
+  /// Everything printed (seller, buyer, item, amounts, terms, validity).
+  snapshot          Json
+  createdById       String?
+  createdAt         DateTime        @default(now())
+
+  @@unique([sourcingRequestId, revision])
 }
 
 // ─── Orders ─────────────────────────────────────────────────
@@ -1027,6 +1078,12 @@ model Order {
   payableSince        DateTime?
   /// Every open pre-payment hold (holdReason is the first of them).
   openHolds           String[]   @default([])
+  /// The General Terms of Sale the buyer accepted (checkout tick-box or offer
+  /// acceptance): the link shown, sha256 of the terms text, when and from where.
+  termsUrl            String?
+  termsVersion        String?
+  termsAcceptedAt     DateTime?
+  termsAcceptedIp     String?
   trackingCarrier String?
   trackingNumber  String?
   shippedAt       DateTime?
@@ -1071,6 +1128,7 @@ model Order {
   items          OrderItem[]
   documents      FiscalDocument[]
   payments       Payment[]
+  paymentProofs  PaymentProof[]
   refunds        Refund[]
   shipments      Shipment[]
   reservations   StockReservation[]
@@ -1172,6 +1230,8 @@ enum OrderHoldReason {
   PAYMENT_REVIEW
   /// 8e: paid, but the invoice could not be issued (missing legal details / technical error).
   INVOICE_PENDING
+  /// Paid, but the unit is no longer in stock: staff decide refund, backorder or another unit.
+  STOCK_SHORTAGE
 }
 
 enum CountryShipPolicy {
@@ -1624,6 +1684,27 @@ model Payment {
   @@index([orderId])
 }
 
+/// Every payment receipt of an order, kept after a new upload or a rejection
+/// (Order.paymentProofUrl only points at the latest one). One row per event.
+model PaymentProof {
+  id             String   @id @default(cuid())
+  orderId        String
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Object key of the stored file.
+  key            String
+  /// SUBMITTED (buyer upload) | REJECTED (staff rejected it) | PART (a part
+  /// payment) | MANUAL (staff attached it when booking a payment)
+  kind           String
+  fileName       String?
+  amountCents    Int?
+  uploadedById   String?
+  rejectedReason String?
+  createdAt      DateTime @default(now())
+
+  @@index([orderId])
+  @@index([key])
+}
+
 // ─── Messaging ───────────────────────────────────────────────
 
 model MessageThread {
@@ -1856,6 +1937,17 @@ model SellSubmission {
   completedAt DateTime?
   paymentReceiptUrl String?
 
+  /// Legal and compliance pack of the sale to us: the seller's business IDs,
+  /// ISO country, and when they accepted the sell terms and declared
+  /// ownership (no liens) and decontamination (with what remains, if anything).
+  sellerVatId               String?
+  sellerKvk                 String?
+  countryCode               String?
+  termsAcceptedAt           DateTime?
+  ownershipDeclaredAt       DateTime?
+  decontaminationDeclaredAt DateTime?
+  decontaminationNote       String?
+
   messages SellMessage[]
   /// 8c (A23): every payout-bank change, incl. ones waiting for staff review.
   bankChanges BankDetailsChange[]
@@ -1905,6 +1997,8 @@ model SellMessage {
   authorId    String?
   body        String
   attachments String[] @default([])
+  /// Original file names, index-aligned with `attachments` (the stored keys are hashes).
+  attachmentNames String[] @default([])
 
   /// Message kind: TEXT (default chat), PRICE_PROPOSAL (sender proposes a
   /// new price in priceCents/currency below), PRICE_ACCEPTED (informational
@@ -2142,4 +2236,19 @@ model ReminderLog {
 
   @@unique([subjectType, subjectId, kind, step])
   @@index([sentAt])
+}
+
+/// Redirect manager (Admin -> SEO -> Redirects): a changed or removed URL
+/// answers 301 to `toPath`, or 410 Gone when `toPath` is empty.
+model Redirect {
+  id          String   @id @default(cuid())
+  /// Site path as requested, e.g. /marketplace/old-slug (no host, no query).
+  fromPath    String   @unique
+  toPath      String?
+  /// 301 | 410
+  statusCode  Int      @default(301)
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }

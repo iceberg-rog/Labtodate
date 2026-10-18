@@ -16,6 +16,13 @@ import { CATALOG_SETTING_DEFS } from '../catalog/settings-defs';
 import { QUOTE_SETTING_DEFS } from '../quotes/settings-defs';
 import { DOC_LABEL_DEFS, DOC_LABEL_KEYS, docLabelSettingKey } from '../documents/labels';
 import { FULFILMENT_SETTING_DEFS } from '../fulfilment/settings-defs';
+import { SUPPORT_SETTING_DEFS } from '../support/settings-defs';
+import { HOME_SETTING_DEFS } from '../home/settings-defs';
+import {
+  ABOUT_PAGE_TOKENS, COOKIE_POLICY_TOKENS, DEFAULT_ABOUT_PAGE_TEXT, DEFAULT_BUYER_CANCEL_DISABLED_TEXT, DEFAULT_CONSUMER_WITHDRAWAL_TEXT,
+  DEFAULT_COOKIE_POLICY_TEXT, DEFAULT_FAQ_TEXT, DEFAULT_PRIVACY_POLICY_TEXT, DEFAULT_SELL_DECONTAMINATION_TEXT, DEFAULT_SELL_TERMS_TEXT,
+  DEFAULT_SELLER_PAYOUT_TERMS_TEXT, DEFAULT_SELLER_TERMS_TEXT, FAQ_TOKENS, PRIVACY_POLICY_TOKENS, SELLER_TERMS_TOKENS,
+} from './page-texts';
 
 export const SETTING_GROUPS = [
   'Company',
@@ -36,8 +43,11 @@ export const SETTING_GROUPS = [
   'Security',
   'Brand',
   'Site texts & pages',
+  'Homepage',
+  'Support',
   'Catalog & claims',
   'Import & suppliers',
+  'Suppliers',
   'Acquisitions',
   'AI assistant',
 ] as const;
@@ -87,6 +97,9 @@ export interface SettingDefinition {
   max?: number;
   /** Allow an empty value (= "not set", e.g. "no free-shipping threshold"). */
   optional?: boolean;
+  /** Once set, the value can be changed but never emptied (legal identity and
+   *  bank details printed on every document): saving it empty is refused. */
+  required?: boolean;
   multiline?: boolean;
   /** Old field-level check button on the settings page. */
   verify?: 'email' | 'number' | 'url' | 'image';
@@ -97,10 +110,18 @@ export interface SettingDefinition {
   sensitive?: boolean;
   /** Saved but not applied yet: names the feature that will apply it. */
   pending?: string;
-  /** Extra per-key validation (pure). Return a reason, or null when valid. */
-  validate?: (value: string) => string | null;
+  /** Extra per-key validation (pure). Return a reason, or null when valid.
+   *  `ctx` gives other keys' values as they will be after the save (absent
+   *  outside a save: rules then assume those keys' registry defaults). */
+  validate?: (value: string, ctx?: SettingValidationContext) => string | null;
   /** Derived: type === 'secret'. Kept for older callers. */
   secret: boolean;
+}
+
+/** Read access to the other settings while one value is validated. */
+export interface SettingValidationContext {
+  /** Effective value of `key` once the save being checked is applied. */
+  value(key: string): string;
 }
 
 type DefInput = Omit<SettingDefinition, 'secret'>;
@@ -131,6 +152,31 @@ export function companyVatIdProblem(v: string): string | null {
   return /^(?:[A-Z]{2}|EL)[0-9A-Z+*]{2,13}$/.test(id) ? null : 'must start with the 2-letter country code, e.g. NL123456789B01.';
 }
 
+/**
+ * Company register number (COMPANY_KVK). With the VAT home country NL it is a
+ * Dutch KvK number: exactly 8 digits (spaces ignored). Other home countries'
+ * registers have their own formats (letters allowed), checked loosely.
+ */
+export function companyRegisterNumberProblem(v: string, homeCountry: string): string | null {
+  const id = v.replace(/\s+/g, '');
+  if (homeCountry.trim().toUpperCase() === 'NL') {
+    return /^\d{8}$/.test(id) ? null : 'a Dutch KvK number is exactly 8 digits, e.g. 12345678 (no letters).';
+  }
+  return /^(?=.*\d)[A-Za-z0-9./-]{2,30}$/.test(id) ? null : 'use the number of your company register (letters, digits and - . / only).';
+}
+
+/** Comma-separated list of absolute https:// links (profile pages). */
+function httpsLinksProblem(v: string): string | null {
+  const bad = v.split(',').map((s) => s.trim()).filter(Boolean).filter((s) => {
+    try {
+      return new URL(s).protocol !== 'https:';
+    } catch {
+      return true;
+    }
+  });
+  return bad.length ? `“${bad.slice(0, 3).join('”, “')}” — every link must be a full https:// address.` : null;
+}
+
 const NUMBER_TOKENS = /\{(PREFIX|YYYY|YY|SEQ(?::\d)?)\}/g;
 export function numberFormatProblem(v: string): string | null {
   if (!/\{SEQ(?::\d)?\}/.test(v)) return 'must contain {SEQ} (or {SEQ:5} for zero-padding to 5 digits).';
@@ -141,6 +187,7 @@ export function numberFormatProblem(v: string): string | null {
 }
 
 const prefixProblem = (v: string) => (/^[A-Z0-9]{1,8}$/.test(v) ? null : 'use 1–8 capital letters or digits, e.g. INV.');
+const tokensHint = (tokens: readonly string[]) => ` Placeholders: ${tokens.join(', ')}.`;
 
 const yesNo: readonly SettingOption[] = [
   { value: 'true', label: 'Yes' },
@@ -211,19 +258,19 @@ function securityPolicySetting(d: PolicyDef): DefInput {
 
 const DEFS: DefInput[] = [
   // ── Company ──
-  { key: 'COMPANY_LEGAL_NAME', label: 'Legal company name', group: 'Company', type: 'string', sensitive: true, effect: 'new-documents',
-    hint: 'Registered name exactly as at the KvK — printed as the seller on proformas, invoices and credit notes.' },
-  { key: 'COMPANY_ADDRESS', label: 'Registered address', group: 'Company', type: 'text', multiline: true, sensitive: true, effect: 'new-documents',
-    hint: 'Street + number on the first line, postcode + city on the next.' },
+  { key: 'COMPANY_LEGAL_NAME', label: 'Legal company name', group: 'Company', type: 'string', sensitive: true, effect: 'new-documents', required: true,
+    hint: 'Registered name exactly as at the KvK — printed as the seller on proformas, invoices and credit notes. Once set it can be changed, not emptied.' },
+  { key: 'COMPANY_ADDRESS', label: 'Registered address', group: 'Company', type: 'text', multiline: true, sensitive: true, effect: 'new-documents', required: true,
+    hint: 'Street + number on the first line, postcode + city on the next. Once set it can be changed, not emptied.' },
   { key: 'COMPANY_CITY', label: 'Issuing city', group: 'Company', type: 'string', effect: 'new-documents',
     hint: 'City shown on documents (e.g. Zoetermeer).' },
   { key: 'COMPANY_COUNTRY', label: 'Country', group: 'Company', type: 'string', effect: 'new-documents',
     hint: 'Country name printed under the address, e.g. Netherlands. (The VAT home country is set under Tax & VAT.)' },
-  { key: 'COMPANY_KVK', label: 'KvK number (Chamber of Commerce)', group: 'Company', type: 'string', sensitive: true, effect: 'new-documents',
-    hint: 'Trade-register number, 8 digits in NL. Required on Dutch invoices.',
-    validate: (v) => (/^\d{8}$/.test(v.replace(/\s+/g, '')) || !/^\d+$/.test(v.replace(/\s+/g, '')) ? null : 'a Dutch KvK number has 8 digits.') },
-  { key: 'COMPANY_VAT', label: 'VAT ID (BTW-id)', group: 'Company', type: 'string', sensitive: true, effect: 'new-documents',
-    hint: 'Your own VAT identification number, e.g. NL123456789B01. Required on every invoice.', validate: companyVatIdProblem },
+  { key: 'COMPANY_KVK', label: 'KvK number (Chamber of Commerce)', group: 'Company', type: 'string', sensitive: true, effect: 'new-documents', required: true,
+    hint: 'Trade-register number: exactly 8 digits while the VAT home country (Tax & VAT) is NL. Required on Dutch invoices; once set it can be changed, not emptied.',
+    validate: (v, ctx) => companyRegisterNumberProblem(v, ctx?.value('TAX_HOME_COUNTRY') || 'NL') },
+  { key: 'COMPANY_VAT', label: 'VAT ID (BTW-id)', group: 'Company', type: 'string', sensitive: true, effect: 'new-documents', required: true,
+    hint: 'Your own VAT identification number, e.g. NL123456789B01. Required on every invoice; once set it can be changed, not emptied.', validate: companyVatIdProblem },
   { key: 'COMPANY_EORI', label: 'EORI number', group: 'Company', type: 'string', effect: 'new-documents', optional: true,
     hint: 'Customs number for exports outside the EU (usually NL + your VAT number digits). Printed on export documents.' },
   { key: 'COMPANY_PHONE', label: 'Phone', group: 'Company', type: 'string', effect: 'new-documents', hint: 'Business phone printed on documents.' },
@@ -369,9 +416,9 @@ const DEFS: DefInput[] = [
     hint: 'whsec_… from the Stripe webhook endpoint.' },
   { key: 'BANK_NAME', label: 'Bank name', group: 'Payments & credit terms', type: 'string', sensitive: true, effect: 'new-documents',
     hint: 'Payee bank shown on proformas, e.g. “ING Bank”.' },
-  { key: 'BANK_IBAN', label: 'Bank IBAN', group: 'Payments & credit terms', type: 'string', sensitive: true, effect: 'new-documents',
+  { key: 'BANK_IBAN', label: 'Bank IBAN', group: 'Payments & credit terms', type: 'string', sensitive: true, effect: 'new-documents', required: true,
     validate: (v) => (isValidIban(v) ? null : 'not a valid IBAN (checksum failed) — check for typos.'),
-    hint: 'Printed on proformas and the payment page. Each proforma keeps the IBAN it was issued with.' },
+    hint: 'Printed on proformas and the payment page. Each proforma keeps the IBAN it was issued with. Once set it can be changed, not emptied.' },
   { key: 'BANK_SWIFT', label: 'Bank SWIFT / BIC', group: 'Payments & credit terms', type: 'string', sensitive: true, effect: 'new-documents',
     validate: (v) => (/^[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?$/.test(v.replace(/\s+/g, '').toUpperCase()) ? null : 'a BIC has 8 or 11 letters/digits, e.g. INGBNL2A.'),
     hint: 'e.g. INGBNL2A. For international transfers.' },
@@ -399,6 +446,9 @@ const DEFS: DefInput[] = [
     hint: 'Part of “Billing & delivery details before payment”: whether the details count as complete without the buyer’s VAT ID. Outside the EU most buyers have no EU VAT ID, so “Required for EU buyers” is the usual choice; “Optional” lets EU buyers without one pay (they are charged VAT).' },
   { key: 'PAYMENT_VERIFY_TURNAROUND', label: 'Payment verification promise', group: 'Payments & credit terms', type: 'string', default: '1 business day',
     hint: 'Shown on the payment page (“we verify within …”). Only promise what the team really does.' },
+  { key: 'BUYER_CANCEL_DISABLED_TEXT', label: 'Payment page — how to cancel when buyers cannot', group: 'Payments & credit terms', type: 'text', multiline: true,
+    default: DEFAULT_BUYER_CANCEL_DISABLED_TEXT,
+    hint: 'Shown on the payment page of an unpaid order, with a link to support, while buyers cannot cancel themselves (Quotes & offers → “Buyer can cancel an unpaid order” off).' },
   { key: 'CREDIT_TERMS_ENABLED', label: 'Allow invoice payment (NET terms)', group: 'Payments & credit terms', type: 'bool', default: 'false', options: yesNo,
     hint: 'Yes: buyers you approved for credit (with a credit limit — on the order page → Credit terms) can ask to pay on invoice. Staff then approve the order on terms: an UNPAID invoice with a due date is issued — never “paid” without money. Everyone else prepays.' },
   { key: 'CREDIT_DEFAULT_TERM_DAYS', label: 'Default NET term (days)', group: 'Payments & credit terms', type: 'int', default: '30', min: 1, max: 120, effect: 'new-documents',
@@ -500,6 +550,9 @@ const DEFS: DefInput[] = [
     hint: 'Business buyers must give their registered company name and a KvK / registration number or a VAT ID at checkout.' },
   { key: 'CONSUMER_ORDER_BUTTON_TEXT', label: 'Order button for consumers', group: 'Sales channel', type: 'string', default: 'Order with obligation to pay',
     hint: 'EU consumer law requires the final button to say the order must be paid (only used when consumers may buy).' },
+  { key: 'CONSUMER_WITHDRAWAL_TEXT', label: 'Withdrawal right (consumers)', group: 'Sales channel', type: 'text', multiline: true,
+    default: DEFAULT_CONSUMER_WITHDRAWAL_TEXT,
+    hint: 'EU consumer law: private buyers are told about their 14-day withdrawal right before they order and in the order confirmation. Shown next to the consumer order button and in the order e-mail (only when consumers may buy). Say who pays the return shipping.' },
 
   // ── Checkout & customers ──
   { key: 'CHECKOUT_PO_NUMBER', label: 'Purchase-order (PO) number', group: 'Checkout & customers', type: 'enum', default: 'OPTIONAL',
@@ -650,6 +703,10 @@ const DEFS: DefInput[] = [
     hint: 'Inbox for “Let us find it” / unassigned quote requests.' },
   { key: 'SUPPORT_INTAKE_EMAIL', label: 'Support tickets go to', group: 'Email', type: 'email', verify: 'email',
     hint: 'Inbox that receives new support tickets / contact messages.' },
+  { key: 'TRANSACTIONAL_REPLY_TO', label: 'Replies to customer e-mails go to', group: 'Email', type: 'email', verify: 'email', optional: true,
+    hint: 'Reply-To of every order, quote and account e-mail, so a customer who presses Reply reaches a person. Set: those e-mails invite a reply. Empty: the Reply-To is the public support e-mail (Brand) and the e-mails point to the support page instead of asking for a reply.' },
+  { key: 'PAYMENTS_INBOX_EMAIL', label: 'Payment receipts are announced to', group: 'Email', type: 'email', verify: 'email', optional: true,
+    hint: 'Staff inbox told about every payment receipt a buyer uploads (with the amount still due and a link to the order), next to the in-app notice. Empty = the billing e-mail (Company).' },
 
   // ── Security (security team: src/lib/security/policy-defs.ts) ──
   // Edited on the Security tab (and /admin/settings/security): needs
@@ -659,15 +716,51 @@ const DEFS: DefInput[] = [
 
   // ── Brand ──
   { key: 'SITE_NAME', label: 'Site / brand name', group: 'Brand', type: 'string', preview: '/',
-    hint: 'Display name used in emails and page metadata.' },
+    hint: 'Your brand as customers read it: the sender name of every e-mail, browser-tab titles and link previews, the footer, the legal pages and the account name in authenticator apps. Empty = “Labtodate”. The registered company name is set under Company.' },
   { key: 'SUPPORT_EMAIL', label: 'Public support email', group: 'Brand', type: 'email', verify: 'email',
     hint: 'Shown in the footer “contact us” link.' },
+
+  // ── Site texts & pages (public pages, legal texts, sharing) ──
+  { key: 'ABOUT_PAGE_TEXT', label: 'About page', group: 'Site texts & pages', type: 'text', multiline: true, default: DEFAULT_ABOUT_PAGE_TEXT,
+    hint: 'The /about page. “## ” starts a heading, an empty line a new paragraph, [text](/path) is a link.' + tokensHint(ABOUT_PAGE_TOKENS) },
+  { key: 'FAQ_TEXT', label: 'FAQ page', group: 'Site texts & pages', type: 'text', multiline: true, default: DEFAULT_FAQ_TEXT,
+    hint: 'The /faq page: each “## ” line is a question, the paragraphs under it the answer; [text](/path) is a link.' + tokensHint(FAQ_TOKENS) },
+  { key: 'PRIVACY_POLICY_TEXT', label: 'Privacy policy', group: 'Site texts & pages', type: 'text', multiline: true, default: DEFAULT_PRIVACY_POLICY_TEXT,
+    hint: 'The /legal/privacy page. Name every provider that processes customer data for you (e-mail, hosting and storage, VAT checks, payments, carriers) and keep it true when you add one. “## ” starts a heading, an empty line a new paragraph, [text](/path) is a link.' + tokensHint(PRIVACY_POLICY_TOKENS) },
+  { key: 'COOKIE_POLICY_TEXT', label: 'Cookie policy', group: 'Site texts & pages', type: 'text', multiline: true, default: DEFAULT_COOKIE_POLICY_TEXT,
+    hint: 'The /legal/cookies page. List every cookie the site sets; analytics or marketing cookies would also need a consent banner. “## ” starts a heading, an empty line a new paragraph.' + tokensHint(COOKIE_POLICY_TOKENS) },
+  { key: 'SOCIAL_LINKS', label: 'Company profiles on other sites', group: 'Site texts & pages', type: 'list', optional: true, validate: httpsLinksProblem,
+    hint: 'Full https:// links of your own company pages (LinkedIn, YouTube, X …), comma-separated. Search engines are told these profiles belong to your company. Empty = none.' },
+  { key: 'OG_DEFAULT_IMAGE_URL', label: 'Link-preview image', group: 'Site texts & pages', type: 'image', verify: 'image', optional: true,
+    hint: 'Picture shown when a page without its own image is shared (chat apps, social media, search previews); 1200 × 630 px works everywhere. Empty = no preview picture.' },
+  { key: 'OG_LOCALE', label: 'Language of the site for link previews', group: 'Site texts & pages', type: 'string', default: 'en_US',
+    validate: (v) => (/^[a-z]{2}_[A-Z]{2}$/.test(v) ? null : 'use language_COUNTRY, e.g. en_US, en_GB or nl_NL.'),
+    hint: 'Told to social media and search engines with every page (og:locale), e.g. en_US, en_GB, nl_NL. Match the language the site is written in.' },
+
+  // ── Suppliers (companies that sell their stock through you) ──
+  { key: 'SELLER_PROGRAMME_PUBLIC', label: 'Public supplier programme page', group: 'Suppliers', type: 'bool', default: 'false', options: yesNo,
+    hint: 'Yes: /seller/pricing explains to suppliers how selling through you works (the two texts below) and search engines may list it. No (default): that page does not exist for visitors — suppliers join by agreement with your team.' },
+  { key: 'SELLER_TERMS_TEXT', label: 'Supplier programme — how it works', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_TERMS_TEXT,
+    hint: 'First part of /seller/pricing. Describe the real deal — by default a supplier receives their own price and never sees your sell price (Quotes & offers → “Suppliers see the buyer price”). “## ” starts a heading, an empty line a new paragraph.' + tokensHint(SELLER_TERMS_TOKENS) },
+  { key: 'SELLER_PAYOUT_TERMS_TEXT', label: 'Supplier programme — how suppliers are paid', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_PAYOUT_TERMS_TEXT,
+    hint: 'Payout part of /seller/pricing: when and how a supplier is paid for a sold unit. Only state terms your supplier agreements really contain.' + tokensHint(SELLER_TERMS_TOKENS) },
+  { key: 'MESSAGE_MEDIATION_MODE', label: 'Messages between buyers and suppliers', group: 'Suppliers', type: 'enum', default: 'MASK_CONTACTS', sensitive: true,
+    options: [
+      { value: 'MASK_CONTACTS', label: 'Remove contact details (e-mail addresses, phone numbers, links, IBANs) and notify staff (recommended)' },
+      { value: 'STAFF_REVIEW', label: 'Staff release every supplier message before the buyer sees it' },
+      { value: 'OFF', label: 'Deliver messages as written (buyers and suppliers can deal around you)' },
+    ],
+    hint: 'Applies to quote threads and “Message seller” conversations between a buyer and a supplier. Removed details show as “[contact details removed]”. Messages written by your own staff are never changed.' },
 
   // ── Acquisitions ──
   { key: 'COMPANY_RECEIVING_ADDRESS', label: 'Receiving warehouse address', group: 'Acquisitions', type: 'text', multiline: true,
     hint: 'Full address sellers ship accepted equipment to. Multi-line OK. Shown in their shipping form once we accept their offer.' },
   { key: 'EMAIL_THROTTLE_HOURS', label: 'Email throttle (hours)', group: 'Acquisitions', type: 'int', verify: 'number', min: 0, max: 168,
     hint: 'When we reply to a seller/buyer, skip the email if we already emailed them in the last N hours (the in-app notification still fires). Stops chat-rapid-fire spam. Default: 2.' },
+  { key: 'SELL_TERMS_TEXT', label: 'Sell form — terms the seller accepts', group: 'Acquisitions', type: 'text', multiline: true, default: DEFAULT_SELL_TERMS_TEXT,
+    hint: 'Shown above the “I accept” tick-box of the “Sell equipment” form; the time of acceptance is kept with the submission. Keep it in line with “How you acquire equipment”. An empty line starts a new paragraph.' },
+  { key: 'SELL_DECONTAMINATION_TEXT', label: 'Sell form — decontamination declaration', group: 'Acquisitions', type: 'text', multiline: true, default: DEFAULT_SELL_DECONTAMINATION_TEXT,
+    hint: 'The declaration a seller ticks before shipping equipment to you (with a field for remaining residues or hazards); the time is kept with the submission.' },
 
   // ── Catalog & claims / Import & suppliers / Acquisitions (/sell copy) ──
   // Owned by the catalog area (src/lib/catalog/settings-defs.ts), read through
@@ -681,15 +774,19 @@ const DEFS: DefInput[] = [
   // (fulfilment area: src/lib/fulfilment/settings-defs.ts) ──
   ...FULFILMENT_SETTING_DEFS,
 
-  // ── AI assistant ──
+  // ── Support (support tickets: src/lib/support/settings-defs.ts) ──
+  ...SUPPORT_SETTING_DEFS,
+
+  // ── Homepage (stations, items and texts: src/lib/home/settings-defs.ts) ──
+  ...HOME_SETTING_DEFS,
+
+  // ── AI assistant (admin AI tools; the on-site chat was removed) ──
   { key: 'AI_API_KEY', label: 'AI API key', group: 'AI assistant', type: 'secret',
-    hint: 'OpenAI-compatible key (sk-…). Powers the on-site assistant.' },
+    hint: 'OpenAI-compatible (sk-…) or Anthropic (sk-ant-…) key for the admin AI tools: supplier-shop suggestions and shop risk checks (Shops & suppliers). Empty = those tools are off.' },
   { key: 'AI_BASE_URL', label: 'AI base URL', group: 'AI assistant', type: 'url', verify: 'url',
-    hint: 'Default https://api.openai.com/v1 — change for any OpenAI-compatible provider.' },
+    hint: 'Empty = https://api.openai.com/v1 (or https://api.anthropic.com for an Anthropic key) — change for any OpenAI-compatible provider.' },
   { key: 'AI_MODEL', label: 'AI model', group: 'AI assistant', type: 'string',
-    hint: 'e.g. gpt-4o-mini. Default: gpt-4o-mini.' },
-  { key: 'ASSISTANT_NAME', label: 'Assistant name', group: 'AI assistant', type: 'string', preview: '/',
-    hint: 'Display name of the on-site chat assistant. Default: lab2date Assistant.' },
+    hint: 'Empty = gpt-4o-mini (or claude-haiku-4-5 for an Anthropic key).' },
 ];
 
 export const SETTING_DEFS: readonly SettingDefinition[] = DEFS.map((d) => ({ ...d, secret: d.type === 'secret' }));
@@ -737,8 +834,9 @@ export function displayValue(d: SettingDefinition, stored: string): string {
   return stored;
 }
 
-/** Validate a NORMALISED value. Returns a reason, or null. Empty = "unset" (always allowed). */
-export function validateSettingValue(d: SettingDefinition, value: string): string | null {
+/** Validate a NORMALISED value. Returns a reason, or null. Empty = "unset" (allowed here;
+ *  saveSettings refuses emptying a `required` key). `ctx`: see SettingDefinition.validate. */
+export function validateSettingValue(d: SettingDefinition, value: string, ctx?: SettingValidationContext): string | null {
   if (value === '') return null;
   switch (d.type) {
     case 'int': {
@@ -791,7 +889,7 @@ export function validateSettingValue(d: SettingDefinition, value: string): strin
     default:
       break;
   }
-  return d.validate ? d.validate(value) : null;
+  return d.validate ? d.validate(value, ctx) : null;
 }
 
 /** Mask a secret for the change history: never the plaintext. */

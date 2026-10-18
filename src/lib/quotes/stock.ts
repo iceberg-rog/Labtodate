@@ -105,3 +105,27 @@ export async function sellQuoteUnit(tx: Prisma.TransactionClient, quoteId: strin
   await consumeQuoteHold(quoteId, tx);
   return '';
 }
+
+/** Outcome of taking a paid quote order's unit out of stock. */
+export interface TakeUnitResult {
+  /** The unit is sold to this order (or the order holds no listed unit). */
+  ok: boolean;
+  /** The unit is no longer in stock: staff decide refund, backorder or another unit (STOCK_SHORTAGE). */
+  short: boolean;
+  /** For staff ('' when there is nothing to say). */
+  warning: string;
+}
+
+/**
+ * sellQuoteUnit with a typed result for the "paid" paths: `short` instead of a
+ * warning sentence when the unit could not be taken. An order without a quote
+ * has no quote hold — nothing to take.
+ */
+export async function takeQuoteUnit(
+  tx: Prisma.TransactionClient,
+  order: { id: string; sourcingRequestId: string | null; items: Array<{ productId: string | null; quantity: number }> },
+): Promise<TakeUnitResult> {
+  if (!order.sourcingRequestId) return { ok: true, short: false, warning: '' };
+  const warning = (await sellQuoteUnit(tx, order.sourcingRequestId, order.id, order.items[0])).trim();
+  return warning ? { ok: false, short: true, warning } : { ok: true, short: false, warning: '' };
+}

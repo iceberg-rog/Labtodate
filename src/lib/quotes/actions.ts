@@ -110,6 +110,16 @@ const SourcingInput = z.object({
   company_url: z.string().optional().nullable(),
   /** Solved bot check (only when Settings → Security asks signed-in customers too). */
   captcha: z.string().max(8000).optional(),
+  // What the buyer needs, for the offer: accepted by the form already, not
+  // stored on the request yet.
+  /** ISO country the goods go to ('' = not given). */
+  deliveryCountry: z.string().regex(/^([A-Za-z]{2})?$/).optional().nullable(),
+  quantity: z.number().int().min(1).max(999).optional().nullable(),
+  /** Wanted Incoterm, e.g. DAP. */
+  incoterm: z.string().max(3).optional().nullable(),
+  vatId: z.string().max(32).optional().nullable(),
+  /** "Source a similar unit" from a sold / reserved listing (not that unit itself). */
+  similar: z.boolean().optional().nullable(),
 });
 
 export type SourcingInputType = z.infer<typeof SourcingInput>;
@@ -459,6 +469,14 @@ const OfferInput = z.object({
   warranty: z.string().max(200).optional().nullable(),
   /** Payment term after acceptance (days). Default: PAYMENT_TERM_DAYS. */
   paymentDays: z.number().int().min(1).max(120).optional().nullable(),
+  // The offered item and its destination: accepted by the composer already,
+  // not stored on the offer yet.
+  itemTitle: z.string().max(200).optional().nullable(),
+  itemDescription: z.string().max(4000).optional().nullable(),
+  itemCondition: z.enum(['NEW', 'REFURBISHED', 'USED']).optional().nullable(),
+  itemSerial: z.string().max(120).optional().nullable(),
+  /** ISO country the offer is priced for (freight, VAT). */
+  destinationCountry: z.string().regex(/^([A-Za-z]{2})?$/).optional().nullable(),
 });
 
 class OfferRaceError extends Error {}
@@ -1419,8 +1437,9 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
 
 // ── Decline / close ─────────────────────────────────────────────────────────
 
-/** The buyer declines an open offer, optionally saying why. */
-export async function declineOffer(input: { sourcingRequestId: string; reason?: string | null; note?: string | null }): Promise<QuoteActionResult> {
+/** The buyer declines an open offer, optionally saying why. `offerRevision` (the
+ *  revision the buyer was looking at) is accepted already, not checked yet. */
+export async function declineOffer(input: { sourcingRequestId: string; reason?: string | null; note?: string | null; offerRevision?: number | null }): Promise<QuoteActionResult> {
   await ensureSettingsLoaded();
   const reasons = declineReasons();
   const reason = (input.reason ?? '').trim();
@@ -1431,8 +1450,30 @@ export async function declineOffer(input: { sourcingRequestId: string; reason?: 
 
 class ProofInFlightError extends Error {}
 
-export async function setQuoteStatus(id: string, status: 'DECLINED' | 'CLOSED'): Promise<QuoteActionResult> {
+/** Decline (buyer) or close (staff). A close reason and note are accepted
+ *  already, not stored yet: the quote is closed exactly as without them. */
+export async function setQuoteStatus(
+  id: string,
+  status: 'DECLINED' | 'CLOSED',
+  opts?: { reason?: string | null; note?: string | null },
+): Promise<QuoteActionResult> {
+  void opts;
   return setQuoteStatusCore(id, status, {});
+}
+
+/** Staff: start a new request for the same buyer (and product) from a closed
+ *  quote or one whose order was canceled. Not available yet. */
+export async function cloneQuoteForBuyer(id: string): Promise<QuoteActionResult & { sourcingRequestId?: string }> {
+  void id;
+  return { error: 'Not available yet' };
+}
+
+/** Assigned supplier: give the request back to the team instead of closing
+ *  the buyer's request. Not available yet. */
+export async function handBackQuote(id: string, reason: string): Promise<QuoteActionResult> {
+  void id;
+  void reason;
+  return { error: 'Not available yet' };
 }
 
 async function setQuoteStatusCore(
