@@ -294,6 +294,22 @@ async function numberingProblems(input: Record<string, string>, normalised: Map<
   return out;
 }
 
+/**
+ * The value `key` will have once `input` is saved, as saveSettings applies it:
+ * a cleared or emptied field falls back to .env / the registry default (an
+ * empty secret keeps its value); a field not in the form keeps `current`.
+ */
+export function valueAfterSave(key: string, input: Record<string, string>, current: (key: string) => string): string {
+  const d = settingDef(key);
+  if (!d) return '';
+  if (input[`__clear_${key}`] === 'on') return baselineValue(key);
+  const raw = input[key];
+  if (raw === undefined) return current(key);
+  const value = normaliseInput(d, raw);
+  if (value) return value;
+  return d.secret ? current(key) : baselineValue(key);
+}
+
 export async function saveSettings(input: Record<string, string>, actor: SettingActor = {}): Promise<SaveSettingsResult> {
   // A set Resend key overrides SMTP, so an autofilled login password in that
   // field silently breaks all email. Real keys start with "re_"; reject anything
@@ -313,24 +329,31 @@ export async function saveSettings(input: Record<string, string>, actor: Setting
   // first, so a bad submit changes nothing.
   const problems: string[] = [];
   const normalised = new Map<string, string>();
+  const stored = (key: string) => (inDb.get(key) ?? '').trim() || baselineValue(key);
+  // Rules that read another key (the KvK format follows the VAT home country)
+  // see that key as it will be after this save.
+  const ctx = { value: (key: string) => valueAfterSave(key, input, stored) };
   for (const d of SETTING_DEFS) {
-    if (input[`__clear_${d.key}`] === 'on') continue;
     const raw = input[d.key];
+    const clearing = input[`__clear_${d.key}`] === 'on' || (raw !== undefined && !d.secret && normaliseInput(d, raw) === '');
+    // A required key (legal identity, IBAN) can be changed but not emptied —
+    // not even back to a .env value: that fallback is not the registered name
+    // or account the documents carry now. (Only from .env: emptying changes nothing.)
+    if (clearing && d.required && (inDb.get(d.key) ?? '').trim()) {
+      problems.push(`${d.label}: required on the documents — it can be changed but not emptied (enter the correct value instead).`);
+      continue;
+    }
+    if (input[`__clear_${d.key}`] === 'on') continue;
     if (raw === undefined) continue;
     const value = normaliseInput(d, raw);
     normalised.set(d.key, value);
-    if (!value) {
-      // Emptying a required setting that has no fallback is refused (a blank
-      // VAT rate would silently become 0).
-      continue;
-    }
-    const why = validateSettingValue(d, value);
+    if (!value) continue; // emptied: the override is removed below (falls back to .env / default)
+    const why = validateSettingValue(d, value, ctx);
     if (why) {
       problems.push(`${d.label}: ${why}`);
       continue;
     }
-    const current = (inDb.get(d.key) ?? '').trim() || baselineValue(d.key);
-    const guard = await guardProblem(d, value, current);
+    const guard = await guardProblem(d, value, stored(d.key));
     if (guard) problems.push(`${d.label}: ${guard}`);
   }
   // Cross-key rules of the document numbering (prefixes, format, year reset,

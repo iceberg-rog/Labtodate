@@ -8,6 +8,10 @@ import {
   Banknote,
   Inbox,
   MessageSquare,
+  MessagesSquare,
+  PackageCheck,
+  Files,
+  CornerDownRight,
   ShoppingCart,
   Settings,
   Megaphone,
@@ -113,8 +117,23 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                 />
               )}
               {can('messages:view') && (
-                <AdminNavLink href="/admin/messages" icon={<MessageSquare className="h-4 w-4" />} label="Messages" />
+                <AdminNavLink
+                  href="/admin/messages/threads"
+                  icon={<MessagesSquare className="h-4 w-4" />}
+                  label="Buyer-supplier threads"
+                />
               )}
+              {can('messages:view') && (
+                // Old on-site chat transcripts, read-only: support runs on tickets now.
+                <AdminNavLink href="/admin/messages" icon={<MessageSquare className="h-4 w-4" />} label="Chat archive" />
+              )}
+            </NavSection>
+          )}
+
+          {can('finance:view') && (
+            <NavSection title="Finance">
+              <AdminNavLink href="/admin/sold" icon={<PackageCheck className="h-4 w-4" />} label="Sold items" />
+              <AdminNavLink href="/admin/documents" icon={<Files className="h-4 w-4" />} label="Documents" />
             </NavSection>
           )}
 
@@ -142,6 +161,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               )}
               {can('products:edit') && (
                 <AdminNavLink href="/admin/catalog/audit" icon={<ShieldCheck className="h-4 w-4" />} label="Catalog audit" />
+              )}
+              {can('products:edit') && (
+                <AdminNavLink href="/admin/seo/redirects" icon={<CornerDownRight className="h-4 w-4" />} label="Redirects" />
               )}
             </NavSection>
           )}

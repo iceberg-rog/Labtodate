@@ -1,10 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SETTING_DEFS, SETTING_GROUPS, settingDef, validateSettingValue, normaliseInput, displayValue, isValidIban, companyVatIdProblem, numberFormatProblem, maskSecret } from './defs';
+import {
+  SETTING_DEFS, SETTING_GROUPS, settingDef, validateSettingValue, normaliseInput, displayValue, isValidIban, companyVatIdProblem, numberFormatProblem, maskSecret,
+  companyRegisterNumberProblem,
+} from './defs';
 
-const v = (key: string, raw: string) => {
+const v = (key: string, raw: string, others: Record<string, string> = {}) => {
   const d = settingDef(key)!;
-  return validateSettingValue(d, normaliseInput(d, raw));
+  const ctx = { value: (k: string) => others[k] ?? settingDef(k)?.default ?? '' };
+  return validateSettingValue(d, normaliseInput(d, raw), ctx);
 };
 
 test('every setting has a known group, a hint, a type, and enum defaults that are valid options', () => {
@@ -115,4 +119,98 @@ test('catalog settings are registered with their defaults and validation', async
   assert.match(v('IMPORT_FALLBACK_CATEGORY', 'Parts & modules') ?? '', /slug/);
   assert.equal(settingDef('LEGAL_TERMS_TEXT')?.group, 'Documents & legal texts');
   assert.ok((settingDef('LEGAL_TERMS_TEXT')?.default ?? '').length < 5000, 'terms default fits the 5000-character limit');
+});
+
+test('KvK number: exactly 8 digits while the VAT home country is NL, no letters', () => {
+  assert.match(v('COMPANY_KVK', '1234ABCD') ?? '', /8 digits/);
+  assert.match(v('COMPANY_KVK', '1234567') ?? '', /8 digits/);
+  assert.match(v('COMPANY_KVK', '123456789') ?? '', /8 digits/);
+  assert.equal(v('COMPANY_KVK', '12345678'), null);
+  assert.equal(v('COMPANY_KVK', '1234 5678'), null);
+  // Without a context (client-side or legacy callers) the registry default NL applies.
+  const d = settingDef('COMPANY_KVK')!;
+  assert.match(validateSettingValue(d, '1234ABCD') ?? '', /8 digits/);
+  // Another home country: its own register format (letters allowed).
+  assert.equal(v('COMPANY_KVK', 'HRB 12345', { TAX_HOME_COUNTRY: 'DE' }), null);
+  assert.match(v('COMPANY_KVK', 'ABCDEF', { TAX_HOME_COUNTRY: 'DE' }) ?? '', /company register/);
+  assert.equal(companyRegisterNumberProblem('0123.456.789', 'BE'), null);
+  assert.match(companyRegisterNumberProblem('12345678X', 'nl') ?? '', /8 digits/);
+});
+
+test('legal identity and IBAN are required once set; the rest of the company block is not', () => {
+  for (const k of ['COMPANY_LEGAL_NAME', 'COMPANY_ADDRESS', 'COMPANY_KVK', 'COMPANY_VAT', 'BANK_IBAN']) {
+    assert.equal(settingDef(k)?.required, true, k);
+    assert.match(settingDef(k)?.hint ?? '', /not emptied/, k);
+  }
+  for (const k of ['COMPANY_EORI', 'COMPANY_PHONE', 'COMPANY_CITY', 'BANK_SWIFT']) assert.ok(!settingDef(k)?.required, k);
+});
+
+test('release v2 keys are registered in their groups with valid defaults', () => {
+  const groups: Record<string, string> = {
+    TRANSACTIONAL_REPLY_TO: 'Email', PAYMENTS_INBOX_EMAIL: 'Email',
+    SELLER_PROGRAMME_PUBLIC: 'Suppliers', SELLER_TERMS_TEXT: 'Suppliers', SELLER_PAYOUT_TERMS_TEXT: 'Suppliers', MESSAGE_MEDIATION_MODE: 'Suppliers',
+    ABOUT_PAGE_TEXT: 'Site texts & pages', FAQ_TEXT: 'Site texts & pages', PRIVACY_POLICY_TEXT: 'Site texts & pages', COOKIE_POLICY_TEXT: 'Site texts & pages',
+    SOCIAL_LINKS: 'Site texts & pages', OG_DEFAULT_IMAGE_URL: 'Site texts & pages', OG_LOCALE: 'Site texts & pages',
+    CONSUMER_WITHDRAWAL_TEXT: 'Sales channel', BUYER_CANCEL_DISABLED_TEXT: 'Payments & credit terms',
+    SELL_TERMS_TEXT: 'Acquisitions', SELL_DECONTAMINATION_TEXT: 'Acquisitions',
+  };
+  for (const [k, g] of Object.entries(groups)) assert.equal(settingDef(k)?.group, g, k);
+  for (const g of ['Suppliers', 'Support', 'Homepage'] as const) assert.ok(SETTING_GROUPS.includes(g), g);
+  // Supplier programme page stays private and contact details are masked unless the owner decides otherwise.
+  assert.equal(settingDef('SELLER_PROGRAMME_PUBLIC')?.default, 'false');
+  assert.equal(settingDef('MESSAGE_MEDIATION_MODE')?.default, 'MASK_CONTACTS');
+  assert.deepEqual(settingDef('MESSAGE_MEDIATION_MODE')?.options?.map((o) => o.value), ['MASK_CONTACTS', 'STAFF_REVIEW', 'OFF']);
+  assert.equal(settingDef('OG_LOCALE')?.default, 'en_US');
+  assert.match(v('OG_LOCALE', 'english') ?? '', /language_COUNTRY/);
+  assert.equal(v('OG_LOCALE', 'nl_NL'), null);
+  assert.equal(v('SOCIAL_LINKS', 'https://www.linkedin.com/company/x, https://www.youtube.com/@x'), null);
+  assert.match(v('SOCIAL_LINKS', 'linkedin.com/company/x') ?? '', /https/);
+  assert.match(v('SOCIAL_LINKS', 'http://example.org/a') ?? '', /https/);
+  assert.equal(v('OG_DEFAULT_IMAGE_URL', '/media/lab2date-media/og.png'), null);
+  assert.equal(v('TRANSACTIONAL_REPLY_TO', ''), null);
+  assert.match(v('PAYMENTS_INBOX_EMAIL', 'finance') ?? '', /valid email/);
+  for (const k of ['ABOUT_PAGE_TEXT', 'FAQ_TEXT', 'PRIVACY_POLICY_TEXT', 'COOKIE_POLICY_TEXT', 'SELLER_TERMS_TEXT', 'SELLER_PAYOUT_TERMS_TEXT',
+    'SELL_TERMS_TEXT', 'SELL_DECONTAMINATION_TEXT', 'CONSUMER_WITHDRAWAL_TEXT', 'BUYER_CANCEL_DISABLED_TEXT']) {
+    const def = settingDef(k)?.default ?? '';
+    assert.ok(def.length > 40 && def.length < 5000, `${k} default fits the 5000-character limit`);
+    assert.doesNotMatch(def, /lab2date|Labtodate/i, `${k} default names no brand (it comes from SITE_NAME)`);
+  }
+});
+
+test('release v2 keys say “not applied yet” until the package that reads them ships', () => {
+  // Each W1 package removes the `pending` of its keys (and its line here) when it adds the reader.
+  const readers: Record<string, string> = {
+    TRANSACTIONAL_REPLY_TO: 'PKG-07',
+    PAYMENTS_INBOX_EMAIL: 'PKG-04',
+    BUYER_CANCEL_DISABLED_TEXT: 'PKG-04',
+    CONSUMER_WITHDRAWAL_TEXT: 'PKG-19',
+    ABOUT_PAGE_TEXT: 'PKG-15',
+    FAQ_TEXT: 'PKG-15',
+    PRIVACY_POLICY_TEXT: 'PKG-08',
+    COOKIE_POLICY_TEXT: 'PKG-08',
+    SOCIAL_LINKS: 'PKG-13',
+    OG_DEFAULT_IMAGE_URL: 'PKG-14',
+    OG_LOCALE: 'PKG-14',
+    SELLER_PROGRAMME_PUBLIC: 'PKG-12',
+    SELLER_TERMS_TEXT: 'PKG-12',
+    SELLER_PAYOUT_TERMS_TEXT: 'PKG-12',
+    MESSAGE_MEDIATION_MODE: 'PKG-16',
+    SELL_TERMS_TEXT: 'PKG-17',
+    SELL_DECONTAMINATION_TEXT: 'PKG-17',
+  };
+  for (const [k, pkg] of Object.entries(readers)) assert.ok(settingDef(k)?.pending?.includes(pkg), `${k} pending names ${pkg}`);
+  // The admin page prints “takes effect with <pending>”: a feature, then the package.
+  for (const d of SETTING_DEFS) if (d.pending) assert.match(d.pending, /^[a-z].* \(PKG-\d{2}(, PKG-\d{2})*\)$/, d.key);
+});
+
+test('the chat assistant name is gone and the AI keys describe the admin tools only', () => {
+  assert.equal(settingDef('ASSISTANT_NAME'), undefined);
+  for (const k of ['AI_API_KEY', 'AI_BASE_URL', 'AI_MODEL']) assert.doesNotMatch(settingDef(k)?.hint ?? '', /on-site|chat/i, k);
+  assert.match(settingDef('SITE_NAME')?.hint ?? '', /e-mail/);
+});
+
+test('domain lists spread into the registry (support, homepage)', async () => {
+  const { SUPPORT_SETTING_DEFS } = await import('../support/settings-defs');
+  const { HOME_SETTING_DEFS } = await import('../home/settings-defs');
+  for (const d of [...SUPPORT_SETTING_DEFS, ...HOME_SETTING_DEFS]) assert.equal(settingDef(d.key)?.group, d.group, d.key);
 });

@@ -65,6 +65,8 @@ test('ship readiness: unpaid, incomplete details, blocked country and dispatch h
   assert.match(shipBlockers({ ...ok, openHolds: ['PAYMENT_REVIEW'] }).join(), /payment is under review/);
   assert.match(shipBlockers({ ...ok, holdReason: 'COMPLIANCE' }).join(), /export-compliance/);
   assert.deepEqual(shipBlockers({ ...ok, openHolds: ['VAT_REVIEW'] }), [], 'a VAT question does not stop the parcel');
+  // Paid, but the unit is gone (PAYMENT_VERIFIED oversell): nothing ships until staff decide.
+  assert.deepEqual(shipBlockers({ ...ok, openHolds: ['STOCK_SHORTAGE'] }), ['the unit is no longer in stock — decide refund, backorder or another unit']);
 });
 
 test('partial shipments: remaining units, progress, line validation', () => {

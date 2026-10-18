@@ -85,6 +85,8 @@ export interface VatContext {
   billingCountry: string | null;
   customerKind: CustomerKind;
   vatId: VatIdEvidence | null;
+  /** Buyer's registered company name from the billing details (to compare with the VIES name). */
+  buyerLegalName?: string | null;
   lines: VatLineInput[];
 }
 

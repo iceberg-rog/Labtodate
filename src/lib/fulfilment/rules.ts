@@ -129,8 +129,9 @@ export const RETURN_TYPE_LABEL: Record<string, string> = {
 
 /** Holds that stop a dispatch (paid or not): export screening, a changed
  *  destination under review, money under review (Stripe mismatch / dispute),
- *  fraud, a supplier that has not confirmed, freight not set. */
-export const DISPATCH_BLOCKING_HOLDS = ['COMPLIANCE', 'ADDRESS_REVIEW', 'PAYMENT_REVIEW', 'FRAUD', 'SUPPLIER_CONFIRMATION', 'SHIPPING_PENDING'] as const;
+ *  fraud, a supplier that has not confirmed, freight not set, a paid unit
+ *  that is no longer in stock. */
+export const DISPATCH_BLOCKING_HOLDS = ['COMPLIANCE', 'ADDRESS_REVIEW', 'PAYMENT_REVIEW', 'FRAUD', 'SUPPLIER_CONFIRMATION', 'SHIPPING_PENDING', 'STOCK_SHORTAGE'] as const;
 
 const HOLD_TEXT: Record<string, string> = {
   COMPLIANCE: 'the export-compliance review is not cleared',
@@ -139,6 +140,7 @@ const HOLD_TEXT: Record<string, string> = {
   FRAUD: 'the order is on a fraud hold',
   SUPPLIER_CONFIRMATION: 'the supplier has not confirmed the item',
   SHIPPING_PENDING: 'the shipping cost is not confirmed',
+  STOCK_SHORTAGE: 'the unit is no longer in stock — decide refund, backorder or another unit',
 };
 
 export interface ReadinessInput {
