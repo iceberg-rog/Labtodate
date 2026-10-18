@@ -744,7 +744,7 @@ const DEFS: DefInput[] = [
     hint: 'First part of /seller/pricing. Describe the real deal — by default a supplier receives their own price and never sees your sell price (Quotes & offers → “Suppliers see the buyer price”). “## ” starts a heading, an empty line a new paragraph.' + tokensHint(SELLER_TERMS_TOKENS) },
   { key: 'SELLER_PAYOUT_TERMS_TEXT', label: 'Supplier programme — how suppliers are paid', group: 'Suppliers', type: 'text', multiline: true, default: DEFAULT_SELLER_PAYOUT_TERMS_TEXT, pending: 'the supplier programme page (PKG-12)',
     hint: 'Payout part of /seller/pricing: when and how a supplier is paid for a sold unit. Only state terms your supplier agreements really contain.' + tokensHint(SELLER_TERMS_TOKENS) },
-  { key: 'MESSAGE_MEDIATION_MODE', label: 'Messages between buyers and suppliers', group: 'Suppliers', type: 'enum', default: 'MASK_CONTACTS', sensitive: true, pending: 'buyer–supplier message mediation (PKG-01, PKG-16)',
+  { key: 'MESSAGE_MEDIATION_MODE', label: 'Messages between buyers and suppliers', group: 'Suppliers', type: 'enum', default: 'MASK_CONTACTS', sensitive: true, pending: 'mediation of “Message seller” conversations; quote threads apply it already (PKG-16)',
     options: [
       { value: 'MASK_CONTACTS', label: 'Remove contact details (e-mail addresses, phone numbers, links, IBANs) and notify staff (recommended)' },
       { value: 'STAFF_REVIEW', label: 'Staff release every supplier message before the buyer sees it' },

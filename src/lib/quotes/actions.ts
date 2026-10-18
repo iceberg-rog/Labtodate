@@ -23,25 +23,39 @@ import { createOrderWithUniqueNumber } from '@/lib/orders/internal';
 import { absoluteDocumentHref } from '@/lib/documents';
 import { documentAttachment, issueProforma, markDocumentSent, voidProformas } from '@/lib/documents/issue';
 import { quoteDeletionBlockers } from '@/lib/documents/retention';
-import { QUOTE_REF, offerMaxCents, endOfDayUtc, fmtDay, isoDay, offerPhase, quoteRef, PAID_ORDER_STATES } from '@/lib/quotes/offer';
-import { vatTreatmentLabel, type VatTreatmentCode } from '@/lib/tax/determine';
+import {
+  CONTACT_REMOVED, HELD_SUPPLIER_MESSAGE_PREFIX, QUOTE_REF, contactKindsLabel, destinationFromPlace, offerMaxCents, endOfDayUtc, fmtDay, isoDay, mediateSupplierMessage,
+  mediateSupplierOffer, offerPhase, placeCountries, quoteRef, sentence, statusClaimFilter, PAID_ORDER_STATES, type ContactKind, type CountryRef, type SupplierOfferText,
+} from '@/lib/quotes/offer';
+import { vatTreatmentLabel, type VatDecision, type VatTreatmentCode } from '@/lib/tax/determine';
 import { billingAddressJson, parseDetailsInput, shippingAddressJson, type DetailsFieldErrors, type OrderDetails } from '@/lib/orders/details';
 import {
-  autoArchiveOnClose, declineReasons, offerCurrencies, offerDefaults, offerIncoterms, openOfferHoldDays, quoteSlaHours,
-  requireTermsAcceptance, sellerMarkupBp, sellerOffersRequireApproval, sellerPriceRounding, sellerSeesSellPrice, stockReserveOn, termsOfSaleUrl, vatIdRule,
+  acceptedTermsVersion, autoArchiveOnClose, closeReasons, declineReasons, mediationMode, offerCurrencies, offerDefaults, offerIncoterms, openOfferHoldDays,
+  quoteSlaHours, requireTermsAcceptance, sellerMarkupBp, sellerOffersGoDirect, sellerPriceRounding, sellerSeesSellPrice, stockReserveOn, termsOfSaleHref,
+  termsOfSaleUrl, vatIdRule, vatReviewBuyerText,
 } from '@/lib/quotes/policy';
 import {
-  applyMarkup, daysFrom, fillPaymentTermsText, incotermLabel, offerAmounts, parseOfferTerms, pctLabel, type OfferTerms,
+  applyMarkup, daysFrom, fillPaymentTermsText, offerAmounts, parseOfferTerms, pctLabel, type OfferTerms,
 } from '@/lib/quotes/pricing';
-import { decideVatForDetails, offerVatAtSend, offerVatLines, vatExplanation } from '@/lib/quotes/engine';
+import { decideVatForDetails, offerVatAtSend, offerVatLines } from '@/lib/quotes/engine';
 import { holdUnitForQuote, releaseQuoteHold, unitAvailability } from '@/lib/quotes/stock';
 import { mailLayout, mailTable } from '@/lib/quotes/mail';
+import {
+  buyerVatExplanation, offerItemTitle, offerMail, offerMailRows, offerThreadBody, parseOfferItem, type OfferAnnouncement, type OfferItem,
+} from '@/lib/quotes/offer-view';
+import { siteName } from '@/lib/brand/identity';
+import { documentRecipients } from '@/lib/orders/recipients';
+import { quotationAttachment } from '@/lib/documents/quotation';
+import { primaryHold, type HoldCode } from '@/lib/checkout/engine';
+import { checkCountry } from '@/lib/compliance/country';
+import { getConditionGrades } from '@/lib/catalog/policy';
+import { decodeEntities } from '@/lib/marketplace/import-clean';
 
 // ────────────────────────────────────────────────────────────────────────────
 //   Mirror of Support-ticket production-hardening helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Reply deadline for a request waiting on lab2date (QUOTE_SLA_HOURS per priority). */
+/** Reply deadline for a request waiting on our team (QUOTE_SLA_HOURS per priority). */
 function computeQuoteDueAt(now: Date, priority: string): Date {
   return new Date(now.getTime() + quoteSlaHours(priority) * 3600 * 1000);
 }
@@ -61,6 +75,9 @@ function quoteRefOrProforma(sr: { id: string; proformaNumber: string | null }): 
 function siteBase(): string {
   return (process.env.BETTER_AUTH_URL ?? '').replace(/\/+$/, '');
 }
+
+/** A mail paragraph whose HTML starts with a tag (mailLayout wraps only lines that start with text). */
+const mailP = (html: string) => `<p style="margin:0 0 12px;">${html}</p>`;
 
 /** Turnaround promise for buyer copy. Comes from the admin QUOTE_TURNAROUND
  *  setting (the same value /let-us-find-it shows); no setting, no time promise. */
@@ -84,6 +101,38 @@ function staffQuoteInbox(sr: { assignedTo?: { email: string; role: string } | nu
     to: isDeliverableEmail(sellerEmail) ? sellerEmail : process.env.QUOTE_INTAKE_EMAIL ?? '',
     toSeller,
   };
+}
+
+/** Where the buyer follows a quote: the dashboard, or the magic link of a guest request. */
+function buyerQuoteLink(sr: { id: string; submittedById: string | null; accessToken: string | null }): string {
+  return sr.submittedById || !sr.accessToken ? `${siteBase()}/app/quotes/${sr.id}` : `${siteBase()}/quotes/t/${sr.accessToken}`;
+}
+
+/**
+ * One admin alert per quote and kind per 24 h (a buyer clicking "accept" three
+ * times while VIES is down is one problem, not three). The claim is a
+ * ReminderLog row (QUOTE, id, kind): created, or moved forward when the last
+ * alert is older than a day. Never fatal.
+ */
+async function alertAdminsOncePerDay(quoteId: string, kind: string, title: string, body: string): Promise<boolean> {
+  const now = new Date();
+  try {
+    try {
+      await prisma.reminderLog.create({ data: { subjectType: 'QUOTE', subjectId: quoteId, kind, step: 0, sentAt: now, detail: title.slice(0, 200) } });
+    } catch (e) {
+      if (!(e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002')) throw e;
+      const moved = await prisma.reminderLog.updateMany({
+        where: { subjectType: 'QUOTE', subjectId: quoteId, kind, step: 0, sentAt: { lt: new Date(now.getTime() - 86_400_000) } },
+        data: { sentAt: now, detail: title.slice(0, 200) },
+      });
+      if (moved.count !== 1) return false;
+    }
+    await notifyAdmins(title, body, `/admin/quotes/${quoteId}`, 'SYSTEM');
+    return true;
+  } catch (e) {
+    await logError('quotes:admin-alert', e);
+    return false;
+  }
 }
 
 /** Readable result for quote actions. Production builds hide thrown messages
@@ -149,19 +198,39 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   await rateLimit('quote');
   const submittedById = session.user.id;
 
-  // If anchored to a product, route to that product's seller.
+  // Anchored to a product only when THAT unit can be offered: a published
+  // listing in stock, and the buyer did not ask for a similar one (routed to
+  // the product's seller). A sold or reserved listing ("Source a similar unit")
+  // becomes a "similar to" request the team sources — no unit is promised, so
+  // any matching unit can be offered. Unpublished listings are ignored.
   let productId: string | null = null;
+  let similarToProductId: string | null = null;
   let assignedToId: string | null = null;
   if (parsed.productSlug) {
     const product = await prisma.product.findUnique({
       where: { slug: parsed.productSlug },
-      select: { id: true, sellerId: true, title: true },
+      select: { id: true, sellerId: true, title: true, status: true, quantity: true },
     });
-    if (product) {
-      productId = product.id;
-      assignedToId = product.sellerId;
+    if (product?.status === 'PUBLISHED') {
+      if (!parsed.similar && product.quantity > 0) {
+        productId = product.id;
+        assignedToId = product.sellerId;
+      } else {
+        similarToProductId = product.id;
+        parsed.productCategory = `Similar to: ${decodeEntities(product.title).replace(/\s+/g, ' ').trim()}`.slice(0, 120);
+      }
     }
   }
+  // What the buyer needs for the offer (destination, quantity, Incoterm): kept
+  // with the request text, so whoever quotes sees it. The VAT ID identifies the
+  // buyer's company, so it is an internal note (suppliers never see it).
+  const needs = [
+    parsed.deliveryCountry ? `Delivery country: ${parsed.deliveryCountry.toUpperCase()}` : '',
+    parsed.quantity && parsed.quantity > 1 ? `Quantity: ${parsed.quantity}` : '',
+    parsed.incoterm?.trim() ? `Incoterm: ${parsed.incoterm.trim().toUpperCase()}` : '',
+  ].filter(Boolean);
+  if (needs.length) parsed.description = `${parsed.description.trim()}\n\n${needs.join(' · ')}`.slice(0, 4000);
+  const buyerVatId = parsed.vatId?.trim().toUpperCase().replace(/[\s.\-_/]+/g, '') || null;
   // A lab-rental access request has no product: record the facility as the
   // category so the admin queue, title and emails say which lab is wanted.
   let facilityLabel: string | null = null;
@@ -197,6 +266,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
       timeframe: parsed.timeframe ?? null,
       description: parsed.description,
       productId,
+      similarToProductId,
       submittedById,
       assignedToId,
       customerType,
@@ -213,6 +283,11 @@ export async function submitSourcingRequest(input: SourcingInputType) {
       assignedTo: { select: { email: true, name: true, role: true } },
     },
   });
+  if (buyerVatId) {
+    await prisma.quoteMessage.create({
+      data: { sourcingRequestId: created.id, authorId: null, isInternalNote: true, fromStaff: true, body: `VAT ID given with the request: ${buyerVatId} (checked with VIES when the buyer accepts an offer).` },
+    });
+  }
 
   // Confirmation to buyer — REGISTERED gets dashboard CTA, GUEST gets magic-link.
   // The request is already saved: a failed confirmation is logged, not thrown,
@@ -220,35 +295,35 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   const buyerCta = accessToken
     ? `${siteBase()}/quotes/t/${accessToken}`
     : `${siteBase()}/app/quotes/${created.id}`;
+  const productTitle = created.product ? decodeEntities(created.product.title) : null;
+  const quoteBlock = `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;color:#374151;">${escapeHtmlLines(parsed.description)}</blockquote>`;
   await trySendEmail({
     to: parsed.buyerEmail,
-    subject: created.product
-      ? `Quote request received: ${headerText(created.product.title, 120)}`
-      : 'lab2date sourcing request received',
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:540px;">
-        <h2 style="color:#0E4F40;">We&rsquo;ve got your request</h2>
-        <p>Hi <span dir="auto">${escapeHtml(parsed.buyerName)}</span>, our team and the supplier will review your request and send you an <strong>offer</strong> (price, terms and how long it is valid) ${escapeHtml(quoteTurnaroundPhrase())}.</p>
-        <p>Nothing is ordered until you accept that offer. You can accept or decline it from your dashboard.</p>
-        ${created.product ? `<p><strong>Product:</strong> <span dir="auto">${escapeHtml(created.product.title)}</span></p>` : ''}
-        <p><strong>What you wrote:</strong></p>
-        <blockquote dir="auto" style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
-        <p style="margin:18px 0;">
-          <a href="${buyerCta}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-            ${accessToken ? 'View / reply to your quote' : 'Open in dashboard'}
-          </a>
-        </p>
-        ${accessToken ? `<p style="color:#888;font-size:11px;">This is a private link tied to your request — keep it to yourself. Valid for 14 days.</p>` : ''}
-        <p style="color:#888;font-size:12px;">Reference: ${QUOTE_REF(created.id)}</p>
-      </div>
-    `,
+    subject: productTitle
+      ? `Quote request received: ${headerText(productTitle, 120)}`
+      : `Your ${headerText(siteName(), 60)} sourcing request was received`,
+    html: mailLayout({
+      heading: 'We’ve got your request',
+      body: [
+        `Hi <span dir="auto">${escapeHtml(parsed.buyerName)}</span>, our team will review your request and send you an <strong>offer</strong> (price, terms and how long it is valid) ${escapeHtml(quoteTurnaroundPhrase())}.`,
+        'Nothing is ordered until you accept that offer. You can accept or decline it from your dashboard.',
+        productTitle ? mailP(`<strong>Product:</strong> <span dir="auto">${escapeHtml(productTitle)}</span>`) : parsed.productCategory ? mailP(`<strong>Request:</strong> <span dir="auto">${escapeHtml(parsed.productCategory)}</span>`) : '',
+        mailP('<strong>What you wrote:</strong>'),
+        quoteBlock,
+      ].filter(Boolean),
+      cta: { href: buyerCta, label: accessToken ? 'View / reply to your quote' : 'Open in dashboard' },
+      footer: [
+        ...(accessToken ? ['This is a private link tied to your request — keep it to yourself. Valid for 14 days.'] : []),
+        `Reference: ${QUOTE_REF(created.id)}`,
+      ],
+    }),
   }, 'quotes:confirmation');
 
   // Notify assignee (seller or platform inbox). Imported sellers carry
   // placeholder addresses, so those go to the intake inbox. The request is
   // already saved: a failed staff notification must not fail the buyer's submit
   // (they'd see an error and resubmit, creating duplicates).
-  // Sellers never learn who the buyer is (lab2date mediates), so a seller copy
+  // Sellers never learn who the buyer is (the platform mediates), so a seller copy
   // carries no buyer identity and links to the seller inbox; staff and intake
   // copies link to the admin workspace, which labels internal notes.
   const inbox = staffQuoteInbox(created);
@@ -257,28 +332,29 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     : `${siteBase()}/admin/quotes/${created.id}`;
   await sendInternalEmail({
     to: inbox.to,
-    subject: created.product
-      ? `New quote request: ${headerText(created.product.title, 120)}`
+    subject: productTitle
+      ? `New quote request: ${headerText(productTitle, 120)}`
       : facilityLabel ? `New access request — ${headerText(facilityLabel, 120)}`
       : inbox.toSeller ? 'New sourcing request' : `New sourcing request from ${headerText(parsed.buyerName)}`,
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:540px;">
-        <h2 style="color:#0E4F40;">${created.product ? 'Quote request' : 'Sourcing request'}</h2>
-        ${inbox.toSeller ? '' : `<p>From <strong dir="auto">${escapeHtml(parsed.buyerName)}</strong> &lt;${escapeHtml(parsed.buyerEmail)}&gt;${parsed.companyName ? ` · <span dir="auto">${escapeHtml(parsed.companyName)}</span>` : ''}</p>`}
-        ${created.product ? `<p><strong>Product:</strong> <span dir="auto">${escapeHtml(created.product.title)}</span></p>` : ''}
-        ${facilityLabel ? `<p><strong>Facility:</strong> ${escapeHtml(facilityLabel)}</p>` : ''}
-        ${parsed.budget ? `<p><strong>Budget:</strong> <span dir="auto">${escapeHtml(parsed.budget)}</span></p>` : ''}
-        ${parsed.timeframe ? `<p><strong>Timeframe:</strong> <span dir="auto">${escapeHtml(parsed.timeframe)}</span></p>` : ''}
-        <p><strong>Description:</strong></p>
-        <blockquote dir="auto" style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
-        <p>Reply with questions or send the buyer an offer: <a href="${assigneeLink}">${inbox.toSeller ? 'Open in seller inbox' : 'Open in admin'}</a></p>
-      </div>
-    `,
+    html: mailLayout({
+      heading: created.product ? 'Quote request' : 'Sourcing request',
+      body: [
+        inbox.toSeller ? '' : `From <strong dir="auto">${escapeHtml(parsed.buyerName)}</strong> &lt;${escapeHtml(parsed.buyerEmail)}&gt;${parsed.companyName ? ` · <span dir="auto">${escapeHtml(parsed.companyName)}</span>` : ''}`,
+        productTitle ? mailP(`<strong>Product:</strong> <span dir="auto">${escapeHtml(productTitle)}</span>`) : '',
+        similarToProductId && parsed.productCategory ? mailP(`<strong>${escapeHtml(parsed.productCategory)}</strong> — the listed unit is sold or reserved; offer any matching unit.`) : '',
+        facilityLabel ? mailP(`<strong>Facility:</strong> ${escapeHtml(facilityLabel)}`) : '',
+        parsed.budget ? mailP(`<strong>Budget:</strong> <span dir="auto">${escapeHtml(parsed.budget)}</span>`) : '',
+        parsed.timeframe ? mailP(`<strong>Timeframe:</strong> <span dir="auto">${escapeHtml(parsed.timeframe)}</span>`) : '',
+        mailP('<strong>Description:</strong>'),
+        quoteBlock,
+      ].filter(Boolean),
+      cta: { href: assigneeLink, label: inbox.toSeller ? 'Open in seller inbox' : 'Open in admin' },
+    }),
   }, 'quotes:intake');
 
   await notifyAdmins(
     'New quote request',
-    `${parsed.buyerName}: ${created.product?.title ?? parsed.productCategory ?? 'sourcing request'}`,
+    `${parsed.buyerName}: ${productTitle ?? parsed.productCategory ?? 'sourcing request'}`,
     `/admin/quotes/${created.id}`,
     'QUOTE_NEW',
   );
@@ -286,7 +362,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   await audit(
     'quote.submit',
     QUOTE_REF(created.id),
-    `type=${customerType} buyer=${parsed.buyerEmail}${productId ? ` productId=${productId}` : ''}${assignedToId ? ` assignee=${assignedToId}` : ''}`,
+    `type=${customerType} buyer=${parsed.buyerEmail}${productId ? ` productId=${productId}` : ''}${similarToProductId ? ` similarTo=${similarToProductId}` : ''}${assignedToId ? ` assignee=${assignedToId}` : ''}`,
   );
 
   revalidatePath('/app/quotes');
@@ -303,10 +379,17 @@ const ReplyInput = z.object({
     .array(z.string().regex(/^\/api\/support-attachment\//, 'attachment must be auth-gated proxy URL'))
     .max(8)
     .optional(),
+  /** Original file names, index-aligned with `attachments` (the stored keys are hashes). */
+  attachmentNames: z.array(z.string().max(255)).max(8).optional(),
   // Admin/seller-only flag. Buyer cannot post internal notes — even if they
   // tried to inject `internal: '1'` the action would refuse (see check below).
   internal: z.boolean().optional(),
 });
+
+/** File names stored next to the attachment keys: one per attachment, '' when unknown. */
+function attachmentNamesFor(attachments: string[], names: string[] | undefined): string[] {
+  return attachments.map((_, i) => (names?.[i] ?? '').replace(/[\r\n\t]+/g, ' ').replace(/[/\\]/g, '_').trim().slice(0, 200));
+}
 
 export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<QuoteActionResult> {
   const result = ReplyInput.safeParse(input);
@@ -345,20 +428,72 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
   }
 
   // Internal notes: admin/seller only. Buyer flag is ignored.
-  const isInternalNote = !!parsed.internal && (isAdmin || isAssignee);
+  const wantsNote = !!parsed.internal && (isAdmin || isAssignee);
   const fromStaff = isAdmin || isAssignee;
   const now = new Date();
+  const site = siteName();
+  const attachments = parsed.attachments ?? [];
+  const attachmentNames = attachmentNamesFor(attachments, parsed.attachmentNames);
+
+  // Mediation (MESSAGE_MEDIATION_MODE): what a supplier writes to the buyer
+  // never carries a way around the platform. MASK_CONTACTS removes e-mail
+  // addresses, phone numbers, links and IBANs (the original stays as an
+  // internal note for staff); STAFF_REVIEW holds the message as an internal
+  // note until staff release it (releaseQuoteMessage). Staff are told in both.
+  const bySupplier = isAssignee && !isAdmin && sr.assignedTo?.role === 'SELLER' && !wantsNote;
+  const mediated = mediateSupplierMessage(bySupplier ? mediationMode() : 'OFF', parsed.body);
+  const held = mediated.held;
+  const masked = mediated.removed.length ? { kinds: mediated.removed } : null;
+  const isInternalNote = wantsNote || held;
+  const body = mediated.body;
 
   await prisma.quoteMessage.create({
     data: {
       sourcingRequestId: parsed.sourcingRequestId,
-      body: parsed.body,
+      body,
       authorId: session.user.id,
-      attachments: parsed.attachments ?? [],
+      attachments,
+      attachmentNames,
       isInternalNote,
       fromStaff,
     },
   });
+  if (masked) {
+    await prisma.quoteMessage.create({
+      data: {
+        sourcingRequestId: parsed.sourcingRequestId,
+        body: `Supplier message as written (only staff see this; the buyer got it with ${CONTACT_REMOVED} in place of ${contactKindsLabel(masked.kinds)}):\n\n${parsed.body}`.slice(0, 5000),
+        authorId: session.user.id,
+        isInternalNote: true,
+        fromStaff: true,
+      },
+    });
+  }
+  if (masked || held) {
+    const ref = quoteRefOrProforma(sr);
+    await notifyAdmins(
+      held ? `Supplier message to review — ${ref}` : `Contact details removed from a supplier message — ${ref}`,
+      held
+        ? 'The supplier wrote to the buyer. The message waits for your review (internal note) — release it to send it to the buyer.'
+        : `The supplier's message reached the buyer without its ${contactKindsLabel(masked!.kinds)}. The original is kept as an internal note.`,
+      `/admin/quotes/${sr.id}`,
+      'SYSTEM',
+    );
+    if (held) {
+      await sendInternalEmail({
+        to: process.env.QUOTE_INTAKE_EMAIL ?? '',
+        subject: `[${ref}] Supplier message to review`,
+        html: mailLayout({
+          heading: 'Supplier message to review',
+          body: [
+            `The supplier wrote to the buyer on quote <strong>${ref}</strong>. The buyer sees nothing until you release it:`,
+            `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(parsed.body)}</blockquote>`,
+          ],
+          cta: { href: `${siteBase()}/admin/quotes/${sr.id}`, label: 'Review the message' },
+        }),
+      }, 'quotes:supplier-message-held');
+    }
+  }
 
   // Status + lastReplyAt updates — skip if internal note (the customer-visible
   // state shouldn't budge from a note).
@@ -390,28 +525,9 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
   let warning: string | undefined;
   if (!isInternalNote) {
     if (fromStaff) {
-      const buyerLink = sr.submittedById || !sr.accessToken
-        ? `${siteBase()}/app/quotes/${sr.id}`
-        : `${siteBase()}/quotes/t/${sr.accessToken}`;
-      const sent = await trySendEmail({
-        to: sr.buyerEmail,
-        subject: `[${quoteRefOrProforma(sr)}] New reply on your lab2date quote`,
-        html: mailLayout({
-          heading: 'New reply on your quote',
-          body: [`We replied to your quote request <strong>${quoteRefOrProforma(sr)}</strong>.`],
-          cta: { href: buyerLink, label: 'Read the reply' },
-        }),
-      }, 'quotes:reply');
+      const sent = await emailBuyerNewReply(sr, site);
       if (!sent.ok) {
         warning = `Reply saved and visible to the buyer in their dashboard, but the email to ${isAdmin ? sr.buyerEmail : 'the buyer'} could not be delivered (${sent.error}).`;
-      }
-      if (sr.submittedById) {
-        await notifyUser(
-          sr.submittedById,
-          'New reply on your quote',
-          'The supplier responded to your quote request.',
-          `/app/quotes/${sr.id}`,
-        );
       }
     } else {
       if (sr.assignedToId) {
@@ -430,22 +546,90 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
       await sendInternalEmail({
         to: inbox.to,
         subject: `[${quoteRefOrProforma(sr)}] The buyer replied on a quote`,
-        html: `<p>The buyer replied on quote <strong>${quoteRefOrProforma(sr)}</strong>.</p><p><a href="${inbox.toSeller ? `${siteBase()}/app/seller/inbox/${sr.id}` : `${siteBase()}/admin/quotes/${sr.id}`}">Open the thread</a> to read it and respond.</p>`,
+        html: mailLayout({
+          heading: 'The buyer replied',
+          body: [`The buyer replied on quote <strong>${quoteRefOrProforma(sr)}</strong>. Open the thread to read it and respond.`],
+          cta: { href: inbox.toSeller ? `${siteBase()}/app/seller/inbox/${sr.id}` : `${siteBase()}/admin/quotes/${sr.id}`, label: 'Open the thread' },
+        }),
       }, 'quotes:buyer-reply');
     }
   }
 
   await audit(
-    isInternalNote ? 'quote.note.add' : 'quote.reply',
+    held ? 'quote.reply.held' : isInternalNote ? 'quote.note.add' : 'quote.reply',
     quoteRefOrProforma(sr),
-    `${session.user.email}${parsed.attachments?.length ? ` +${parsed.attachments.length}attach` : ''}`,
+    `${session.user.email}${attachments.length ? ` +${attachments.length}attach` : ''}${masked ? ` · contact details removed (${masked.kinds.join(', ')})` : ''}`,
   );
 
   revalidatePath(`/app/quotes/${parsed.sourcingRequestId}`);
   revalidatePath(`/app/seller/inbox/${parsed.sourcingRequestId}`);
   revalidatePath(`/admin/quotes/${parsed.sourcingRequestId}`);
   revalidatePath('/admin/quotes');
+  if (held) return { notice: `Sent to the ${site} team for review — the buyer sees your message once our team releases it.` };
+  if (masked) {
+    const note = `Reply sent. The ${contactKindsLabel(masked.kinds)} in it were removed — buyers deal with ${site} only.`;
+    return warning ? { warning: `${note} ${warning}` } : { notice: note };
+  }
   return warning ? { warning } : {};
+}
+
+/** "New reply on your quote" to the buyer (mail + in-app). The reply is saved already. */
+async function emailBuyerNewReply(
+  sr: { id: string; proformaNumber: string | null; buyerEmail: string; submittedById: string | null; accessToken: string | null },
+  site: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const sent = await trySendEmail({
+    to: sr.buyerEmail,
+    subject: `[${quoteRefOrProforma(sr)}] New reply on your ${headerText(site, 60)} quote`,
+    html: mailLayout({
+      heading: 'New reply on your quote',
+      body: [`We replied to your quote request <strong>${quoteRefOrProforma(sr)}</strong>.`],
+      cta: { href: buyerQuoteLink(sr), label: 'Read the reply' },
+    }),
+  }, 'quotes:reply');
+  if (sr.submittedById) {
+    await notifyUser(sr.submittedById, 'New reply on your quote', 'We replied to your quote request.', `/app/quotes/${sr.id}`);
+  }
+  return sent.ok ? { ok: true } : { ok: false, error: sent.error };
+}
+
+/**
+ * Staff release a supplier message held for review (MESSAGE_MEDIATION_MODE =
+ * STAFF_REVIEW): it becomes a normal reply in the thread and the buyer is
+ * told. Guarded on the message still being held (no double release).
+ */
+export async function releaseQuoteMessage(messageId: string): Promise<QuoteActionResult> {
+  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/quotes' });
+  await requireCapability('quotes:reply', { redirectTo: '/admin/quotes' });
+  await ensureSettingsLoaded();
+  const m = await prisma.quoteMessage.findUnique({
+    where: { id: messageId },
+    select: {
+      id: true, body: true, isInternalNote: true, sourcingRequestId: true,
+      sourcingRequest: { select: { id: true, proformaNumber: true, status: true, buyerEmail: true, submittedById: true, accessToken: true } },
+    },
+  });
+  if (!m) return { error: 'This message no longer exists.' };
+  if (!m.isInternalNote || !m.body.startsWith(HELD_SUPPLIER_MESSAGE_PREFIX)) return { error: 'This message is not waiting for review (already released?). Reload the page.' };
+  const claim = await prisma.quoteMessage.updateMany({
+    where: { id: m.id, isInternalNote: true, body: { startsWith: HELD_SUPPLIER_MESSAGE_PREFIX } },
+    data: { isInternalNote: false, body: m.body.slice(HELD_SUPPLIER_MESSAGE_PREFIX.length) },
+  });
+  if (claim.count !== 1) return { error: 'This message was released a moment ago. Reload the page.' };
+  const sr = m.sourcingRequest;
+  const now = new Date();
+  await prisma.sourcingRequest.update({
+    where: { id: sr.id },
+    data: { lastReplyAt: now, lastReplyByStaff: true, dueAt: null, slaBreachAt: null, ...(sr.status === 'PENDING' ? { status: 'RESPONDED' } : {}) },
+  });
+  const sent = await emailBuyerNewReply(sr, siteName());
+  await audit('quote.reply.release', quoteRefOrProforma(sr), `${messageId} by ${session.user.email}`);
+  revalidatePath(`/app/quotes/${sr.id}`);
+  revalidatePath(`/app/seller/inbox/${sr.id}`);
+  revalidatePath(`/admin/quotes/${sr.id}`);
+  return sent.ok
+    ? { notice: 'Message released — the buyer was emailed.' }
+    : { warning: `Message released and visible to the buyer, but the email to ${sr.buyerEmail} could not be delivered (${sent.error}).` };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -454,7 +638,7 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
 
 const OfferInput = z.object({
   sourcingRequestId: z.string().min(1),
-  /** Unit price (excl. VAT). For a supplier: their price to lab2date. */
+  /** Unit price (excl. VAT). For a supplier: their price to us. */
   priceCents: z.number().int().positive().max(2_000_000_000),
   qty: z.number().int().min(1).max(999).default(1),
   currency: z.string().regex(/^[A-Z]{3}$/).default('EUR'),
@@ -469,14 +653,15 @@ const OfferInput = z.object({
   warranty: z.string().max(200).optional().nullable(),
   /** Payment term after acceptance (days). Default: PAYMENT_TERM_DAYS. */
   paymentDays: z.number().int().min(1).max(120).optional().nullable(),
-  // The offered item and its destination: accepted by the composer already,
-  // not stored on the offer yet.
+  // The offered item (offerTerms; printed on the order line, proforma and invoice).
   itemTitle: z.string().max(200).optional().nullable(),
   itemDescription: z.string().max(4000).optional().nullable(),
   itemCondition: z.enum(['NEW', 'REFURBISHED', 'USED']).optional().nullable(),
   itemSerial: z.string().max(120).optional().nullable(),
-  /** ISO country the offer is priced for (freight, VAT). */
+  /** ISO country the offer is priced for (freight, VAT). Default: the Incoterm place of a C/D-term; required with freight. */
   destinationCountry: z.string().regex(/^([A-Za-z]{2})?$/).optional().nullable(),
+  /** Staff only: offer a listing that is not published (draft / under review / archived) — audited. */
+  allowUnpublished: z.boolean().optional(),
 });
 
 class OfferRaceError extends Error {}
@@ -484,30 +669,15 @@ class OfferBlockedError extends Error {}
 
 const clean = (v: string | null | undefined) => (v && v.trim() ? v.trim() : null);
 
-function offerMailRows(o: {
-  qty: number; unitCents: number; goodsCents: number; shippingCents: number; vatDecided: boolean; vatRateBp: number | null;
-  vatCents: number | null; vatLabel: string | null; totalCents: number; currency: string;
-}): string {
-  const m = (c: number) => escapeHtml(formatPrice(c, o.currency));
-  const rows: Array<[string, string, boolean?]> = [];
-  rows.push([o.qty > 1 ? `Price (${o.qty} × ${m(o.unitCents)})` : 'Price', m(o.goodsCents)]);
-  if (o.shippingCents > 0) rows.push(['Freight / shipping', m(o.shippingCents)]);
-  if (o.vatDecided) rows.push([`VAT ${pctLabel(o.vatRateBp)}${o.vatLabel ? ` <span style="color:#6b7280;font-size:12px;">(${escapeHtml(o.vatLabel)})</span>` : ''}`, m(o.vatCents ?? 0)]);
-  else rows.push(['VAT', '<span style="color:#6b7280;">determined from your billing details when you accept</span>']);
-  rows.push([o.vatDecided ? 'Total' : 'Total excl. VAT', m(o.totalCents), true]);
-  return mailTable(rows);
+/** The country list (CountryPolicy, every mode) for reading a destination from an Incoterm place. */
+async function countryRefs(): Promise<CountryRef[]> {
+  const rows = await prisma.countryPolicy.findMany({ select: { country: true, name: true } });
+  return rows.map((r) => ({ code: r.country, name: r.name }));
 }
 
-function termsMailRows(t: OfferTerms, validUntil: Date): string {
-  const rows: Array<[string, string]> = [];
-  const inc = incotermLabel(t);
-  if (inc) rows.push(['Delivery terms', escapeHtml(inc)]);
-  if (t.leadTime) rows.push(['Lead time', `<span dir="auto">${escapeHtml(t.leadTime)}</span>`]);
-  if (t.warranty) rows.push(['Warranty', `<span dir="auto">${escapeHtml(t.warranty)}</span>`]);
-  rows.push(['Payment', escapeHtml(t.paymentTerms.text)]);
-  rows.push(['Valid until', `<strong>${escapeHtml(fmtDay(validUntil))}</strong>`]);
-  return mailTable(rows);
-}
+const SUPPLIER_FIELD_LABEL: Record<keyof SupplierOfferText, string> = {
+  note: 'Note', leadTime: 'Lead time', warranty: 'Warranty', incotermPlace: 'Incoterm place', itemTitle: 'Item title', itemDescription: 'Item description', itemSerial: 'Serial number',
+};
 
 type OfferCtx = {
   sr: NonNullable<Awaited<ReturnType<typeof loadQuoteForOffer>>>;
@@ -531,13 +701,20 @@ type OfferCtx = {
   approvesProposal: boolean;
   /** Sent by the supplier with review off (their price + margin). */
   bySupplierDirect: boolean;
+  /** What is offered and where to (offerTerms). */
+  item: OfferItem;
+  /** Name of item.destinationCountry, and the Incoterm place it was read from (not chosen). */
+  destinationName: string | null;
+  destinationDerivedFrom: string | null;
+  /** A supplier's texts as written, when MESSAGE_MEDIATION_MODE removed contact details from them. */
+  mediation: { removed: ContactKind[]; original: SupplierOfferText; maskedFields: Array<keyof SupplierOfferText> } | null;
 };
 
 async function loadQuoteForOffer(id: string) {
   return prisma.sourcingRequest.findUnique({
     where: { id },
     include: {
-      product: { select: { id: true, title: true, vatScheme: true } },
+      product: { select: { id: true, title: true, vatScheme: true, status: true } },
       assignedTo: { select: { id: true, email: true, role: true } },
     },
   });
@@ -551,9 +728,21 @@ async function loadQuoteForOffer(id: string) {
 async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   const { sr } = c;
   const now = new Date();
+  const site = siteName();
   const goodsCents = c.unitCents * c.qty;
-  const itemTitle = sr.product?.title ?? sr.productCategory ?? 'Requested equipment';
+  const itemTitle = offerItemTitle({ offerTerms: { itemTitle: c.item.itemTitle }, product: sr.product, productCategory: sr.productCategory });
   const money = (x: number) => formatPrice(x, c.currency);
+
+  // A listing that is not published (draft, under review, archived) is not on
+  // sale: staff offer it only with the explicit override (kept on the offer, so
+  // the buyer can accept it, and audited).
+  if (sr.product && sr.product.status !== 'PUBLISHED' && !c.item.allowUnpublished) {
+    return {
+      error: c.isAdmin
+        ? `This listing is not published (${sr.product.status.toLowerCase().replace(/_/g, ' ')}), so the buyer could not accept the offer. Publish it first, or tick “Offer although the listing is not published”.`
+        : `This listing is not published, so no offer can be sent on it. Ask the ${site} team.`,
+    };
+  }
 
   // The listed unit must be available (not sold, not held for someone else).
   const mode = stockReserveOn();
@@ -572,9 +761,11 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   const d = vat.decision;
   const vatCents = d ? d.taxCents : null;
   const totalCents = goodsCents + c.shippingCents + (vatCents ?? 0);
-  const previousAmounts = sr.status === 'RESPONDED' && sr.quotedPriceCents != null ? offerAmounts(sr) : null;
+  // A re-quote after a decline is an updated offer too (revision + 1, "Updated offer").
+  const reopening = sr.status === 'DECLINED';
+  const previousAmounts = (sr.status === 'RESPONDED' || reopening) && sr.quotedPriceCents != null ? offerAmounts(sr) : null;
   const isUpdate = !!previousAmounts;
-  const terms: OfferTerms = {
+  const terms: OfferTerms & OfferItem = {
     v: 1,
     qty: c.qty,
     unitCents: c.unitCents,
@@ -587,6 +778,7 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
     previous: previousAmounts
       ? { totalCents: previousAmounts.vatDecided ? previousAmounts.totalCents : null, netCents: previousAmounts.netCents, currency: sr.quotedCurrency || 'EUR' }
       : null,
+    ...c.item,
   };
   const linked = await prisma.order.findUnique({
     where: { sourcingRequestId: sr.id },
@@ -596,13 +788,27 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   const holdUntil = holdDays ? new Date(Math.min(c.validUntil.getTime(), now.getTime() + holdDays * 86_400_000)) : c.validUntil;
 
   let detachedOrder: string | null = null;
+  let detachedWasPayable = false;
   const nextRevision = (sr.offerRevision ?? 0) + 1;
+  // What the buyer reads (thread message + offer mail) — built from the texts
+  // as published (a supplier's already mediated, see sendOffer).
+  const announcement: OfferAnnouncement = {
+    quoteId: sr.id, revision: nextRevision, isUpdate, itemTitle, item: c.item, destinationName: c.destinationName, currency: c.currency,
+    qty: c.qty, unitCents: c.unitCents, goodsCents, shippingCents: c.shippingCents,
+    vat: d ? { treatment: d.treatment, rateBp: d.rateBp, cents: vatCents ?? 0 } : null, totalCents, validUntil: c.validUntil,
+    previous: previousAmounts
+      ? { cents: previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, currency: sr.quotedCurrency || 'EUR', exclVat: !previousAmounts.vatDecided }
+      : null,
+    terms, note: c.note,
+  };
   try {
     await prisma.$transaction(async (tx) => {
-      // Guarded write: a buyer who accepted / declined in the meantime wins.
+      // Guarded write: a buyer who accepted / declined in the meantime wins
+      // (a declined quote is re-opened only when it was declined when we read it).
       const claim = await tx.sourcingRequest.updateMany({
-        where: { id: sr.id, status: { in: ['PENDING', 'RESPONDED'] }, offerRevision: sr.offerRevision },
+        where: { id: sr.id, status: { in: reopening ? ['DECLINED'] : ['PENDING', 'RESPONDED'] }, offerRevision: sr.offerRevision },
         data: {
+          ...(reopening ? { lostReason: null, lostNote: null, archivedAt: null, archivedById: null } : {}),
           quotedPriceCents: goodsCents,
           quotedCurrency: c.currency,
           quotedNote: c.note,
@@ -631,6 +837,10 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
         },
       });
       if (claim.count !== 1) throw new OfferRaceError();
+      // Each revision gets its own expiry reminders and staff alert (and a new
+      // "unit sold" notice): the sweep's claims are per quote, so the ones of
+      // the previous revision are cleared with the new offer.
+      await tx.reminderLog.deleteMany({ where: { subjectType: 'QUOTE', subjectId: sr.id, kind: { in: ['OFFER_EXPIRING', 'OFFER_EXPIRED_STAFF', 'UNIT_SOLD'] } } });
       if (linked) {
         // Legacy auto-created order (unpaid, no proof) or a canceled one: it
         // must not stay payable at the old price — cancel it and unlink it so
@@ -646,10 +856,11 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
           where: { id: linked.id },
           data: {
             sourcingRequestId: null,
-            adminNotes: `${linked.adminNotes ? `${linked.adminNotes}\n` : ''}[${isoDay(now)}] Unlinked from quote ${QUOTE_REF(sr.id)}: a new offer was sent (the order was created by the old auto-accept flow and never paid).`.slice(0, 4000),
+            adminNotes: `${linked.adminNotes ? `${linked.adminNotes}\n` : ''}[${isoDay(now)}] Unlinked from quote ${QUOTE_REF(sr.id)}: a new offer was sent (${linked.status === 'CANCELED' ? 'this order was canceled' : 'the order was created by the old auto-accept flow and never paid'}).`.slice(0, 4000),
           },
         });
         detachedOrder = linked.orderNumber;
+        detachedWasPayable = linked.status === 'PENDING_PAYMENT';
       }
       if (sr.productId && mode === 'OFFER_SENT') {
         const hold = await holdUnitForQuote(tx, { quoteId: sr.id, productId: sr.productId, qty: c.qty, expiresAt: holdUntil });
@@ -658,17 +869,25 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
       await tx.quoteMessage.create({
         data: {
           sourcingRequestId: sr.id,
-          authorId: c.actorId,
+          // The offer is the platform's (a supplier sending directly priced it,
+          // but the buyer price incl. margin is ours): no supplier as author.
+          authorId: c.bySupplierDirect ? null : c.actorId,
           fromStaff: true,
-          body: [
-            `${isUpdate ? 'Updated offer' : 'Offer'} (revision ${nextRevision}) for "${itemTitle}": ${c.qty > 1 ? `${c.qty} × ${money(c.unitCents)} = ` : ''}${money(goodsCents)}${c.shippingCents ? ` + freight ${money(c.shippingCents)}` : ''} excl. VAT${d ? `; VAT ${pctLabel(d.rateBp)}: ${money(vatCents ?? 0)}; total ${money(totalCents)}` : '; VAT is determined from your billing details when you accept'}. Valid until ${fmtDay(c.validUntil)}.`,
-            isUpdate && previousAmounts ? `Previous offer: ${formatPrice(previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, sr.quotedCurrency || 'EUR')}${previousAmounts.vatDecided ? '' : ' excl. VAT'}.` : '',
-            [incotermLabel(terms), terms.leadTime ? `Lead time: ${terms.leadTime}` : '', terms.warranty ? `Warranty: ${terms.warranty}` : '', terms.paymentTerms.text].filter(Boolean).join(' · '),
-            'Accept or decline it at the top of this page. Nothing is ordered until you accept.',
-            c.note ? `\nNote: ${c.note}` : '',
-          ].filter(Boolean).join('\n'),
+          body: offerThreadBody(announcement),
         },
       });
+      if (c.mediation) {
+        // What the supplier really wrote — for staff only (MASK_CONTACTS, as for their messages).
+        await tx.quoteMessage.create({
+          data: {
+            sourcingRequestId: sr.id,
+            authorId: c.actorId,
+            isInternalNote: true,
+            fromStaff: true,
+            body: `Supplier offer as written (only staff see this; the buyer got it with ${CONTACT_REMOVED} in place of ${contactKindsLabel(c.mediation.removed)}):\n\n${c.mediation.maskedFields.map((k) => `${SUPPLIER_FIELD_LABEL[k]}: ${c.mediation!.original[k] ?? ''}`).join('\n')}`.slice(0, 5000),
+          },
+        });
+      }
     });
   } catch (e) {
     if (e instanceof OfferBlockedError) return { error: e.message };
@@ -684,34 +903,18 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   }
 
   // ─── After commit: notify (never fatal) ───
-  const buyerLink = sr.submittedById || !sr.accessToken ? `${siteBase()}/app/quotes/${sr.id}` : `${siteBase()}/quotes/t/${sr.accessToken}`;
-  const amounts = {
-    qty: c.qty, unitCents: c.unitCents, goodsCents, shippingCents: c.shippingCents, vatDecided: !!d, vatRateBp: d?.rateBp ?? null,
-    vatCents, vatLabel: d ? vatTreatmentLabel(d.treatment) : null, totalCents, currency: c.currency,
-  };
-  const prevLine = isUpdate && previousAmounts
-    ? `<p style="margin:0 0 12px;color:#4b5563;">Previous offer: <s>${escapeHtml(formatPrice(previousAmounts.vatDecided ? previousAmounts.totalCents : previousAmounts.netCents, sr.quotedCurrency || 'EUR'))}${previousAmounts.vatDecided ? '' : ' excl. VAT'}</s></p>`
-    : '';
-  const sent = await trySendEmail({
-    to: sr.buyerEmail,
-    subject: `[${QUOTE_REF(sr.id)}] ${isUpdate ? 'Updated offer' : 'Your offer'} for ${headerText(itemTitle, 90)}: ${money(totalCents)}${d ? '' : ' excl. VAT'}`,
-    html: mailLayout({
-      heading: isUpdate ? 'Your offer was updated' : 'Your offer is ready',
-      body: [
-        `Hi <span dir="auto">${escapeHtml(sr.buyerName)}</span>,`,
-        `${isUpdate ? 'We updated our offer' : 'Here is our offer'} for <strong dir="auto">${escapeHtml(itemTitle)}</strong>:`,
-        offerMailRows(amounts),
-        prevLine,
-        termsMailRows(terms, c.validUntil),
-        c.note ? `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;color:#374151;">${escapeHtmlLines(c.note)}</blockquote>` : '',
-      ].filter(Boolean),
-      cta: { href: buyerLink, label: 'Review and accept the offer' },
-      footer: [
-        'Nothing is ordered yet. When you accept, you confirm your billing and delivery details; we then create your order and email you the proforma invoice (PDF) with the bank details.',
-        `Terms of sale: <a href="${escapeHtml(termsOfSaleUrl().startsWith('/') ? `${siteBase()}${termsOfSaleUrl()}` : termsOfSaleUrl())}">${escapeHtml(termsOfSaleUrl())}</a> · Reference ${QUOTE_REF(sr.id)}`,
-      ],
-    }),
-  }, 'quotes:offer');
+  // The quotation PDF of this revision (a document a purchasing office can raise a PO on), when one exists.
+  const quotation = await quotationAttachment(sr.id).catch(async (e) => { await logError('quotes:quotation-pdf', e); return null; });
+  const mail = offerMail(announcement, { buyerName: sr.buyerName, buyerLink: buyerQuoteLink(sr), termsHref: termsOfSaleHref(siteBase()), quotationAttached: !!quotation });
+  const sent = await trySendEmail({ to: sr.buyerEmail, subject: mail.subject, html: mail.html, attachments: quotation ? [quotation] : [] }, 'quotes:offer');
+  if (c.mediation) {
+    await notifyAdmins(
+      `Contact details removed from a supplier offer — ${QUOTE_REF(sr.id)}`,
+      `The supplier's offer reached the buyer without its ${contactKindsLabel(c.mediation.removed)}. The original texts are kept as an internal note.`,
+      `/admin/quotes/${sr.id}`,
+      'SYSTEM',
+    );
+  }
 
   await notifyUser(
     sr.submittedById,
@@ -729,14 +932,14 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
     await notifyUser(
       sr.assignedToId,
       `Offer sent to the buyer — ${QUOTE_REF(sr.id)}`,
-      `lab2date sent the buyer an offer based on your price for "${itemTitle}". You will be notified when the buyer decides.`,
+      `${site} sent the buyer an offer based on your price for "${itemTitle}". You will be notified when the buyer decides.`,
       `/app/seller/inbox/${sr.id}`,
     );
   }
   await audit(
     isUpdate ? 'quote.offer.update' : 'quote.offer.send',
     QUOTE_REF(sr.id),
-    `r${nextRevision} · ${itemTitle} · ${c.qty}×${money(c.unitCents)} + freight ${money(c.shippingCents)} · vat=${d ? `${d.treatment} ${pctLabel(d.rateBp)}` : 'at acceptance'} · total ${money(totalCents)} · validUntil=${isoDay(c.validUntil)}${previousAmounts ? ` · was ${formatPrice(previousAmounts.totalCents, sr.quotedCurrency || 'EUR')}` : ''}${c.supplierCostCents != null ? ` · supplier ${formatPrice(c.supplierCostCents, c.currency)}` : ''}${detachedOrder ? ` · unlinked legacy order ${detachedOrder}` : ''}${sent.ok ? '' : ` · buyer email failed: ${sent.error}`} · by ${c.actorEmail}`,
+    `r${nextRevision}${reopening ? ' (re-quote after decline)' : ''} · ${itemTitle} · ${c.qty}×${money(c.unitCents)} + freight ${money(c.shippingCents)}${c.item.destinationCountry ? ` to ${c.item.destinationCountry}` : ''} · vat=${d ? `${d.treatment} ${pctLabel(d.rateBp)}` : 'at acceptance'} · total ${money(totalCents)} · validUntil=${isoDay(c.validUntil)}${previousAmounts ? ` · was ${formatPrice(previousAmounts.totalCents, sr.quotedCurrency || 'EUR')}` : ''}${c.supplierCostCents != null ? ` · supplier ${formatPrice(c.supplierCostCents, c.currency)}` : ''}${c.item.allowUnpublished && sr.product?.status !== 'PUBLISHED' ? ` · OVERRIDE: listing not published (${sr.product?.status ?? '?'})` : ''}${detachedOrder ? ` · unlinked order ${detachedOrder}` : ''}${quotation ? ' · quotation PDF attached' : ''}${sent.ok ? '' : ` · buyer email failed: ${sent.error}`} · by ${c.actorEmail}`,
   );
 
   revalidatePath(`/app/quotes/${sr.id}`);
@@ -745,21 +948,34 @@ async function publishOffer(c: OfferCtx): Promise<QuoteActionResult> {
   revalidatePath('/admin/quotes');
   revalidatePath('/app/quotes');
 
-  // Sellers never see the buyer's address.
+  // Sellers never see the buyer's address — nor, unless SELLER_SEES_SELL_PRICE,
+  // the buyer price (their price plus our margin).
   const who = c.isAdmin ? sr.buyerEmail : 'the buyer';
-  const what = `${isUpdate ? 'Offer updated' : 'Offer sent'}: ${money(totalCents)}${d ? '' : ' excl. VAT (VAT at acceptance)'}, valid until ${fmtDay(c.validUntil)}.`;
+  const what = c.bySupplierDirect && !sellerSeesSellPrice()
+    ? `Offer sent to the buyer based on your price ${money(c.supplierCostCents ?? goodsCents)} (excl. VAT), valid until ${fmtDay(c.validUntil)}.`
+    : `${isUpdate ? 'Offer updated' : 'Offer sent'}: ${money(totalCents)}${d ? '' : ' excl. VAT (VAT at acceptance)'}, valid until ${fmtDay(c.validUntil)}.`;
+  // A destination read from the Incoterm place is named, so a wrong reading is caught now.
+  const extra = [
+    c.destinationDerivedFrom && c.destinationName
+      ? `Priced for delivery to ${c.destinationName} — read from “${c.destinationDerivedFrom}”; if that is wrong, choose the destination country and update the offer.`
+      : '',
+    c.mediation ? `The ${contactKindsLabel(c.mediation.removed)} in your texts were removed — buyers deal with ${site} only.` : '',
+  ].filter(Boolean).join(' ');
   if (!sent.ok) {
-    return { warning: `${what} It is saved and the buyer sees it in their dashboard, but the email to ${who} could not be delivered (${sent.error}).` };
+    return { warning: `${what} It is saved and the buyer sees it in their dashboard, but the email to ${who} could not be delivered (${sent.error}).${extra ? ` ${extra}` : ''}` };
   }
-  return { notice: `${what} Emailed to ${who}${detachedOrder ? `; old unpaid order ${detachedOrder} was canceled` : ''}.` };
+  return { notice: `${what} Emailed to ${who}${detachedOrder ? `; ${detachedWasPayable ? `old unpaid order ${detachedOrder} was canceled` : `canceled order ${detachedOrder} was unlinked`}` : ''}.${extra ? ` ${extra}` : ''}` };
 }
 
 /**
  * Staff / assigned supplier "Send offer". Staff publish the offer to the buyer.
- * A supplier's price is a PROPOSAL to lab2date when SELLER_OFFERS_REQUIRE_APPROVAL
- * is on (staff review it and add the margin); with review off it goes to the
- * buyer at the supplier price + SELLER_OFFER_MARKUP_PCT. No order or proforma
- * exist until the buyer accepts; after acceptance the price is locked.
+ * A supplier's price is a PROPOSAL to the team when SELLER_OFFERS_REQUIRE_APPROVAL
+ * is on or MESSAGE_MEDIATION_MODE holds supplier texts for staff (STAFF_REVIEW):
+ * staff review it and add the margin. Otherwise it goes to the buyer at the
+ * supplier price + SELLER_OFFER_MARKUP_PCT, its free texts mediated like the
+ * supplier's messages (MASK_CONTACTS: contact details removed, the original kept
+ * as an internal note, admins told). No order or proforma exist until the buyer
+ * accepts; after acceptance the price is locked.
  */
 export async function sendOffer(input: z.input<typeof OfferInput>): Promise<QuoteActionResult> {
   const result = OfferInput.safeParse(input);
@@ -774,6 +990,11 @@ export async function sendOffer(input: z.input<typeof OfferInput>): Promise<Quot
     if (field === 'validUntil') return { error: 'Enter a valid "valid until" date.' };
     if (field === 'paymentDays') return { error: 'The payment term must be 1–120 days.' };
     if (field === 'leadTime' || field === 'warranty' || field === 'incotermPlace') return { error: 'Lead time, warranty and place can have at most 200 characters.' };
+    if (field === 'itemTitle') return { error: 'The item title can have at most 200 characters.' };
+    if (field === 'itemDescription') return { error: 'The item description can have at most 4,000 characters.' };
+    if (field === 'itemSerial') return { error: 'The serial number can have at most 120 characters.' };
+    if (field === 'itemCondition') return { error: 'Choose the condition: new, refurbished or used.' };
+    if (field === 'destinationCountry') return { error: 'Choose the destination country.' };
     return { error: 'This offer could not be sent. Check the fields and try again.' };
   }
   const p = result.data;
@@ -800,14 +1021,20 @@ export async function sendOffer(input: z.input<typeof OfferInput>): Promise<Quot
   if (!currencies.includes(p.currency)) return { error: `Choose one of: ${currencies.join(', ')}.` };
 
   // ─── Price lock after acceptance ───
+  // A declined offer (or an expired one) is re-quoted on the same request; a
+  // closed request or an accepted one (its order is binding, Order.sourcingRequestId
+  // is unique) gets a new request for the same buyer: “New quote for this buyer”.
   if (sr.status === 'ACCEPTED') {
-    const o = await prisma.order.findUnique({ where: { sourcingRequestId: sr.id }, select: { orderNumber: true } });
+    const o = await prisma.order.findUnique({ where: { sourcingRequestId: sr.id }, select: { orderNumber: true, status: true } });
+    if (o?.status === 'CANCELED') {
+      return { error: `The accepted order ${o.orderNumber} was canceled, so this quote is finished. Use “New quote for this buyer” to send the buyer a new offer.` };
+    }
     return {
-      error: `The buyer already accepted this offer${o ? ` (order ${o.orderNumber}` : ''}${sr.proformaNumber ? `${o ? ', ' : ' ('}proforma ${sr.proformaNumber})` : o ? ')' : ''}, so its price can no longer be changed. Cancel that order first (Deal panel), then send a new offer on a new quote.`,
+      error: `The buyer already accepted this offer${o ? ` (order ${o.orderNumber}` : ''}${sr.proformaNumber ? `${o ? ', ' : ' ('}proforma ${sr.proformaNumber})` : o ? ')' : ''}, so its price can no longer be changed. Cancel that order first (“Cancel order” in the Deal panel), then use “New quote for this buyer”.`,
     };
   }
-  if (sr.status === 'DECLINED' || sr.status === 'CLOSED') {
-    return { error: `This quote is ${sr.status === 'DECLINED' ? 'declined' : 'closed'}, so no new offer can be sent on it. Open a new quote for the buyer instead.` };
+  if (sr.status === 'CLOSED') {
+    return { error: isAdmin ? 'This request is closed. Use “New quote for this buyer” to start a new request for the same buyer and send the offer there.' : `This request is closed. Ask the ${siteName()} team if the buyer should get a new offer.` };
   }
 
   // A legacy quote (old flow) may carry an order the old code auto-created. A
@@ -832,21 +1059,44 @@ export async function sendOffer(input: z.input<typeof OfferInput>): Promise<Quot
   if (incoterm && !incoterms.includes(incoterm)) return { error: `Choose one of the Incoterms: ${incoterms.join(', ')}.` };
 
   // ─── Supplier (assigned seller, not staff) ───
-  if (isAssignee && !isAdmin) {
-    if (sellerOffersRequireApproval()) {
-      return submitSellerProposal(sr, session.user.id, {
-        priceCents: p.priceCents * p.qty, currency: p.currency, note: clean(p.note), leadTime: clean(p.leadTime), warranty: clean(p.warranty),
-      });
-    }
-    // Review off: the buyer gets the supplier price + lab2date's margin.
+  // A supplier's price reaches the buyer directly only with review off and their
+  // texts not held for staff (STAFF_REVIEW): otherwise it is a proposal staff publish.
+  const supplier = isAssignee && !isAdmin;
+  if (supplier && !sellerOffersGoDirect()) {
+    return submitSellerProposal(sr, session.user.id, {
+      priceCents: p.priceCents * p.qty, currency: p.currency, note: clean(p.note), leadTime: clean(p.leadTime), warranty: clean(p.warranty),
+      offered: {
+        qty: p.qty, unitCents: p.priceCents, shippingCents: p.shippingCents, incoterm, incotermPlace: clean(p.incotermPlace), validUntil: isoDay(validUntil),
+        itemTitle: clean(p.itemTitle), itemDescription: clean(p.itemDescription), itemCondition: p.itemCondition ?? null, itemSerial: clean(p.itemSerial),
+        destinationCountry: clean(p.destinationCountry)?.toUpperCase() ?? null,
+      },
+    });
+  }
+  // Supplier texts reach the buyer mediated, like their messages (MASK_CONTACTS:
+  // contact details removed from every free-text field; OFF: as written).
+  const original: SupplierOfferText = {
+    note: p.note, leadTime: p.leadTime, warranty: p.warranty, incotermPlace: p.incotermPlace, itemTitle: p.itemTitle, itemDescription: p.itemDescription, itemSerial: p.itemSerial,
+  };
+  const mediated = supplier ? mediateSupplierOffer(mediationMode(), original) : null;
+  const q = mediated ? { ...p, ...mediated.fields } : p;
+  const mediation = mediated && mediated.removed.length ? { removed: mediated.removed, original, maskedFields: mediated.maskedFields } : null;
+
+  const finalIncoterm = supplier ? incoterm ?? defaults.incoterm : incoterm;
+  const finalPlace = supplier ? clean(q.incotermPlace) ?? defaults.incotermPlace : clean(q.incotermPlace);
+  const offered = await offerItemFrom(sr, q, { incoterm: finalIncoterm, place: finalPlace, staff: isAdmin });
+  if ('error' in offered) return { error: offered.error };
+  const { item, destinationName, destinationDerivedFrom } = offered;
+
+  if (supplier) {
+    // Review off: the buyer gets the supplier price + our margin.
     const sellUnit = applyMarkup(p.priceCents, sellerMarkupBp(), sellerPriceRounding());
     return publishOffer({
       sr, actorId: session.user.id, actorEmail: session.user.email, isAdmin: false,
-      unitCents: sellUnit, qty: p.qty, currency: p.currency, shippingCents: p.shippingCents, note: clean(p.note), validUntil,
-      incoterm: incoterm ?? defaults.incoterm, incotermPlace: clean(p.incotermPlace) ?? defaults.incotermPlace,
-      leadTime: clean(p.leadTime) ?? clean(defaults.leadTime), warranty: clean(p.warranty),
+      unitCents: sellUnit, qty: p.qty, currency: p.currency, shippingCents: p.shippingCents, note: clean(q.note), validUntil,
+      incoterm: finalIncoterm, incotermPlace: finalPlace,
+      leadTime: clean(q.leadTime) ?? clean(defaults.leadTime), warranty: clean(q.warranty),
       paymentDays: p.paymentDays ?? defaults.paymentTermDays,
-      supplierCostCents: p.priceCents * p.qty, approvesProposal: false, bySupplierDirect: true,
+      supplierCostCents: p.priceCents * p.qty, approvesProposal: false, bySupplierDirect: true, item, destinationName, destinationDerivedFrom, mediation,
     });
   }
 
@@ -854,37 +1104,115 @@ export async function sendOffer(input: z.input<typeof OfferInput>): Promise<Quot
   return publishOffer({
     sr, actorId: session.user.id, actorEmail: session.user.email, isAdmin,
     unitCents: p.priceCents, qty: p.qty, currency: p.currency, shippingCents: p.shippingCents, note: clean(p.note), validUntil,
-    incoterm, incotermPlace: clean(p.incotermPlace), leadTime: clean(p.leadTime), warranty: clean(p.warranty),
+    incoterm: finalIncoterm, incotermPlace: finalPlace, leadTime: clean(p.leadTime), warranty: clean(p.warranty),
     paymentDays: p.paymentDays ?? defaults.paymentTermDays,
     // A pending supplier proposal is approved by this offer (its cost is the margin basis).
     supplierCostCents: proposalPending ? sr.sellerProposalCents : sr.offerSupplierCostCents ?? null,
-    approvesProposal: proposalPending, bySupplierDirect: false,
+    approvesProposal: proposalPending, bySupplierDirect: false, item, destinationName, destinationDerivedFrom, mediation: null,
   });
 }
 
-/** A supplier's price goes to lab2date for review (A30) — the buyer sees nothing yet. */
+/**
+ * The item part of an offer: title / description / condition / serial (the
+ * title is required when the request has no listing of its own — "Let us find
+ * it" or "similar to …" — since it becomes the goods line of the proforma and
+ * the invoice), and the destination country it is priced for. An update keeps
+ * what the composer did not send (undefined); an empty value clears it.
+ *
+ * Destination: as chosen (a country of the list); else, while the Incoterm and
+ * its place stay the same, the one chosen for the current offer. An offer with
+ * freight is refused without one. An offer without freight takes the country
+ * its C/D-term place names when that is unambiguous ("DAP Leuven, Belgium";
+ * not "DAP Newark, DE") — named in the send result so staff catch a wrong reading.
+ */
+async function offerItemFrom(
+  sr: { status: string; quotedPriceCents: number | null; offerTerms: Prisma.JsonValue; productId: string | null; similarToProductId: string | null },
+  p: { itemTitle?: string | null; itemDescription?: string | null; itemCondition?: OfferItem['itemCondition']; itemSerial?: string | null; destinationCountry?: string | null; allowUnpublished?: boolean; shippingCents: number },
+  ctx: { incoterm: string | null; place: string | null; staff: boolean },
+): Promise<{ item: OfferItem; destinationName: string | null; destinationDerivedFrom: string | null } | { error: string }> {
+  const cur = sr.quotedPriceCents != null && (sr.status === 'RESPONDED' || sr.status === 'DECLINED') ? parseOfferItem(sr.offerTerms) : null;
+  const curTerms = cur ? parseOfferTerms(sr.offerTerms) : null;
+  const keep = (v: string | null | undefined, current: string | null | undefined) => (v === undefined ? current ?? null : clean(v));
+  const rawTitle = keep(p.itemTitle, cur?.itemTitle);
+  const title = rawTitle ? decodeEntities(rawTitle).replace(/\s+/g, ' ').trim() || null : null;
+  if (!title && (!sr.productId || sr.similarToProductId)) {
+    return { error: 'Enter the item title (make, model, year) — it is printed on the proforma and the invoice.' };
+  }
+
+  let destination: string | null = null;
+  let source: OfferItem['destinationSource'] = null;
+  if (p.destinationCountry !== undefined) {
+    destination = clean(p.destinationCountry)?.toUpperCase() ?? null;
+    if (destination === 'UK') destination = 'GB';
+    source = destination ? 'CHOSEN' : null;
+  } else if (
+    cur?.destinationSource === 'CHOSEN' && curTerms &&
+    (curTerms.incoterm ?? null) === ctx.incoterm && (curTerms.incotermPlace ?? null) === (ctx.incoterm ? ctx.place : null)
+  ) {
+    destination = cur.destinationCountry;
+    source = 'CHOSEN';
+  }
+  if (!destination && p.shippingCents > 0) {
+    return { error: 'Choose the destination country: the freight in this offer is priced for it (the buyer can accept only with delivery there).' };
+  }
+  let destinationDerivedFrom: string | null = null;
+  if (!destination && ctx.incoterm && ctx.place) {
+    destination = destinationFromPlace(ctx.incoterm, ctx.place, await countryRefs());
+    if (destination) {
+      source = 'PLACE';
+      destinationDerivedFrom = `${ctx.incoterm} ${ctx.place}`;
+    }
+  }
+  let destinationName: string | null = null;
+  if (destination) {
+    const c = await checkCountry(destination);
+    if (!c.known) return { error: `“${destination}” is not a country of the country list (Settings → Compliance & countries). Choose the destination country from the list.` };
+    if (c.mode === 'BLOCK') return { error: `We do not deliver to ${c.name ?? destination}: ${c.reason}` };
+    destinationName = c.name ?? destination;
+  }
+  return {
+    item: {
+      itemTitle: title,
+      itemDescription: keep(p.itemDescription, cur?.itemDescription),
+      itemCondition: p.itemCondition === undefined ? cur?.itemCondition ?? null : p.itemCondition,
+      itemSerial: keep(p.itemSerial, cur?.itemSerial),
+      destinationCountry: destination,
+      destinationSource: source,
+      allowUnpublished: ctx.staff && (p.allowUnpublished ?? cur?.allowUnpublished ?? false),
+    },
+    destinationName,
+    destinationDerivedFrom,
+  };
+}
+
+/** A supplier's price goes to the team for review (A30) — the buyer sees nothing yet. */
 async function submitSellerProposal(
   sr: NonNullable<Awaited<ReturnType<typeof loadQuoteForOffer>>>,
   sellerId: string,
-  p: { priceCents: number; currency: string; note: string | null; leadTime: string | null; warranty: string | null },
+  p: {
+    priceCents: number; currency: string; note: string | null; leadTime: string | null; warranty: string | null;
+    /** The rest of what the supplier filled in (quantity, freight, Incoterm, item, destination) — for staff, kept with the proposal. */
+    offered?: Record<string, string | number | null>;
+  },
 ): Promise<QuoteActionResult> {
   const now = new Date();
   const claim = await prisma.sourcingRequest.updateMany({
-    where: { id: sr.id, status: { in: ['PENDING', 'RESPONDED'] } },
+    where: { id: sr.id, status: { in: ['PENDING', 'RESPONDED', 'DECLINED'] } },
     data: {
       sellerProposalStatus: 'PENDING',
       sellerProposalCents: p.priceCents,
       sellerProposalCurrency: p.currency,
       sellerProposalNote: p.note,
-      sellerProposalTerms: { leadTime: p.leadTime, warranty: p.warranty } as Prisma.InputJsonValue,
+      sellerProposalTerms: { ...(p.offered ?? {}), leadTime: p.leadTime, warranty: p.warranty } as Prisma.InputJsonValue,
       sellerProposalAt: now,
       sellerProposalById: sellerId,
       sellerProposalReviewNote: null,
     },
   });
-  if (claim.count !== 1) return { error: 'This quote changed meanwhile (accepted, declined or closed). Reload the page.' };
-  const itemTitle = sr.product?.title ?? sr.productCategory ?? 'Requested equipment';
+  if (claim.count !== 1) return { error: 'This quote changed meanwhile (accepted or closed). Reload the page.' };
+  const itemTitle = offerItemTitle(sr);
   const money = formatPrice(p.priceCents, p.currency);
+  const o = p.offered;
   await notifyAdmins(
     `Supplier proposal to review — ${QUOTE_REF(sr.id)}`,
     `${itemTitle}: supplier price ${money}. Review it, add the margin and send the offer to the buyer.`,
@@ -898,6 +1226,15 @@ async function submitSellerProposal(
       heading: 'Supplier proposal to review',
       body: [
         `The supplier proposed <strong>${escapeHtml(money)}</strong> (excl. VAT) for <strong dir="auto">${escapeHtml(itemTitle)}</strong>.`,
+        o && (Number(o.qty) > 1 || Number(o.shippingCents) > 0 || o.incoterm || o.itemTitle)
+          ? mailP(escapeHtml([
+              Number(o.qty) > 1 ? `Quantity ${o.qty}` : '',
+              Number(o.shippingCents) > 0 ? `freight ${formatPrice(Number(o.shippingCents), p.currency)}` : '',
+              o.incoterm ? `${o.incoterm}${o.incotermPlace ? ` ${o.incotermPlace}` : ''}` : '',
+              o.destinationCountry ? `to ${o.destinationCountry}` : '',
+              o.itemTitle ? `item: ${o.itemTitle}` : '',
+            ].filter(Boolean).join(' · ')))
+          : '',
         p.leadTime ? `Lead time: <span dir="auto">${escapeHtml(p.leadTime)}</span>` : '',
         p.warranty ? `Warranty: <span dir="auto">${escapeHtml(p.warranty)}</span>` : '',
         p.note ? `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(p.note)}</blockquote>` : '',
@@ -910,13 +1247,14 @@ async function submitSellerProposal(
   revalidatePath(`/app/seller/inbox/${sr.id}`);
   revalidatePath(`/admin/quotes/${sr.id}`);
   revalidatePath('/admin/quotes');
-  return { notice: `Proposal sent to lab2date for review: ${money} (excl. VAT). The buyer sees an offer once lab2date approves it — you are notified then.` };
+  return { notice: `Proposal sent to the ${siteName()} team for review: ${money} (excl. VAT). The buyer sees an offer once our team approves it — you are notified then.` };
 }
 
 /** Staff decline a supplier proposal (with a note the supplier sees). */
 export async function rejectSellerProposal(input: { sourcingRequestId: string; note: string }): Promise<QuoteActionResult> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/quotes' });
   await requireCapability('quotes:proforma', { redirectTo: '/admin/quotes' });
+  await ensureSettingsLoaded();
   const note = (input.note ?? '').trim().slice(0, 1000);
   if (note.length < 4) return { error: 'Tell the supplier why (at least 4 characters).' };
   const sr = await prisma.sourcingRequest.findUnique({
@@ -930,14 +1268,14 @@ export async function rejectSellerProposal(input: { sourcingRequestId: string; n
   });
   if (claim.count !== 1) return { error: 'There is no pending supplier proposal on this quote (already handled?). Reload the page.' };
   if (sr.assignedToId) {
-    await notifyUser(sr.assignedToId, `Proposal not used — ${QUOTE_REF(sr.id)}`, `lab2date did not send your proposal to the buyer: ${note.slice(0, 160)}`, `/app/seller/inbox/${sr.id}`);
+    await notifyUser(sr.assignedToId, `Proposal not used — ${QUOTE_REF(sr.id)}`, `${siteName()} did not send your proposal to the buyer: ${note.slice(0, 160)}`, `/app/seller/inbox/${sr.id}`);
     if (sr.assignedTo?.role === 'SELLER') {
       await sendInternalEmail({
         to: sr.assignedTo.email,
         subject: `[${QUOTE_REF(sr.id)}] Your proposal was not sent to the buyer`,
         html: mailLayout({
           heading: 'Your proposal was not sent to the buyer',
-          body: [`lab2date reviewed your proposal of ${escapeHtml(formatPrice(sr.sellerProposalCents ?? 0, sr.sellerProposalCurrency ?? 'EUR'))} and did not send it:`, `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(note)}</blockquote>`, 'You can send a new proposal from your seller inbox.'],
+          body: [`${escapeHtml(siteName())} reviewed your proposal of ${escapeHtml(formatPrice(sr.sellerProposalCents ?? 0, sr.sellerProposalCurrency ?? 'EUR'))} and did not send it:`, `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(note)}</blockquote>`, 'You can send a new proposal from your seller inbox.'],
           cta: { href: `${siteBase()}/app/seller/inbox/${sr.id}`, label: 'Open the request' },
         }),
       }, 'quotes:proposal-reject');
@@ -984,6 +1322,9 @@ export type AcceptancePreview = {
   offerTotalCents: number | null;
   /** Shipping to a country staff must clear first (export compliance). */
   complianceReview: string | null;
+  /** The VAT needs a staff decision (VIES down, VAT ID of another company …): the
+   *  order is created on a VAT review, without a proforma — buyer text. */
+  vatReview: string | null;
   dueDays: number;
 };
 
@@ -1004,14 +1345,19 @@ type Prepared = {
   lineVat: { rateBp: number; taxCents: number };
   vatIdEvidence: Awaited<ReturnType<typeof decideVatForDetails>>['vatId'];
   terms: OfferTerms | null;
+  item: OfferItem;
   complianceNote: string | null;
+  /** VAT review before payment: why (staff) — the buyer text is preview.vatReview on the
+   *  acceptance step and vatReviewPlaced once the order exists. */
+  vatReviewNote: string | null;
+  vatReviewPlaced: string | null;
 };
 
 async function loadQuoteForAcceptance(id: string) {
   return prisma.sourcingRequest.findUnique({
     where: { id },
     include: {
-      product: { select: { id: true, title: true, vatScheme: true, brand: { select: { name: true } } } },
+      product: { select: { id: true, title: true, vatScheme: true, status: true, brand: { select: { name: true } } } },
       assignedTo: { select: { id: true, email: true, role: true } },
       order: { select: { id: true, orderNumber: true, status: true, paymentSubmittedAt: true, buyerId: true, adminNotes: true } },
     },
@@ -1039,7 +1385,14 @@ async function prepareAcceptance(
     return { ok: 'accepted', orderNumber: sr.order && sr.order.status !== 'CANCELED' ? sr.order.orderNumber : null };
   }
   if (sr.status === 'DECLINED' || sr.status === 'CLOSED') {
-    return { ok: false, result: { error: 'This quote is closed, so its offer can no longer be accepted. Open a new request if you still need the item.' } };
+    return {
+      ok: false,
+      result: {
+        error: sr.status === 'DECLINED'
+          ? 'This offer was declined, so it can no longer be accepted. Ask us for a new offer in the conversation below.'
+          : 'This request was closed, so its offer can no longer be accepted. Open a new request if you still need the item.',
+      },
+    };
   }
   if (sr.status !== 'RESPONDED' || sr.quotedPriceCents == null) {
     return { ok: false, result: { error: 'There is no offer to accept yet. We will email you as soon as the supplier sends one.' } };
@@ -1058,13 +1411,56 @@ async function prepareAcceptance(
   ) {
     return { ok: false, result: { error: 'This offer was updated after you opened the page. Review the new offer and accept again.' } };
   }
+
+  // The offered unit itself, before the buyer types anything: on sale, and not
+  // sold to / held for someone else (a competing offer accepted first).
+  const terms = parseOfferTerms(sr.offerTerms);
+  const item = parseOfferItem(sr.offerTerms);
+  const qty = terms?.qty ?? 1;
+  if (sr.productId) {
+    if (sr.product && sr.product.status !== 'PUBLISHED' && !item.allowUnpublished) {
+      return { ok: false, result: { error: 'This listing is not published right now, so the offer can not be accepted. Ask us in the conversation below.' } };
+    }
+    const av = await unitAvailability(sr.productId, sr.id);
+    if (av && !av.heldByThisQuote && av.quantity < qty) {
+      await alertAdminsOncePerDay(sr.id, 'ACCEPT_UNIT_GONE', `Acceptance refused: unit no longer available — ${QUOTE_REF(sr.id)}`, `${offerItemTitle(sr)}: the buyer tried to accept, but the unit is sold or held for another deal. Offer them a similar unit or close the request.`);
+      return { ok: false, result: { error: 'Sorry — this unit was just sold or reserved by another buyer, so the offer can not be accepted. We can source a similar one: ask us in the conversation below.' } };
+    }
+  }
+
   const parsed = parseDetailsInput(p.details ?? {}, { vatIdRule: vatIdRule() });
   if (!parsed.ok) return { ok: false, result: { error: parsed.message, fieldErrors: parsed.fieldErrors } };
   const details = parsed.details;
 
-  const terms = parseOfferTerms(sr.offerTerms);
+  // The offer's freight and VAT are priced for one destination.
   const amounts = offerAmounts(sr);
-  const qty = terms?.qty ?? 1;
+  if (item.destinationCountry && details.delivery.country !== item.destinationCountry) {
+    const name = (await checkCountry(item.destinationCountry)).name ?? item.destinationCountry;
+    return {
+      ok: false,
+      result: {
+        error: `This offer was priced for delivery to ${name}. Ask us for a new offer to deliver to another country.`,
+        fieldErrors: { d_country: `this offer is for delivery to ${name}` },
+      },
+    };
+  }
+  // An offer sent before offers named their destination: its freight was priced
+  // for the C/D-term place — refused when the delivery country can not be that
+  // place's ("DAP Berlin, DE" is Germany or Delaware, never Australia).
+  if (!item.destinationCountry && amounts.shippingCents > 0 && terms?.incoterm && terms.incotermPlace) {
+    const possible = placeCountries(terms.incoterm, terms.incotermPlace, await countryRefs());
+    if (possible && !possible.includes(details.delivery.country)) {
+      const where = `${terms.incotermPlace} (${terms.incoterm})`;
+      return {
+        ok: false,
+        result: {
+          error: `This offer and its freight were priced for delivery to ${where}. Ask us for a new offer to deliver to another country.`,
+          fieldErrors: { d_country: `this offer is for delivery to ${terms.incotermPlace}` },
+        },
+      };
+    }
+  }
+
   const unitCents = terms?.unitCents || Math.round(amounts.goodsCents / qty);
   const vat = await decideVatForDetails(details, offerVatLines({ goodsCents: amounts.goodsCents, shippingCents: amounts.shippingCents, scheme: sr.product?.vatScheme ?? null }));
   for (const c of [vat.shipTo, vat.billing]) {
@@ -1073,23 +1469,25 @@ async function prepareAcceptance(
     }
   }
   const d = vat.decision;
+  const viesDown = vat.vatId?.status === 'UNAVAILABLE';
   if (d.blocked) {
-    return { ok: false, result: { error: `This sale is not possible with these details: ${d.reasons.join(' ')}` } };
-  }
-  if (d.reviewRequired) {
-    await notifyAdmins(
-      `Acceptance needs a VAT decision — ${QUOTE_REF(sr.id)}`,
-      `The buyer tried to accept, but the VAT could not be decided: ${d.reasons.join(' ')}`.slice(0, 400),
-      `/admin/quotes/${sr.id}`,
-      'SYSTEM',
-    );
+    await alertAdminsOncePerDay(sr.id, 'ACCEPT_VAT_BLOCKED', `Acceptance refused by the VAT rules — ${QUOTE_REF(sr.id)}`, `The buyer tried to accept: ${d.reasons.join(' ')}`.slice(0, 400));
     return {
       ok: false,
       result: {
-        error: `We could not determine the VAT for these details right now: ${d.reasons.join(' ')} Please try again later — our team has been notified${details.billing.vatId ? ', or remove the VAT ID to accept with VAT charged' : ''}.`,
+        error: viesDown
+          ? 'We could not check your VAT ID with the EU service right now, and this order can only be placed once it is confirmed. Please try again later — our team has been told.'
+          : 'This offer can not be accepted with these billing details. Contact us in the conversation below and we will sort it out.',
       },
     };
   }
+  // Undecidable VAT (VIES down under MANUAL_REVIEW, a VAT ID registered to
+  // another company, …): the order is still placed, on a pre-payment VAT
+  // review — no proforma until staff confirm the VAT (like the COMPLIANCE hold).
+  const vatReviewNote = d.reviewRequired ? d.reasons.join(' ').slice(0, 900) : null;
+  // Before the buyer confirms nothing is ordered yet ("if you accept …"); the order mail says it is placed.
+  const vatReview = d.reviewRequired ? vatReviewBuyerText(viesDown ? 'VIES_UNAVAILABLE' : 'REVIEW', 'PREVIEW') : null;
+  const vatReviewPlaced = d.reviewRequired ? vatReviewBuyerText(viesDown ? 'VIES_UNAVAILABLE' : 'REVIEW', 'PLACED') : null;
   const goodsLine = d.lines.find((l) => l.lineType === 'GOODS');
   const totalCents = amounts.goodsCents + amounts.shippingCents + d.taxCents;
   const review = [vat.shipTo, vat.billing].find((c) => c?.mode === 'REVIEW');
@@ -1099,6 +1497,7 @@ async function prepareAcceptance(
       sr,
       details,
       terms,
+      item,
       decisionReasons: d.reasons,
       vatTreatment: d.treatment,
       vatRateBp: d.rateBp,
@@ -1106,6 +1505,8 @@ async function prepareAcceptance(
       lineVat: { rateBp: goodsLine?.rateBp ?? d.rateBp, taxCents: goodsLine?.taxCents ?? 0 },
       vatIdEvidence: vat.vatId,
       complianceNote: review ? review.reason : null,
+      vatReviewNote,
+      vatReviewPlaced,
       preview: {
         currency: sr.quotedCurrency || 'EUR',
         qty,
@@ -1115,13 +1516,15 @@ async function prepareAcceptance(
         vatCents: d.taxCents,
         vatRateBp: d.rateBp,
         vatTreatment: d.treatment,
-        vatLabel: vatTreatmentLabel(d.treatment),
-        vatExplanation: vatExplanation(d),
-        legalText: d.legalText,
+        vatLabel: vatReview ? 'VAT to be confirmed' : vatTreatmentLabel(d.treatment),
+        // Buyer wording only — the engine's reasons are for staff.
+        vatExplanation: vatReview ?? buyerVatExplanation(d as VatDecision & { buyerExplanation?: string | null }),
+        legalText: vatReview ? null : d.legalText,
         totalCents,
         differsFromOffer: amounts.vatDecided ? amounts.totalCents !== totalCents : true,
         offerTotalCents: amounts.vatDecided ? amounts.totalCents : null,
         complianceReview: review ? review.reason : null,
+        vatReview,
         dueDays: terms?.paymentTerms.days ?? offerDefaults().paymentTermDays,
       },
     },
@@ -1145,9 +1548,14 @@ export async function previewOfferAcceptance(input: z.input<typeof AcceptInput>)
  * ONE transaction: claim RESPONDED → ACCEPTED (guarded on the exact offer
  * revision), create the order priced by the VAT engine (exactly the total the
  * buyer confirmed), hold the unit (A09), issue the proforma (number, due date,
- * bank snapshot). Then redirect to the payment page at once — the proforma PDF
- * and the emails go out after the response, so a busy PDF queue never stalls
- * the acceptance. A double click / second tab is sent to the same order.
+ * bank snapshot) and record the accepted Terms of Sale (link, version, time,
+ * IP). Then redirect to the payment page at once — the proforma PDF and the
+ * emails go out after the response, so a busy PDF queue never stalls the
+ * acceptance. A double click / second tab is sent to the same order.
+ *
+ * Holds before payment: an export-compliance country (COMPLIANCE — the proforma
+ * is issued, not mailed) and a VAT the rules can not decide (VAT_REVIEW — no
+ * proforma at all until staff confirm the VAT: lib/checkout/holds.ts).
  */
 export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<AcceptResult> {
   const parsedInput = AcceptInput.safeParse(input);
@@ -1175,11 +1583,16 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
   }
 
   const now = new Date();
+  const site = siteName();
   const buyerId = sr.submittedById ?? session.user.id;
   const currency = preview.currency;
-  const itemTitle = sr.product?.title ?? sr.productCategory ?? 'Requested equipment';
+  const item = r.prep.item;
+  const itemTitle = offerItemTitle(sr);
   const lineTruth = sr.productId ? (await orderLineTruthFor([sr.productId])).get(sr.productId) : undefined;
   const warrantySnapshot = terms?.warranty ?? lineTruth?.warrantySnapshot ?? null;
+  // The offer's own condition, printed with the grade label the catalog uses.
+  const conditionSnapshot = item.itemCondition ? (await getConditionGrades())[item.itemCondition]?.label ?? null : lineTruth?.conditionSnapshot ?? null;
+  const vatReview = !!r.prep.vatReviewNote;
   const dueDate = daysFrom(now, preview.dueDays);
   const money = (c: number) => formatPrice(c, currency);
   const h = await headers();
@@ -1204,20 +1617,34 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
     invoiceEmail: details.billing.invoiceEmail,
     poNumber: details.billing.poNumber,
   };
-  // A REVIEW country: a pre-payment hold like checkout's (lib/checkout/holds.ts —
-  // openHolds + holdReason). The order is not payable until staff clear it; the
-  // payment term restarts then (releaseHold).
-  const hold = r.prep.complianceNote
-    ? { holdReason: 'COMPLIANCE' as const, holdNote: `COMPLIANCE: Export compliance check before payment: ${r.prep.complianceNote}`.slice(0, 1000), holdAt: now, openHolds: ['COMPLIANCE'], payableSince: null }
+  // A REVIEW country / an undecided VAT: pre-payment holds like checkout's
+  // (lib/checkout/holds.ts — openHolds + holdReason). The order is not payable
+  // until staff clear them; the payment term restarts then (releaseHold).
+  const holdCodes: HoldCode[] = [...(r.prep.complianceNote ? ['COMPLIANCE' as const] : []), ...(vatReview ? ['VAT_REVIEW' as const] : [])];
+  const holdNotes = [
+    r.prep.complianceNote ? `COMPLIANCE: Export compliance check before payment: ${r.prep.complianceNote}` : '',
+    vatReview ? `VAT_REVIEW: VAT to be decided before the proforma is issued: ${r.prep.vatReviewNote}${vatId?.name ? ` (VIES name: ${vatId.name}; billing name: ${details.billing.legalName})` : ''}` : '',
+  ].filter(Boolean);
+  const hold = holdCodes.length
+    ? { holdReason: primaryHold(holdCodes), holdNote: holdNotes.join(' | ').slice(0, 2000), holdAt: now, openHolds: holdCodes as string[], payableSince: null }
     : { openHolds: [] as string[], payableSince: now };
+  // The Terms of Sale the buyer ticked: which link, which text version (the
+  // rendered text as /legal/terms shows it now), when, from where.
+  const termsVersion = p.acceptTerms ? await acceptedTermsVersion(siteBase()) : null;
+  const termsAccepted = p.acceptTerms
+    ? { termsUrl: termsOfSaleUrl(), termsVersion, termsAcceptedAt: now, termsAcceptedIp: ip }
+    : {};
   const orderTerms = { kind: 'PREPAY', days: preview.dueDays, text: terms?.paymentTerms.text ?? fillPaymentTermsText(offerDefaults().paymentTermsText, preview.dueDays), incoterm: terms?.incoterm ?? null, incotermPlace: terms?.incotermPlace ?? null, leadTime: terms?.leadTime ?? null };
 
-  let order: { id: string; orderNumber: string; proformaId: string; number: string };
+  // proformaId / number are null while the order waits on a VAT review (no proforma yet).
+  let order: { id: string; orderNumber: string; proformaId: string | null; number: string | null };
   try {
     order = await prisma.$transaction(async (tx) => {
+      // Guarded on the exact open offer: a staff close or a decline in another
+      // tab that committed first makes this claim fail (and vice versa).
       const claim = await tx.sourcingRequest.updateMany({
         where: { id: sr.id, status: 'RESPONDED', offerRevision: sr.offerRevision, quotedPriceCents: sr.quotedPriceCents, ...(sr.quotedAt ? { quotedAt: sr.quotedAt } : {}) },
-        data: { status: 'ACCEPTED', proformaIssuedAt: now, submittedById: buyerId, archivedAt: null, archivedById: null, dueAt: null, slaBreachAt: null },
+        data: { status: 'ACCEPTED', submittedById: buyerId, archivedAt: null, archivedById: null, dueAt: null, slaBreachAt: null },
       });
       if (claim.count !== 1) throw new AcceptRaceError();
 
@@ -1237,6 +1664,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         dueAt: dueDate,
         ...orderVat,
         ...hold,
+        ...termsAccepted,
       };
       const itemData = {
         productId: sr.productId ?? null,
@@ -1247,7 +1675,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         lineType: 'GOODS',
         vatRateBp: r.prep.lineVat.rateBp,
         taxCents: r.prep.lineVat.taxCents,
-        conditionSnapshot: lineTruth?.conditionSnapshot ?? null,
+        conditionSnapshot,
         warrantySnapshot,
         warrantyMonthsSnapshot: lineTruth?.warrantyMonthsSnapshot ?? null,
       };
@@ -1287,20 +1715,26 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
       if (sr.productId && (mode === 'OFFER_ACCEPTED' || mode === 'OFFER_SENT')) {
         const held = await holdUnitForQuote(tx, { quoteId: sr.id, productId: sr.productId, qty: preview.qty, orderId: created.id });
         if (!held.ok) {
-          throw new AcceptBlockedError('Sorry — this unit was just sold or reserved by another buyer, so the offer can not be accepted. Ask us for an alternative in the conversation below.');
+          throw new AcceptBlockedError('Sorry — this unit was just sold or reserved by another buyer, so the offer can not be accepted. We can source a similar one: ask us in the conversation below.');
         }
       }
-      // The proforma: gap-free PF number + immutable snapshot, in THIS transaction.
-      const pf = await issueProforma(created.id, { tx, actorId: session.user.id, dueDate });
-      if (!pf.ok) throw new Error(`Proforma could not be issued: ${pf.message}`);
-      const number = pf.document.number;
-      await tx.sourcingRequest.update({ where: { id: sr.id }, data: { proformaNumber: number } });
+      // The proforma: gap-free PF number + immutable snapshot, in THIS transaction —
+      // unless the VAT is still to be decided (it is issued when the review is cleared).
+      let pfDoc: { id: string; number: string } | null = null;
+      if (!vatReview) {
+        const pf = await issueProforma(created.id, { tx, actorId: session.user.id, dueDate });
+        if (!pf.ok) throw new Error(`Proforma could not be issued: ${pf.message}`);
+        pfDoc = { id: pf.document.id, number: pf.document.number };
+        await tx.sourcingRequest.update({ where: { id: sr.id }, data: { proformaNumber: pfDoc.number, proformaIssuedAt: now } });
+      }
       await tx.quoteMessage.create({
         data: {
           sourcingRequestId: sr.id,
           authorId: session.user.id,
           fromStaff: false,
-          body: `Offer accepted (revision ${sr.offerRevision}): ${money(preview.totalCents)} incl. ${preview.vatRateBp ? `VAT ${pctLabel(preview.vatRateBp)}` : 'VAT 0%'} for "${itemTitle}". Order ${created.orderNumber} and proforma ${number} were created — payment due by ${fmtDay(dueDate)}.${r.prep.complianceNote ? ` Note: ${r.prep.complianceNote}` : ''}`,
+          body: vatReview
+            ? `Offer accepted (revision ${sr.offerRevision}): ${money(preview.totalCents)} excl. VAT for "${itemTitle}" — the VAT is confirmed by ${site} before payment. Order ${created.orderNumber} was created; the proforma invoice follows once the VAT is confirmed.${r.prep.complianceNote ? ` Note: ${r.prep.complianceNote}` : ''}`
+            : `Offer accepted (revision ${sr.offerRevision}): ${money(preview.totalCents)} incl. ${preview.vatRateBp ? `VAT ${pctLabel(preview.vatRateBp)}` : 'VAT 0%'} for "${itemTitle}". Order ${created.orderNumber} and proforma ${pfDoc!.number} were created — payment due by ${fmtDay(dueDate)}.${r.prep.complianceNote ? ` Note: ${r.prep.complianceNote}` : ''}`,
         },
       });
       if (p.saveProfile !== false) {
@@ -1317,19 +1751,22 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         };
         await tx.billingProfile.upsert({ where: { userId: buyerId }, update: profile, create: { userId: buyerId, ...profile } });
       }
-      return { ...created, proformaId: pf.document.id, number };
+      return { ...created, proformaId: pfDoc?.id ?? null, number: pfDoc?.number ?? null };
     });
   } catch (e) {
     const raced = e instanceof AcceptRaceError || (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002');
     if (raced) {
-      // A parallel request (double click / second tab) won: send this one to the same order.
-      const fresh = await prisma.sourcingRequest.findUnique({ where: { id: sr.id }, select: { status: true, order: { select: { orderNumber: true } } } });
+      // A parallel request (double click / second tab) won: send this one to the
+      // same order. A close / decline that won is said as it is — no order exists.
+      const fresh = await prisma.sourcingRequest.findUnique({ where: { id: sr.id }, select: { status: true, offerRevision: true, order: { select: { orderNumber: true } } } });
       if (fresh?.status === 'ACCEPTED' && fresh.order) redirect(`/app/orders/${fresh.order.orderNumber}/payment`);
+      if (fresh?.status === 'CLOSED') return { error: `This request was closed by ${site} a moment ago, so no order was created. Open a new request if you still need the item.` };
+      if (fresh?.status === 'DECLINED') return { error: 'This offer was declined (in another window) a moment ago, so no order was created.' };
       return { error: 'This offer changed while you were accepting it. Review the current offer and try again.' };
     }
     if (e instanceof AcceptBlockedError) {
       if (/sold or reserved/.test(e.message)) {
-        await notifyAdmins(`Acceptance refused: unit no longer available — ${QUOTE_REF(sr.id)}`, `${itemTitle}: the buyer tried to accept, but the unit is sold or held for another deal.`, `/admin/quotes/${sr.id}`, 'SYSTEM');
+        await alertAdminsOncePerDay(sr.id, 'ACCEPT_UNIT_GONE', `Acceptance refused: unit no longer available — ${QUOTE_REF(sr.id)}`, `${itemTitle}: the buyer tried to accept, but the unit is sold or held for another deal. Offer them a similar unit or close the request.`);
       }
       return { error: e.message };
     }
@@ -1338,90 +1775,124 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
 
   await audit(
     'quote.offer.accept',
-    order.number,
-    `order=${order.orderNumber} r${sr.offerRevision} total=${money(preview.totalCents)} vat=${preview.vatTreatment} ${pctLabel(preview.vatRateBp)} by ${session.user.email} ip=${ip ?? '-'} ua="${(ua ?? '-').slice(0, 120)}" terms=${requireTermsAcceptance() ? `${termsOfSaleUrl()} accepted` : 'not required'}${r.prep.complianceNote ? ' · compliance hold' : ''}`,
+    order.number ?? order.orderNumber,
+    `order=${order.orderNumber} r${sr.offerRevision} total=${money(preview.totalCents)} vat=${preview.vatTreatment} ${pctLabel(preview.vatRateBp)} by ${session.user.email} ip=${ip ?? '-'} ua="${(ua ?? '-').slice(0, 120)}" terms=${p.acceptTerms ? `${termsOfSaleUrl()} ${termsVersion?.slice(0, 19) ?? '(external link)'} accepted` : requireTermsAcceptance() ? 'MISSING' : 'not required'}${r.prep.complianceNote ? ' · compliance hold' : ''}${vatReview ? ' · VAT review (no proforma yet)' : ''}${item.allowUnpublished && sr.product?.status !== 'PUBLISHED' ? ' · unpublished listing (staff override on the offer)' : ''}`,
   );
 
   const sendAll = async () => {
     const paymentUrl = `${siteBase()}/app/orders/${order.orderNumber}/payment`;
     const pdfUrl = absoluteDocumentHref('proforma', order.orderNumber, 'pdf');
-    // Render the issued proforma ONCE from its snapshot and store it; the email attaches exactly those bytes.
-    // Compliance hold (REVIEW country): no payment request until staff clear it —
-    // the proforma goes out then (clearOrderHold), not now.
-    const onHold = !!r.prep.complianceNote;
-    const doc = onHold ? { attachment: null, error: null } : await documentAttachment({ id: order.proformaId, number: order.number });
+    // The order may have been canceled (Deal panel, the buyer) or its proforma
+    // voided in the moment since the commit: a canceled order never gets an
+    // "order confirmed" mail with bank details.
+    const [live, pfRow] = await Promise.all([
+      prisma.order.findUnique({ where: { id: order.id }, select: { status: true } }),
+      order.proformaId ? prisma.fiscalDocument.findUnique({ where: { id: order.proformaId }, select: { voidedAt: true, snapshot: true } }) : Promise.resolve(null),
+    ]);
+    const stillOpen = live?.status === 'PENDING_PAYMENT';
+    const proformaLive = !!pfRow && !pfRow.voidedAt;
+    // Pre-payment holds (export check, VAT review): no payment request until staff
+    // clear them — the proforma goes out then (lib/checkout/holds.ts releaseHold).
+    const onHold = !!r.prep.complianceNote || vatReview;
+    const mailBuyer = stillOpen && (onHold || proformaLive);
+    const doc = !mailBuyer || onHold || !order.proformaId || !order.number ? { attachment: null, error: null } : await documentAttachment({ id: order.proformaId, number: order.number });
     const attachments = doc.attachment ? [doc.attachment] : [];
-    const bank = await prisma.fiscalDocument.findUnique({ where: { id: order.proformaId }, select: { snapshot: true } });
-    const snap = bank?.snapshot as { bank?: { beneficiary: string; bankName: string; iban: string; bic: string } | null } | null;
+    const snap = pfRow?.snapshot as { bank?: { beneficiary: string; bankName: string; iban: string; bic: string } | null } | null;
     const b = snap?.bank ?? null;
+    const reference = order.number ?? order.orderNumber;
     const payRows: Array<[string, string, boolean?]> = b
       ? [
           ['Beneficiary', escapeHtml(b.beneficiary)],
           ...(b.bankName ? [['Bank', escapeHtml(b.bankName)] as [string, string]] : []),
           ['IBAN', `<span style="font-family:ui-monospace,monospace;">${escapeHtml(b.iban)}</span>`],
           ...(b.bic ? [['BIC', `<span style="font-family:ui-monospace,monospace;">${escapeHtml(b.bic)}</span>`] as [string, string]] : []),
-          ['Reference', `<strong>${escapeHtml(order.number)}</strong>`],
+          ['Reference', `<strong>${escapeHtml(reference)}</strong>`],
           ['Amount', escapeHtml(money(preview.totalCents)), true],
           ['Pay by', `<strong>${escapeHtml(fmtDay(dueDate))}</strong>`],
         ]
-      : [['Reference', escapeHtml(order.number)], ['Amount', escapeHtml(money(preview.totalCents)), true], ['Pay by', escapeHtml(fmtDay(dueDate))]];
-    const proformaHtml = mailLayout({
-      heading: `Thank you — your order ${order.orderNumber} is confirmed`,
+      : [['Reference', escapeHtml(reference)], ['Amount', escapeHtml(money(preview.totalCents)), true], ['Pay by', escapeHtml(fmtDay(dueDate))]];
+    const holdText = [r.prep.complianceNote, r.prep.vatReviewPlaced].filter(Boolean).join(' ');
+    const html = mailLayout({
+      heading: onHold ? 'Order received — check before payment' : `Thank you — your order ${order.orderNumber} is confirmed`,
       body: [
         `Hi <span dir="auto">${escapeHtml(sr.buyerName)}</span>,`,
         onHold
           ? `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong>.`
-          : `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong> and proforma invoice <strong>${order.number}</strong>${doc.attachment ? ' (attached as PDF)' : ''}.`,
-        offerMailRows({ qty: preview.qty, unitCents: preview.unitCents, goodsCents: preview.goodsCents, shippingCents: preview.shippingCents, vatDecided: true, vatRateBp: preview.vatRateBp, vatCents: preview.vatCents, vatLabel: preview.vatLabel, totalCents: preview.totalCents, currency }),
-        r.prep.complianceNote
-          ? `<p style="margin:0 0 12px;padding:10px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;"><strong>Please do not pay yet.</strong> ${escapeHtml(r.prep.complianceNote)} We email you as soon as the check is done.</p>`
+          : `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong> and proforma invoice <strong>${reference}</strong>${doc.attachment ? ' (attached as PDF)' : ''}.`,
+        vatReview
+          ? offerMailRows({ qty: preview.qty, unitCents: preview.unitCents, goodsCents: preview.goodsCents, shippingCents: preview.shippingCents, vatDecided: false, vatRateBp: null, vatCents: null, vatLabel: null, totalCents: preview.totalCents, currency })
+          : offerMailRows({ qty: preview.qty, unitCents: preview.unitCents, goodsCents: preview.goodsCents, shippingCents: preview.shippingCents, vatDecided: true, vatRateBp: preview.vatRateBp, vatCents: preview.vatCents, vatLabel: preview.vatLabel, totalCents: preview.totalCents, currency }),
+        onHold
+          ? `<p style="margin:0 0 12px;padding:10px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;"><strong>Please do not pay yet.</strong> ${escapeHtml(holdText)} We email you as soon as the check is done.</p>`
           : `<h3 style="color:#0E4F40;margin:16px 0 6px;font-size:15px;">How to pay</h3>${mailTable(payRows)}${b ? '' : '<p style="margin:0 0 12px;">Our bank details are on the payment page.</p>'}`,
         onHold ? '' : 'After paying, upload your bank receipt on the payment page so we can verify it and ship.',
       ].filter(Boolean),
-      cta: { href: paymentUrl, label: 'Go to the payment page' },
+      cta: { href: paymentUrl, label: onHold ? 'View your order' : 'Go to the payment page' },
       footer: onHold
-        ? ['We send you the proforma invoice with the bank details as soon as the check is done.']
+        ? ['We send you the proforma invoice with the final total and the bank details as soon as the check is done.']
         : [`${doc.attachment ? 'Your proforma invoice is attached.' : 'Your proforma invoice is ready on the payment page.'} You can also <a href="${pdfUrl}">download the PDF</a> at any time (sign-in required).`],
     });
-    const buyerMail = await trySendEmail({
-      to: sr.buyerEmail,
-      subject: onHold
-        ? `Order ${order.orderNumber} received — export check before payment (${headerText(itemTitle, 70)})`
-        : `Proforma invoice ${order.number} — order ${order.orderNumber} (${headerText(itemTitle, 80)})`,
-      html: proformaHtml,
-      attachments,
-    }, 'quotes:accept');
-    if (buyerMail.ok && !onHold) await markDocumentSent(order.proformaId);
-    const copyTo = companyCopyAddress();
-    if (copyTo) await sendInternalEmail({ to: copyTo, subject: `[copy] Proforma invoice ${order.number} — order ${order.orderNumber}`, html: proformaHtml, attachments }, 'quotes:accept-copy');
+    const subject = onHold
+      ? `Order ${order.orderNumber} received — ${vatReview ? 'VAT check' : 'export check'} before payment (${headerText(itemTitle, 70)})`
+      : `Proforma invoice ${reference} — order ${order.orderNumber} (${headerText(itemTitle, 80)})`;
+    // The proforma goes to the accounts-payable address given at acceptance, the
+    // account in copy (INVOICE_EMAIL_CC_ACCOUNT); the hold notice goes to the account.
+    const rcpt = onHold ? { to: sr.buyerEmail, cc: [] as string[] } : documentRecipients({ invoiceEmail: details.billing.invoiceEmail, accountEmail: sr.buyerEmail });
+    let buyerMail: { ok: true } | { ok: false; error: string } = { ok: false, error: stillOpen ? 'proforma no longer current' : `order ${live?.status?.toLowerCase() ?? 'gone'} meanwhile` };
+    if (mailBuyer) {
+      const sent = await trySendEmail({ to: rcpt.to, subject, html, attachments }, 'quotes:accept');
+      buyerMail = sent.ok ? { ok: true } : { ok: false, error: sent.error };
+      if (sent.ok && !onHold && order.proformaId) await markDocumentSent(order.proformaId);
+      for (const cc of rcpt.cc) await trySendEmail({ to: cc, subject: `[copy] ${subject}`, html, attachments }, 'quotes:accept-account-copy');
+      const copyTo = companyCopyAddress();
+      if (copyTo) await sendInternalEmail({ to: copyTo, subject: `[copy] ${subject}`, html, attachments }, 'quotes:accept-copy');
+    }
     // Staff / assigned seller — sellers never see who the buyer is.
     const inbox = staffQuoteInbox(sr);
+    const viesName = vatId?.name && vatId.name !== '---' ? vatId.name : null;
+    const status = !stillOpen
+      ? ` <strong>Order ${escapeHtml(live?.status?.toLowerCase().replace(/_/g, ' ') ?? 'removed')} since</strong> — no proforma mail was sent.`
+      : vatReview ? ` <strong>On VAT review</strong> (no proforma yet): ${escapeHtml(r.prep.vatReviewNote ?? '')}`
+      : r.prep.complianceNote ? ` <strong>On compliance hold:</strong> ${escapeHtml(r.prep.complianceNote)}`
+      : ' Awaiting the buyer’s bank transfer.';
     await sendInternalEmail({
       to: inbox.to,
       subject: `[${QUOTE_REF(sr.id)}] Offer accepted — order ${order.orderNumber}`,
       html: mailLayout({
         heading: 'Offer accepted',
         body: [
-          `${inbox.toSeller ? 'The buyer' : `<span dir="auto">${escapeHtml(sr.buyerName)}</span> &lt;${escapeHtml(sr.buyerEmail)}&gt;${details.billing.legalName ? ` (<span dir="auto">${escapeHtml(details.billing.legalName)}</span>)` : ''}`} accepted the offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>${inbox.toSeller && !sellerSeesSellPrice() ? '' : `: <strong>${escapeHtml(money(preview.totalCents))}</strong> (${escapeHtml(preview.vatLabel)})`}.`,
-          `Order <strong>${order.orderNumber}</strong> · proforma <strong>${order.number}</strong> · payment due ${escapeHtml(fmtDay(dueDate))}.${r.prep.complianceNote ? ` <strong>On compliance hold:</strong> ${escapeHtml(r.prep.complianceNote)}` : ' Awaiting the buyer’s bank transfer.'}`,
-          buyerMail.ok ? '' : `<strong>The proforma email to the buyer could not be delivered</strong> (${escapeHtml(buyerMail.error)}).`,
+          mailP(`${inbox.toSeller ? 'The buyer' : `<span dir="auto">${escapeHtml(sr.buyerName)}</span> &lt;${escapeHtml(sr.buyerEmail)}&gt;${details.billing.legalName ? ` (<span dir="auto">${escapeHtml(details.billing.legalName)}</span>)` : ''}`} accepted the offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>${inbox.toSeller && !sellerSeesSellPrice() ? '' : `: <strong>${escapeHtml(money(preview.totalCents))}</strong> (${escapeHtml(preview.vatLabel)})`}.`),
+          !inbox.toSeller && vatId?.vatId ? `VAT ID <strong>${escapeHtml(vatId.vatId)}</strong> — VIES: ${escapeHtml(vatId.status === 'UNAVAILABLE' ? 'could not check' : vatId.status.toLowerCase().replace('_', ' '))}${viesName ? `, registered to <strong dir="auto">${escapeHtml(viesName)}</strong> (billing name: <span dir="auto">${escapeHtml(details.billing.legalName)}</span>)` : ''}.` : '',
+          `Order <strong>${order.orderNumber}</strong>${order.number ? ` · proforma <strong>${order.number}</strong> · payment due ${escapeHtml(fmtDay(dueDate))}` : ''}.${status}`,
+          !mailBuyer || buyerMail.ok ? '' : mailP(`<strong>The order email to the buyer could not be delivered</strong> (${escapeHtml(buyerMail.error)}).`),
         ].filter(Boolean),
         cta: { href: `${siteBase()}${inbox.toSeller ? `/app/seller/inbox/${sr.id}` : `/admin/quotes/${sr.id}`}`, label: 'Open the quote' },
       }),
     }, 'quotes:accept-staff');
-    await notifyUser(buyerId, `Offer accepted — order ${order.orderNumber}`, `Proforma ${order.number} is ready. Pay ${money(preview.totalCents)} by bank transfer by ${fmtDay(dueDate)} and upload the receipt.`, `/app/orders/${order.orderNumber}/payment`);
+    if (stillOpen) {
+      await notifyUser(
+        buyerId,
+        `Offer accepted — order ${order.orderNumber}`,
+        onHold
+          ? `${holdText} Please do not pay yet — we email you when the order is ready for payment.`.slice(0, 480)
+          : `Proforma ${reference} is ready. Pay ${money(preview.totalCents)} by bank transfer by ${fmtDay(dueDate)} and upload the receipt.`,
+        `/app/orders/${order.orderNumber}/payment`,
+      );
+    }
     if (sr.assignedToId && sr.assignedTo?.role === 'SELLER') {
       await notifyUser(sr.assignedToId, `Offer accepted — ${QUOTE_REF(sr.id)}`, `The buyer accepted the offer for "${itemTitle}". Awaiting payment.`, `/app/seller/inbox/${sr.id}`);
     }
+    // One admin notice per acceptance; the VAT review / compliance hold is part of it.
     await notifyAdmins(
-      `Offer accepted — order ${order.orderNumber}`,
-      `${itemTitle} · ${money(preview.totalCents)} · proforma ${order.number}${buyerMail.ok ? '' : ' · proforma email to the buyer FAILED'}${doc.attachment ? '' : ' · PDF not attached'}${r.prep.complianceNote ? ' · COMPLIANCE HOLD' : ''}`,
+      `Offer accepted — order ${order.orderNumber}${vatReview ? ' (VAT review)' : ''}`,
+      `${itemTitle} · ${money(preview.totalCents)}${vatReview ? ' excl. VAT · VAT to decide before the proforma' : ` · proforma ${reference}`}${viesName ? ` · VIES name ${viesName} / billing ${details.billing.legalName}` : ''}${mailBuyer && !buyerMail.ok ? ' · email to the buyer FAILED' : ''}${mailBuyer && !onHold && !doc.attachment ? ' · PDF not attached' : ''}${r.prep.complianceNote ? ' · COMPLIANCE HOLD' : ''}${stillOpen ? '' : ` · order ${live?.status ?? 'gone'} since — no mail sent`}`,
       `/admin/quotes/${sr.id}`,
       'ORDER_FROM_QUOTE',
     );
-    if (!buyerMail.ok || doc.error) {
-      await audit('quote.offer.accept.mail', order.number, `${buyerMail.ok ? 'email ok' : `email failed: ${buyerMail.error}`}${doc.error ? ` · pdf: ${doc.error}` : ''}`);
+    if ((mailBuyer && !buyerMail.ok) || doc.error || !mailBuyer) {
+      await audit('quote.offer.accept.mail', reference, `${!mailBuyer ? `not sent: ${buyerMail.ok ? '' : buyerMail.error}` : buyerMail.ok ? `email ok to ${rcpt.to}` : `email failed: ${buyerMail.error}`}${doc.error ? ` · pdf: ${doc.error}` : ''}`);
     }
+    if (sr.productId && stillOpen) await tellCompetingBuyers(sr.productId, sr.id, itemTitle);
   };
   after(() => sendAll().catch((e) => logError('quotes:accept-after', e)));
 
@@ -1435,57 +1906,364 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
   redirect(`/app/orders/${order.orderNumber}/payment?accepted=1`);
 }
 
+// ── Competing offers on one unit ────────────────────────────────────────────
+
+/**
+ * An acceptance took the last unit: the other open offers on that listing can
+ * no longer be accepted. Their buyers are told at once ("we can source a
+ * similar one") instead of typing their billing details only to be refused,
+ * and the quotes go back to the staff queue (internal note, tag UNIT_SOLD, the
+ * reply SLA restarts). Once per quote until a new offer is sent (ReminderLog
+ * UNIT_SOLD, cleared by publishOffer). Runs after the response; never fatal.
+ */
+async function tellCompetingBuyers(productId: string, winnerQuoteId: string, itemTitle: string): Promise<void> {
+  const others = await prisma.sourcingRequest.findMany({
+    where: { productId, id: { not: winnerQuoteId }, status: 'RESPONDED', quotedPriceCents: { not: null } },
+    select: {
+      id: true, proformaNumber: true, status: true, quotedPriceCents: true, validUntilAt: true, offerTerms: true, priority: true, tags: true,
+      buyerName: true, buyerEmail: true, submittedById: true, accessToken: true,
+      order: { select: { status: true, paymentSubmittedAt: true } },
+    },
+    take: 50,
+  });
+  const now = new Date();
+  for (const q of others) {
+    try {
+      if (offerPhase(q, q.order) !== 'open') continue;
+      const qty = parseOfferTerms(q.offerTerms)?.qty ?? 1;
+      const av = await unitAvailability(productId, q.id);
+      if (!av || av.heldByThisQuote || av.quantity >= qty) continue;
+      try {
+        await prisma.reminderLog.create({ data: { subjectType: 'QUOTE', subjectId: q.id, kind: 'UNIT_SOLD', step: 0, detail: `sold via ${QUOTE_REF(winnerQuoteId)}` } });
+      } catch (e) {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') continue;
+        throw e;
+      }
+      const ref = quoteRefOrProforma(q);
+      await prisma.quoteMessage.create({
+        data: {
+          sourcingRequestId: q.id, authorId: null, isInternalNote: true, fromStaff: true,
+          body: `The unit of this offer was sold to another buyer (${QUOTE_REF(winnerQuoteId)}). The buyer was told it can no longer be accepted and that we can source a similar one — offer an alternative or close the request.`,
+        },
+      });
+      await prisma.sourcingRequest.update({
+        where: { id: q.id },
+        data: { lastReplyByStaff: false, dueAt: computeQuoteDueAt(now, q.priority), slaBreachAt: null, tags: Array.from(new Set([...q.tags, 'UNIT_SOLD'])) },
+      });
+      const sent = await trySendEmail({
+        to: q.buyerEmail,
+        subject: `[${ref}] The unit in your offer was sold`,
+        html: mailLayout({
+          heading: 'This unit was just sold',
+          body: [
+            `Hi <span dir="auto">${escapeHtml(q.buyerName)}</span>,`,
+            `The <strong dir="auto">${escapeHtml(itemTitle)}</strong> in our offer <strong>${ref}</strong> was just sold to another buyer, so this offer can no longer be accepted.`,
+            'We can source a similar unit for you. Reply in the conversation (what matters most: model, condition, budget, timing) and we send you a new offer.',
+          ],
+          cta: { href: buyerQuoteLink(q), label: 'Ask for a similar unit' },
+          footer: [`Reference ${ref}`],
+        }),
+      }, 'quotes:unit-sold');
+      await notifyUser(q.submittedById, 'The unit in your offer was sold', `"${itemTitle}" was sold to another buyer. We can source a similar one — reply in the conversation.`, `/app/quotes/${q.id}`);
+      await notifyAdmins(
+        `Unit sold — open offer ${ref} can no longer be accepted`,
+        `${itemTitle}: sold via ${QUOTE_REF(winnerQuoteId)}. The buyer of ${ref} was ${sent.ok ? 'emailed' : `NOT emailed (${sent.error})`}; offer an alternative or close the request.`,
+        `/admin/quotes/${q.id}`,
+        'SYSTEM',
+      );
+      await audit('quote.unit-sold.notify', ref, `sold via ${QUOTE_REF(winnerQuoteId)} · buyer email ${sent.ok ? 'ok' : `failed: ${sent.error}`}`);
+      revalidatePath(`/app/quotes/${q.id}`);
+      revalidatePath(`/admin/quotes/${q.id}`);
+    } catch (e) {
+      await logError('quotes:unit-sold', e);
+    }
+  }
+}
+
 // ── Decline / close ─────────────────────────────────────────────────────────
 
-/** The buyer declines an open offer, optionally saying why. `offerRevision` (the
- *  revision the buyer was looking at) is accepted already, not checked yet. */
+const OFFER_UPDATED_BEFORE_DECLINE = 'The offer was just updated — review the new offer before declining.';
+
+/** The buyer declines an open offer, optionally saying why. `offerRevision` is
+ *  the revision the buyer was looking at: a newer offer sent meanwhile is never
+ *  declined unseen. */
 export async function declineOffer(input: { sourcingRequestId: string; reason?: string | null; note?: string | null; offerRevision?: number | null }): Promise<QuoteActionResult> {
   await ensureSettingsLoaded();
   const reasons = declineReasons();
   const reason = (input.reason ?? '').trim();
   if (reason && !reasons.includes(reason)) return { error: 'Choose one of the listed reasons (or none).' };
   const note = (input.note ?? '').trim().slice(0, 1000) || null;
-  return setQuoteStatusCore(input.sourcingRequestId, 'DECLINED', { reason: reason || null, note });
+  return setQuoteStatusCore(input.sourcingRequestId, 'DECLINED', { reason: reason || null, note, offerRevision: input.offerRevision ?? undefined });
 }
 
 class ProofInFlightError extends Error {}
+class StatusClaimLost extends Error {}
 
-/** Decline (buyer) or close (staff). A close reason and note are accepted
- *  already, not stored yet: the quote is closed exactly as without them. */
+/** Decline (buyer) or close (staff “Close (no deal)”): the reason comes from
+ *  QUOTE_CLOSE_REASONS (QUOTE_DECLINE_REASONS for a decline); reason and note
+ *  are stored on the quote, posted in the conversation and mailed to the buyer. */
 export async function setQuoteStatus(
   id: string,
   status: 'DECLINED' | 'CLOSED',
   opts?: { reason?: string | null; note?: string | null },
 ): Promise<QuoteActionResult> {
-  void opts;
-  return setQuoteStatusCore(id, status, {});
+  await ensureSettingsLoaded();
+  const reason = (opts?.reason ?? '').trim();
+  const note = (opts?.note ?? '').trim().slice(0, 1000) || null;
+  if (reason && !(status === 'CLOSED' ? closeReasons() : declineReasons()).includes(reason)) {
+    return { error: 'Choose one of the listed reasons.' };
+  }
+  return setQuoteStatusCore(id, status, { reason: reason || null, note });
 }
 
-/** Staff: start a new request for the same buyer (and product) from a closed
- *  quote or one whose order was canceled. Not available yet. */
+/**
+ * Staff “New quote for this buyer”. A closed request, or one whose accepted
+ * order was canceled, takes no new offer (its offer is part of the record and
+ * an order belongs to one quote) — a new request for the same buyer and item is
+ * opened, assigned to the staff member who clicked, with internal notes linking
+ * both. The buyer hears nothing until the new offer is sent.
+ */
 export async function cloneQuoteForBuyer(id: string): Promise<QuoteActionResult & { sourcingRequestId?: string }> {
-  void id;
-  return { error: 'Not available yet' };
+  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/quotes' });
+  await requireCapability('quotes:proforma', { redirectTo: '/admin/quotes' });
+  await ensureSettingsLoaded();
+  const sr = await prisma.sourcingRequest.findUnique({
+    where: { id },
+    select: {
+      id: true, proformaNumber: true, status: true, lostReason: true, priority: true, customerType: true,
+      buyerEmail: true, buyerName: true, companyName: true, productCategory: true, budget: true, timeframe: true, description: true,
+      productId: true, similarToProductId: true, submittedById: true,
+      product: { select: { id: true, title: true, status: true, quantity: true } },
+      similarTo: { select: { id: true, title: true, status: true, quantity: true } },
+      order: { select: { orderNumber: true, status: true } },
+    },
+  });
+  if (!sr) return { error: 'This quote no longer exists.' };
+  const canceledOrder = sr.order?.status === 'CANCELED' ? sr.order.orderNumber : null;
+  if (sr.status !== 'CLOSED' && !(sr.status === 'ACCEPTED' && canceledOrder)) {
+    return {
+      error: sr.status === 'ACCEPTED'
+        ? `The buyer accepted this offer${sr.order ? ` (order ${sr.order.orderNumber})` : ''}. Cancel that order first (“Cancel order” in the Deal panel), then open the new quote.`
+        : sr.status === 'DECLINED'
+          ? 'The buyer declined this offer: send the new offer on this request (“Send offer” — it becomes the next revision).'
+          : 'This request is still open: send the new offer on it (“Send offer”).',
+    };
+  }
+  // The same item: that listing again when it can be offered, else "similar to" it.
+  const listing = sr.product ?? sr.similarTo;
+  const anchor = listing && !sr.similarToProductId && listing.status === 'PUBLISHED' && listing.quantity > 0 ? listing : null;
+  const similar = !anchor && listing && listing.status === 'PUBLISHED' ? listing : null;
+  const now = new Date();
+  const ref = quoteRefOrProforma(sr);
+  const guest = sr.customerType === 'GUEST' && !sr.submittedById;
+  const token = guest ? makeQuoteAccessToken() : null;
+  const created = await prisma.$transaction(async (tx) => {
+    const n = await tx.sourcingRequest.create({
+      data: {
+        buyerEmail: sr.buyerEmail,
+        buyerName: sr.buyerName,
+        companyName: sr.companyName,
+        productCategory: similar ? `Similar to: ${decodeEntities(similar.title).replace(/\s+/g, ' ').trim()}`.slice(0, 120) : sr.productCategory,
+        budget: sr.budget,
+        timeframe: sr.timeframe,
+        description: sr.description,
+        productId: anchor?.id ?? null,
+        similarToProductId: similar?.id ?? null,
+        submittedById: sr.submittedById,
+        customerType: sr.customerType,
+        accessToken: token,
+        accessTokenIssuedAt: token ? now : null,
+        accessTokenExpiresAt: token ? quoteTokenExpiry(now) : null,
+        assignedToId: session.user.id,
+        priority: sr.priority,
+        dueAt: computeQuoteDueAt(now, sr.priority),
+        lastReplyAt: now,
+        lastReplyByStaff: false,
+      },
+    });
+    await tx.quoteMessage.create({
+      data: {
+        sourcingRequestId: n.id, authorId: session.user.id, isInternalNote: true, fromStaff: true,
+        body: `Opened by ${session.user.email} for the same buyer from ${ref} (${canceledOrder ? `its order ${canceledOrder} was canceled` : `closed${sr.lostReason ? `: ${sr.lostReason}` : ''}`}). Send the new offer here.`,
+      },
+    });
+    await tx.quoteMessage.create({
+      data: {
+        sourcingRequestId: sr.id, authorId: session.user.id, isInternalNote: true, fromStaff: true,
+        body: `New quote ${QUOTE_REF(n.id)} opened for this buyer by ${session.user.email}.`,
+      },
+    });
+    return n;
+  });
+  await audit('quote.clone', QUOTE_REF(created.id), `from ${ref}${canceledOrder ? ` (order ${canceledOrder} canceled)` : ''} · ${anchor ? `listing ${anchor.id}` : similar ? `similar to ${similar.id}` : 'no listing'} · by ${session.user.email}`);
+  revalidatePath('/admin/quotes');
+  revalidatePath(`/admin/quotes/${sr.id}`);
+  revalidatePath('/app/quotes');
+  return {
+    notice: `New quote ${QUOTE_REF(created.id)} opened for ${sr.buyerName} and assigned to you${!anchor && listing ? ` (the listing can not be offered as is, so it is “similar to” it)` : ''}. Send the offer there — the buyer is told when you do.`,
+    sourcingRequestId: created.id,
+  };
 }
 
-/** Assigned supplier: give the request back to the team instead of closing
- *  the buyer's request. Not available yet. */
+/**
+ * Assigned supplier “Decline to quote (hand back)”: the request goes back to
+ * the team (unassigned, still open, the reply SLA restarts) with the reason as
+ * an internal note and a mail to the intake inbox. The buyer is not told —
+ * the team decides (another supplier, or a close with a reason).
+ */
 export async function handBackQuote(id: string, reason: string): Promise<QuoteActionResult> {
-  void id;
-  void reason;
-  return { error: 'Not available yet' };
+  const session = await requireSession({ redirectTo: '/app' });
+  await ensureSettingsLoaded();
+  const site = siteName();
+  const why = (reason ?? '').trim().slice(0, 1000);
+  if (why.length < 4) return { error: 'Tell us why you can not quote (at least 4 characters).' };
+  const sr = await prisma.sourcingRequest.findUnique({
+    where: { id },
+    select: {
+      id: true, proformaNumber: true, status: true, assignedToId: true, priority: true, tags: true,
+      sellerProposalStatus: true, sellerProposalCents: true, sellerProposalCurrency: true,
+      productCategory: true, offerTerms: true, product: { select: { title: true } },
+    },
+  });
+  if (!sr) return { error: 'This quote no longer exists.' };
+  if (sr.assignedToId !== session.user.id) return { error: 'This request is not assigned to you (any more).' };
+  if (sr.status !== 'PENDING' && sr.status !== 'RESPONDED') {
+    return { error: sr.status === 'ACCEPTED' ? `The buyer accepted the offer, so the deal is binding. Contact the ${site} team.` : 'This request is no longer open.' };
+  }
+  const now = new Date();
+  const withdrawn = sr.sellerProposalStatus === 'PENDING' && sr.sellerProposalCents != null
+    ? formatPrice(sr.sellerProposalCents, sr.sellerProposalCurrency ?? 'EUR')
+    : null;
+  const claim = await prisma.sourcingRequest.updateMany({
+    where: { id, assignedToId: session.user.id, status: { in: ['PENDING', 'RESPONDED'] } },
+    data: {
+      assignedToId: null,
+      dueAt: computeQuoteDueAt(now, sr.priority),
+      slaBreachAt: null,
+      tags: Array.from(new Set([...sr.tags, 'HANDED_BACK'])),
+      ...(withdrawn ? { sellerProposalStatus: null } : {}),
+    },
+  });
+  if (claim.count !== 1) return { error: 'This request changed meanwhile. Reload the page.' };
+  const ref = quoteRefOrProforma(sr);
+  const item = offerItemTitle(sr);
+  await prisma.quoteMessage.create({
+    data: {
+      sourcingRequestId: id, authorId: session.user.id, isInternalNote: true, fromStaff: true,
+      body: `The supplier (${session.user.email}) declined to quote and handed the request back: ${sentence(why)}${withdrawn ? ` Their pending proposal of ${withdrawn} is withdrawn.` : ''} The buyer was not told — assign another supplier, quote it yourself, or close it with a reason.`,
+    },
+  });
+  await sendInternalEmail({
+    to: process.env.QUOTE_INTAKE_EMAIL ?? '',
+    subject: `[${ref}] Supplier declined to quote — back with the team`,
+    html: mailLayout({
+      heading: 'A supplier handed a request back',
+      body: [
+        `The supplier declined to quote <strong dir="auto">${escapeHtml(item)}</strong> (<strong>${ref}</strong>) and gave it back to the team.`,
+        `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(why)}</blockquote>`,
+        withdrawn ? `Their pending proposal of ${escapeHtml(withdrawn)} is withdrawn.` : '',
+        'The request is unassigned and still open. The buyer was not told anything.',
+      ].filter(Boolean),
+      cta: { href: `${siteBase()}/admin/quotes/${id}`, label: 'Open the request' },
+    }),
+  }, 'quotes:handback');
+  await notifyAdmins(`Supplier declined to quote — ${ref}`, `${item}: ${why}`.slice(0, 400), `/admin/quotes/${id}`, 'QUOTE_NEW');
+  await audit('quote.handback', ref, `by ${session.user.email}: ${why.slice(0, 300)}${withdrawn ? ` · proposal ${withdrawn} withdrawn` : ''}`);
+  revalidatePath(`/app/seller/inbox/${id}`);
+  revalidatePath('/app/seller/inbox');
+  revalidatePath(`/admin/quotes/${id}`);
+  revalidatePath('/admin/quotes');
+  return { notice: `Handed back to the ${site} team with your reason. The buyer is not notified; the request no longer shows in your inbox.` };
+}
+
+/**
+ * Staff detach a request from its listing (it becomes “similar to” that unit)
+ * or move it to another listing — e.g. a request anchored to a unit that sold
+ * before any offer. Not while an offer is open: the buyer could accept that
+ * offer for the other unit. A unit held for the request is released. Audited.
+ */
+export async function setQuoteProduct(input: { sourcingRequestId: string; productId: string | null; note?: string | null }): Promise<QuoteActionResult> {
+  const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/quotes' });
+  await requireCapability('quotes:proforma', { redirectTo: '/admin/quotes' });
+  await ensureSettingsLoaded();
+  const sr = await prisma.sourcingRequest.findUnique({
+    where: { id: input.sourcingRequestId },
+    select: {
+      id: true, proformaNumber: true, status: true, quotedPriceCents: true, validUntilAt: true, productId: true, similarToProductId: true,
+      product: { select: { id: true, title: true } },
+      order: { select: { status: true, paymentSubmittedAt: true } },
+    },
+  });
+  if (!sr) return { error: 'This quote no longer exists.' };
+  if (sr.status !== 'PENDING' && sr.status !== 'RESPONDED') return { error: 'Only an open request can change its listing (this one is accepted, declined or closed).' };
+  if (offerPhase(sr, sr.order) === 'open') {
+    return { error: 'An offer is open on this request, and the buyer could accept it for the other unit. Change the listing before you send an offer (or once the offer expired).' };
+  }
+  const target = input.productId
+    ? await prisma.product.findUnique({ where: { id: input.productId }, select: { id: true, title: true, status: true, quantity: true } })
+    : null;
+  if (input.productId && !target) return { error: 'That listing no longer exists.' };
+  if (target && target.id === sr.productId) return { notice: 'The request is already on this listing.' };
+  const old = sr.product;
+  if (!target && !old) return { notice: 'This request has no listing to detach.' };
+  const note = (input.note ?? '').trim().slice(0, 500);
+  const data = target
+    ? { productId: target.id, similarToProductId: null }
+    : { productId: null, similarToProductId: old!.id, productCategory: `Similar to: ${decodeEntities(old!.title).replace(/\s+/g, ' ').trim()}`.slice(0, 120) };
+  let released = 0;
+  try {
+    released = await prisma.$transaction(async (tx) => {
+      const claim = await tx.sourcingRequest.updateMany({ where: { id: sr.id, status: sr.status, productId: sr.productId }, data });
+      if (claim.count !== 1) throw new StatusClaimLost();
+      const units = await releaseQuoteHold(sr.id, target ? 'Quote moved to another listing' : 'Quote detached from its listing', tx);
+      await tx.quoteMessage.create({
+        data: {
+          sourcingRequestId: sr.id, authorId: session.user.id, isInternalNote: true, fromStaff: true,
+          body: `${target ? `Listing changed${old ? ` from “${decodeEntities(old.title)}”` : ''} to “${decodeEntities(target.title)}”` : `Detached from “${decodeEntities(old!.title)}” — now a request for a similar unit`} by ${session.user.email}.${note ? ` ${sentence(note)}` : ''}${units ? ' The held unit went back on sale.' : ''}`,
+        },
+      });
+      return units;
+    });
+  } catch (e) {
+    if (e instanceof StatusClaimLost) return { error: 'This request changed meanwhile. Reload the page.' };
+    throw e;
+  }
+  await audit('quote.product.set', quoteRefOrProforma(sr), `${old?.id ?? '-'} → ${target ? target.id : `similar to ${old!.id}`} by ${session.user.email}${note ? ` · "${note.slice(0, 120)}"` : ''}${released ? ` · ${released} unit(s) released` : ''}`);
+  revalidatePath(`/admin/quotes/${sr.id}`);
+  revalidatePath('/admin/quotes');
+  const warn = target && (target.status !== 'PUBLISHED' || target.quantity < 1)
+    ? ` Note: that listing is ${target.status !== 'PUBLISHED' ? 'not published' : 'out of stock'} — an offer on it needs ${target.status !== 'PUBLISHED' ? 'the “not published” override' : 'the unit back in stock'}.`
+    : '';
+  return { notice: `${target ? 'Listing changed.' : 'Detached: the request is now for a similar unit.'}${released ? ' The held unit went back on sale.' : ''}${warn}` };
+}
+
+/** Why a decline / close claim found the quote changed — read again, said as it is. */
+async function statusClaimLost(id: string, status: 'DECLINED' | 'CLOSED', expectedRevision: number): Promise<QuoteActionResult> {
+  const fresh = await prisma.sourcingRequest.findUnique({ where: { id }, select: { status: true, offerRevision: true, order: { select: { orderNumber: true } } } });
+  if (fresh?.status === 'ACCEPTED') {
+    return {
+      error: status === 'DECLINED'
+        ? `You accepted this offer a moment ago${fresh.order ? ` (order ${fresh.order.orderNumber})` : ''}. To cancel it, use “Cancel order” on the payment page while it is unpaid.`
+        : `The buyer accepted the offer a moment ago${fresh.order ? ` (order ${fresh.order.orderNumber})` : ''}, so nothing was closed or sent. Use “Cancel order” in the Deal panel if the deal must not go ahead.`,
+    };
+  }
+  if (fresh?.status === status) return { notice: status === 'DECLINED' ? 'This offer is already declined.' : 'This request is already closed.' };
+  if (status === 'DECLINED' && fresh?.status === 'RESPONDED' && fresh.offerRevision !== expectedRevision) return { error: OFFER_UPDATED_BEFORE_DECLINE };
+  if (status === 'DECLINED' && fresh?.status === 'CLOSED') return { error: 'This request was closed a moment ago, so there is no offer to decline.' };
+  return { error: 'This quote changed meanwhile. Reload the page and try again.' };
 }
 
 async function setQuoteStatusCore(
   id: string,
   status: 'DECLINED' | 'CLOSED',
-  opts: { reason?: string | null; note?: string | null },
+  opts: { reason?: string | null; note?: string | null; offerRevision?: number },
 ): Promise<QuoteActionResult> {
   if (status !== 'DECLINED' && status !== 'CLOSED') {
     return { error: 'Use "Accept offer" to accept an offer.' };
   }
   const session = await requireSession({ redirectTo: '/app' });
   await ensureSettingsLoaded();
+  const site = siteName();
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id },
     select: {
@@ -1494,9 +2272,10 @@ async function setQuoteStatusCore(
       assignedToId: true,
       status: true,
       archivedAt: true,
+      offerRevision: true,
       quotedPriceCents: true,
       quotedCurrency: true,
-      offerSubtotalCents: true, offerShippingCents: true, offerVatTreatment: true, offerVatRateBp: true, offerVatCents: true, offerTotalCents: true,
+      offerSubtotalCents: true, offerShippingCents: true, offerVatTreatment: true, offerVatRateBp: true, offerVatCents: true, offerTotalCents: true, offerTerms: true,
       description: true,
       productId: true,
       productCategory: true,
@@ -1511,30 +2290,45 @@ async function setQuoteStatusCore(
 
   const role = (session.user as { role?: string }).role;
   const isAdmin = role === 'ADMIN';
-  // Buyer can decline, seller can close. Admin can do both (with cap).
-  const allowed =
-    isAdmin ||
-    (sr.submittedById === session.user.id && status === 'DECLINED') ||
-    (sr.assignedToId === session.user.id && status === 'CLOSED');
-  if (!allowed) return { error: 'You are not allowed to change this quote.' };
-  if (isAdmin && sr.submittedById !== session.user.id && sr.assignedToId !== session.user.id) {
+  const isBuyer = sr.submittedById === session.user.id;
+  const isAssignee = sr.assignedToId === session.user.id;
+  // The buyer declines an offer; only staff close a request. A supplier hands
+  // the request back to the team instead (handBackQuote): the buyer's request
+  // stays open and the team decides what to tell them.
+  if (status === 'CLOSED' && !isAdmin) {
+    return { error: isAssignee ? `Use “Decline to quote (hand back)” instead: the request goes back to the ${site} team, who take it from there.` : 'You are not allowed to change this quote.' };
+  }
+  if (status === 'DECLINED' && !isAdmin && !isBuyer) return { error: 'You are not allowed to change this quote.' };
+  if (isAdmin && !isBuyer && !isAssignee) {
     await requireCapability('quotes:status', { redirectTo: '/admin/quotes' });
   }
 
   // Once accepted, the deal is binding: the buyer cancels the ORDER (payment
-  // page, while unpaid) and only lab2date staff cancel it otherwise — never the
+  // page, while unpaid) and only staff cancel it otherwise — never the
   // supplier, and never through "decline" / "close".
   if (sr.status === 'ACCEPTED') {
     const o = await prisma.order.findUnique({ where: { sourcingRequestId: id }, select: { orderNumber: true, status: true } });
     if (status === 'DECLINED') {
       return { error: `You already accepted this offer${o ? ` (order ${o.orderNumber})` : ''}. To cancel it, use “Cancel order” on the payment page while it is unpaid, or contact support.` };
     }
-    if (!isAdmin) {
-      return { error: `The buyer accepted this offer${o ? ` (order ${o.orderNumber})` : ''}, so it is a binding order. Only lab2date can cancel it — contact the lab2date team.` };
-    }
     if (o && o.status !== 'CANCELED') {
       return { error: `The buyer accepted this offer (order ${o.orderNumber}). Use “Cancel order” in the Deal panel: it voids the proforma, releases the unit and emails the buyer.` };
     }
+  }
+  if (status === 'DECLINED') {
+    if (sr.status === 'DECLINED') return { notice: 'This offer is already declined.' };
+    if (sr.status === 'CLOSED') return { error: 'This request is closed, so there is no offer to decline.' };
+    if (sr.status !== 'RESPONDED' || sr.quotedPriceCents == null) return { error: 'There is no offer to decline yet.' };
+    if (opts.offerRevision !== undefined && opts.offerRevision !== sr.offerRevision) return { error: OFFER_UPDATED_BEFORE_DECLINE };
+  }
+  if (status === 'CLOSED' && sr.status === 'CLOSED') {
+    if (!sr.archivedAt && autoArchiveOnClose()) {
+      await prisma.sourcingRequest.updateMany({ where: { id, status: 'CLOSED', archivedAt: null }, data: { archivedAt: new Date(), archivedById: session.user.id } });
+      await audit('quote.archive', quoteRefOrProforma(sr), `auto on CLOSE by ${session.user.email}`);
+      revalidatePath('/admin/quotes');
+      return { notice: 'This request is already closed; it was archived.' };
+    }
+    return { notice: 'This request is already closed.' };
   }
 
   // Declining or closing ends the deal, so an unpaid order linked to it (old
@@ -1559,24 +2353,25 @@ async function setQuoteStatusCore(
 
   // Closing archives only when the owner wants it (default: stays in Lost).
   const shouldAutoArchive = status === 'CLOSED' && !sr.archivedAt && autoArchiveOnClose();
-  const statusChanged = sr.status !== status;
   const lost = {
-    lostReason: opts.reason ?? (status === 'CLOSED' ? 'Closed by lab2date' : null),
+    lostReason: opts.reason ?? (status === 'CLOSED' ? `Closed by ${site}` : null),
     lostNote: opts.note ?? null,
   };
-  let changed = false;
+  const expectedRevision = opts.offerRevision ?? sr.offerRevision;
+  // The claim names the exact state decided on: a decline only the offer the
+  // buyer looked at; a close only a request nobody accepted meanwhile (an
+  // accepted one only when its order is canceled, checked above). An
+  // acceptance that committed first wins — then nothing is canceled or mailed.
+  const where: Prisma.SourcingRequestWhereInput = { id, ...statusClaimFilter(status, sr.status, expectedRevision) };
   let canceledOrder: string | null = null;
   let released = 0;
   try {
-    ({ changed, canceledOrder, released } = await prisma.$transaction(async (tx) => {
+    ({ canceledOrder, released } = await prisma.$transaction(async (tx) => {
       const claim = await tx.sourcingRequest.updateMany({
-        where: shouldAutoArchive
-          ? { id, OR: [{ status: { not: status } }, { archivedAt: null }] }
-          : { id, status: { not: status } },
-        data: shouldAutoArchive
-          ? { status, archivedAt: new Date(), archivedById: session.user.id, dueAt: null, ...lost }
-          : { status, dueAt: null, ...(statusChanged ? lost : {}) },
+        where,
+        data: { status, dueAt: null, ...lost, ...(shouldAutoArchive ? { archivedAt: new Date(), archivedById: session.user.id } : {}) },
       });
+      if (claim.count !== 1) throw new StatusClaimLost();
       const pending = await tx.order.findFirst({
         where: { sourcingRequestId: id, status: 'PENDING_PAYMENT', paymentSubmittedAt: null },
         select: { orderNumber: true },
@@ -1593,7 +2388,6 @@ async function setQuoteStatusCore(
       // A unit held for this offer (STOCK_RESERVE_ON = OFFER_SENT) goes back on sale.
       const units = await releaseQuoteHold(id, status === 'DECLINED' ? 'Offer declined by the buyer' : 'Quote closed without a deal', tx);
       return {
-        changed: claim.count === 1,
         canceledOrder: cancel.count === 1 ? pending?.orderNumber ?? null : null,
         released: units,
       };
@@ -1602,14 +2396,13 @@ async function setQuoteStatusCore(
     if (e instanceof ProofInFlightError) {
       return { error: 'A payment proof was just submitted for this order, so the quote stays open. Review the order first.' };
     }
+    if (e instanceof StatusClaimLost) return statusClaimLost(id, status, expectedRevision);
     throw e;
   }
   const ref = quoteRefOrProforma(sr);
-  const itemTitle = sr.product?.title ?? sr.productCategory ?? null;
-  if (changed && statusChanged) {
-    await audit('quote.status', ref, `${sr.status} → ${status} by ${session.user.email}${opts.reason ? ` · reason: ${opts.reason}` : ''}${opts.note ? ` · "${opts.note.slice(0, 120)}"` : ''}${released ? ` · ${released} unit(s) released` : ''}`);
-  }
-  if (changed && shouldAutoArchive) {
+  const itemTitle = sr.product || sr.productCategory || sr.offerTerms ? offerItemTitle(sr) : null;
+  await audit('quote.status', ref, `${sr.status} → ${status} by ${session.user.email}${status === 'DECLINED' ? ` · r${expectedRevision}` : ''}${opts.reason ? ` · reason: ${opts.reason}` : ''}${opts.note ? ` · "${opts.note.slice(0, 120)}"` : ''}${released ? ` · ${released} unit(s) released` : ''}`);
+  if (shouldAutoArchive) {
     await audit('quote.archive', ref, `auto on CLOSE by ${session.user.email}`);
   }
   if (canceledOrder) {
@@ -1617,7 +2410,7 @@ async function setQuoteStatusCore(
     revalidatePath('/app/orders');
     revalidatePath('/admin/orders');
   }
-  if (changed && statusChanged && status === 'DECLINED') {
+  if (status === 'DECLINED') {
     const offerShown = sr.quotedPriceCents != null ? offerAmounts(sr) : null;
     const amount = offerShown ? `${formatPrice(offerShown.totalCents, sr.quotedCurrency || 'EUR')}${offerShown.vatDecided ? '' : ' excl. VAT'}` : null;
     if (opts.note || opts.reason) {
@@ -1632,7 +2425,7 @@ async function setQuoteStatusCore(
     }
     await notifyAdmins(
       `Offer declined — ${ref}`,
-      `${sr.buyerName} declined${amount ? ` the offer of ${amount}` : ' the offer'}${opts.reason ? ` (${opts.reason})` : ''}.${canceledOrder ? ` Order ${canceledOrder} was canceled.` : ''}`,
+      `${sr.buyerName} declined${amount ? ` the offer of ${amount}` : ' the offer'}${opts.reason ? ` (${opts.reason})` : ''}.${canceledOrder ? ` Order ${canceledOrder} was canceled.` : ''} You can send a new offer on the same request.`,
       `/admin/quotes/${id}`,
       'SYSTEM',
     );
@@ -1646,30 +2439,39 @@ async function setQuoteStatusCore(
       html: mailLayout({
         heading: 'The buyer declined the offer',
         body: [
-          `${inbox.toSeller ? 'The buyer' : `<span dir="auto">${escapeHtml(sr.buyerName)}</span> &lt;${escapeHtml(sr.buyerEmail)}&gt;`} declined ${amount && !(inbox.toSeller && !sellerSeesSellPrice()) ? `the offer of <strong>${escapeHtml(amount)}</strong>` : 'the offer'}${itemTitle ? ` for <strong dir="auto">${escapeHtml(itemTitle)}</strong>` : ''} on quote <strong>${ref}</strong>.`,
+          mailP(`${inbox.toSeller ? 'The buyer' : `<span dir="auto">${escapeHtml(sr.buyerName)}</span> &lt;${escapeHtml(sr.buyerEmail)}&gt;`} declined ${amount && !(inbox.toSeller && !sellerSeesSellPrice()) ? `the offer of <strong>${escapeHtml(amount)}</strong>` : 'the offer'}${itemTitle ? ` for <strong dir="auto">${escapeHtml(itemTitle)}</strong>` : ''} on quote <strong>${ref}</strong>.`),
           `Reason: <strong>${escapeHtml(opts.reason ?? 'none given')}</strong>`,
           opts.note ? `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(opts.note)}</blockquote>` : '',
           released ? `${released} reserved unit(s) went back on sale.` : '',
+          inbox.toSeller ? '' : 'A new offer can be sent on the same request (it becomes the next revision).',
         ].filter(Boolean),
         cta: { href: `${siteBase()}${inbox.toSeller ? `/app/seller/inbox/${id}` : `/admin/quotes/${id}`}`, label: 'Open the quote' },
       }),
     }, 'quotes:decline-staff');
   }
-  // Closing (seller "Close request" or admin "Close (no deal)") ends the deal
-  // for the buyer, so tell them it is over (and that any open order is no
-  // longer payable). Fires once.
+  // Closing (staff "Close (no deal)") ends the deal for the buyer: tell them it
+  // is over, why (the close reason and note) and that any open order is no
+  // longer payable — in the conversation and by mail. Fires once (the claim).
   let buyerNotified = false;
   let buyerEmailError: string | null = null;
-  if (status === 'CLOSED' && ((changed && statusChanged) || canceledOrder)) {
+  if (status === 'CLOSED') {
+    const why = opts.reason ? sentence(opts.reason) : '';
+    await prisma.quoteMessage.create({
+      data: {
+        sourcingRequestId: id,
+        authorId: session.user.id,
+        fromStaff: true,
+        body: `Request closed without a deal${opts.reason ? ` — ${opts.reason}` : ''}.${opts.note ? `\n${opts.note}` : ''}${canceledOrder ? `\nOrder ${canceledOrder} was canceled, so no payment is due.` : ''}`,
+      },
+    });
     const orderLine = canceledOrder ? ` Order ${canceledOrder} was canceled, so no payment is due.` : '';
     await notifyUser(
       sr.submittedById,
       `Quote ${ref} was closed`,
-      `Your request was closed without a deal.${orderLine} If you still need the item, open a new request.`,
+      `Your request was closed without a deal.${why ? ` ${why}` : ''}${orderLine} If you still need the item, open a new request.`.slice(0, 480),
       `/app/quotes/${id}`,
     );
     buyerNotified = !!sr.submittedById;
-    const buyerLink = sr.submittedById || !sr.accessToken ? `${siteBase()}/app/quotes/${id}` : `${siteBase()}/quotes/t/${sr.accessToken}`;
     const sent = await trySendEmail({
       to: sr.buyerEmail,
       subject: `[${ref}] Your quote request was closed`,
@@ -1678,28 +2480,21 @@ async function setQuoteStatusCore(
         body: [
           `Hi <span dir="auto">${escapeHtml(sr.buyerName)}</span>,`,
           `Your request <strong>${ref}</strong>${itemTitle ? ` for <strong dir="auto">${escapeHtml(itemTitle)}</strong>` : ''} was closed without a deal.`,
-          canceledOrder ? `Order <strong>${canceledOrder}</strong> was canceled, so <strong>no payment is due</strong>. Please don&rsquo;t send a transfer for it. If you already paid, contact our support team and we&rsquo;ll sort it out.` : '',
-          'If you still need the item, you can open a new request on lab2date at any time.',
+          opts.reason ? `Reason: <strong>${escapeHtml(opts.reason)}</strong>` : '',
+          opts.note ? `<blockquote dir="auto" style="border-left:3px solid #A3E635;margin:0 0 12px;padding-left:12px;">${escapeHtmlLines(opts.note)}</blockquote>` : '',
+          canceledOrder ? `Order <strong>${canceledOrder}</strong> was canceled, so <strong>no payment is due</strong>. Please don’t send a transfer for it. If you already paid, contact our support team and we’ll sort it out.` : '',
+          `If you still need the item, you can open a new request on ${escapeHtml(site)} at any time.`,
         ].filter(Boolean),
-        cta: { href: buyerLink, label: 'View the quote' },
+        cta: { href: buyerQuoteLink(sr), label: 'View the quote' },
       }),
     }, 'quotes:close');
     if (sent.ok) buyerNotified = true;
     else buyerEmailError = sent.error;
-    if (!isAdmin) {
-      await notifyAdmins(
-        `Quote closed by the supplier — ${ref}`,
-        canceledOrder
-          ? `The supplier closed the request without a deal. Order ${canceledOrder} was canceled and the buyer was notified.`
-          : 'The supplier closed the request without a deal. The buyer was notified.',
-        `/admin/quotes/${id}`,
-        'SYSTEM',
-      );
-    } else if (sr.assignedToId && sr.assignedToId !== session.user.id) {
+    if (sr.assignedToId && sr.assignedToId !== session.user.id) {
       await notifyUser(
         sr.assignedToId,
         `Quote ${ref} was closed`,
-        'lab2date closed this request without a deal.',
+        `${site} closed this request without a deal.`,
         sr.assignedTo?.role === 'SELLER' ? `/app/seller/inbox/${id}` : `/admin/quotes/${id}`,
       );
     }
@@ -1711,22 +2506,20 @@ async function setQuoteStatusCore(
   revalidatePath('/admin/quotes');
 
   if (status === 'CLOSED') {
-    const parts = [changed && statusChanged ? 'Request closed.' : 'This request is closed.'];
+    const parts = [`Request closed${opts.reason ? ` (${opts.reason})` : ''}.`];
     if (canceledOrder) parts.push(`Order ${canceledOrder} was canceled.`);
     if (released) parts.push(`${released} reserved unit(s) went back on sale.`);
-    if (shouldAutoArchive && changed) parts.push('The request was archived.');
+    if (shouldAutoArchive) parts.push('The request was archived.');
     if (buyerEmailError) {
       return {
-        warning: `${parts.join(' ')} ${sr.submittedById ? 'The buyer was notified in their dashboard, but the' : 'The'} email to ${isAdmin ? sr.buyerEmail : 'the buyer'} could not be delivered (${buyerEmailError}).`,
+        warning: `${parts.join(' ')} ${sr.submittedById ? 'The buyer was notified in their dashboard, but the' : 'The'} email to ${sr.buyerEmail} could not be delivered (${buyerEmailError}).`,
       };
     }
     if (buyerNotified) parts.push('The buyer was notified.');
     return { notice: parts.join(' ') };
   }
   return {
-    notice: changed && statusChanged
-      ? `You declined the offer.${canceledOrder ? ` Order ${canceledOrder} was canceled.` : ''} The supplier was told${opts.reason ? ' why' : ''}.`
-      : 'This offer is already declined.',
+    notice: `You declined the offer.${canceledOrder ? ` Order ${canceledOrder} was canceled.` : ''} The ${site} team was told${opts.reason ? ' why' : ''}.`,
   };
 }
 
@@ -1803,7 +2596,7 @@ export async function setQuotePriority(formData: FormData): Promise<{ ok: boolea
   });
   if (!sr) return { ok: false, message: 'Quote not found.' };
   await ensureSettingsLoaded();
-  // The SLA clock only runs while the request waits on lab2date; a new priority
+  // The SLA clock only runs while the request waits on our team; a new priority
   // re-times it then, and never restarts it for a deal waiting on the buyer.
   await prisma.sourcingRequest.update({
     where: { id },
@@ -1835,6 +2628,7 @@ export async function claimQuote(formData: FormData): Promise<{ ok: boolean; mes
 export async function transferQuote(formData: FormData): Promise<{ ok: boolean; message: string }> {
   const session = await requireSession({ roles: ['ADMIN'], redirectTo: '/admin/quotes' });
   await requireCapability('quotes:assign', { redirectTo: '/admin/quotes' });
+  await ensureSettingsLoaded();
   const id = String(formData.get('quoteId') ?? '');
   const toUserId = String(formData.get('toUserId') ?? '');
   if (!id || !toUserId) return { ok: false, message: 'Missing fields.' };
@@ -1854,7 +2648,11 @@ export async function transferQuote(formData: FormData): Promise<{ ok: boolean; 
   await sendInternalEmail({
     to: target.email,
     subject: `[${quoteRefOrProforma(sr)}] A quote was transferred to you`,
-    html: `<p>Quote <strong>${quoteRefOrProforma(sr)}</strong> was transferred to you on lab2date.</p><p><a href="${siteBase()}${href}">Open the quote</a> to reply to the buyer or send an offer.</p>`,
+    html: mailLayout({
+      heading: 'A quote was transferred to you',
+      body: [`Quote <strong>${quoteRefOrProforma(sr)}</strong> was transferred to you on ${escapeHtml(siteName())}. Open it to reply to the buyer or send an offer.`],
+      cta: { href: `${siteBase()}${href}`, label: 'Open the quote' },
+    }),
   }, 'quotes:transfer');
   await audit('quote.transfer', quoteRefOrProforma(sr), `from=${session.user.email} to=${target.email}`);
   revalidatePath('/admin/quotes');
@@ -2022,23 +2820,16 @@ export async function reissueQuoteMagicLink(
     },
   });
 
-  const site = process.env.SITE_NAME || 'Labtodate';
-  const href = `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${newToken}`;
+  const href = `${siteBase()}/quotes/t/${newToken}`;
   const sent = await trySendEmail({
     to: sr.buyerEmail,
     subject: `[${quoteRefOrProforma(sr)}] New link to view your quote`,
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">Here&rsquo;s a fresh link, ${escapeHtml(sr.buyerName)}</h2>
-        <p>Your support team rotated the access link on quote <strong>${quoteRefOrProforma(sr)}</strong>. Any previous link no longer works.</p>
-        <p style="margin:18px 0;">
-          <a href="${href}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-            View quote
-          </a>
-        </p>
-        <p style="color:#888;font-size:11px;">This link is valid for 14 days. Keep it private.</p>
-        <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
-      </div>`,
+    html: mailLayout({
+      heading: `Here’s a fresh link, ${sr.buyerName}`,
+      body: [`Our team rotated the access link on quote <strong>${quoteRefOrProforma(sr)}</strong>. Any previous link no longer works.`],
+      cta: { href, label: 'View quote' },
+      footer: ['This link is valid for 14 days. Keep it private.'],
+    }),
   }, 'quotes:magiclink');
   await audit('quote.magiclink.reissue', quoteRefOrProforma(sr), `by ${session.user.email}`);
   revalidatePath(`/admin/quotes/${id}`);

@@ -5,8 +5,10 @@ import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
 import { voidProformas } from '@/lib/documents/issue';
 import { formatPrice } from '@/lib/utils';
-import { QUOTE_REF, isoDay } from './offer';
-import { autoArchiveOnClose } from './policy';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { siteName } from '@/lib/brand/identity';
+import { QUOTE_REF, isoDay, sentence } from './offer';
+import { autoArchiveOnClose, repliesReachUs } from './policy';
 import { releaseQuoteHold } from './stock';
 import { heldMoneyCents, LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
 import { mailLayout, siteBase } from './mail';
@@ -42,12 +44,40 @@ export type CancelQuoteOrderResult =
 
 class CancelRefused extends Error {}
 
+/** Why the cancel claim found the order changed — read again, said as it is. */
+async function changedMeanwhile(tx: Prisma.TransactionClient, orderId: string, orderNumber: string, actor: CancelActor): Promise<string> {
+  const now = await tx.order.findUnique({ where: { id: orderId }, select: { status: true, paymentSubmittedAt: true, amountPaidCents: true, currency: true } });
+  if (!now || now.status === 'CANCELED') return `Order ${orderNumber} is already canceled.`;
+  if (now.status !== 'PENDING_PAYMENT') return `Order ${orderNumber} was just paid — a paid order is refunded (with a credit note), not canceled.`;
+  if (now.paymentSubmittedAt) {
+    return actor.kind === 'BUYER'
+      ? `A payment receipt for order ${orderNumber} was just uploaded, so it can not be canceled online. Contact support — we check the payment first.`
+      : `A payment receipt for order ${orderNumber} was just uploaded — verify or reject it first.`;
+  }
+  if (now.amountPaidCents > 0) return `A payment of ${formatPrice(now.amountPaidCents, now.currency)} was just recorded for order ${orderNumber} — refund it first, then cancel.`;
+  return `Order ${orderNumber} changed a moment ago. Reload the page and check it.`;
+}
+
 export async function cancelQuoteOrder(
   orderId: string,
   actor: CancelActor,
-  opts: { reason: string; note?: string | null; lostReason: string; emailBuyer?: boolean; buyerEmailHtml?: (ctx: { orderNumber: string; voided: string[]; total: string }) => { subject: string; html: string } },
+  opts: {
+    reason: string;
+    note?: string | null;
+    /** Stored on the quote (Lost tab). Default: "Canceled by the buyer: <reason>" / "Canceled by <brand> after acceptance". */
+    lostReason?: string;
+    emailBuyer?: boolean;
+    buyerEmailHtml?: (ctx: { orderNumber: string; voided: string[]; total: string }) => { subject: string; html: string };
+  },
 ): Promise<CancelQuoteOrderResult> {
+  await ensureSettingsLoaded();
   const now = new Date();
+  const site = siteName();
+  // Callers written before the brand setting pass the old brand literal: the
+  // configured brand (SITE_NAME) is what the quote shows.
+  const lostReason = (opts.lostReason ?? (actor.kind === 'BUYER' ? `Canceled by the buyer: ${opts.reason}` : `Canceled by ${site} after acceptance`))
+    .replace(/\blab2date\b/gi, site);
+  const why = sentence(`${opts.reason}${opts.note ? ` — ${opts.note}` : ''}`);
   let out: { orderNumber: string; quoteId: string; voided: string[]; units: number; total: string; buyer: { id: string; email: string; name: string }; title: string; assigned: { id: string; role: string; email: string } | null };
   try {
     out = await prisma.$transaction(async (tx) => {
@@ -88,16 +118,16 @@ export async function cancelQuoteOrder(
         where: { id: o.id, status: 'PENDING_PAYMENT', paymentSubmittedAt: null, amountPaidCents: o.amountPaidCents, amountRefundedCents: o.amountRefundedCents },
         data: {
           status: 'CANCELED',
-          adminNotes: `${o.adminNotes ? `${o.adminNotes}\n` : ''}[${isoDay(now)}] Canceled by ${actor.kind === 'BUYER' ? 'the buyer' : actor.kind === 'SYSTEM' ? 'the system' : actor.email ?? 'staff'}: ${opts.reason}${open.length ? ` — proforma ${open.map((d) => d.number).join(', ')} void` : ''}.`.slice(0, 4000),
+          adminNotes: `${o.adminNotes ? `${o.adminNotes}\n` : ''}[${isoDay(now)}] Canceled by ${actor.kind === 'BUYER' ? 'the buyer' : actor.kind === 'SYSTEM' ? 'the system' : actor.email ?? 'staff'}: ${sentence(`${opts.reason}${open.length ? ` — proforma ${open.map((d) => d.number).join(', ')} void` : ''}`)}`.slice(0, 4000),
         },
       });
-      if (claim.count !== 1) throw new CancelRefused(`Order ${o.orderNumber} changed meanwhile (a receipt was uploaded or it was paid). Reload and check.`);
+      if (claim.count !== 1) throw new CancelRefused(await changedMeanwhile(tx, o.id, o.orderNumber, actor));
       const units = await releaseQuoteHold(o.sourcingRequestId, `Order ${o.orderNumber} canceled: ${opts.reason}`, tx);
       const archive = autoArchiveOnClose() && !o.sourcingRequest.archivedAt;
       await tx.sourcingRequest.updateMany({
         where: { id: o.sourcingRequestId, status: { in: ['ACCEPTED', 'RESPONDED'] } },
         data: {
-          status: 'CLOSED', lostReason: opts.lostReason, lostNote: opts.note ?? opts.reason, dueAt: null,
+          status: 'CLOSED', lostReason, lostNote: opts.note ?? opts.reason, dueAt: null,
           ...(archive ? { archivedAt: now, archivedById: actor.id } : {}),
         },
       });
@@ -106,7 +136,7 @@ export async function cancelQuoteOrder(
           sourcingRequestId: o.sourcingRequestId,
           authorId: actor.id,
           fromStaff: actor.kind !== 'BUYER',
-          body: `Order ${o.orderNumber} was canceled ${actor.kind === 'BUYER' ? 'by the buyer' : actor.kind === 'SYSTEM' ? 'automatically' : 'by lab2date'}: ${opts.reason}${opts.note ? ` — ${opts.note}` : ''}.${open.length ? ` Proforma ${open.map((d) => d.number).join(', ')} is void; no payment is due.` : ' No payment is due.'}${units ? ' The reserved unit is back on sale.' : ''}`,
+          body: `Order ${o.orderNumber} was canceled ${actor.kind === 'BUYER' ? 'by the buyer' : actor.kind === 'SYSTEM' ? 'automatically' : `by ${site}`}: ${why}${open.length ? ` Proforma ${open.map((d) => d.number).join(', ')} is void; no payment is due.` : ' No payment is due.'}${units ? ' The reserved unit is back on sale.' : ''}`,
         },
       });
       return {
@@ -142,7 +172,7 @@ export async function cancelQuoteOrder(
             ? `As you asked, we canceled order <strong>${out.orderNumber}</strong> (<span dir="auto">${escapeHtml(out.title)}</span>, ${escapeHtml(out.total)}).`
             : `We canceled order <strong>${out.orderNumber}</strong> (<span dir="auto">${escapeHtml(out.title)}</span>, ${escapeHtml(out.total)}).`,
           `Reason: ${escapeHtmlLines(opts.reason)}${opts.note && actor.kind !== 'SYSTEM' ? ` — <span dir="auto">${escapeHtml(opts.note)}</span>` : ''}`,
-          `<strong>No payment is due.</strong>${out.voided.length ? ` Proforma ${out.voided.map((n) => `<strong>${escapeHtml(n)}</strong>`).join(', ')} is void — please do not transfer money for it.` : ''} If you already sent a transfer, reply to this email or contact support and we refund it.`,
+          `<p style="margin:0 0 12px;"><strong>No payment is due.</strong>${out.voided.length ? ` Proforma ${out.voided.map((n) => `<strong>${escapeHtml(n)}</strong>`).join(', ')} is void — please do not transfer money for it.` : ''} If you already sent a transfer, ${repliesReachUs() ? 'reply to this email or ' : ''}<a href="${escapeHtml(`${siteBase()}/support?order=${encodeURIComponent(out.orderNumber)}`)}">contact our support team</a> and we refund it.</p>`,
         ],
         cta: { href: `${siteBase()}/app/orders/${out.orderNumber}`, label: 'View the order' },
         footer: [`Reference ${ref}`],
