@@ -20,6 +20,12 @@ export const dynamic = 'force-dynamic';
  * The same rules cover quote, sell-offer and live-chat messages (assigned
  * seller / offer submitter / chat owner incl. the guest widget cookie).
  *
+ * Internal notes are staff-only: a file on an internal ticket or quote note
+ * opens only for staff with tickets:view / quotes:view — never for the buyer,
+ * the assigned seller or a magic-link token. The owner checks use the message
+ * the file was first posted in, so re-posting someone else's file URL in
+ * your own message does not unlock it.
+ *
  * On success: 302 redirect to a 60s-presigned S3 URL.
  * Otherwise: 404 (never reveal whether the key exists vs is forbidden).
  */
@@ -53,10 +59,14 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
     accessTokenExpiresAt: Date | null;
   };
 
-  // 1) Support ticket message
-  const ticketMsg = await prisma.supportMessage.findFirst({
+  // 1) Support ticket message — every message carrying the file, oldest
+  //    (the original upload) first; one internal note makes it staff-only.
+  const ticketMsgs = await prisma.supportMessage.findMany({
     where: { attachments: { has: proxiedUrl } },
+    orderBy: { createdAt: 'asc' },
+    take: 10,
     select: {
+      isInternalNote: true,
       ticket: {
         select: {
           id: true, email: true, submittedById: true,
@@ -65,12 +75,16 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
       },
     },
   });
+  const ticketMsg = ticketMsgs[0] ?? null;
 
   // 2) Quote message
-  const quoteMsg = !ticketMsg
-    ? await prisma.quoteMessage.findFirst({
+  const quoteMsgs = !ticketMsg
+    ? await prisma.quoteMessage.findMany({
         where: { attachments: { has: proxiedUrl } },
+        orderBy: { createdAt: 'asc' },
+        take: 10,
         select: {
+          isInternalNote: true,
           sourcingRequest: {
             select: {
               id: true, buyerEmail: true, submittedById: true, assignedToId: true,
@@ -79,7 +93,14 @@ export async function GET(req: NextRequest, props: { params: Promise<{ key: stri
           },
         },
       })
-    : null;
+    : [];
+  const quoteMsg = quoteMsgs[0] ?? null;
+
+  // D91: a file on an internal note is staff-only, whoever owns the record.
+  if (ticketMsgs.some((m) => m.isInternalNote) || quoteMsgs.some((m) => m.isInternalNote)) {
+    const ok = await staffCan(ticketMsg ? 'tickets:view' : 'quotes:view');
+    return ok ? streamAttachment(key) : NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
 
   // 3) Sell-offer (acquisitions) message — seller is the submitter.
   const sellMsg = !ticketMsg && !quoteMsg

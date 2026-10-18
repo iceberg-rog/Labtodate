@@ -4,8 +4,6 @@ import {
   Inbox,
   Hourglass,
   CircleCheck,
-  Lock,
-  Trash2,
   AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -64,6 +62,20 @@ export default async function AdminTicketsPage(
   const sortRaw = searchParams.sort ?? '';
   const sort: SortKey = (SORT_OPTIONS.find((s) => s.key === sortRaw)?.key ?? 'urgency') as SortKey;
 
+  // LTV, paid orders and order statuses are order data: shown only with orders:view.
+  const commerceVisible = await hasCapability('orders:view');
+
+  // The search also finds tickets through their linked order / quote proforma,
+  // an order or proforma number mentioned in any message, and the customer's
+  // company (account company or billing name) — as the placeholder promises.
+  const refLike = /^(L2D|PRO)-/i.test(q) || /^\d{4}-[A-Z0-9]{3,6}$/i.test(q);
+  const [qOrderIds, qRfqIds] = q.length >= 3
+    ? await Promise.all([
+        prisma.order.findMany({ where: { orderNumber: { contains: q, mode: 'insensitive' } }, select: { id: true }, take: 50 }),
+        prisma.sourcingRequest.findMany({ where: { proformaNumber: { contains: q, mode: 'insensitive' } }, select: { id: true }, take: 50 }),
+      ]).then(([o, r]) => [o.map((x) => x.id), r.map((x) => x.id)])
+    : [[], []];
+
   // The filters shared by every tab (the tab adds its own status scope).
   const filterWhere = (archived: boolean): Prisma.SupportTicketWhereInput => ({
     ...(archived ? { archivedAt: { not: null } } : { archivedAt: null }),
@@ -78,6 +90,11 @@ export default async function AdminTicketsPage(
             { email: { contains: q, mode: 'insensitive' } },
             { subject: { contains: q, mode: 'insensitive' } },
             { category: { contains: q, mode: 'insensitive' } },
+            { submittedBy: { company: { name: { contains: q, mode: 'insensitive' } } } },
+            { submittedBy: { billingProfile: { legalName: { contains: q, mode: 'insensitive' } } } },
+            ...(qOrderIds.length ? [{ orderId: { in: qOrderIds } }] : []),
+            ...(qRfqIds.length ? [{ sourcingRequestId: { in: qRfqIds } }] : []),
+            ...(refLike ? [{ messages: { some: { body: { contains: q, mode: 'insensitive' as const } } } }] : []),
           ],
         }
       : {}),
@@ -161,7 +178,7 @@ export default async function AdminTicketsPage(
   // Buyer intel (LTV + paid count) for tickets with a registered submitter.
   const buyerIds = Array.from(new Set(tickets.map((t) => t.submittedBy?.id).filter(Boolean) as string[]));
   const intelByBuyer = new Map<string, { paidCount: number; lifetimeCents: number }>();
-  if (buyerIds.length > 0) {
+  if (commerceVisible && buyerIds.length > 0) {
     const stats = await prisma.order.groupBy({
       by: ['buyerId'],
       where: { buyerId: { in: buyerIds }, status: { in: ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] } },
@@ -370,6 +387,7 @@ export default async function AdminTicketsPage(
               linkedRfq,
               archived: !!t.archivedAt,
               lastBodyPreview: lastMsg?.fromStaff ? null : null,
+              commerceVisible,
             };
           })}
           view={view === 'archived' ? 'archived' : 'active'}

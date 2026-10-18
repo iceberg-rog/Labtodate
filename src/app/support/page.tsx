@@ -1,15 +1,16 @@
-import { LifeBuoy, Clock, ShieldCheck } from 'lucide-react';
+import { LifeBuoy, Clock, ShieldCheck, CalendarClock } from 'lucide-react';
 import { getServerSession } from '@/lib/auth-server';
 import { SupportForm } from '@/components/support/SupportForm';
-import { formCaptchaFlag } from '@/lib/security/captcha';
+import { supportFormProps, type SupportFormQuery } from '@/lib/support/form-props';
+import { businessTimeZone, supportHoursText } from '@/lib/support/policy';
 
 export const metadata = { title: 'Support' };
 export const dynamic = 'force-dynamic';
 
-export default async function SupportPage() {
+export default async function SupportPage(props: { searchParams?: Promise<SupportFormQuery> }) {
   const session = await getServerSession();
-  const signedIn = !!session?.user;
-  const captcha = await formCaptchaFlag('support', signedIn);
+  const form = await supportFormProps(session, (await props.searchParams) ?? {});
+  const hours = supportHoursText();
   return (
     <div className="container-px py-12 md:py-20">
       <div className="grid lg:grid-cols-[1fr_1.3fr] gap-12 items-start max-w-6xl mx-auto">
@@ -25,16 +26,16 @@ export default async function SupportPage() {
             reference number and a reply by email.
           </p>
           <ul className="mt-8 space-y-4">
-            <li className="flex gap-3"><Clock className="h-5 w-5 text-primary flex-shrink-0" /><span className="text-sm">Replies within <strong>1 business day</strong></span></li>
+            {form.replyPromise && (
+              <li className="flex gap-3"><Clock className="h-5 w-5 text-primary flex-shrink-0" /><span className="text-sm">Replies within <strong>{form.replyPromise}</strong></span></li>
+            )}
+            {hours && (
+              <li className="flex gap-3"><CalendarClock className="h-5 w-5 text-primary flex-shrink-0" /><span className="text-sm">Support hours: <strong>{hours}</strong> <span className="text-muted-foreground">({businessTimeZone().replace(/_/g, ' ')} time)</span></span></li>
+            )}
             <li className="flex gap-3"><ShieldCheck className="h-5 w-5 text-primary flex-shrink-0" /><span className="text-sm">Every ticket is tracked end to end</span></li>
           </ul>
         </div>
-        <SupportForm
-          defaultEmail={session?.user.email ?? ''}
-          defaultName={session?.user.name ?? ''}
-          signedIn={signedIn}
-          captcha={captcha}
-        />
+        <SupportForm {...form} />
       </div>
     </div>
   );

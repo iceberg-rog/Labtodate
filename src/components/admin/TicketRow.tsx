@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState, useTransition } from 'react';
 import {
   Mail,
-  Phone,
   Building2,
   Paperclip,
   Lock,
@@ -52,6 +51,8 @@ export type TicketRowProps = {
   linkedRfq?: LinkedRfq;
   archived: boolean;
   lastBodyPreview: string | null;
+  /** The viewer holds orders:view — LTV, paid orders and order statuses show only then. */
+  commerceVisible?: boolean;
   // Bulk-mode props injected by TicketBulkList. When `selectable` is true the
   // row renders a checkbox at the far left.
   selectable?: boolean;
@@ -97,11 +98,13 @@ function formatPrice(cents: number): string {
  *   future   = green ("on track")
  *   <2h late = amber ("overdue")
  *   >2h late = red ("breached")
- * Resolved/closed/spam suppress the badge entirely.
+ * Shown only while the ticket waits on support: waiting on the customer (or
+ * the legacy PENDING), resolved, closed and spam have no running deadline —
+ * a ticket the customer has not answered yet is never "breached".
  */
 function SlaBadge({ dueAtISO, status, mounted }: { dueAtISO: string | null; status: string; mounted: boolean }) {
   if (!dueAtISO) return null;
-  if (['RESOLVED', 'CLOSED', 'SPAM'].includes(status)) return null;
+  if (!['OPEN', 'WAITING_ON_SUPPORT'].includes(status)) return null;
   if (!mounted) {
     // Stable placeholder — same DOM as a future "x left" badge so layout
     // doesn't shift when the real value lands after hydration.
@@ -257,7 +260,7 @@ export function TicketRow(p: TicketRowProps) {
                 <UserIcon className="h-2.5 w-2.5" />
                 <span>{p.isRegistered ? 'registered' : 'guest'}</span>
               </span>
-              {p.paidOrderCount > 0 ? (
+              {!p.commerceVisible ? null : p.paidOrderCount > 0 ? (
                 <span className="text-[10px] text-muted-foreground">
                   {`${p.paidOrderCount} order${p.paidOrderCount === 1 ? '' : 's'} · LTV ${formatPrice(p.lifetimeCents)}`}
                 </span>
@@ -278,8 +281,12 @@ export function TicketRow(p: TicketRowProps) {
               <p className="inline-flex items-center gap-1.5 text-[11px]">
                 <span className="text-muted-foreground">Order</span>
                 <span className="font-mono font-semibold">{p.linkedOrder.orderNumber}</span>
-                <span className="text-muted-foreground">·</span>
-                <span className="font-semibold text-[10px] uppercase">{p.linkedOrder.status.toLowerCase().replace(/_/g, ' ')}</span>
+                {p.commerceVisible && (
+                  <>
+                    <span className="text-muted-foreground">·</span>
+                    <span className="font-semibold text-[10px] uppercase">{p.linkedOrder.status.toLowerCase().replace(/_/g, ' ')}</span>
+                  </>
+                )}
               </p>
             )}
             {p.linkedRfq && (

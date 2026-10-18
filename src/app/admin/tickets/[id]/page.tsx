@@ -4,7 +4,6 @@ import {
   ChevronLeft,
   Building2,
   Mail,
-  Phone,
   Crown,
   ShieldAlert,
   AlertCircle,
@@ -19,8 +18,10 @@ import {
   Truck,
   Lock,
 } from 'lucide-react';
-import { requireCapability, getServerSession } from '@/lib/auth-server';
+import { requireCapability, getServerSession, hasCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { mentionedOrderNumbers } from '@/lib/support/rules';
+import { orderBelongsTo } from '@/lib/support/tickets';
 import { adminDetailTitle } from '@/app/admin/admin-title';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
@@ -112,35 +113,45 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
   });
   if (!t) notFound();
 
+  // Order data (addresses, totals, items, tracking, LTV) needs orders:view and
+  // quote data quotes:view — a support-only agent sees the ticket, the order
+  // number and whether it is this customer's, nothing more.
+  const [canSeeOrders, canSeeQuotes] = await Promise.all([hasCapability('orders:view'), hasCapability('quotes:view')]);
+  const customer = { userId: t.submittedById, email: t.email };
+
   // === Customer intel: orders + LTV + recent activity ===
   let buyerOrders: { id: string; orderNumber: string; status: string; totalCents: number; currency: string; createdAt: Date }[] = [];
   let buyerStats = { paidCount: 0, lifetimeCents: 0 };
   let buyerRfqs: { id: string; status: string; proformaNumber: string | null; quotedPriceCents: number | null; createdAt: Date }[] = [];
-  const buyerPhone = t.submittedBy
-    ? null // phone lives on Order.shippingAddress, not on User
-    : null;
   if (t.submittedBy) {
+    const buyerId = t.submittedBy.id;
     const [ords, agg, rfqs] = await Promise.all([
-      prisma.order.findMany({
-        where: { buyerId: t.submittedBy.id },
-        orderBy: { createdAt: 'desc' },
-        take: 6,
-        select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, createdAt: true },
-      }),
-      prisma.order.aggregate({
-        where: { buyerId: t.submittedBy.id, status: { in: ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] } },
-        _count: { _all: true },
-        _sum: { totalCents: true },
-      }),
-      prisma.sourcingRequest.findMany({
-        where: { submittedById: t.submittedBy.id },
-        orderBy: { createdAt: 'desc' },
-        take: 4,
-        select: { id: true, status: true, proformaNumber: true, quotedPriceCents: true, createdAt: true },
-      }),
+      canSeeOrders
+        ? prisma.order.findMany({
+            where: { buyerId },
+            orderBy: { createdAt: 'desc' },
+            take: 6,
+            select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, createdAt: true },
+          })
+        : [],
+      canSeeOrders
+        ? prisma.order.aggregate({
+            where: { buyerId, status: { in: ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'] } },
+            _count: { _all: true },
+            _sum: { totalCents: true },
+          })
+        : null,
+      canSeeQuotes
+        ? prisma.sourcingRequest.findMany({
+            where: { submittedById: buyerId },
+            orderBy: { createdAt: 'desc' },
+            take: 4,
+            select: { id: true, status: true, proformaNumber: true, quotedPriceCents: true, createdAt: true },
+          })
+        : [],
     ]);
     buyerOrders = ords;
-    buyerStats = { paidCount: agg._count._all, lifetimeCents: agg._sum.totalCents ?? 0 };
+    buyerStats = { paidCount: agg?._count._all ?? 0, lifetimeCents: agg?._sum.totalCents ?? 0 };
     buyerRfqs = rfqs;
   }
 
@@ -149,8 +160,12 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
   const linkedProduct = t.productId
     ? await prisma.product.findUnique({ where: { id: t.productId }, select: { slug: true, title: true, status: true, company: { select: { name: true } } } })
     : null;
-  const [linkedOrder, linkedRfq] = await Promise.all([
-    t.orderId
+  // Order numbers the customer typed: each one is checked against the
+  // customer (account or e-mail) — a number alone proves nothing.
+  const mentionText = [t.subject, ...t.messages.filter((m) => !m.fromStaff && !m.isInternalNote).map((m) => m.body)].join('\n');
+  const mentionedNos = mentionedOrderNumbers(mentionText).slice(0, 10);
+  const [linkedOrder, linkedOrderRef, linkedRfq, mentionedRows] = await Promise.all([
+    t.orderId && canSeeOrders
       ? prisma.order.findUnique({
           where: { id: t.orderId },
           include: {
@@ -159,7 +174,13 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
           },
         })
       : null,
-    t.sourcingRequestId
+    t.orderId
+      ? prisma.order.findUnique({
+          where: { id: t.orderId },
+          select: { id: true, orderNumber: true, buyerId: true, invoiceEmail: true, buyer: { select: { email: true } } },
+        })
+      : null,
+    t.sourcingRequestId && canSeeQuotes
       ? prisma.sourcingRequest.findUnique({
           where: { id: t.sourcingRequestId },
           select: {
@@ -168,7 +189,22 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
           },
         })
       : null,
+    mentionedNos.length
+      ? prisma.order.findMany({
+          where: { orderNumber: { in: mentionedNos } },
+          select: { orderNumber: true, buyerId: true, invoiceEmail: true, buyer: { select: { email: true } } },
+        })
+      : [],
   ]);
+  const linkedIsCustomers = linkedOrderRef ? orderBelongsTo(linkedOrderRef, customer) : true;
+  // Mentions other than the linked order: this customer's (not linked yet),
+  // another customer's (never linked automatically), or no such order.
+  const mentions = mentionedNos
+    .filter((n) => n !== linkedOrderRef?.orderNumber)
+    .map((n) => {
+      const row = mentionedRows.find((o) => o.orderNumber === n);
+      return { orderNumber: n, state: !row ? 'unknown' : orderBelongsTo(row, customer) ? 'own' : 'foreign' } as const;
+    });
 
   const adminCandidates = await prisma.user.findMany({
     where: { role: 'ADMIN' },
@@ -189,6 +225,9 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
     lifetimeCents: buyerStats.lifetimeCents,
     isGuest: !t.submittedBy,
   };
+  // The hover card shows paid orders and LTV: without orders:view the name stays plain text.
+  const customerName = (label: React.ReactNode) =>
+    canSeeOrders ? <CustomerHoverCard info={customerInfo} trigger={label} /> : label;
 
   return (
     <div className="space-y-4">
@@ -227,10 +266,7 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
             </div>
             <h1 className="text-2xl font-bold tracking-tight">{t.subject}</h1>
             <p className="text-sm text-muted-foreground mt-1 inline-flex items-center gap-1.5 flex-wrap">
-              <CustomerHoverCard
-                info={customerInfo}
-                trigger={<span className="font-medium text-foreground">{t.name}</span>}
-              />
+              {customerName(<span className="font-medium text-foreground">{t.name}</span>)}
               <span>·</span>
               <EmailText email={t.email} className="hover:text-foreground" asLink />
               {t.category && (
@@ -281,14 +317,14 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
                       ) : m.fromStaff ? (
                         <span>Support</span>
                       ) : (
-                        <CustomerHoverCard info={customerInfo} trigger={<span>{t.name}</span>} />
+                        customerName(<span>{t.name}</span>)
                       )}
                       <span>·</span>
                       <span>
                         {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </p>
-                    <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
+                    {m.body && <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>}
                     <MessageAttachments urls={m.attachments} />
                   </div>
                 </li>
@@ -320,18 +356,20 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
                   Joined {new Date(t.submittedBy.createdAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
                 </p>
               )}
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border mt-2">
-                <Stat
-                  label="Paid orders"
-                  value={String(buyerStats.paidCount)}
-                  icon={<Repeat className="h-3 w-3" />}
-                />
-                <Stat
-                  label="LTV"
-                  value={totalBuyerSpend > 0 ? fmt(totalBuyerSpend, 'EUR') : '—'}
-                  icon={<TrendingUp className="h-3 w-3" />}
-                />
-              </div>
+              {canSeeOrders && (
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border mt-2">
+                  <Stat
+                    label="Paid orders"
+                    value={String(buyerStats.paidCount)}
+                    icon={<Repeat className="h-3 w-3" />}
+                  />
+                  <Stat
+                    label="LTV"
+                    value={totalBuyerSpend > 0 ? fmt(totalBuyerSpend, 'EUR') : '—'}
+                    icon={<TrendingUp className="h-3 w-3" />}
+                  />
+                </div>
+              )}
               {!t.submittedBy && (
                 <p className="text-[11px] text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-md p-2 mt-2">
                   Guest ticket — no account on file. Reply emails include a magic link the customer can use to follow up without signing up.
@@ -357,8 +395,23 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
                 </p>
               </div>
             )}
-            {!linkedOrder && !linkedRfq && (
+            {!linkedOrderRef && !t.sourcingRequestId && (
               <p className="text-[11px] text-muted-foreground italic">No order or RFQ linked yet.</p>
+            )}
+            {linkedOrderRef && !linkedIsCustomers && (
+              <p className="text-[11px] font-semibold text-red-800 dark:text-red-300 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md p-2 mb-2" data-testid="ticket-foreign-order">
+                {linkedOrderRef.orderNumber} is not this customer’s order (another account and e-mail). Check who is asking before sharing or changing anything.
+              </p>
+            )}
+            {linkedOrderRef && !linkedOrder && (
+              <p className="text-[11px] mb-2">
+                <span className="text-muted-foreground">Order </span>
+                <span className="font-mono font-semibold">{linkedOrderRef.orderNumber}</span>
+                <span className="text-muted-foreground"> — its details need the Orders permission.</span>
+              </p>
+            )}
+            {t.sourcingRequestId && !canSeeQuotes && (
+              <p className="text-[11px] text-muted-foreground mb-2">A quote request is linked — its details need the Quotes permission.</p>
             )}
             {(linkedOrder || linkedRfq) && (
               <>
@@ -394,7 +447,7 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
               {linkedRfq && (
                 <div className="space-y-1.5">
                   <Link
-                    href={`/admin/quotes`}
+                    href={`/admin/quotes/${linkedRfq.id}`}
                     className="inline-flex items-center gap-1 font-mono text-[12px] font-semibold hover:text-primary"
                   >
                     {linkedRfq.proformaNumber ?? linkedRfq.id.slice(-8)} <ExternalLink className="h-3 w-3" />
@@ -425,8 +478,21 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
               )}
               </>
             )}
+            {mentions.length > 0 && (
+              <ul className="mt-2 space-y-1" data-testid="ticket-order-mentions">
+                {mentions.map((m) => (
+                  <li
+                    key={m.orderNumber}
+                    className={`text-[11px] ${m.state === 'foreign' ? 'text-red-800 dark:text-red-300 font-semibold' : 'text-muted-foreground'}`}
+                  >
+                    Mentions order <span className="font-mono">{m.orderNumber}</span>
+                    {m.state === 'own' ? ' — this customer’s, not linked' : m.state === 'foreign' ? ' — not this customer’s' : ' — no such order'}
+                  </li>
+                ))}
+              </ul>
+            )}
             {/* Always-on link/relink form. Empty input clears the link. */}
-            <TicketLinkOrder ticketId={t.id} currentOrderNumber={linkedOrder?.orderNumber ?? null} />
+            <TicketLinkOrder ticketId={t.id} currentOrderNumber={linkedOrderRef?.orderNumber ?? null} />
           </SidebarCard>
 
           {/* Order history (last 6) */}
@@ -469,8 +535,8 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
           <SidebarCard title="Timeline" icon={<Hourglass className="h-3.5 w-3.5 text-primary" />}>
             <div className="space-y-1 text-[11px]">
               <div className="flex justify-between"><span className="text-muted-foreground">Opened</span><span>{t.createdAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>
-              {t.dueAt && (
-                <div className="flex justify-between"><span className="text-muted-foreground">SLA due</span><span className="font-semibold">{t.dueAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>
+              {t.dueAt && (t.status === 'OPEN' || t.status === 'WAITING_ON_SUPPORT') && (
+                <div className="flex justify-between"><span className="text-muted-foreground">Reply due</span><span className="font-semibold">{t.dueAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>
               )}
               {t.lastReplyAt && (
                 <div className="flex justify-between"><span className="text-muted-foreground">Last reply</span><span>{t.lastReplyByStaff ? 'support' : 'customer'} · {t.lastReplyAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>
