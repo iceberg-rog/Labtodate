@@ -19,13 +19,17 @@
  *                    confirmed before you pay.”, or the no-claim answer
  *   {SELL_TURNAROUND} “, usually within <valuation reply time>” — empty when not set
  *   {CHECKOUT_PAYMENT_METHODS} the payment methods checkout really offers
- *   {CARD_PAYMENTS}  “ <who processes card payments>.” while card payments are
- *                    offered — empty otherwise
+ *   {CARD_PAYMENTS}  “Card payments: <who processes them and what it receives>.”
+ *                    while card payments are offered — empty otherwise (alone on
+ *                    its line, the paragraph is then left out)
  *   {CARD_PAYMENT_COOKIES} “ <the card page of the payment provider sets its own
  *                    cookies>.” while card payments are offered — empty otherwise
  *   {MARKETING_BASIS} who gets news and offers by e-mail and on which legal
  *                    basis — privacyMarketingBasis(Security → Marketing e-mail →
  *                    soft opt-in), so the policy follows what the mailer does
+ *   {TEAM_NOTIFICATIONS} “Team notifications: <what staff notices carry, in
+ *                    which chat services>.” while an active webhook (Slack,
+ *                    Discord, Telegram) receives them — empty otherwise
  * The defaults describe only what the site really does; edit them when the
  * business changes.
  */
@@ -66,7 +70,15 @@ Contact {CONTACT} within {RETURN_DAYS} days of delivery; under our [terms](/lega
 ## How do I track my order?
 Sign in and open the order under [My orders](/app/orders) — you see the fulfilment status, and the tracking number once it has shipped.`;
 
-export const PRIVACY_POLICY_TOKENS = ['{SITE}', '{LEGAL_NAME}', '{ADDRESS}', '{CONTACT}', '{RETENTION_YEARS}', '{CARD_PAYMENTS}', '{MARKETING_BASIS}'] as const;
+export const PRIVACY_POLICY_TOKENS = ['{SITE}', '{LEGAL_NAME}', '{ADDRESS}', '{CONTACT}', '{RETENTION_YEARS}', '{CARD_PAYMENTS}', '{MARKETING_BASIS}', '{TEAM_NOTIFICATIONS}'] as const;
+
+/**
+ * The day the default privacy / cookie text was last revised — the page’s
+ * “Last updated” while the default is in use. Set it to the day you change
+ * the default text (lib/legal/policy-text.test.ts pins both together).
+ */
+export const DEFAULT_PRIVACY_POLICY_DATE = '2026-10-18';
+export const DEFAULT_COOKIE_POLICY_DATE = '2026-10-18';
 
 /**
  * Fill of {MARKETING_BASIS}: who receives news and offers by e-mail and on
@@ -103,11 +115,15 @@ E-mail: our e-mail provider delivers the account and order e-mails we send you.
 
 Hosting and storage: the site, its database and uploaded files (photos, payment receipts, documents) are kept on servers we rent for this purpose, with encrypted backup copies.
 
-VAT ID checks: a VAT ID you enter is checked with the European Commission’s VIES service; the answer is kept as evidence for the VAT treatment of your order.{CARD_PAYMENTS}
+VAT ID checks: a VAT ID you enter is checked with the European Commission’s VIES service; the answer is kept as evidence for the VAT treatment of your order.
+
+{CARD_PAYMENTS}
 
 Shipping: the carrier of a shipment receives the delivery name, address and phone number.
 
 Each of them processes the data only to perform that task for us.
+
+{TEAM_NOTIFICATIONS}
 
 Suppliers: when you message a supplier or request a quote on a supplier’s listing, that supplier — a separate company — receives your message and the details of your request, not your name or contact details.
 

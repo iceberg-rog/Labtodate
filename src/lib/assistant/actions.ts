@@ -1,505 +1,187 @@
-'use server';
+/**
+ * Chat archive — read-only queries over the transcripts of the former on-site
+ * chat (AssistantConversation / AssistantMessage) for Admin → Chat archive.
+ *
+ * The chat was removed (owner decision: support runs on tickets only), so
+ * nothing here sends, claims, closes or rates a conversation, sets a cookie
+ * or calls an AI provider. The tables stay as a read-only archive until the
+ * retention review drops them.
+ *
+ * Deliberately not a 'use server' file: every export of one is a public
+ * endpoint. These are plain server functions for the admin pages, which
+ * check messages:view before calling them.
+ */
 
-import { revalidatePath } from 'next/cache';
-import { cookies } from 'next/headers';
-import { randomBytes } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { getServerSession, requireCapability, hasCapability } from '@/lib/auth-server';
-import { rateLimit } from '@/lib/ratelimit';
-import { aiChat, type AIMessage } from '@/lib/ai';
-import { ensureSettingsLoaded } from '@/lib/settings';
-import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
-import { notifyAndMaybeEmail } from '@/lib/notify-throttled';
-import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 
-const GUEST_COOKIE = 'lab2_asst_g';
-const GUEST_COOKIE_TTL_DAYS = 90;
+export const ARCHIVE_PAGE_SIZE = 50;
 
-/** Chat attachments are uploaded via /api/attachment-upload, which returns
- *  auth-gated proxy URLs; only those are stored. */
-function keepProxyAttachments(urls: unknown[], max: number): string[] {
-  return urls
-    .filter((u): u is string => typeof u === 'string' && u.startsWith('/api/support-attachment/'))
-    .slice(0, max);
+/** How a conversation ended, from its last stored status. */
+export type ArchiveOutcome = 'unanswered' | 'team' | 'ai' | 'closed' | 'ended';
+
+export const ARCHIVE_OUTCOME_LABEL: Record<ArchiveOutcome, string> = {
+  unanswered: 'Asked for a person — unanswered',
+  team: 'Answered by the team',
+  ai: 'AI only',
+  closed: 'Closed by the team',
+  ended: 'Ended',
+};
+
+/**
+ * The stored status means: AI (only the AI answered — unless a team member
+ * replied without the status moving, which the old reply action allowed),
+ * AWAITING_HUMAN (the customer asked for a person and nobody joined),
+ * WITH_HUMAN (a team member joined), CLOSED (the team closed it), ARCHIVED
+ * (the customer rated it or started a new chat).
+ */
+export function archiveOutcome(c: { status: string; assignedToId: string | null }): ArchiveOutcome {
+  switch (c.status) {
+    case 'AWAITING_HUMAN':
+      return 'unanswered';
+    case 'WITH_HUMAN':
+      return 'team';
+    case 'CLOSED':
+      return 'closed';
+    case 'ARCHIVED':
+      return 'ended';
+    default:
+      return c.assignedToId ? 'team' : 'ai';
+  }
+}
+
+export const ARCHIVE_FILTERS = [
+  { key: 'all', label: 'All' },
+  { key: 'unanswered', label: 'Unanswered requests for a person' },
+  { key: 'team', label: 'Answered by the team' },
+  { key: 'ai', label: 'AI only' },
+  { key: 'closed', label: 'Closed or ended' },
+] as const;
+
+export type ArchiveFilter = (typeof ARCHIVE_FILTERS)[number]['key'];
+
+export function archiveFilterOf(value: string | undefined): ArchiveFilter {
+  return ARCHIVE_FILTERS.find((f) => f.key === value)?.key ?? 'all';
+}
+
+/** The conversations of one filter — exactly those whose archiveOutcome it names. */
+export function archiveFilterWhere(filter: ArchiveFilter): Prisma.AssistantConversationWhereInput {
+  switch (filter) {
+    case 'unanswered':
+      return { status: 'AWAITING_HUMAN' };
+    case 'team':
+      return { OR: [{ status: 'WITH_HUMAN' }, { status: { notIn: ['AWAITING_HUMAN', 'WITH_HUMAN', 'CLOSED', 'ARCHIVED'] }, assignedToId: { not: null } }] };
+    case 'ai':
+      return { status: { notIn: ['AWAITING_HUMAN', 'WITH_HUMAN', 'CLOSED', 'ARCHIVED'] }, assignedToId: null };
+    case 'closed':
+      return { status: { in: ['CLOSED', 'ARCHIVED'] } };
+    default:
+      return {};
+  }
+}
+
+/** Search over subject, the customer's name and e-mail and the message text. */
+export function archiveSearchWhere(q: string): Prisma.AssistantConversationWhereInput {
+  const s = q.trim();
+  if (!s) return {};
+  const contains = { contains: s, mode: 'insensitive' as const };
+  return {
+    OR: [
+      { subject: contains },
+      { guestName: contains },
+      { guestEmail: contains },
+      { user: { name: contains } },
+      { user: { email: contains } },
+      { messages: { some: { body: contains } } },
+    ],
+  };
+}
+
+/** Number of conversations per filter (for the filter chips). */
+export async function archiveCounts(): Promise<Record<ArchiveFilter, number>> {
+  const counts = await Promise.all(ARCHIVE_FILTERS.map((f) => prisma.assistantConversation.count({ where: archiveFilterWhere(f.key) })));
+  return Object.fromEntries(ARCHIVE_FILTERS.map((f, i) => [f.key, counts[i]])) as Record<ArchiveFilter, number>;
+}
+
+/** One page of the archive, most recent first. */
+export async function listArchive(opts: { filter: ArchiveFilter; q: string; page: number }) {
+  const where: Prisma.AssistantConversationWhereInput = { AND: [archiveFilterWhere(opts.filter), archiveSearchWhere(opts.q)] };
+  const [total, rows] = await Promise.all([
+    prisma.assistantConversation.count({ where }),
+    prisma.assistantConversation.findMany({
+      where,
+      orderBy: { lastMessageAt: 'desc' },
+      skip: (Math.max(1, opts.page) - 1) * ARCHIVE_PAGE_SIZE,
+      take: ARCHIVE_PAGE_SIZE,
+      select: {
+        id: true, status: true, subject: true, rating: true,
+        guestName: true, guestEmail: true, assignedToId: true,
+        user: { select: { name: true, email: true } },
+        startedAt: true, lastMessageAt: true,
+        _count: { select: { messages: true } },
+        messages: { orderBy: { createdAt: 'desc' }, take: 1, select: { role: true, body: true } },
+      },
+    }),
+  ]);
+  return { total, rows };
+}
+
+/** Totals for the summary strip of the archive. */
+export async function archiveSummary() {
+  const [total, unanswered, team, range, ratings] = await Promise.all([
+    prisma.assistantConversation.count(),
+    prisma.assistantConversation.count({ where: archiveFilterWhere('unanswered') }),
+    prisma.assistantConversation.count({ where: archiveFilterWhere('team') }),
+    prisma.assistantConversation.aggregate({ _min: { startedAt: true }, _max: { lastMessageAt: true } }),
+    prisma.assistantConversation.aggregate({ _avg: { rating: true }, _count: { rating: true }, where: { rating: { not: null } } }),
+  ]);
+  return {
+    total,
+    unanswered,
+    team,
+    firstAt: range._min.startedAt,
+    lastAt: range._max.lastMessageAt,
+    rated: ratings._count.rating,
+    avgRating: ratings._avg.rating,
+  };
 }
 
 /**
- * Resolve the conversation actor:
- *   - If logged in → { userId }
- *   - Else → { guestToken } (read existing cookie or mint a fresh one)
- *
- * Either way we have a stable handle to upsert/lookup the conversation.
+ * The mailto: link to follow up a transcript, or null when the address is not
+ * one well-formed e-mail address. A guest typed it at escalation and it was
+ * never validated, so it may be a name, a list or carry ?bcc=/&body= that
+ * would pre-fill the staff member’s mail.
  */
-async function resolveActor(): Promise<{
-  userId: string | null;
-  guestToken: string | null;
-  userName?: string;
-  userEmail?: string;
-}> {
-  const session = await getServerSession();
-  if (session?.user) {
-    return {
-      userId: session.user.id,
-      guestToken: null,
-      userName: session.user.name,
-      userEmail: session.user.email,
-    };
-  }
-  const cookieStore = await cookies();
-  let token = cookieStore.get(GUEST_COOKIE)?.value;
-  if (!token) {
-    token = randomBytes(24).toString('hex');
-    cookieStore.set(GUEST_COOKIE, token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: true,
-      path: '/',
-      maxAge: GUEST_COOKIE_TTL_DAYS * 86400,
-    });
-  }
-  return { userId: null, guestToken: token };
+export function followUpMailto(email: string | null | undefined): string | null {
+  if (!email || !z.string().email().safeParse(email).success) return null;
+  return `mailto:${encodeURIComponent(email).replace(/%40/g, '@')}`;
 }
 
-/**
- * Find the active conversation for this actor (status NOT in ARCHIVED).
- * One person at a time can have at most one open conversation — keeps the
- * model simple. Older archived ones stay around for history.
- */
-async function findOrCreateConversation(actor: {
-  userId: string | null;
-  guestToken: string | null;
-}): Promise<string> {
-  const where = actor.userId
-    ? { userId: actor.userId, archivedAt: null }
-    : { guestToken: actor.guestToken!, archivedAt: null };
-  const existing = await prisma.assistantConversation.findFirst({
-    where,
-    orderBy: { lastMessageAt: 'desc' },
-    select: { id: true },
-  });
-  if (existing) return existing.id;
-  const created = await prisma.assistantConversation.create({
-    data: {
-      userId: actor.userId,
-      guestToken: actor.guestToken,
-      status: 'AI',
-    },
-    select: { id: true },
-  });
-  return created.id;
-}
-
-/**
- * Send a user message. Always persists the message; if status=AI we call the
- * LLM for a reply and persist that too. If status=AWAITING_HUMAN or
- * WITH_HUMAN we just queue the message + ping admins. Returns the full
- * conversation snapshot so the client can re-render.
- */
-export async function sendAssistantMessage(input: {
-  body: string;
-  attachments?: string[];
-}): Promise<{
-  conversationId: string;
-  messages: Array<{ id: string; role: string; body: string; attachments: string[]; createdAt: string }>;
-  status: string;
-  rating: number | null;
-  closedAt: string | null;
-}> {
-  // SECURITY: this action is callable by anonymous guests and drives a paid
-  // LLM call — throttle per real client IP so a replay loop can't run up the
-  // provider bill or flood the DB with messages/conversations.
-  await rateLimit('assistant', 20, 5 * 60_000);
-  await ensureSettingsLoaded();
-  const actor = await resolveActor();
-  const conversationId = await findOrCreateConversation(actor);
-  const body = (input.body || '').trim().slice(0, 4000);
-  const attachments = keepProxyAttachments(input.attachments || [], 4);
-  if (!body && attachments.length === 0) {
-    return readConversation(conversationId);
-  }
-
-  // Persist user message.
-  await prisma.assistantMessage.create({
-    data: {
-      conversationId,
-      role: 'user',
-      authorId: actor.userId,
-      body,
-      attachments,
-    },
-  });
-
-  // If subject is empty, snapshot the first user message as subject for the
-  // admin queue.
-  await prisma.assistantConversation.update({
-    where: { id: conversationId },
-    data: {
-      lastMessageAt: new Date(),
-      subject: { set: (await prisma.assistantConversation.findUnique({ where: { id: conversationId }, select: { subject: true } }))?.subject || body.slice(0, 60) },
-    },
-  });
-
-  const convo = await prisma.assistantConversation.findUnique({
-    where: { id: conversationId },
-    select: { status: true, userId: true, guestEmail: true, assignedToId: true },
-  });
-  if (!convo) return readConversation(conversationId);
-
-  if (convo.status === 'AI') {
-    // Build history for AI: most-recent 12 messages, mapped to the OpenAI
-    // schema. Admin messages count as 'assistant' for the model's PoV.
-    const history = await prisma.assistantMessage.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'asc' },
-      take: 12,
-      select: { role: true, body: true },
-    });
-    const aiHistory: AIMessage[] = history.map((m) => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.body,
-    }));
-    let reply: string;
-    try {
-      reply = await aiChat(aiHistory);
-    } catch (e) {
-      reply =
-        'I hit a technical hiccup. If this is urgent, click "Talk to a human" and an operator will join shortly.';
-      console.error('AI error', e);
-    }
-    await prisma.assistantMessage.create({
-      data: { conversationId, role: 'assistant', body: reply },
-    });
-    await prisma.assistantConversation.update({
-      where: { id: conversationId },
-      data: { lastMessageAt: new Date() },
-    });
-  } else if (convo.status === 'AWAITING_HUMAN' || convo.status === 'WITH_HUMAN') {
-    // Ping admins so they can jump in.
-    await notifyAdmins(
-      `New customer message · ${conversationId.slice(-6).toUpperCase()}`,
-      body.slice(0, 140),
-      `/admin/messages/${conversationId}`,
-      'SYSTEM',
-    ).catch(() => null);
-  }
-
-  return readConversation(conversationId);
-}
-
-/**
- * User clicks "Talk to a human". Marks the conversation AWAITING_HUMAN and
- * pings admins. Optional name/email collected so the operator can address
- * the customer; passing them is recommended for guests but optional for
- * logged-in users (we already have their profile).
- */
-export async function requestHumanEscalation(input: {
-  name?: string;
-  email?: string;
-}): Promise<{ conversationId: string; status: string }> {
-  // Anonymous-callable + pings admins — throttle to stop escalation spam.
-  await rateLimit('assistant-escalate', 6, 15 * 60_000);
-  await ensureSettingsLoaded();
-  const actor = await resolveActor();
-  const conversationId = await findOrCreateConversation(actor);
-  const conv = await prisma.assistantConversation.findUnique({
-    where: { id: conversationId },
-    select: { status: true, subject: true, userId: true, guestName: true, guestEmail: true },
-  });
-  if (!conv) throw new Error('Conversation not found');
-  if (conv.status === 'CLOSED' || conv.status === 'ARCHIVED') {
-    return { conversationId, status: conv.status };
-  }
-  await prisma.assistantConversation.update({
-    where: { id: conversationId },
-    data: {
-      status: 'AWAITING_HUMAN',
-      lastMessageAt: new Date(),
-      ...(actor.userId
-        ? {}
-        : {
-            guestName: (input.name || conv.guestName)?.slice(0, 120) ?? null,
-            guestEmail: (input.email || conv.guestEmail)?.slice(0, 120) ?? null,
-          }),
-    },
-  });
-  await prisma.assistantMessage.create({
-    data: {
-      conversationId,
-      role: 'system',
-      body: 'Customer requested a human operator.',
-    },
-  });
-  const tag = actor.userId
-    ? '(registered user)'
-    : `(guest${input.name ? ` · ${input.name}` : ''}${input.email ? ` · ${input.email}` : ''})`;
-  await notifyAdmins(
-    `Live chat handoff · ${conversationId.slice(-6).toUpperCase()}`,
-    `${conv.subject ?? 'New chat'} ${tag}`,
-    `/admin/messages/${conversationId}`,
-    'SYSTEM',
-  ).catch(() => null);
-  await audit('assistant.escalate', conversationId.slice(-6).toUpperCase(), tag);
-  return { conversationId, status: 'AWAITING_HUMAN' };
-}
-
-/**
- * Admin claims an awaiting conversation (idempotent — second claim re-asserts).
- */
-export async function adminClaimConversation(formData: FormData): Promise<void> {
-  const session = await requireCapability('messages:reply', { redirectTo: '/admin/messages' });
-  const id = String(formData.get('conversationId') ?? '');
-  if (!id) return;
-  await prisma.assistantConversation.update({
-    where: { id },
-    data: { status: 'WITH_HUMAN', assignedToId: session.user.id, lastMessageAt: new Date() },
-  });
-  await prisma.assistantMessage.create({
-    data: { conversationId: id, role: 'system', body: `${session.user.name} joined the chat.` },
-  });
-  await audit('assistant.claim', id.slice(-6).toUpperCase(), `by=${session.user.email}`);
-  revalidatePath('/admin/messages');
-  revalidatePath(`/admin/messages/${id}`);
-}
-
-/**
- * Admin reply. Persists, advances state if needed, pings user.
- */
-export async function adminReplyConversation(formData: FormData): Promise<void> {
-  const session = await requireCapability('messages:reply', { redirectTo: '/admin/messages' });
-  await ensureSettingsLoaded();
-  const id = String(formData.get('conversationId') ?? '');
-  const body = String(formData.get('body') ?? '').trim().slice(0, 4000);
-  // ReplyForm posts a JSON array of proxy URLs. The old comma-split +
-  // http-only filter dropped every attachment silently.
-  let attachments: string[] = [];
-  try {
-    const parsed: unknown = JSON.parse(String(formData.get('attachments') ?? '[]') || '[]');
-    if (Array.isArray(parsed)) attachments = keepProxyAttachments(parsed, 5);
-  } catch {
-    attachments = [];
-  }
-  if (!id || (!body && attachments.length === 0)) return;
-
+/** One transcript with the names of the team members who wrote in it, joined or closed it. */
+export async function getArchivedConversation(id: string) {
   const conv = await prisma.assistantConversation.findUnique({
     where: { id },
-    select: { userId: true, guestEmail: true, guestName: true, status: true, subject: true, assignedToId: true },
-  });
-  if (!conv) return;
-
-  await prisma.assistantMessage.create({
-    data: {
-      conversationId: id,
-      role: 'admin',
-      authorId: session.user.id,
-      body,
-      attachments,
-    },
-  });
-  await prisma.assistantConversation.update({
-    where: { id },
-    data: {
-      status: conv.status === 'AWAITING_HUMAN' ? 'WITH_HUMAN' : conv.status,
-      assignedToId: session.user.id,
-      lastMessageAt: new Date(),
-    },
-  });
-  const ref = `CHT-${id.slice(-6).toUpperCase()}`;
-  if (conv.userId) {
-    await notifyAndMaybeEmail({
-      userId: conv.userId,
-      toEmail: (await prisma.user.findUnique({ where: { id: conv.userId }, select: { email: true } }))?.email ?? '',
-      notifTitle: `New reply · ${ref}`,
-      notifBody: `An operator replied: ${body.slice(0, 120)}`,
-      notifHref: '/app#chat-open',
-      emailSubject: `[${ref}] We replied to your chat on lab2date`,
-      emailHtml: `<p>Hi,</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app">Open lab2date</a> to continue the conversation.</p>`,
-      dedupeKey: ref,
-    });
-  } else if (conv.guestEmail && z.string().email().safeParse(conv.guestEmail).success) {
-    // Guest — fire a one-shot email; throttle still applies via EmailLog. The
-    // address is whatever the guest typed (never validated at escalation), so
-    // only a single well-formed address is mailed — never a list.
-    await notifyAndMaybeEmail({
-      userId: null,
-      toEmail: conv.guestEmail,
-      notifTitle: '',
-      notifBody: '',
-      notifHref: '',
-      emailSubject: `[${ref}] We replied to your chat on lab2date`,
-      emailHtml: `<p>Hi ${escapeHtml(conv.guestName ?? 'there')},</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p>Re-open the chat at the bottom-right of <a href="${process.env.BETTER_AUTH_URL || 'https://labtodate.com'}">labtodate.com</a> to continue.</p>`,
-      dedupeKey: ref,
-    });
-  }
-  await audit('assistant.reply', ref, `by=${session.user.email}`);
-  revalidatePath('/admin/messages');
-  revalidatePath(`/admin/messages/${id}`);
-}
-
-/** Admin closes; user gets a rating prompt next time they open the widget. */
-export async function adminCloseConversation(formData: FormData): Promise<void> {
-  const session = await requireCapability('messages:reply', { redirectTo: '/admin/messages' });
-  const id = String(formData.get('conversationId') ?? '');
-  if (!id) return;
-  await prisma.assistantConversation.update({
-    where: { id },
-    data: { status: 'CLOSED', closedAt: new Date(), closedById: session.user.id, lastMessageAt: new Date() },
-  });
-  await prisma.assistantMessage.create({
-    data: { conversationId: id, role: 'system', body: `${session.user.name} closed the chat.` },
-  });
-  const conv = await prisma.assistantConversation.findUnique({
-    where: { id },
-    select: { userId: true, guestEmail: true },
-  });
-  if (conv?.userId) {
-    await notifyUser(
-      conv.userId,
-      `Chat closed — rate your experience`,
-      `An operator closed your chat. Rate it next time you open the assistant.`,
-      '/app#chat-open',
-    ).catch(() => null);
-  }
-  await audit('assistant.close', id.slice(-6).toUpperCase(), `by=${session.user.email}`);
-  revalidatePath('/admin/messages');
-  revalidatePath(`/admin/messages/${id}`);
-}
-
-/** User rates a CLOSED conversation 1..5. Archives after submission. */
-export async function rateAssistantConversation(input: {
-  rating: number;
-  note?: string;
-}): Promise<{ ok: boolean }> {
-  const actor = await resolveActor();
-  const conversationId = await findOrCreateConversation(actor);
-  const r = Math.max(1, Math.min(5, Math.round(input.rating || 0)));
-  if (!r) return { ok: false };
-  await prisma.assistantConversation.update({
-    where: { id: conversationId },
-    data: {
-      rating: r,
-      ratingNote: (input.note || '').slice(0, 500) || null,
-      ratedAt: new Date(),
-      status: 'ARCHIVED',
-      archivedAt: new Date(),
-    },
-  });
-  await audit('assistant.rate', conversationId.slice(-6).toUpperCase(), `rating=${r}`);
-  return { ok: true };
-}
-
-/** Snapshot reader used by the widget on every send. */
-export async function readConversation(conversationId: string): Promise<{
-  conversationId: string;
-  messages: Array<{ id: string; role: string; body: string; attachments: string[]; createdAt: string }>;
-  status: string;
-  rating: number | null;
-  closedAt: string | null;
-}> {
-  const conv = await prisma.assistantConversation.findUnique({
-    where: { id: conversationId },
-    select: {
-      id: true,
-      status: true,
-      rating: true,
-      closedAt: true,
-      userId: true,
-      guestToken: true,
+    include: {
+      user: { select: { id: true, name: true, email: true, createdAt: true } },
       messages: {
         orderBy: { createdAt: 'asc' },
-        select: { id: true, role: true, body: true, attachments: true, createdAt: true },
-        take: 200,
+        select: { id: true, role: true, authorId: true, body: true, attachments: true, createdAt: true },
       },
     },
   });
-  if (!conv) {
-    return { conversationId, messages: [], status: 'AI', rating: null, closedAt: null };
-  }
-  // SECURITY (IDOR): a conversation can hold guest name/email + free-text
-  // support content. Only the owner — the logged-in user, or a guest matched
-  // by cookie — or an admin may read it. Anyone else (leaked/guessed id) gets
-  // an empty snapshot rather than someone else's chat.
-  const session = await getServerSession();
-  const role = (session?.user as { role?: string } | undefined)?.role;
-  const guestToken = (await cookies()).get(GUEST_COOKIE)?.value ?? null;
-  const owns = conv.userId
-    ? conv.userId === session?.user?.id
-    : !!conv.guestToken && conv.guestToken === guestToken;
-  // Staff read other people's chats only with messages:view (A31).
-  if (!owns && !(role === 'ADMIN' && (await hasCapability('messages:view')))) {
-    return { conversationId, messages: [], status: conv.status, rating: null, closedAt: null };
-  }
-  return {
-    conversationId: conv.id,
-    messages: conv.messages.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })),
-    status: conv.status,
-    rating: conv.rating,
-    closedAt: conv.closedAt?.toISOString() ?? null,
-  };
-}
-
-/** Initial snapshot for the widget on open — finds existing conversation. */
-export async function getOrInitConversation(): Promise<{
-  conversationId: string;
-  messages: Array<{ id: string; role: string; body: string; attachments: string[]; createdAt: string }>;
-  status: string;
-  rating: number | null;
-  closedAt: string | null;
-  identity: { kind: 'user' | 'guest'; name: string | null; email: string | null };
-}> {
-  const actor = await resolveActor();
-  const id = await findOrCreateConversation(actor);
-  const snap = await readConversation(id);
-  return {
-    ...snap,
-    identity: {
-      kind: actor.userId ? 'user' : 'guest',
-      name: actor.userName ?? null,
-      email: actor.userEmail ?? null,
-    },
-  };
-}
-
-/**
- * Archive whatever non-archived conversation this actor has, then create a
- * fresh AI-mode one. Used by the widget's "Start a new chat" button after
- * the user rates a closed conversation. Returns the new empty snapshot.
- */
-export async function startFreshConversation(): Promise<{
-  conversationId: string;
-  messages: Array<{ id: string; role: string; body: string; attachments: string[]; createdAt: string }>;
-  status: string;
-  rating: number | null;
-  closedAt: string | null;
-  identity: { kind: 'user' | 'guest'; name: string | null; email: string | null };
-}> {
-  // Anonymous-callable + creates a row each call — throttle to cap DB growth.
-  await rateLimit('assistant-fresh', 10, 15 * 60_000);
-  const actor = await resolveActor();
-  const where = actor.userId
-    ? { userId: actor.userId, archivedAt: null }
-    : { guestToken: actor.guestToken!, archivedAt: null };
-  // Sweep any open conversation into archived so findOrCreateConversation
-  // returns a fresh row on the next call. updateMany silently no-ops if
-  // there's nothing to archive — fine.
-  await prisma.assistantConversation.updateMany({
-    where,
-    data: { archivedAt: new Date(), status: 'ARCHIVED' },
-  });
-  const created = await prisma.assistantConversation.create({
-    data: { userId: actor.userId, guestToken: actor.guestToken, status: 'AI' },
-    select: { id: true },
-  });
-  return {
-    conversationId: created.id,
-    messages: [],
-    status: 'AI',
-    rating: null,
-    closedAt: null,
-    identity: {
-      kind: actor.userId ? 'user' : 'guest',
-      name: actor.userName ?? null,
-      email: actor.userEmail ?? null,
-    },
-  };
+  if (!conv) return null;
+  // assignedToId / closedById / authorId are loose user ids (no relations on the model).
+  const staffIds = [
+    ...new Set(
+      [conv.assignedToId, conv.closedById, ...conv.messages.filter((m) => m.role === 'admin').map((m) => m.authorId)].filter(
+        (x): x is string => !!x,
+      ),
+    ),
+  ];
+  const staff = staffIds.length
+    ? await prisma.user.findMany({ where: { id: { in: staffIds } }, select: { id: true, name: true } })
+    : [];
+  const staffNames: Record<string, string> = Object.fromEntries(staff.map((u) => [u.id, u.name]));
+  return { conv, staffNames };
 }

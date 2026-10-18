@@ -1,18 +1,22 @@
-import { ensureSettingsLoaded } from '@/lib/settings';
-
-export interface AIMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
-}
-
 /**
+ * AI provider configuration for the admin AI tools (Shops & suppliers:
+ * supplier-shop suggestions and shop risk checks, and the import fallback
+ * that reads a supplier product page) — see lib/ai-structured.ts. Settings →
+ * AI assistant. The on-site chat that also used it was removed (support runs
+ * on tickets), so nothing public calls an AI provider.
+ *
+ * These tools send supplier web pages and URLs, never customer data — which
+ * is why the privacy policy names no AI provider. Keep it that way, or add
+ * the provider to Settings → Site texts & pages → Privacy policy.
+ *
  * Provider auto-detected from the API key prefix:
  *   - `sk-ant-*` → Anthropic (Claude). Uses /v1/messages.
  *   - anything else → OpenAI-compatible (/v1/chat/completions). Works with
  *     OpenAI, DeepSeek, Together, etc.
  *
  * Admin can override AI_BASE_URL + AI_MODEL via Settings to pin a specific
- * provider; the prefix sniff is just the default routing.
+ * provider; the prefix sniff is just the default routing. Read after
+ * `await ensureSettingsLoaded()`.
  */
 function detectProvider(key: string): 'anthropic' | 'openai-compatible' {
   return key.startsWith('sk-ant-') ? 'anthropic' : 'openai-compatible';
@@ -28,124 +32,9 @@ export function aiConfig() {
     provider,
     base: (process.env.AI_BASE_URL || baseDefault).replace(/\/+$/, ''),
     model: process.env.AI_MODEL || modelDefault,
-    name: process.env.ASSISTANT_NAME || 'lab2date Assistant',
   };
 }
 
 export function aiConfigured(): boolean {
   return !!process.env.AI_API_KEY;
-}
-
-// ── Global daily circuit-breaker ────────────────────────────────────────────
-// A hard ceiling on LLM calls per UTC day across ALL callers — a backstop
-// against a distributed abuse burst (many real IPs) running up the provider
-// bill even after per-IP rate limits. In-memory, single-instance; resets at
-// UTC midnight and on restart. Tune via AI_DAILY_CALL_CAP.
-const DAILY_AI_CALL_CAP = Number(process.env.AI_DAILY_CALL_CAP || 5000);
-let aiCallDay = '';
-let aiCallCount = 0;
-
-function withinDailyBudget(): boolean {
-  const today = new Date().toISOString().slice(0, 10);
-  if (today !== aiCallDay) {
-    aiCallDay = today;
-    aiCallCount = 0;
-  }
-  if (aiCallCount >= DAILY_AI_CALL_CAP) return false;
-  aiCallCount += 1;
-  return true;
-}
-
-const SYSTEM = `You are the on-site assistant for lab2date, a B2B marketplace for refurbished and surplus laboratory & analytical equipment (HPLC, GC, mass spec, spectroscopy, centrifuges, parts).
-Be concise, professional and helpful. You can explain: how to request a quote (/let-us-find-it), buy now or add to cart, the proforma/invoice flow, how to sell equipment to lab2date (/sell), order tracking (/app/orders), returns/refunds, and support (/support).
-Never reveal internal suppliers or that listings are sourced from third-party shops — lab2date is the single counterparty.
-Never promise a warranty, inspection, shipping method, insurance or delivery time: each listing states its own warranty and condition, and anything else must be confirmed by the team (point the visitor to the listing, /support or a quote request). If unsure or for account-specific issues, advise opening a support ticket at /support. Keep answers under ~120 words unless asked for detail.`;
-
-/** Promises the owner configured (Settings → Catalog & claims) — the only ones
- *  the assistant may repeat. Settings are loaded by aiChat before this runs. */
-function configuredClaims(): string {
-  const lines: string[] = [];
-  const ship = (process.env.TRUST_SHIPPING_CLAIM ?? '').trim();
-  const ret = (process.env.TRUST_RETURNS_CLAIM ?? '').trim();
-  if (ship) lines.push(`Shipping promise you may repeat: "${ship}".`);
-  if (ret) lines.push(`Returns promise you may repeat: "${ret}".`);
-  return lines.length ? `\n${lines.join('\n')}` : '';
-}
-
-/**
- * Call the LLM. Returns assistant text. Auto-routes between Anthropic and
- * OpenAI-compatible based on the configured key.
- */
-export async function aiChat(history: AIMessage[]): Promise<string> {
-  await ensureSettingsLoaded();
-  const c = aiConfig();
-  if (!c.key) {
-    return "The assistant isn't configured yet. Please email support or open a ticket at /support and we'll help right away.";
-  }
-  if (!withinDailyBudget()) {
-    return "Our live assistant is at capacity right now. Please open a support ticket at /support and we'll get right back to you.";
-  }
-
-  // ── Anthropic Claude branch ──
-  if (c.provider === 'anthropic') {
-    const messages = history
-      .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m) => ({ role: m.role, content: m.content }))
-      .slice(-12);
-    // Anthropic requires the first message to be 'user'. If the trimmed
-    // history starts with 'assistant', drop until we hit a 'user'.
-    while (messages.length > 0 && messages[0].role !== 'user') messages.shift();
-    if (messages.length === 0) return 'How can I help?';
-    const res = await fetch(`${c.base}/v1/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': c.key,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: c.model,
-        max_tokens: 500,
-        system: `${SYSTEM}${configuredClaims()}\nYour name is ${c.name}.`,
-        messages,
-        temperature: 0.3,
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      throw new Error(`AI provider error ${res.status}: ${t.slice(0, 200)}`);
-    }
-    const data = (await res.json()) as { content?: { type?: string; text?: string }[] };
-    const text = (data.content ?? [])
-      .filter((b) => b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text)
-      .join('\n')
-      .trim();
-    return text || 'Sorry, I could not generate a reply.';
-  }
-
-  // ── OpenAI-compatible branch ──
-  const res = await fetch(`${c.base}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${c.key}`,
-    },
-    body: JSON.stringify({
-      model: c.model,
-      messages: [{ role: 'system', content: `${SYSTEM}${configuredClaims()}\nYour name is ${c.name}.` }, ...history].slice(-12),
-      temperature: 0.3,
-      max_tokens: 500,
-    }),
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    throw new Error(`AI provider error ${res.status}: ${t.slice(0, 200)}`);
-  }
-  const data = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-  };
-  return data.choices?.[0]?.message?.content?.trim() || 'Sorry, I could not generate a reply.';
 }

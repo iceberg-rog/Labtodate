@@ -184,8 +184,6 @@ test('release v2 keys say “not applied yet” until the package that reads the
     CONSUMER_WITHDRAWAL_TEXT: 'PKG-19',
     ABOUT_PAGE_TEXT: 'PKG-15',
     FAQ_TEXT: 'PKG-15',
-    PRIVACY_POLICY_TEXT: 'PKG-08',
-    COOKIE_POLICY_TEXT: 'PKG-08',
     SOCIAL_LINKS: 'PKG-13',
     OG_DEFAULT_IMAGE_URL: 'PKG-14',
     OG_LOCALE: 'PKG-14',
@@ -199,6 +197,16 @@ test('release v2 keys say “not applied yet” until the package that reads the
   for (const [k, pkg] of Object.entries(readers)) assert.ok(settingDef(k)?.pending?.includes(pkg), `${k} pending names ${pkg}`);
   // The admin page prints “takes effect with <pending>”: a feature, then the package.
   for (const d of SETTING_DEFS) if (d.pending) assert.match(d.pending, /^[a-z].* \(PKG-\d{2}(, PKG-\d{2})*\)$/, d.key);
+});
+
+test('the privacy and cookie texts are applied (PKG-08): no “not applied yet”, a preview of the page', () => {
+  assert.equal(settingDef('PRIVACY_POLICY_TEXT')?.pending, undefined);
+  assert.equal(settingDef('COOKIE_POLICY_TEXT')?.pending, undefined);
+  assert.equal(settingDef('PRIVACY_POLICY_TEXT')?.preview, '/legal/privacy');
+  assert.equal(settingDef('COOKIE_POLICY_TEXT')?.preview, '/legal/cookies');
+  assert.match(settingDef('PRIVACY_POLICY_TEXT')?.hint ?? '', /\{CARD_PAYMENTS\}/);
+  assert.match(settingDef('PRIVACY_POLICY_TEXT')?.hint ?? '', /\{TEAM_NOTIFICATIONS\} names the chat services/);
+  assert.match(settingDef('COOKIE_POLICY_TEXT')?.hint ?? '', /\{CARD_PAYMENT_COOKIES\}/);
 });
 
 test('the chat assistant name is gone and the AI keys describe the admin tools only', () => {

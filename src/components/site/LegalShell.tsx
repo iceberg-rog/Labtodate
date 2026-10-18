@@ -21,13 +21,19 @@ export async function legalContext() {
   };
 }
 
+/**
+ * “Last updated” is shown only from `updatedAt` — when the page’s text really
+ * changed (e.g. loadPolicyUpdatedAt), never today’s date.
+ */
 export function LegalShell({
   title,
   subtitle,
+  updatedAt,
   children,
 }: {
   title: string;
   subtitle?: string;
+  updatedAt?: Date | null;
   children: React.ReactNode;
 }) {
   return (
@@ -37,7 +43,11 @@ export function LegalShell({
       </h1>
       {subtitle && <p className="mt-3 text-lg text-muted-foreground">{subtitle}</p>}
       <div className="prose-article mt-10 text-foreground">{children}</div>
-      <p className="mt-12 text-xs text-muted-foreground">Last updated: {new Date().toLocaleDateString('en-GB', { year: 'numeric', month: 'long' })}</p>
+      {updatedAt && (
+        <p className="mt-12 text-xs text-muted-foreground">
+          Last updated: {updatedAt.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', timeZone: 'Europe/Amsterdam' })}
+        </p>
+      )}
     </div>
   );
 }

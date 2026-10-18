@@ -1,44 +1,34 @@
 import Link from 'next/link';
-import {
-  MessageSquare, Inbox, Headphones, Sparkles, CheckCheck, Archive,
-  ArrowRight, Star, Clock, ShieldCheck, UserCircle2,
-} from 'lucide-react';
-import { requireCapability } from '@/lib/auth-server';
-import { prisma } from '@/lib/db';
-import { Prisma } from '@prisma/client';
+import { MessageSquare, Inbox, Headphones, Sparkles, Archive, ArrowRight, Star, Clock, ShieldCheck, UserCircle2, Lock } from 'lucide-react';
+import { hasCapability, requireCapability } from '@/lib/auth-server';
 import { AdminSearch, AdminPager } from '@/components/admin/AdminListControls';
-import { AutoRefresh } from '@/components/util/AutoRefresh';
+import {
+  ARCHIVE_FILTERS, ARCHIVE_OUTCOME_LABEL, ARCHIVE_PAGE_SIZE, archiveCounts, archiveFilterOf, archiveOutcome, archiveSummary, listArchive,
+  type ArchiveFilter, type ArchiveOutcome,
+} from '@/lib/assistant/actions';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Messages' };
-
-const PAGE_SIZE = 50;
+export const metadata = { title: 'Chat archive' };
 
 /**
- * Tabs split the queue by lifecycle stage. "Awaiting human" is the most
- * urgent — someone is sitting in the widget waiting for an operator.
- * "With me" filters to conversations the current admin claimed. Closed
- * groups CLOSED + ARCHIVED so historical conversations stay reachable.
+ * Chat archive: the transcripts of the former on-site chat, read-only. The
+ * chat was removed (support runs on tickets only), so nothing on this page or
+ * the transcript page can answer, claim or close a conversation.
  */
-const TAB_DEFS: Array<{
-  key: string;
-  label: string;
-  statusFilter?: string[];
-  Icon: React.ComponentType<{ className?: string }>;
-}> = [
-  { key: 'awaiting', label: 'Awaiting human',  statusFilter: ['AWAITING_HUMAN'], Icon: Headphones },
-  { key: 'with_me',  label: 'With me',         statusFilter: ['WITH_HUMAN'], Icon: ShieldCheck },
-  { key: 'ai',       label: 'AI handling',     statusFilter: ['AI'], Icon: Sparkles },
-  { key: 'closed',   label: 'Closed',          statusFilter: ['CLOSED', 'ARCHIVED'], Icon: Archive },
-  { key: 'all',      label: 'All',             statusFilter: undefined, Icon: Inbox },
-];
+const FILTER_ICON: Record<ArchiveFilter, React.ComponentType<{ className?: string }>> = {
+  all: Inbox,
+  unanswered: Headphones,
+  team: ShieldCheck,
+  ai: Sparkles,
+  closed: Archive,
+};
 
-const STATUS_VIS: Record<string, { stripe: string; pill: string; label: string }> = {
-  AI:               { stripe: 'before:bg-violet-400',  pill: 'bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800',     label: 'AI handling' },
-  AWAITING_HUMAN:   { stripe: 'before:bg-amber-500',   pill: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800',       label: 'Waiting for you' },
-  WITH_HUMAN:       { stripe: 'before:bg-emerald-500', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800',  label: 'Live · with human' },
-  CLOSED:           { stripe: 'before:bg-slate-400',   pill: 'bg-muted text-muted-foreground border-border',       label: 'Closed' },
-  ARCHIVED:         { stripe: 'before:bg-slate-300',   pill: 'bg-muted text-muted-foreground border-border',        label: 'Archived' },
+const OUTCOME_VIS: Record<ArchiveOutcome, { stripe: string; pill: string }> = {
+  unanswered: { stripe: 'before:bg-amber-500',   pill: 'bg-amber-100 text-amber-900 border-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:border-amber-800' },
+  team:       { stripe: 'before:bg-emerald-500', pill: 'bg-emerald-50 text-emerald-900 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800' },
+  ai:         { stripe: 'before:bg-violet-400',  pill: 'bg-violet-50 text-violet-900 border-violet-200 dark:bg-violet-950/40 dark:text-violet-300 dark:border-violet-800' },
+  closed:     { stripe: 'before:bg-slate-400',   pill: 'bg-muted text-muted-foreground border-border' },
+  ended:      { stripe: 'before:bg-slate-300',   pill: 'bg-muted text-muted-foreground border-border' },
 };
 
 function smartDate(d: Date | null | undefined): string {
@@ -52,120 +42,92 @@ function smartDate(d: Date | null | undefined): string {
   }
   if (days === 1) return 'yesterday';
   if (days < 7) return `${days}d ago`;
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-export default async function AdminMessagesPage(
+export default async function AdminChatArchivePage(
   props: {
     searchParams: Promise<{ tab?: string; q?: string; page?: string }>;
   }
 ) {
   const searchParams = await props.searchParams;
   await requireCapability('messages:view');
-  const tab = TAB_DEFS.find((t) => t.key === searchParams.tab) ?? TAB_DEFS[0];
+  const filter = archiveFilterOf(searchParams.tab);
+  const filterLabel = ARCHIVE_FILTERS.find((f) => f.key === filter)?.label ?? 'All';
   const q = (searchParams.q ?? '').trim();
   const page = Math.max(1, parseInt(searchParams.page ?? '1', 10) || 1);
 
-  const where: Prisma.AssistantConversationWhereInput = {
-    ...(tab.statusFilter ? { status: { in: tab.statusFilter } } : {}),
-    ...(q
-      ? {
-          OR: [
-            { subject: { contains: q, mode: 'insensitive' as const } },
-            { guestName: { contains: q, mode: 'insensitive' as const } },
-            { guestEmail: { contains: q, mode: 'insensitive' as const } },
-            { user: { name: { contains: q, mode: 'insensitive' as const } } },
-            { user: { email: { contains: q, mode: 'insensitive' as const } } },
-            { messages: { some: { body: { contains: q, mode: 'insensitive' as const } } } },
-          ],
-        }
-      : {}),
-  };
-
-  const counts: Record<string, number> = {};
-  for (const t of TAB_DEFS) {
-    counts[t.key] = await prisma.assistantConversation.count({
-      where: { ...(t.statusFilter ? { status: { in: t.statusFilter } } : {}) },
-    });
-  }
-
-  const [total, convs] = await Promise.all([
-    prisma.assistantConversation.count({ where }),
-    prisma.assistantConversation.findMany({
-      where,
-      orderBy: { lastMessageAt: 'desc' },
-      skip: (page - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-      select: {
-        id: true, status: true, subject: true, rating: true,
-        guestName: true, guestEmail: true, assignedToId: true,
-        user: { select: { name: true, email: true } },
-        startedAt: true, lastMessageAt: true,
-        _count: { select: { messages: true } },
-        messages: {
-          orderBy: { createdAt: 'desc' },
-          take: 1,
-          select: { role: true, body: true },
-        },
-      },
-    }),
-  ]);
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const [counts, { total, rows }, canTickets] = await Promise.all([archiveCounts(), listArchive({ filter, q, page }), hasCapability('tickets:view')]);
+  const totalPages = Math.max(1, Math.ceil(total / ARCHIVE_PAGE_SIZE));
 
   return (
     <div className="space-y-5">
-      <AutoRefresh />
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Messages</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Chat archive</h1>
         <p className="text-muted-foreground mt-1">
-          Customer chats — AI assistant + human handoff. {total} {total === 1 ? 'conversation' : 'conversations'} · {tab.label.toLowerCase()}
+          Transcripts of the former on-site chat. {total} {total === 1 ? 'conversation' : 'conversations'} · {filterLabel.toLowerCase()}
           {q ? ` · matching "${q}"` : ''}
           {totalPages > 1 ? ` · page ${page}/${totalPages}` : ''}
         </p>
       </div>
 
-      {/* At-a-glance analytics — total, escalation rate, avg rating, today */}
-      <AnalyticsStrip />
+      <div className="rounded-2xl border border-border bg-foreground/[0.02] p-4 text-sm text-muted-foreground flex gap-3 items-start">
+        <Lock className="h-4 w-4 mt-0.5 flex-shrink-0 text-foreground" />
+        <p>
+          <strong className="text-foreground">Read-only.</strong> The on-site chat is switched off — customers contact you
+          through {canTickets ? <Link href="/admin/tickets" className="underline">support tickets</Link> : 'support tickets'}. These transcripts cannot be
+          answered, claimed or closed; to follow up, e-mail the customer where a transcript shows a valid address.
+        </p>
+      </div>
 
-      <AdminSearch basePath="/admin/messages" q={q} placeholder="Search subject, customer name, email, message…" />
+      <SummaryStrip />
+
+      <AdminSearch
+        basePath="/admin/messages"
+        q={q}
+        params={{ tab: filter !== 'all' ? filter : undefined }}
+        placeholder="Search subject, customer name, email, message…"
+      />
 
       <div className="flex gap-2 flex-wrap">
-        {TAB_DEFS.map((t) => {
-          const active = t.key === tab.key;
-          const TIcon = t.Icon;
+        {ARCHIVE_FILTERS.map((f) => {
+          const active = f.key === filter;
+          const FIcon = FILTER_ICON[f.key];
           return (
             <Link
-              key={t.key}
-              href={t.key === 'awaiting' ? '/admin/messages' : `/admin/messages?tab=${t.key}`}
+              key={f.key}
+              href={f.key === 'all' ? '/admin/messages' : `/admin/messages?tab=${f.key}`}
               className={`inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-xs font-semibold transition ${
                 active
                   ? 'bg-primary text-primary-foreground'
                   : 'bg-card border border-border text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
             >
-              <TIcon className="h-3.5 w-3.5" />
-              {t.label}
-              <span className={`tabular-nums ${active ? 'opacity-80' : 'opacity-60'}`}>{counts[t.key] ?? 0}</span>
+              <FIcon className="h-3.5 w-3.5" />
+              {f.label}
+              <span className={`tabular-nums ${active ? 'opacity-80' : 'opacity-60'}`}>{counts[f.key] ?? 0}</span>
             </Link>
           );
         })}
       </div>
 
-      {convs.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
           <div className="mx-auto h-14 w-14 rounded-full bg-primary/10 text-primary inline-flex items-center justify-center mb-4">
             <MessageSquare className="h-7 w-7" />
           </div>
-          <p className="text-lg font-bold">Nothing here</p>
+          <p className="text-lg font-bold">{q || filter !== 'all' ? 'No matching transcripts' : 'No chat transcripts'}</p>
           <p className="text-sm text-muted-foreground mt-2 max-w-sm mx-auto">
-            Customer chats from the floating <strong>lab2date Assistant</strong> on the public site land here.
-            The AI answers within site scope; if a user requests a human, they jump into <em>Awaiting human</em>.
+            {q || filter !== 'all'
+              ? 'Try another filter or search.'
+              : 'There are no transcripts from the former on-site chat. New customer questions arrive as support tickets.'}
           </p>
         </div>
       ) : (
         <ul className="space-y-3">
-          {convs.map((c) => {
-            const vis = STATUS_VIS[c.status] ?? STATUS_VIS.AI;
+          {rows.map((c) => {
+            const outcome = archiveOutcome(c);
+            const vis = OUTCOME_VIS[outcome];
             const last = c.messages[0];
             const customerName = c.user?.name || c.guestName || (c.guestEmail ?? 'Anonymous guest');
             const customerEmail = c.user?.email || c.guestEmail || null;
@@ -184,7 +146,7 @@ export default async function AdminMessagesPage(
                       <div className="flex items-center gap-2 flex-wrap mb-1">
                         <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{ref}</span>
                         <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${vis.pill}`}>
-                          {vis.label}
+                          {ARCHIVE_OUTCOME_LABEL[outcome]}
                         </span>
                         {isGuest && (
                           <span className="inline-flex items-center text-[10px] uppercase tracking-wider font-bold rounded-full bg-muted text-muted-foreground border border-border px-1.5 py-0.5">
@@ -197,11 +159,11 @@ export default async function AdminMessagesPage(
                           </span>
                         )}
                       </div>
-                      <h3 className="font-bold text-[15px] leading-tight truncate">{c.subject ?? 'New conversation'}</h3>
+                      <h3 className="font-bold text-[15px] leading-tight truncate">{c.subject ?? 'Untitled conversation'}</h3>
                       <p className="text-xs text-muted-foreground mt-1 truncate">
                         {last ? (
                           <>
-                            <span className="font-medium text-foreground">{last.role === 'user' ? 'Them: ' : last.role === 'admin' ? 'Admin: ' : last.role === 'assistant' ? 'AI: ' : ''}</span>
+                            <span className="font-medium text-foreground">{last.role === 'user' ? 'Customer: ' : last.role === 'admin' ? 'Team: ' : last.role === 'assistant' ? 'AI: ' : ''}</span>
                             {last.body.slice(0, 120)}
                           </>
                         ) : '—'}
@@ -216,7 +178,7 @@ export default async function AdminMessagesPage(
                           <MessageSquare className="h-3 w-3" /> {c._count.messages} msg{c._count.messages === 1 ? '' : 's'}
                         </span>
                         <span className="inline-flex items-center gap-1">
-                          <Clock className="h-3 w-3" /> {smartDate(c.lastMessageAt)}
+                          <Clock className="h-3 w-3" /> last message {smartDate(c.lastMessageAt)}
                         </span>
                       </div>
                     </div>
@@ -229,46 +191,29 @@ export default async function AdminMessagesPage(
         </ul>
       )}
 
-      <AdminPager basePath="/admin/messages" page={page} totalPages={totalPages} total={total} q={q} tab={tab.key !== 'awaiting' ? tab.key : undefined} />
+      <AdminPager basePath="/admin/messages" page={page} totalPages={totalPages} total={total} q={q} tab={filter !== 'all' ? filter : undefined} />
     </div>
   );
 }
 
-/**
- * At-a-glance analytics. Cheap aggregate queries — RSC, runs once per page
- * render. 5 cells: active right now, new today, all-time total, escalation
- * rate (% of conversations that reached a human), avg rating across rated
- * conversations.
- */
-async function AnalyticsStrip() {
-  const since24h = new Date(Date.now() - 24 * 3600_000);
-  const [total, last24h, active, escalated, agg] = await Promise.all([
-    prisma.assistantConversation.count(),
-    prisma.assistantConversation.count({ where: { startedAt: { gte: since24h } } }),
-    prisma.assistantConversation.count({ where: { status: { in: ['AI', 'AWAITING_HUMAN', 'WITH_HUMAN'] } } }),
-    prisma.assistantConversation.count({ where: { assignedToId: { not: null } } }),
-    prisma.assistantConversation.aggregate({ _avg: { rating: true }, _count: { rating: true }, where: { rating: { not: null } } }),
-  ]);
-  const escRate = total > 0 ? Math.round((escalated / total) * 100) : 0;
-  const avgRating = agg._avg.rating ?? null;
+/** Archive totals: conversations, unanswered requests, team-answered, ratings, last chat. */
+async function SummaryStrip() {
+  const s = await archiveSummary();
   return (
     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-      <StatCell label="Active now" value={active.toString()} hint={active === 1 ? 'conversation' : 'conversations'} tone="emerald" />
-      <StatCell label="New today" value={last24h.toString()} hint="last 24 hours" tone="sky" />
-      <StatCell label="All-time" value={total.toString()} hint="conversations" />
-      <StatCell label="Escalation rate" value={`${escRate}%`} hint="reached human" tone={escRate > 60 ? 'amber' : 'default'} />
-      <StatCell label="Avg rating" value={avgRating ? `${avgRating.toFixed(1)} / 5` : '—'} hint={`${agg._count.rating} rated`} tone={avgRating && avgRating >= 4 ? 'emerald' : avgRating && avgRating < 3 ? 'red' : 'default'} />
+      <StatCell label="Conversations" value={s.total.toString()} hint={s.firstAt ? `since ${smartDate(s.firstAt)}` : 'none'} />
+      <StatCell label="Unanswered" value={s.unanswered.toString()} hint="asked for a person" tone={s.unanswered > 0 ? 'amber' : 'default'} />
+      <StatCell label="Answered by the team" value={s.team.toString()} hint={s.team === 1 ? 'conversation' : 'conversations'} />
+      <StatCell label="Avg rating" value={s.avgRating ? `${s.avgRating.toFixed(1)} / 5` : '—'} hint={`${s.rated} rated`} />
+      <StatCell label="Last chat" value={s.lastAt ? smartDate(s.lastAt) : '—'} hint="last message" />
     </div>
   );
 }
 
-function StatCell({ label, value, hint, tone = 'default' }: { label: string; value: string; hint?: string; tone?: 'default' | 'emerald' | 'sky' | 'amber' | 'red' }) {
+function StatCell({ label, value, hint, tone = 'default' }: { label: string; value: string; hint?: string; tone?: 'default' | 'amber' }) {
   const palette: Record<string, string> = {
     default: 'bg-card border-border',
-    emerald: 'bg-emerald-50/60 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800',
-    sky: 'bg-sky-50/60 border-sky-200 dark:bg-sky-950/30 dark:border-sky-800',
     amber: 'bg-amber-50/60 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800',
-    red: 'bg-red-50/60 border-red-200 dark:bg-red-950/30 dark:border-red-800',
   };
   return (
     <div className={`rounded-2xl border p-4 ${palette[tone]}`}>
