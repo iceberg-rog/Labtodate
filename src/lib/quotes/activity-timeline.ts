@@ -133,10 +133,15 @@ export function offerMessageAmount(body: string): { revision: number; update: bo
   return { ...out, amount: `${moneyText(goods.prefix, goods.cents + (freight?.cents ?? 0), goods.suffix)} excl. VAT` };
 }
 
-/** "Offer accepted (revision 2): €11,374 incl. VAT 21% for …" → revision and amount. */
-export function acceptedMessageAmount(body: string): { revision: number; amount: string } | null {
-  const m = /^Offer accepted \(revision (\d+)\): (.+?) incl\. /.exec(body);
-  return m ? { revision: Number(m[1]), amount: m[2] } : null;
+/**
+ * The acceptance system message → revision and the amount as accepted:
+ * "Offer accepted (revision 2): €11,374 incl. VAT 21% for …" is "€11,374 incl. VAT";
+ * under a VAT review ("…: €9,400 excl. VAT for "…" — the VAT is confirmed by …")
+ * it is "€9,400 excl. VAT". `amount` null when it can not be read.
+ */
+export function acceptedMessageAmount(body: string): { revision: number; amount: string | null } | null {
+  const m = /^Offer accepted \(revision (\d+)\)(?:: (.+?) (incl|excl)\. VAT\b)?/.exec(body);
+  return m ? { revision: Number(m[1]), amount: m[2] ? `${m[2]} ${m[3]}. VAT` : null } : null;
 }
 
 const ORDER_CANCELED = /^Order (\S+) was canceled\b/;
@@ -182,7 +187,7 @@ export function timelineEvents(i: TimelineInput): TimelineEvent[] {
     const accepted = acceptedMessageAmount(m.body);
     if (accepted) {
       acceptedSeen = true;
-      ev.push({ at: m.createdAt, kind: 'accepted', title: `Buyer accepted revision ${accepted.revision}: ${accepted.amount} incl. VAT`, detail });
+      ev.push({ at: m.createdAt, kind: 'accepted', title: `Buyer accepted revision ${accepted.revision}${accepted.amount ? `: ${accepted.amount}` : ''}`, detail });
       continue;
     }
     if (!m.fromStaff && /^Offer declined\b/.test(m.body)) {

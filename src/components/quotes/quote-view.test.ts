@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  closeConfirmText, dealStageOf, isBuyerPriceMessage, messageAuthorLabel, partPaidLine, queuePage, receivedCents,
-  sortQueue, supplierSafeBody, unitUnavailable, validUntilBounds, withFulfilment,
+  closeConfirmText, dealStageOf, isBuyerPriceMessage, messageAuthorLabel, partPaidLine, queuePage, queueTab, receivedCents,
+  QUOTATION_PDF_SERVED, showsQuotationPdf, sortQueue, supplierSafeBody, unitUnavailable, validUntilBounds, withFulfilment,
 } from './quote-view';
+import { computeDealState } from '@/lib/quotes/deal-state';
 
 const brand = 'Labtodate';
 const staff = { id: 'u-staff', role: 'ADMIN', name: 'Anna Staff', email: 'anna@labtodate.com' };
@@ -34,6 +35,13 @@ test('admin page: the side and the name', () => {
   assert.equal(messageAuthorLabel({ fromStaff: true, author: supplier }, v), 'Supplier · Sam Supplier');
   assert.equal(messageAuthorLabel({ fromStaff: false, author: buyer }, v), 'Bea Buyer');
   assert.equal(messageAuthorLabel({ fromStaff: true, author: null }, v), 'Labtodate');
+});
+
+test('buyer deal pill: never "Supplier replied" or "Waiting for supplier" — our side answers', () => {
+  const sr = { status: 'RESPONDED', proformaNumber: null, quotedPriceCents: null, validUntilAt: null, linkedOrder: null };
+  assert.equal(computeDealState({ ...sr, lastReplyByStaff: true }, 'buyer').label, 'Reply received — your move');
+  assert.equal(computeDealState({ ...sr, lastReplyByStaff: false }, 'buyer').label, 'Waiting for our reply');
+  assert.equal(computeDealState({ ...sr, status: 'PENDING', lastReplyByStaff: false }, 'buyer').label, 'Waiting for our reply');
 });
 
 test('review off, supplier sends €5,000: their own direct offer message never shows the €5,750 buyer price', () => {
@@ -105,6 +113,25 @@ test('queue: 103 quotes in pages of 50 — page 3 holds the last 3; out-of-range
   assert.deepEqual(queuePage(0, 1, 50), { page: 1, pages: 1, skip: 0 });
 });
 
+test('queue tab: a new search covers every tab; re-sorting or an empty Search keeps the tab', () => {
+  const keys = ['open', 'review', 'waiting', 'won', 'paid', 'lost', 'all', 'active'];
+  // Sort changed on Won / Lost / All with no search: the form posts tab + prevq.
+  assert.equal(queueTab({ tab: 'won', q: '', prevq: '' }, keys), 'won');
+  assert.equal(queueTab({ tab: 'lost', q: '', prevq: '' }, keys), 'lost');
+  assert.equal(queueTab({ tab: 'all', q: '', prevq: '' }, keys), 'all');
+  // A new search from the Won tab: every tab (a buyer e-mail finds the closed quotes too).
+  assert.equal(queueTab({ tab: 'won', q: 'g1.buyer@', prevq: '' }, keys), 'all');
+  assert.equal(queueTab({ tab: 'won', q: 'g1.buyer@', prevq: 'other' }, keys), 'all');
+  // The same search re-sorted, after narrowing it to Lost: stays on Lost.
+  assert.equal(queueTab({ tab: 'lost', q: 'g1.buyer@', prevq: 'g1.buyer@' }, keys), 'lost');
+  // Clearing the box keeps the tab; a link (no prevq) is taken as it is.
+  assert.equal(queueTab({ tab: 'paid', q: '', prevq: 'g1.buyer@' }, keys), 'paid');
+  assert.equal(queueTab({ tab: 'lost', q: 'x' }, keys), 'lost');
+  // No or an unknown tab: 'all' while searching, else 'open'.
+  assert.equal(queueTab({ q: 'x' }, keys), 'all');
+  assert.equal(queueTab({ tab: 'nope', q: '' }, keys), 'open');
+});
+
 test('queue urgency order: priority, then status, then reply due, then newest', () => {
   const d = (s: string) => new Date(s);
   const rows = [
@@ -118,6 +145,24 @@ test('queue urgency order: priority, then status, then reply due, then newest', 
   assert.deepEqual(sortQueue(rows, 'sla').map((r) => r.id).slice(0, 2), ['vip-pending-soon', 'vip-pending-late']);
   assert.deepEqual(sortQueue(rows, 'oldest').map((r) => r.id)[0], 'normal-pending');
   assert.deepEqual(sortQueue(rows, 'newest').map((r) => r.id)[0], 'normal-pending-new');
+});
+
+test('quotation PDF: never linked before its route is served; buyers only for a live or accepted offer', () => {
+  // The route (PKG-06) is not served yet: no link anywhere.
+  assert.equal(QUOTATION_PDF_SERVED, false);
+  assert.equal(showsQuotationPdf({ offerRevision: 2, phase: 'open', viewer: 'buyer' }), false);
+  assert.equal(showsQuotationPdf({ offerRevision: 2, phase: 'open', viewer: 'staff' }), false);
+  // Once served:
+  const on = (o: Parameters<typeof showsQuotationPdf>[0]) => showsQuotationPdf(o, true);
+  assert.equal(on({ offerRevision: 2, phase: 'open', viewer: 'buyer' }), true);
+  assert.equal(on({ offerRevision: 2, phase: 'accepted', viewer: 'buyer' }), true);
+  assert.equal(on({ offerRevision: 2, phase: 'expired', viewer: 'buyer' }), false);
+  assert.equal(on({ offerRevision: 2, phase: 'void', viewer: 'buyer' }), false);
+  assert.equal(on({ offerRevision: 2, phase: 'open', viewer: 'buyer', unitGone: true }), false);
+  assert.equal(on({ offerRevision: 2, phase: 'expired', viewer: 'staff' }), true);
+  // Never for an offer that was not sent as a revision.
+  assert.equal(on({ offerRevision: 0, phase: 'open', viewer: 'staff' }), false);
+  assert.equal(on({ offerRevision: 1, phase: 'none', viewer: 'staff' }), false);
 });
 
 test('offer validity bounds: today .. one year', () => {

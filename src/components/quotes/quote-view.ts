@@ -1,12 +1,14 @@
 import { formatPrice } from '@/lib/utils';
 import { heldMoneyCents } from '@/lib/finance/held';
+import type { OfferPhase } from '@/lib/quotes/offer';
 
 /**
  * Pure view helpers shared by the quote screens (buyer, supplier and admin
  * pages): who wrote a message as each side may see it, what a supplier may
  * read of the offer messages, whether the quoted unit can still be accepted,
- * the money state of an accepted order and the admin queue's order. No I/O —
- * the pages load the data and pass the brand (siteName()).
+ * whether the quotation PDF is linked, the money state of an accepted order
+ * and the admin queue's tab and order. No I/O — the pages load the data and
+ * pass the brand (siteName()).
  */
 
 // ── Who wrote a message ──────────────────────────────────────────────────────
@@ -107,6 +109,31 @@ export function unitUnavailable(av: { quantity: number; heldByThisQuote: boolean
   return !av.heldByThisQuote && av.quantity < Math.max(1, qty);
 }
 
+// ── Quotation PDF ────────────────────────────────────────────────────────────
+
+/**
+ * The quotation PDF route (/api/documents/quotation/[id], PKG-06) is not
+ * served yet: until it is, no page links to it — a download that ends in a 404
+ * is a false promise to the buyer. Set true together with that route.
+ */
+export const QUOTATION_PDF_SERVED: boolean = false;
+
+/**
+ * Whether a quote page links the quotation PDF of its current revision. Only
+ * for a revision that was sent, and only while the route serves it. The buyer
+ * gets it for an offer they can still accept (the paperwork for a purchase
+ * order) or have accepted — never the PDF of an expired, declined or void
+ * offer, or of one whose unit went to another order; staff for any sent one.
+ */
+export function showsQuotationPdf(
+  o: { offerRevision: number | null | undefined; phase: OfferPhase; viewer: 'buyer' | 'staff'; unitGone?: boolean },
+  served: boolean = QUOTATION_PDF_SERVED,
+): boolean {
+  if (!served || !o.offerRevision || o.offerRevision <= 0 || o.phase === 'none') return false;
+  if (o.viewer === 'staff') return true;
+  return o.phase === 'accepted' || (o.phase === 'open' && !o.unitGone);
+}
+
 // ── Money of an accepted order ───────────────────────────────────────────────
 
 export type DealStage = 'UNPAID' | 'PART_PAID' | 'PROOF' | 'TERMS' | 'PAID' | 'SHIPPED' | 'CANCELED' | 'REFUNDED';
@@ -180,6 +207,19 @@ export function sortQueue<T extends QueueSortRow>(rows: T[], sort: QueueSort): T
     return out.sort((a, b) => (due(a) === due(b) ? b.createdAt.getTime() - a.createdAt.getTime() : due(a) - due(b)));
   }
   return out.sort((a, b) => (sort === 'oldest' ? 1 : -1) * (a.createdAt.getTime() - b.createdAt.getTime()));
+}
+
+/**
+ * The tab of the queue. A new search — the search box holds another text than
+ * the one the page was showing (the form sends that as `prevq`) — looks at
+ * every tab, so a buyer's e-mail finds their closed and won quotes too.
+ * Re-sorting, pressing Search again or clearing the box keeps the tab being
+ * viewed. Without a (known) tab: 'all' while searching, else 'open'.
+ */
+export function queueTab(p: { tab?: string; q: string; prevq?: string }, keys: readonly string[]): string {
+  const newSearch = p.q !== '' && p.prevq !== undefined && p.q !== p.prevq.trim();
+  if (!newSearch && p.tab && keys.includes(p.tab)) return p.tab;
+  return p.q ? 'all' : 'open';
 }
 
 /** Page `requested` (1-based) of `total` rows, clamped to the pages that exist. */

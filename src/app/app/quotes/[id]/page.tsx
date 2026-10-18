@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { QuoteThread } from '@/components/quotes/QuoteThread';
 import { OfferCard } from '@/components/quotes/OfferCard';
-import { messageAuthorLabel, unitUnavailable } from '@/components/quotes/quote-view';
+import { messageAuthorLabel, showsQuotationPdf, unitUnavailable } from '@/components/quotes/quote-view';
 import { computeDealState } from '@/lib/quotes/deal-state';
 import { offerCardProps } from '@/lib/quotes/offer-view';
 import { acceptContextFor, cancelContext, declineContext } from '@/lib/quotes/page-data';
@@ -132,8 +132,11 @@ export default async function BuyerQuoteDetailPage(
     ...baseOffer,
     brand,
     quoteStatus: sr.status,
-    // The quotation PDF of the revision on screen (PO paperwork) — never for an offer that was never sent.
-    quotationHref: (sr.offerRevision ?? 0) > 0 ? quotationPath(sr.id, sr.offerRevision) : null,
+    // The quotation PDF of the revision on screen (PO paperwork): a live or
+    // accepted offer only, and only once the PDF route is served.
+    quotationHref: showsQuotationPdf({ offerRevision: sr.offerRevision, phase: baseOffer.phase, viewer: isBuyer ? 'buyer' : 'staff', unitGone: unavailable })
+      ? quotationPath(sr.id, sr.offerRevision)
+      : null,
     unavailable: unavailable ? 'The listed unit was sold or reserved for another order meanwhile.' : null,
     currencyChangedFrom: parseOfferTerms(sr.offerTerms)?.previous?.currency ?? null,
   };

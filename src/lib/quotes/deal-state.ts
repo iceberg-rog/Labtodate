@@ -45,8 +45,8 @@ export interface DealStateBadge {
 }
 
 const LABELS: Record<Exclude<DealState, 'unknown'>, { buyer: string; staff: string }> = {
-  awaiting_supplier:   { buyer: 'Waiting for supplier',              staff: 'New — awaiting our reply' },
-  awaiting_buyer:      { buyer: 'Supplier replied — your move',      staff: 'Replied — awaiting buyer' },
+  awaiting_supplier:   { buyer: 'Waiting for our reply',             staff: 'New — awaiting our reply' },
+  awaiting_buyer:      { buyer: 'Reply received — your move',        staff: 'Replied — awaiting buyer' },
   offer_sent:          { buyer: 'Offer received — accept or decline', staff: 'Offer sent — awaiting buyer' },
   offer_expired:       { buyer: 'Offer expired — ask for a new one',  staff: 'Offer expired — send a new offer' },
   won_payment_pending: { buyer: 'Accepted — awaiting your payment',  staff: 'Accepted — awaiting payment' },
@@ -150,7 +150,7 @@ export function computeDealState(
   if (sr.lastReplyByStaff) return badge('awaiting_buyer', viewer, 'sky', 4, 2);
   if (sr.status === 'RESPONDED') {
     // Staff replied before, the buyer wrote last → our move again.
-    return badge('awaiting_supplier', viewer, 'amber', 5, 2, viewer === 'buyer' ? 'Waiting for supplier' : 'Buyer replied — your move');
+    return badge('awaiting_supplier', viewer, 'amber', 5, 2, viewer === 'buyer' ? 'Waiting for our reply' : 'Buyer replied — your move');
   }
   return badge('awaiting_supplier', viewer, 'amber', 5, 1);
 }

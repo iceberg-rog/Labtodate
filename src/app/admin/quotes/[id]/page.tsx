@@ -17,7 +17,7 @@ import { DealStateBadge } from '@/components/quotes/DealStateBadge';
 import { AssigneeBadge } from '@/components/quotes/AssigneeBadge';
 import { DealStepper } from '@/components/quotes/DealStepper';
 import { OfferCard } from '@/components/quotes/OfferCard';
-import { dealStageOf, messageAuthorLabel, partPaidLine, withFulfilment } from '@/components/quotes/quote-view';
+import { dealStageOf, messageAuthorLabel, partPaidLine, showsQuotationPdf, withFulfilment } from '@/components/quotes/quote-view';
 import { offerCardProps, offerFormProps, orderPaymentState, priceLockedMessage } from '@/lib/quotes/offer-view';
 import { offerFormContextFor } from '@/lib/quotes/page-data';
 import { parseOfferTerms } from '@/lib/quotes/pricing';
@@ -155,8 +155,11 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
     validUntilAt: sr.validUntilAt,
     linkedOrder,
   }, 'staff'), linkedOrder);
-  const quotationHref = (sr.offerRevision ?? 0) > 0 && sr.quotedPriceCents != null ? quotationPath(sr.id, sr.offerRevision) : null;
   const baseCard = offerCardProps(sr, linkedOrder, 'STAFF', { invoiceNumber: linkedOrder?.documents[0]?.number ?? null });
+  // The quotation PDF of the current revision, once the PDF route is served.
+  const quotationHref = baseCard && showsQuotationPdf({ offerRevision: sr.offerRevision, phase: baseCard.phase, viewer: 'staff' })
+    ? quotationPath(sr.id, sr.offerRevision)
+    : null;
   const offerCard = baseCard && {
     ...baseCard,
     brand,

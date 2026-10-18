@@ -22,7 +22,14 @@ test('offer amount as the buyer saw it: total incl. VAT, else goods + freight ex
     { revision: 3, update: false, amount: 'CHF 12,000.50' },
   );
   assert.equal(offerMessageAmount('Can you ship in May?'), null);
-  assert.deepEqual(acceptedMessageAmount('Offer accepted (revision 3): €8,712 incl. VAT 21% for "X". Order L2D-2026-AB12CD …'), { revision: 3, amount: '€8,712' });
+  assert.deepEqual(acceptedMessageAmount('Offer accepted (revision 3): €8,712 incl. VAT 21% for "X". Order L2D-2026-AB12CD …'), { revision: 3, amount: '€8,712 incl. VAT' });
+  // Accepted under a VAT review: the amount is net, the VAT follows.
+  assert.deepEqual(
+    acceptedMessageAmount('Offer accepted (revision 2): €9,400 excl. VAT for "X" — the VAT is confirmed by Labtodate before payment. Order L2D-2026-AB12CD was created; the proforma invoice follows once the VAT is confirmed.'),
+    { revision: 2, amount: '€9,400 excl. VAT' },
+  );
+  assert.deepEqual(acceptedMessageAmount('Offer accepted (revision 4).'), { revision: 4, amount: null });
+  assert.equal(acceptedMessageAmount('Offer accepted, thanks!'), null);
 });
 
 function deal(): TimelineInput {
@@ -119,6 +126,21 @@ test('open offer: its validity; staff replies carry the brand; a legacy offer wi
   assert.equal(ev.find((e) => e.kind === 'staff_reply')?.title, 'Labtodate replied (Anna Staff)');
   assert.equal(ev.find((e) => e.kind === 'offer_sent')?.title, 'Offer sent: €7,550 excl. VAT');
   assert.equal(ev.find((e) => e.kind === 'offer_valid_until')?.title, 'Offer valid until 30 Nov 2026');
+});
+
+test('accepted under a VAT review: one "accepted" event, excl. VAT — not "Buyer replied", no second acceptance', () => {
+  const i = deal();
+  i.order = { ...i.order!, status: 'PENDING_PAYMENT', paidAt: null, paymentSubmittedAt: null, paymentVerifiedAt: null, shippedAt: null, deliveredAt: null };
+  i.messages = [
+    ...i.messages.slice(0, -1),
+    { createdAt: t('2026-10-07T09:00:00Z'), fromStaff: false, isInternalNote: false, body: 'Offer accepted (revision 3): €7,200 excl. VAT for "X" — the VAT is confirmed by Labtodate before payment. Order L2D-2026-AB12CD was created; the proforma invoice follows once the VAT is confirmed.', author: buyer },
+  ];
+  const ev = timelineEvents(i);
+  const accepted = ev.filter((e) => e.kind === 'accepted');
+  assert.equal(accepted.length, 1);
+  assert.equal(accepted[0].title, 'Buyer accepted revision 3: €7,200 excl. VAT');
+  // Only the buyer's real reply ("Too expensive for us.") is a reply.
+  assert.deepEqual(ev.filter((e) => e.kind === 'buyer_reply').map((e) => e.detail), ['Too expensive for us.']);
 });
 
 test('declined: the decline message with its reason; closed: the close reason', () => {

@@ -348,8 +348,8 @@ function Meta({ label, value }: { label: string; value: string }) {
 type PillMap = Record<Props['status'], { variant: 'success' | 'warning' | 'accent' | 'secondary'; label: string }>;
 
 const BUYER_PILLS: PillMap = {
-  PENDING:   { variant: 'warning',   label: 'Waiting for supplier' },
-  RESPONDED: { variant: 'accent',    label: 'Supplier replied — your move' },
+  PENDING:   { variant: 'warning',   label: 'Waiting for our reply' },
+  RESPONDED: { variant: 'accent',    label: 'Reply received — your move' },
   ACCEPTED:  { variant: 'success',   label: 'Accepted' },
   DECLINED:  { variant: 'secondary', label: 'Declined' },
   CLOSED:    { variant: 'secondary', label: 'Closed' },
@@ -367,7 +367,7 @@ const SUPPLIER_PILLS: PillMap = {
 // RESPONDED only says the supplier answered at some point. When the buyer
 // wrote last, the next move is the supplier's.
 const BUYER_FOLLOWED_UP: Record<Props['viewerRole'], PillMap['RESPONDED']> = {
-  BUYER:  { variant: 'warning', label: 'Waiting for supplier' },
+  BUYER:  { variant: 'warning', label: 'Waiting for our reply' },
   SELLER: { variant: 'warning', label: 'Buyer replied — your move' },
   ADMIN:  { variant: 'warning', label: 'Buyer replied — your move' },
 };

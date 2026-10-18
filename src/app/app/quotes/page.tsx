@@ -52,13 +52,13 @@ const STATE_VISUAL: Record<DealState, StateVisual> = {
     stripe: 'before:bg-amber-400',
     badge: 'bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-300 border-amber-200 dark:border-amber-800',
     Icon: Clock,
-    label: 'Waiting for supplier',
+    label: 'Waiting for our reply',
   },
   awaiting_buyer: {
     stripe: 'before:bg-sky-400',
     badge: 'bg-sky-50 dark:bg-sky-950/40 text-sky-900 dark:text-sky-300 border-sky-200 dark:border-sky-800',
     Icon: MessageSquare,
-    label: 'Supplier replied · your move',
+    label: 'Reply received · your move',
     ctaLabel: 'Open thread',
     ctaHref: (q) => `/app/quotes/${q.id}`,
   },
@@ -311,13 +311,13 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
             // what's happening and what (if anything) they should do.
             let statusLine = `Opened ${smartDate(q.createdAt)}`;
             if (deal.state === 'awaiting_supplier') {
-              statusLine = `Opened ${smartDate(q.createdAt)} · ${turnaround ? `we aim to reply within ${turnaround}` : 'waiting for the supplier'}`;
+              statusLine = `Opened ${smartDate(q.createdAt)} · ${turnaround ? `we aim to reply within ${turnaround}` : 'waiting for our reply'}`;
             } else if (deal.state === 'awaiting_buyer') {
-              statusLine = `Supplier replied ${smartDate(q.lastReplyAt ?? q.updatedAt)} · read their message`;
+              statusLine = `Reply received ${smartDate(q.lastReplyAt ?? q.updatedAt)} · read the message`;
             } else if (deal.state === 'offer_sent') {
               statusLine = `Offer valid until ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—'} · accept or decline it`;
             } else if (deal.state === 'offer_expired') {
-              statusLine = `Offer expired ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : ''} · ask the supplier for a new one`;
+              statusLine = `Offer expired ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : ''} · ask us for a new one`;
             } else if (deal.state === 'won_payment_pending') {
               statusLine = partPaid
                 ? `Order ${orderNumber} · ${partPaid.receivedLabel} received · ${partPaid.openLabel} still due`

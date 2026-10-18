@@ -10,7 +10,7 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 import { offerAmounts } from '@/lib/quotes/pricing';
 import { QUOTE_REF, isQuoteRef } from '@/lib/quotes/offer';
 import { LIVE_REFUNDS_SELECT } from '@/lib/finance/held';
-import { partPaidLine, queuePage, sortQueue, type QueueSort } from '@/components/quotes/quote-view';
+import { partPaidLine, queuePage, queueTab, sortQueue, type QueueSort } from '@/components/quotes/quote-view';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Quote requests' };
@@ -116,7 +116,7 @@ const PER_PAGE = 50;
 export default async function AdminQuotesPage(
   props: {
     searchParams: Promise<{
-      tab?: string; q?: string; view?: string; assignee?: string; priority?: string; sort?: string; page?: string;
+      tab?: string; q?: string; prevq?: string; view?: string; assignee?: string; priority?: string; sort?: string; page?: string;
     }>;
   }
 ) {
@@ -125,13 +125,15 @@ export default async function AdminQuotesPage(
   await ensureSettingsLoaded();
   const session = await getServerSession();
   const q = (searchParams.q ?? '').trim();
-  // A search looks at every deal: a new search (the form never carries the
-  // tab) lists the matches of all tabs — a buyer's e-mail finds their closed
-  // and won quotes too, a PRO- reference the accepted one. Each tab shows how
-  // many matches it holds; clicking one narrows the search to it.
-  const tab =
-    TAB_STATUSES.find((t) => t.key === searchParams.tab) ??
-    (q ? TAB_STATUSES.find((t) => t.key === 'all')! : TAB_STATUSES[0]);
+  // A search looks at every deal: a new search (another text than `prevq`,
+  // the one shown) lists the matches of all tabs — a buyer's e-mail finds
+  // their closed and won quotes too, a PRO- reference the accepted one. Each
+  // tab shows how many matches it holds; clicking one narrows the search to
+  // it. Re-sorting or Search with the same text stays on the tab.
+  const tabKey = queueTab({ tab: searchParams.tab, q, prevq: searchParams.prevq }, TAB_STATUSES.map((t) => t.key));
+  const tab = TAB_STATUSES.find((t) => t.key === tabKey) ?? TAB_STATUSES[0];
+  // The tab the URL asked for and is shown — the form keeps it (a new search drops it).
+  const urlTab = searchParams.tab === tab.key ? tab.key : '';
   const view = searchParams.view === 'archived' ? 'archived' : '';
   const assignee = searchParams.assignee ?? '';
   // One or more priorities, comma-separated (the VIP/Urgent chip sends both);
@@ -285,7 +287,7 @@ export default async function AdminQuotesPage(
   function href(over: Partial<{ tab: string; view: string; assignee: string; priority: string; q: string; sort: string; page: number }>) {
     const sp = new URLSearchParams();
     const merged = {
-      tab: over.tab !== undefined ? over.tab : (searchParams.tab ?? ''),
+      tab: over.tab !== undefined ? over.tab : urlTab,
       view: over.view !== undefined ? over.view : view,
       assignee: over.assignee !== undefined ? over.assignee : assignee,
       priority: over.priority !== undefined ? over.priority : priority,
@@ -327,8 +329,11 @@ export default async function AdminQuotesPage(
         </div>
       </div>
 
-      {/* A search always starts across every tab (no tab field); the tab chips then narrow it. */}
+      {/* A new search starts across every tab (the text differs from prevq); the
+          tab chips then narrow it. Re-sorting keeps the tab. */}
       <form method="GET" className="flex gap-2 flex-wrap items-center">
+        {urlTab && <input type="hidden" name="tab" value={urlTab} />}
+        <input type="hidden" name="prevq" value={q} />
         {view && <input type="hidden" name="view" value={view} />}
         {assignee && <input type="hidden" name="assignee" value={assignee} />}
         {priority && <input type="hidden" name="priority" value={priority} />}
