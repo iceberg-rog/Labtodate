@@ -4,12 +4,15 @@ import {
   buildTrackingUrl,
   carriersProblem,
   fillTemplate,
+  financialAfterRefunds,
   findCarrier,
+  invoiceOverdue,
   orderNextSteps,
   parseCarriers,
   parseReturnReasons,
   refundCapacity,
   remainingToShip,
+  resolvableReturnStatuses,
   returnEligibility,
   returnReasonsProblem,
   settleCredit,
@@ -17,9 +20,10 @@ import {
   shipmentLinesProblem,
   shipProgress,
   trackingRequired,
+  withoutFinalStop,
   type NextStepInput,
 } from './rules';
-import { DEFAULT_CARRIERS, DEFAULT_RETURN_REASONS } from './settings-defs';
+import { DEFAULT_CARRIERS, DEFAULT_RETURN_REASONS, FULFILMENT_SETTING_DEFS } from './settings-defs';
 
 const bill = { company: 'Lab B.V.', name: 'Dr. A', vat: 'NL859876543B01', address: { line1: 'Keizersgracht 123', postal_code: '1015 CJ', city: 'Amsterdam', country: 'NL' } };
 const ship = { name: 'Goods-in', phone: '+31 20 7654321', address: { line1: 'Keizersgracht 123', postal_code: '1015 CJ', city: 'Amsterdam', country: 'NL' } };
@@ -141,4 +145,93 @@ test('next steps: never empty, honest about refunds that are not sent yet', () =
   const blocked = orderNextSteps({ ...base, status: 'PAID', refunds: [], shipBlockers: ['billing / delivery details are incomplete'] }, 'staff');
   assert.match(blocked[0].text, /Before shipping/);
   assert.ok(orderNextSteps({ ...base, status: 'DELIVERED', refunds: [] }, 'buyer').length > 0);
+});
+
+test('money state after refunds: returning only an overpayment keeps the sale PAID (G3/J9)', () => {
+  // L2D-2026-YUFT4C: €1,925.50 received for €1,875.50, the €50 excess sent back.
+  const over = { paidCents: 192550, sentCents: 5000, totalCreditedCents: 0, totalCents: 187550 };
+  assert.equal(financialAfterRefunds({ ...over, current: 'PAID' }), 'PAID');
+  assert.equal(financialAfterRefunds({ ...over, current: 'PARTIALLY_REFUNDED' }), 'PAID', 'a state written by the old rule is corrected on the next sync');
+  // Part of the sale itself went back (credit note + refund, or a refund without a credit note).
+  assert.equal(financialAfterRefunds({ paidCents: 121000, sentCents: 30000, totalCreditedCents: 30000, totalCents: 121000, current: 'PAID' }), 'PARTIALLY_REFUNDED');
+  assert.equal(financialAfterRefunds({ paidCents: 121000, sentCents: 1000, totalCreditedCents: 0, totalCents: 121000, current: 'PAID' }), 'PARTIALLY_REFUNDED');
+  // Excess plus part of the sale: partly refunded.
+  assert.equal(financialAfterRefunds({ paidCents: 126000, sentCents: 8000, totalCreditedCents: 3000, totalCents: 121000, current: 'PAID' }), 'PARTIALLY_REFUNDED');
+  // Only the excess is sent while the credit's own refund still waits: still paid (only SENT money counts).
+  assert.equal(financialAfterRefunds({ paidCents: 126000, sentCents: 5000, totalCreditedCents: 30000, totalCents: 121000, current: 'PAID' }), 'PAID');
+  // Everything received went back; nothing received and fully credited; nothing sent yet.
+  assert.equal(financialAfterRefunds({ paidCents: 121000, sentCents: 121000, totalCreditedCents: 121000, totalCents: 121000, current: 'PAID' }), 'REFUNDED');
+  assert.equal(financialAfterRefunds({ paidCents: 192550, sentCents: 192550, totalCreditedCents: 187550, totalCents: 187550, current: 'PAID' }), 'REFUNDED');
+  assert.equal(financialAfterRefunds({ paidCents: 0, sentCents: 0, totalCreditedCents: 121000, totalCents: 121000, current: 'INVOICED_ON_TERMS' }), 'VOID');
+  assert.equal(financialAfterRefunds({ paidCents: 121000, sentCents: 0, totalCreditedCents: 30000, totalCents: 121000, current: 'PAID' }), 'PAID');
+});
+
+test('returns: resolvable states; staff texts that a template follows with its own full stop', () => {
+  assert.deepEqual(resolvableReturnStatuses(false), ['INSPECTED']);
+  assert.deepEqual(resolvableReturnStatuses(true), ['APPROVED', 'LABEL_SENT', 'INSPECTED']);
+  assert.equal(withoutFinalStop(' Not covered by the terms of sale (art. 9). '), 'Not covered by the terms of sale (art. 9)');
+  assert.equal(withoutFinalStop('Used outside the spec...'), 'Used outside the spec');
+  assert.equal(withoutFinalStop('No reason'), 'No reason');
+});
+
+test('rejection mail (G6/J11): one full stop, a reply path that exists, “cannot”', () => {
+  const def = FULFILMENT_SETTING_DEFS.find((d) => d.key === 'RETURN_EMAIL_REJECTED_TEXT')?.default ?? '';
+  const text = fillTemplate(def, { RMA: 'RMA-2026-8ROYA5-2', ORDER: 'L2D-2026-8ROYA5', REASON: withoutFinalStop('Not covered by the terms of sale (art. 9).'), TICKET: 'support ticket TKT-2026-MTZ8OG' });
+  assert.doesNotMatch(text, /\.\./);
+  assert.doesNotMatch(text, /order page/i, 'the order page has no reply');
+  assert.doesNotMatch(text, /can not/);
+  assert.match(text, /art\. 9\)\. /);
+  assert.match(text, /support ticket TKT-2026-MTZ8OG/);
+  assert.doesNotMatch(text, /\{[A-Z_]+\}/, 'every placeholder is filled');
+});
+
+test('next steps on NET terms (G3/J10): an unpaid invoice is the buyer’s step, never “nothing more to do”', () => {
+  const base: NextStepInput = {
+    status: 'DELIVERED', financialStatus: 'INVOICED_ON_TERMS', onTermsUnpaid: true, prePaymentHold: false, paymentVerificationStatus: null, paymentSubmitted: false,
+    detailsMissing: [], shipBlockers: [], progress: 'ALL', deliveredAt: new Date('2026-10-14T10:00:00Z'), refunds: [], returns: [],
+    returnWindowEndsAt: null, returnsOpen: false, buyerCanCancel: false, invoiceIssued: true,
+    invoiceNumber: 'INV-2026-00018', invoiceDueAt: new Date('2026-11-17T12:00:00Z'), amountDueLabel: '€3,115.75', now: new Date('2026-10-18T10:00:00Z'),
+  };
+  const buyer = orderNextSteps(base, 'buyer');
+  assert.equal(buyer.length, 1);
+  assert.equal(buyer[0].who, 'buyer');
+  assert.equal(buyer[0].text, 'Pay invoice INV-2026-00018 (€3,115.75) by 17 November 2026.');
+  assert.ok(!buyer.some((s) => /nothing more to do/.test(s.text)));
+  assert.match(orderNextSteps(base, 'staff').map((s) => s.text).join(' '), /INV-2026-00018 \(€3,115\.75\) on NET terms is still unpaid — the buyer pays by 17 November 2026/);
+  // Past the due date: pay now (buyer), chase it (staff).
+  const late = { ...base, now: new Date('2026-11-20T10:00:00Z') };
+  assert.match(orderNextSteps(late, 'buyer')[0].text, /^Pay invoice INV-2026-00018 \(€3,115\.75\) now — it was due on 17 November 2026\.$/);
+  assert.equal(orderNextSteps({ ...late, financialStatus: 'OVERDUE' }, 'staff').find((s) => /overdue/.test(s.text))?.who, 'staff');
+  // Shipped / being prepared on terms: the payment step is there too, after the shipping step.
+  const shipped = orderNextSteps({ ...base, status: 'SHIPPED' }, 'buyer');
+  assert.match(shipped[0].text, /on its way/);
+  assert.match(shipped[shipped.length - 1].text, /^Pay invoice INV-2026-00018/);
+  assert.match(orderNextSteps({ ...base, status: 'PROCESSING', progress: 'NONE' }, 'buyer').map((s) => s.text).join(' '), /Pay invoice INV-2026-00018/);
+  // Paid (not on terms): delivered really is done.
+  assert.deepEqual(orderNextSteps({ ...base, financialStatus: 'PAID', onTermsUnpaid: false }, 'buyer').map((s) => s.text), ['Delivered — nothing more to do.']);
+  // No invoice data passed (older callers): still the truth, without a number or date.
+  assert.equal(orderNextSteps({ ...base, invoiceNumber: null, invoiceDueAt: null, amountDueLabel: null }, 'buyer')[0].text, 'Pay the invoice by the due date on the invoice.');
+});
+
+test('NET terms: paying on the due day is on time — overdue only after the printed day ends (or once marked OVERDUE)', () => {
+  // The stored due date is issue time + N days (the QA DB has 2026-11-17T00:56Z); the invoice prints “17 November 2026”.
+  const due = new Date('2026-11-17T00:56:00Z');
+  const base: NextStepInput = {
+    status: 'DELIVERED', financialStatus: 'INVOICED_ON_TERMS', onTermsUnpaid: true, prePaymentHold: false, paymentVerificationStatus: null, paymentSubmitted: false,
+    detailsMissing: [], shipBlockers: [], progress: 'ALL', deliveredAt: new Date('2026-10-14T10:00:00Z'), refunds: [], returns: [],
+    returnWindowEndsAt: null, returnsOpen: false, buyerCanCancel: false, invoiceIssued: true,
+    invoiceNumber: 'INV-2026-00018', invoiceDueAt: due, amountDueLabel: '€3,115.75',
+  };
+  for (const now of ['2026-11-17T00:57:00Z', '2026-11-17T12:00:00Z', '2026-11-17T23:59:59Z']) {
+    const at = { ...base, now: new Date(now) };
+    assert.equal(orderNextSteps(at, 'buyer')[0].text, 'Pay invoice INV-2026-00018 (€3,115.75) by 17 November 2026.', `on the due day (${now}) it is not overdue`);
+    assert.doesNotMatch(orderNextSteps(at, 'staff').map((s) => s.text).join(' '), /overdue|chase/);
+    assert.equal(invoiceOverdue(due, 'INVOICED_ON_TERMS', new Date(now)), false);
+  }
+  const nextDay = { ...base, now: new Date('2026-11-18T00:00:00Z') };
+  assert.equal(orderNextSteps(nextDay, 'buyer')[0].text, 'Pay invoice INV-2026-00018 (€3,115.75) now — it was due on 17 November 2026.');
+  assert.match(orderNextSteps(nextDay, 'staff').map((s) => s.text).join(' '), /overdue \(due 17 November 2026\) — chase the payment/);
+  // The due sweep's OVERDUE wins; no due date and not marked: never overdue.
+  assert.equal(invoiceOverdue(due, 'OVERDUE', new Date('2026-11-17T08:00:00Z')), true);
+  assert.equal(invoiceOverdue(null, 'INVOICED_ON_TERMS', new Date('2030-01-01T00:00:00Z')), false);
 });

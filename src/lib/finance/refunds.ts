@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded, settingBool } from '@/lib/settings';
-import { companyCopyAddress, sendInternalEmail, type EmailAttachment } from '@/lib/email';
+import { companyCopyAddress, type EmailAttachment } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
 import { audit, logError, notifyAdmins, notifyUser } from '@/lib/observability';
 import {
@@ -23,9 +23,9 @@ import { readVerifiedUpload } from '@/lib/storage/file-type';
 import { isValidIban } from '@/lib/settings/defs';
 import { orderReservedStock } from '@/lib/orders/checkout-tx';
 import { quoteOrderTookStock } from '@/lib/quotes/stock';
-import { financialAfterRefunds, refundCapacity, settleCredit, type MoneyState } from '@/lib/fulfilment/rules';
+import { financialAfterRefunds, refundCapacity, settleCredit, withoutFinalStop, type MoneyState } from '@/lib/fulfilment/rules';
 import { restockOnPaidCancel } from '@/lib/fulfilment/policy';
-import { mailOutcomeText, orderUrl, sendBuyerMail, type MailOutcome } from '@/lib/fulfilment/mail';
+import { mailOutcomeText, orderUrl, sendBuyerMail, sendStaffMail, type MailOutcome } from '@/lib/fulfilment/mail';
 import { settingText } from './texts';
 import { LIVE_REFUND_STATUSES, SENT_REFUND_STATUSES } from './held';
 
@@ -347,12 +347,34 @@ export async function stripeRefund(orderId: string, paymentIntent: string, amoun
   }
 }
 
-/** Email the buyer (and the invoice address, and the billing inbox a copy) the outcome of a credit / refund. */
+/**
+ * Claim the one buyer mail of a refund (“approved” / “issued”, or “sent”): the
+ * timestamp is set before the mail goes out, so a repeated call sends nothing.
+ * Returns the release for a failed send (the mail may then be tried again).
+ */
+async function claimRefundMail(refundId: string, kind: 'requested' | 'sent', alsoSent = false): Promise<(() => Promise<void>) | null> {
+  const at = new Date();
+  const claim = kind === 'requested'
+    ? await prisma.refund.updateMany({ where: { id: refundId, requestedEmailAt: null }, data: { requestedEmailAt: at, ...(alsoSent ? { sentEmailAt: at } : {}) } })
+    : await prisma.refund.updateMany({ where: { id: refundId, sentEmailAt: null }, data: { sentEmailAt: at } });
+  if (claim.count !== 1) return null;
+  return async () => {
+    await prisma.refund.updateMany({
+      where: { id: refundId, ...(kind === 'requested' ? { requestedEmailAt: at } : { sentEmailAt: at }) },
+      data: kind === 'requested' ? { requestedEmailAt: null, ...(alsoSent ? { sentEmailAt: null } : {}) } : { sentEmailAt: null },
+    });
+  };
+}
+
+/** Email the buyer (and the invoice address, and the billing inbox a copy) the outcome of a credit / refund — once per refund. */
 export async function emailCreditOutcome(
   order: MoneyOrder,
   out: CreditOutcome,
   ctx: { kind: 'CANCEL' | 'REFUND'; reason: string; extraHtml?: string[] },
 ): Promise<MailOutcome> {
+  // One mail per refund id: a second call for the same refund (a retried action) sends nothing.
+  const release = out.refund ? await claimRefundMail(out.refund.id, 'requested', out.refund.method === 'STRIPE') : null;
+  if (out.refund && !release) return { ok: true, to: order.buyer.email, already: true };
   const money = (c: number) => fmtDocMoney(c, order.currency);
   const att: { attachment: EmailAttachment | null } = out.creditNote ? await documentAttachment(out.creditNote) : { attachment: null };
   const vars = {
@@ -381,7 +403,7 @@ export async function emailCreditOutcome(
     heading,
     html: [
       `<p style="margin:0 0 12px;">Hi <span dir="auto">${escapeHtml(order.buyer.name || 'there')}</span>,</p>`,
-      ...(ctx.kind === 'CANCEL' ? [`<p style="margin:0 0 12px;">We canceled order <strong>${escapeHtml(order.orderNumber)}</strong>. Reason: <span dir="auto">${escapeHtml(ctx.reason)}</span>.</p>`] : [`<p style="margin:0 0 12px;">Reason: <span dir="auto">${escapeHtml(ctx.reason)}</span>.</p>`]),
+      ...(ctx.kind === 'CANCEL' ? [`<p style="margin:0 0 12px;">We canceled order <strong>${escapeHtml(order.orderNumber)}</strong>. Reason: <span dir="auto">${escapeHtml(withoutFinalStop(ctx.reason))}</span>.</p>`] : [`<p style="margin:0 0 12px;">Reason: <span dir="auto">${escapeHtml(withoutFinalStop(ctx.reason))}</span>.</p>`]),
       ...lines.map((l) => `<p style="margin:0 0 12px;">${l}</p>`),
       ...(ctx.extraHtml ?? []),
     ],
@@ -390,14 +412,20 @@ export async function emailCreditOutcome(
     context: ctx.kind === 'CANCEL' ? 'orders:cancel-paid' : 'orders:refund',
   });
   if (mail.ok && out.creditNote) await markDocumentSent(out.creditNote.id);
-  if (mail.ok && out.refund) await prisma.refund.update({ where: { id: out.refund.id }, data: { requestedEmailAt: new Date(), ...(out.refund.method === 'STRIPE' ? { sentEmailAt: new Date() } : {}) } });
+  if (!mail.ok && release) await release();
   // Accounts payable gets the credit note too (like the invoice), and the billing inbox a copy.
   if (out.creditNote && att.attachment) {
     if (order.invoiceEmail && order.invoiceEmail.toLowerCase() !== order.buyer.email.toLowerCase()) {
-      await sendBuyerMail({ to: order.invoiceEmail, subject: `Credit note ${out.creditNote.number} — order ${order.orderNumber}`, heading: `Credit note ${out.creditNote.number}`, html: [`<p style="margin:0 0 12px;">Credit note <strong>${escapeHtml(out.creditNote.number)}</strong> for order ${escapeHtml(order.orderNumber)} is attached.</p>`, ...lines.slice(0, 1).map((l) => `<p>${l}</p>`)], attachments: [att.attachment], context: 'orders:credit-note-ap' });
+      await sendBuyerMail({ to: order.invoiceEmail, subject: `Credit note ${out.creditNote.number} — order ${order.orderNumber}`, heading: `Credit note ${out.creditNote.number}`, html: [`<p style="margin:0 0 12px;">Credit note <strong>${escapeHtml(out.creditNote.number)}</strong> for order ${escapeHtml(order.orderNumber)} is attached.</p>`, ...lines.slice(0, 1).map((l) => `<p style="margin:0 0 12px;">${l}</p>`)], attachments: [att.attachment], context: 'orders:credit-note-ap' });
     }
-    const copy = companyCopyAddress();
-    if (copy) await sendInternalEmail({ to: copy, subject: `[copy] Credit note ${out.creditNote.number} — order ${order.orderNumber}`, html: `<p>Credit note ${escapeHtml(out.creditNote.number)} issued for order ${escapeHtml(order.orderNumber)} (${escapeHtml(ctx.reason)}).</p>`, attachments: [att.attachment] }, 'orders:credit-note-copy');
+    await sendStaffMail({
+      to: companyCopyAddress(),
+      subject: `[copy] Credit note ${out.creditNote.number} — order ${order.orderNumber}`,
+      heading: `Credit note ${out.creditNote.number}`,
+      html: [`<p style="margin:0 0 12px;">Credit note <strong>${escapeHtml(out.creditNote.number)}</strong> issued for order ${escapeHtml(order.orderNumber)} (<span dir="auto">${escapeHtml(ctx.reason)}</span>).</p>`, ...lines.slice(0, 1).map((l) => `<p style="margin:0 0 12px;">${l}</p>`)],
+      attachments: [att.attachment],
+      context: 'orders:credit-note-copy',
+    });
   }
   return mail;
 }
@@ -425,9 +453,23 @@ export function creditSummary(out: CreditOutcome, currency: string, askedCents?:
  * in stock here (A10) — only before shipping, at most once per order.
  */
 export async function createRefund(
-  p: { orderId: string; amountCents: number; reason: string; method: RefundMethod | null; returnId?: string | null; justification?: string | null; payeeIban?: string | null; restock?: boolean | null },
+  p: {
+    orderId: string; amountCents: number; reason: string; method: RefundMethod | null; returnId?: string | null; justification?: string | null; payeeIban?: string | null; restock?: boolean | null;
+    /**
+     * Stripe idempotency key prefix of the card refund; the refunded amount is appended, so a
+     * corrected amount is a new request (default: per order + refund count). A return passes its
+     * own: one card refund per RMA and amount.
+     */
+    stripeKey?: string;
+    /**
+     * Runs inside the money transaction right after the order row is locked,
+     * before the credit note and refund exist (e.g. the RMA claims RESOLVED):
+     * throwing Refused rolls everything back and nothing is created.
+     */
+    inTx?: (tx: Tx) => Promise<void>;
+  },
   actor: Actor,
-): Promise<{ ok: true; message: string; outcome: CreditOutcome } | { ok: false; message: string }> {
+): Promise<{ ok: true; message: string; outcome: CreditOutcome } | { ok: false; message: string; /** Set when the card refund WAS issued in Stripe but nothing was booked. */ stripeRefundId?: string }> {
   await ensureSettingsLoaded();
   const reason = p.reason.trim().slice(0, 300);
   if (reason.length < 4) return { ok: false, message: 'Give the reason (at least 4 characters) — it is printed on the credit note and shown to the buyer.' };
@@ -471,26 +513,34 @@ export async function createRefund(
       : alreadyRestocked ? ' Stock was already returned earlier — not returned twice.'
         : o.status === 'PENDING_PAYMENT' ? '' : ' Stock NOT returned (Settings → Stock & reservation, or unticked) — put it back by hand after checking the unit.';
 
+  // Loaded before any money moves: after a card refund only the booking below can still fail.
+  const docCtx = await refundDocContext();
   let stripeId: string | null = null;
   if (p.method === 'STRIPE' && split.refundCents > 0) {
-    const n = await prisma.refund.count({ where: { orderId: p.orderId } });
-    const s = await stripeRefund(p.orderId, o.stripePaymentIntentId as string, split.refundCents, `r${n + 1}-${split.refundCents}`);
+    const prefix = p.stripeKey ?? `r${(await prisma.refund.count({ where: { orderId: p.orderId } })) + 1}`;
+    const s = await stripeRefund(p.orderId, o.stripePaymentIntentId as string, split.refundCents, `${prefix}-${split.refundCents}`);
     if (!s.ok) return { ok: false, message: s.message };
     stripeId = s.id;
   }
-  const docCtx = await refundDocContext();
   let out: CreditOutcome;
   try {
     out = await prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${p.orderId} FOR UPDATE`;
+      if (p.inTx) await p.inTx(tx);
       return creditAndRefundTx(tx, { orderId: p.orderId, amountCents: p.amountCents, reason, method: p.method, stripeRefundId: stripeId, expectedRefundCents: stripeId ? split.refundCents : undefined, returnId: p.returnId, justification: justification || null, payeeIban: iban, restock, actor, ctx: docCtx });
     });
   } catch (e) {
     if (e instanceof Refused) {
-      return { ok: false, message: stripeId ? `The card refund WAS issued in Stripe (${stripeId}) but could not be recorded: ${e.message} Do not refund again — record it by hand.` : e.message };
+      if (!stripeId) return { ok: false, message: e.message };
+      // Same idempotency key (e.g. the same return resolved twice): Stripe returned the card refund the
+      // first request already booked — nothing went back twice.
+      const booked = await prisma.refund.findFirst({ where: { stripeRefundId: stripeId }, select: { id: true } });
+      return { ok: false, stripeRefundId: stripeId, message: booked ? `${e.message} The card refund ${stripeId} is the one already recorded on this order — nothing was refunded twice.` : `The card refund WAS issued in Stripe (${stripeId}) but could not be recorded: ${e.message} Do not refund again — record it by hand.` };
     }
     await logError('refunds:credit', e);
-    return { ok: false, message: stripeId ? `The card refund WAS issued in Stripe (${stripeId}) but recording it failed — do not refund again; contact a developer.` : `Nothing was changed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown error'}` };
+    return stripeId
+      ? { ok: false, stripeRefundId: stripeId, message: `The card refund WAS issued in Stripe (${stripeId}) but recording it failed — do not refund again; contact a developer.` }
+      : { ok: false, message: `Nothing was changed: ${e instanceof Error ? e.message.slice(0, 200) : 'unknown error'}` };
   }
   const mail = await emailCreditOutcome(o, out, { kind: 'REFUND', reason });
   await notifyUser(o.buyer.id, out.refund ? (out.refund.method === 'STRIPE' ? `Refund issued — order ${o.orderNumber}` : `Refund approved — order ${o.orderNumber}`) : `Credit note — order ${o.orderNumber}`, out.refund && out.refund.method !== 'STRIPE' ? 'The transfer has not been sent yet — we email you when it is.' : 'See your order page.', `/app/orders/${o.orderNumber}`);
@@ -568,7 +618,9 @@ export async function markRefundSent(
   if (!o) return { ok: true, message: 'Refund recorded as sent.' };
   const amount = fmtDocMoney(r.amountCents, r.currency);
   const t = settingText('EMAIL_REFUND_SENT_BODY', { AMOUNT: amount, ORDER: o.orderNumber, DATE: fmtDocDay(p.sentAt), REFERENCE: bankRef }, ['AMOUNT']);
-  const mail = await sendBuyerMail({
+  // One “refund sent” mail per refund.
+  const release = await claimRefundMail(r.id, 'sent');
+  const mail: MailOutcome = !release ? { ok: true, to: o.buyer.email, already: true } : await sendBuyerMail({
     to: o.buyer.email,
     subject: `Refund of ${amount} sent — order ${o.orderNumber}`,
     heading: 'Your refund was sent',
@@ -576,7 +628,7 @@ export async function markRefundSent(
     cta: { href: orderUrl(o.orderNumber), label: 'View your order' },
     context: 'orders:refund-sent',
   });
-  if (mail.ok) await prisma.refund.update({ where: { id: r.id }, data: { sentEmailAt: new Date() } });
+  if (!mail.ok && release) await release();
   await notifyUser(o.buyer.id, `Refund sent — order ${o.orderNumber}`, `${amount} sent on ${fmtDocDay(p.sentAt)} (reference ${bankRef}).`, `/app/orders/${o.orderNumber}`);
   await audit('order.refund.sent', o.orderNumber, `${r.amountCents} ${r.currency} on ${p.sentAt.toISOString().slice(0, 10)} ref ${bankRef}${proofKey ? ' +proof' : ''} · by ${actor.email ?? 'staff'} · money state ${totals.financialStatus}`);
   return { ok: true, message: `Refund of ${amount} recorded as sent on ${fmtDocDay(p.sentAt)} (reference ${bankRef}). ${mailOutcomeText(mail)}` };

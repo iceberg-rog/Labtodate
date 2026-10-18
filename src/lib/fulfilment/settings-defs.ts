@@ -10,7 +10,8 @@ import { carriersProblem, returnReasonsProblem } from './rules';
  *
  * Placeholders in texts: {ORDER} order number, {ITEMS} the items in the shipment,
  * {CARRIER}, {TRACKING}, {DATE}, {AMOUNT}, {REFERENCE}, {RMA}, {DAYS},
- * {ADDRESS} (receiving address), {REASON}.
+ * {ADDRESS} (receiving address), {REASON}, {TICKET} (the return's support ticket).
+ * The RMA texts are also posted on the return's support ticket.
  */
 
 const yesNo = [
@@ -172,13 +173,23 @@ export const FULFILMENT_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   },
   {
     key: 'RETURN_EMAIL_REJECTED_TEXT', label: 'Email text — not approved', group: G_RET, type: 'text', multiline: true,
-    default: 'We reviewed your request {RMA} for order {ORDER} and can not approve it: {REASON}. Reply from your order page if you want to discuss it.',
-    hint: '{REASON} = the reason staff give (required).',
+    default: 'We reviewed your request {RMA} for order {ORDER} and cannot approve it: {REASON}. If you want to discuss it, write to us on {TICKET} (Account → Support).',
+    hint: '{REASON} = the reason staff give (required; a full stop at its end is dropped, so the text adds its own). {TICKET} = the support ticket of the request (“support ticket TKT-…”), where the buyer can reply. The same text is posted on that ticket.',
   },
   {
     key: 'RETURN_EMAIL_RECEIVED_GOODS_TEXT', label: 'Email text — returned goods received', group: G_RET, type: 'text', multiline: true,
     default: 'We received the returned goods for {RMA} (order {ORDER}) on {DATE}. We inspect them and let you know the outcome.',
     hint: 'Sent when staff record the receipt of a return.',
+  },
+  {
+    key: 'RETURN_TICKET_REUSE_CATEGORIES', label: 'A new return continues an open ticket in these categories', group: G_RET, type: 'list', default: 'Return/refund,Order / delivery', optional: true,
+    validate: (v) => (v.trim() ? textList(v) : null),
+    hint: 'Support ticket categories that are about a problem with the goods, separated by commas. When the buyer already has an open ticket about the same order in one of these categories (or with a tag below), the new return is posted on it instead of opening a second ticket. Any other ticket (billing, a general question) is left alone and the return gets its own ticket. A continued ticket is never closed by the return — staff close it; a ticket the return opened is resolved with it.',
+  },
+  {
+    key: 'RETURN_TICKET_REUSE_TAGS', label: '… or an open ticket with one of these tags', group: G_RET, type: 'list', default: 'complaint,return', optional: true,
+    validate: (v) => (v.trim() ? textList(v) : null),
+    hint: 'Ticket tags (exactly as set on the ticket), separated by commas. Empty = only the categories above count.',
   },
   {
     key: 'REFUND_REASONS', label: 'Refund reasons (staff)', group: G_RET, type: 'list', default: 'Returned item,Damaged in transport,Not as described,Price adjustment / goodwill,Order canceled before shipping,Other',

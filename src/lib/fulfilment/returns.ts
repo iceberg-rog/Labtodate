@@ -1,22 +1,25 @@
 import { randomBytes } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { ensureSettingsLoaded, settingString } from '@/lib/settings';
-import { sendInternalEmail, type EmailAttachment } from '@/lib/email';
+import { ensureSettingsLoaded, settingList, settingString } from '@/lib/settings';
+import { type EmailAttachment } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
-import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
-import { uploadObject, getObjectBytes } from '@/lib/storage/s3';
+import { audit, logError, notifyAdmins, notifyUser } from '@/lib/observability';
+import { uploadObject, getObjectBytes, supportAttachmentKey } from '@/lib/storage/s3';
 import { readVerifiedUpload } from '@/lib/storage/file-type';
-import { fmtDocDay } from '@/lib/documents/render';
+import { fmtDocDay, fmtDocMoney } from '@/lib/documents/render';
 import { withUniqueTicketRef } from '@/lib/support/actions';
 import { formatPrice } from '@/lib/utils';
 import {
   fillTemplate,
   OPEN_RETURN_STATUSES,
   RETURN_TYPE_LABEL,
+  resolvableReturnStatuses,
   returnEligibility,
+  withoutFinalStop,
   type ReturnTypeCode,
 } from './rules';
+import { openRmaTicket, postRmaEvent, resolveRmaOnce, ticketFileHref } from './rma-case';
 import {
   fulfilmentText,
   photosRequiredFor,
@@ -29,8 +32,8 @@ import {
   returnWindowDays,
   warrantyClaimsAfterWindow,
 } from './policy';
-import { mailOutcomeText, orderUrl, sendBuyerMail } from './mail';
-import { createRefund, type RefundMethod } from '@/lib/finance/refunds';
+import { mailOutcomeText, orderUrl, sendBuyerMail, sendStaffMail, siteUrl, supportTicketsUrl } from './mail';
+import { createRefund, Refused as MoneyRefused, type CreditOutcome, type RefundMethod } from '@/lib/finance/refunds';
 
 /**
  * Returns / complaints / warranty claims (B14 minimal), as an RMA:
@@ -39,7 +42,12 @@ import { createRefund, type RefundMethod } from '@/lib/finance/refunds';
  *   restock decision: the ONLY place a shipped unit goes back to stock, A10)
  *   → RESOLVED (refund / credit via the refund ledger, repair, replacement, none).
  * Every step is a compare-and-set on the status (double clicks / stale tabs do
- * nothing) and tells the buyer what happened. Server-internal.
+ * nothing) and tells the buyer what happened. Resolving claims the return
+ * before any money moves and turns it RESOLVED inside the transaction that books
+ * the credit note and the refund, so a second tab (whatever it chose) moves no
+ * money. One support ticket carries the case (the buyer's open complaint ticket
+ * about the order, or a new one): every step is posted on it, and a ticket the
+ * return opened is resolved with the RMA (./rma-case.ts). Server-internal.
  */
 
 export type Actor = { id: string | null; email: string | null };
@@ -81,23 +89,56 @@ export async function returnContext(orderId: string, now = new Date()) {
   return { order: o, eligibility: elig, reasons, shipped: shippedUnits(o), photosFor: photosRequiredFor(), maxFiles: returnMaxFiles(), maxMb: Math.round(returnFileMaxBytes() / 1048576) };
 }
 
-async function storeFiles(files: File[], prefix: string, max: number): Promise<{ ok: true; keys: string[] } | { ok: false; message: string }> {
+/**
+ * Store the buyer's files twice: the return's own copy (order page, admin RMA
+ * panel: /api/order-files) and the ticket's copy under support-att/, which the
+ * people who work the ticket queue (tickets:view) and a guest ticket's magic
+ * link can open.
+ */
+async function storeFiles(files: File[], prefix: string, max: number): Promise<{ ok: true; keys: string[]; names: string[]; ticketHrefs: string[] } | { ok: false; message: string }> {
   const real = files.filter((f) => f && typeof f !== 'string' && f.size > 0);
   if (real.length > max) return { ok: false, message: `At most ${max} files.` };
   const keys: string[] = [];
+  const names: string[] = [];
+  const ticketHrefs: string[] = [];
   for (const f of real) {
     const up = await readVerifiedUpload(f, { allow: ['jpeg', 'png', 'webp', 'gif', 'pdf'], maxBytes: returnFileMaxBytes(), label: `“${f.name.slice(0, 60)}”` });
     if (!up.ok) return { ok: false, message: up.error };
     const key = `${prefix}/${randomBytes(24).toString('hex')}.${up.upload.ext}`;
     await uploadObject(key, up.upload.buf, up.upload.mime);
+    const ticketKey = supportAttachmentKey(up.upload.ext);
+    await uploadObject(ticketKey, up.upload.buf, up.upload.mime);
     keys.push(key);
+    names.push(f.name.slice(0, 120));
+    ticketHrefs.push(ticketFileHref(ticketKey));
   }
-  return { ok: true, keys };
+  return { ok: true, keys, names, ticketHrefs };
 }
+
+/** Post an RMA step on the return's ticket. The step itself is saved: a failure here is logged, never fatal. */
+async function rmaEvent(p: Parameters<typeof postRmaEvent>[1]): Promise<void> {
+  try {
+    await postRmaEvent(prisma, p);
+  } catch (e) {
+    await logError(`returns:ticket-${p.step.toLowerCase()}`, e);
+  }
+}
+
+async function ticketRefOf(ticketId: string | null): Promise<string | null> {
+  if (!ticketId) return null;
+  return (await prisma.supportTicket.findUnique({ where: { id: ticketId }, select: { ref: true } }))?.ref ?? null;
+}
+
+const NO_RETURN_LINE = 'You do not need to send anything back. We settle it and email you the outcome.';
+const SEND_TRACKING_LINE = 'When you have sent it, add the carrier and tracking number on your order page.';
 
 /** Buyer (or staff on the buyer's behalf) reports a problem / requests a return. */
 export async function createReturnRequest(
-  p: { orderId: string; reasonLabel: string; description: string; lines: Array<{ orderItemId: string; qty: number }>; files: File[]; openedBy: 'BUYER' | 'STAFF' },
+  p: {
+    orderId: string; reasonLabel: string; description: string; lines: Array<{ orderItemId: string; qty: number }>; files: File[]; openedBy: 'BUYER' | 'STAFF';
+    /** The buyer's support ticket this return is opened from (its conversation continues there). */
+    ticketId?: string | null;
+  },
   actor: Actor,
 ): Promise<Result & { rmaNumber?: string }> {
   const ctx = await returnContext(p.orderId);
@@ -147,23 +188,27 @@ export async function createReturnRequest(
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return { ok: false, message: 'A request was just created for this order — reload the page.' };
     throw e;
   }
-  // A conversation thread for it (Support), linked to the order — high priority.
+  // One conversation for the case (Support), linked to the order: the buyer's open complaint ticket
+  // about this order when there is one (Settings → Returns & refunds), else a new HIGH ticket —
+  // with the SLA due date and the photos.
   const itemsText = lines.map((l) => `${l.qty} × ${o.items.find((i) => i.id === l.orderItemId)?.titleSnapshot ?? 'item'}`).join(', ');
-  let ticketRef: string | null = null;
+  let ticket: { id: string; ref: string; reused: boolean } | null = null;
   try {
-    const t = await withUniqueTicketRef((ref) => prisma.supportTicket.create({
-      data: {
-        ref, name: o.buyer.name, email: o.buyer.email, subject: `${rmaNumber} — ${RETURN_TYPE_LABEL[reason.type]} — order ${o.orderNumber}`.slice(0, 160),
-        category: 'Return/refund', priority: 'HIGH', orderId: o.id, submittedById: o.buyerId,
-        messages: { create: { fromStaff: p.openedBy === 'STAFF', authorId: actor.id, body: `${reason.label} — ${itemsText}\n\n${description}` } },
+    ticket = await openRmaTicket(
+      prisma,
+      {
+        returnId: created.id, order: o, subject: `${rmaNumber} — ${RETURN_TYPE_LABEL[reason.type]} — order ${o.orderNumber}`,
+        body: `${rmaNumber}: ${reason.label} — ${itemsText}\n\n${description}`, fromStaff: p.openedBy === 'STAFF', authorId: actor.id,
+        attachments: stored.ticketHrefs, attachmentNames: stored.names, ticketId: p.ticketId ?? null,
+        reuse: { categories: settingList('RETURN_TICKET_REUSE_CATEGORIES'), tags: settingList('RETURN_TICKET_REUSE_TAGS') },
       },
-      select: { id: true, ref: true },
-    }));
-    ticketRef = t.ref;
-    await prisma.returnRequest.update({ where: { id: created.id }, data: { ticketId: t.id } });
-  } catch {
-    // The RMA itself is saved; the thread is a convenience.
+      (data) => withUniqueTicketRef((ref) => prisma.supportTicket.create({ data: { ref, ...data }, select: { id: true, ref: true } })),
+    );
+  } catch (e) {
+    // The RMA itself is saved; staff are told below that it has no conversation yet.
+    await logError('returns:ticket', e);
   }
+  const ticketRef = ticket?.ref ?? null;
   const mail = await sendBuyerMail({
     to: o.buyer.email,
     subject: `[${rmaNumber}] We received your request — order ${o.orderNumber}`,
@@ -175,16 +220,30 @@ export async function createReturnRequest(
     context: 'returns:received',
   });
   await notifyUser(o.buyer.id, `${rmaNumber}: request received`, 'We review it and reply by email.', `/app/orders/${o.orderNumber}`);
-  await notifyAdmins(`New ${RETURN_TYPE_LABEL[reason.type].toLowerCase()} ${rmaNumber} — order ${o.orderNumber}`, `${reason.label} · ${itemsText}${p.openedBy === 'STAFF' ? ` · opened by ${actor.email}` : ''}`, `/admin/orders/${o.id}#returns`, 'SYSTEM');
+  await notifyAdmins(`New ${RETURN_TYPE_LABEL[reason.type].toLowerCase()} ${rmaNumber} — order ${o.orderNumber}`, `${reason.label} · ${itemsText}${p.openedBy === 'STAFF' ? ` · opened by ${actor.email}` : ''}${ticketRef ? ` · ticket ${ticketRef}` : ''}`, `/admin/orders/${o.id}#returns`, 'SYSTEM');
   const ops = settingString('SUPPORT_INTAKE_EMAIL') || settingString('SUPPORT_EMAIL');
-  await sendInternalEmail({ to: ops, subject: `[${rmaNumber}] ${RETURN_TYPE_LABEL[reason.type]} — order ${o.orderNumber}`, html: `<p>${escapeHtml(o.buyer.name)} (${escapeHtml(o.buyer.email)}): <strong>${escapeHtml(reason.label)}</strong> — ${escapeHtml(itemsText)}</p><p>${escapeHtml(description)}</p><p>${stored.keys.length} file(s). Review it in the admin (Orders → Returns).</p>` }, 'returns:ops');
-  await audit('return.create', rmaNumber, `order ${o.orderNumber} · ${reason.type} · ${reason.label} · by ${p.openedBy} ${actor.email ?? ''} · files ${stored.keys.length} · email ${mail.ok ? 'ok' : mail.error}`);
+  await sendStaffMail({
+    to: ops,
+    subject: `[${rmaNumber}] ${RETURN_TYPE_LABEL[reason.type]} — order ${o.orderNumber}`,
+    heading: `${RETURN_TYPE_LABEL[reason.type]} ${rmaNumber}`,
+    table: [
+      ['Buyer', `<span dir="auto">${escapeHtml(o.buyer.name)}</span> (${escapeHtml(o.buyer.email)})`],
+      ['Reason', escapeHtml(reason.label)],
+      ['Items', `<span dir="auto">${escapeHtml(itemsText)}</span>`],
+      ['Photos / files', String(stored.keys.length)],
+      ['Conversation', ticketRef ? `ticket ${escapeHtml(ticketRef)}${ticket?.reused ? ' (the buyer’s open complaint ticket about this order — the return does not close it)' : ''}` : 'no ticket could be opened — reply from the order page'],
+    ],
+    html: [`<p style="margin:0 0 12px;white-space:pre-wrap;" dir="auto">${escapeHtml(description)}</p>`],
+    cta: { href: siteUrl(`/admin/orders/${o.id}#returns`), label: 'Review it in the admin' },
+    context: 'returns:ops',
+  });
+  await audit('return.create', rmaNumber, `order ${o.orderNumber} · ${reason.type} · ${reason.label} · by ${p.openedBy} ${actor.email ?? ''} · files ${stored.keys.length} · ticket ${ticketRef ? `${ticketRef}${ticket?.reused ? ' (reused)' : ''}` : 'none'} · email ${mail.ok ? 'ok' : mail.error}`);
   return {
     ok: true,
     rmaNumber,
     message: p.openedBy === 'BUYER'
       ? `Request ${rmaNumber} sent. ${mail.ok ? 'We emailed you a confirmation.' : 'We could not email you a confirmation right now — this page shows its status.'} Please do not send anything back before we approve it.`
-      : `Return ${rmaNumber} opened for the buyer. ${mailOutcomeText(mail)}`,
+      : `Return ${rmaNumber} opened for the buyer${ticketRef ? ` (conversation: ticket ${ticketRef}${ticket?.reused ? ', the buyer’s open complaint ticket about this order' : ''})` : ' — no support ticket could be opened for it'}. ${mailOutcomeText(mail)}`,
   };
 }
 
@@ -192,7 +251,7 @@ async function loadReturn(id: string) {
   return prisma.returnRequest.findUnique({
     where: { id },
     select: {
-      id: true, rmaNumber: true, status: true, type: true, reasonCode: true, noReturnNeeded: true, labelKey: true, receivedAt: true,
+      id: true, rmaNumber: true, status: true, type: true, reasonCode: true, noReturnNeeded: true, labelKey: true, receivedAt: true, ticketId: true, createdAt: true,
       items: { select: { orderItemId: true, qty: true } },
       order: { select: { id: true, orderNumber: true, currency: true, buyerId: true, buyer: { select: { id: true, name: true, email: true } }, items: { select: { id: true, titleSnapshot: true, productId: true, priceCentsSnapshot: true } } } },
     },
@@ -217,12 +276,16 @@ export async function approveReturn(p: { returnId: string; instructions: string;
   if (!p.noReturnNeeded && instructions.length < 20) return { ok: false, message: 'Write the return instructions (where and how to send it) — or tick “nothing has to be sent back”.' };
   if (!p.noReturnNeeded && /\(our address follows by email\)/.test(instructions)) return { ok: false, message: 'The return address is missing — set Settings → Acquisitions → Receiving warehouse address, or type the address into the instructions.' };
   let labelKey: string | null = null;
+  let labelTicketKey: string | null = null;
   let labelAtt: EmailAttachment | null = null;
   if (p.label && p.label.size > 0) {
     const up = await readVerifiedUpload(p.label, { allow: ['pdf', 'png', 'jpeg'], maxBytes: 10 * 1024 * 1024, label: 'Return label' });
     if (!up.ok) return { ok: false, message: up.error };
     labelKey = `return-labels/${randomBytes(24).toString('hex')}.${up.upload.ext}`;
     await uploadObject(labelKey, up.upload.buf, up.upload.mime);
+    // The ticket's copy (support-att/), like the photos.
+    labelTicketKey = supportAttachmentKey(up.upload.ext);
+    await uploadObject(labelTicketKey, up.upload.buf, up.upload.mime);
     labelAtt = { filename: `${r.rmaNumber}-label.${up.upload.ext}`, content: up.upload.buf, contentType: up.upload.mime };
   }
   const claim = await prisma.returnRequest.updateMany({
@@ -230,17 +293,23 @@ export async function approveReturn(p: { returnId: string; instructions: string;
     data: { status: labelKey ? 'LABEL_SENT' : 'APPROVED', decidedAt: new Date(), decidedById: actor.id, instructions: instructions || null, noReturnNeeded: p.noReturnNeeded, ...(labelKey ? { labelKey } : {}) },
   });
   if (claim.count !== 1) return { ok: false, message: 'Someone else decided this request a moment ago — reload.' };
+  const approvedText = fillTemplate(fulfilmentText('RETURN_EMAIL_APPROVED_TEXT'), { RMA: r.rmaNumber, ORDER: r.order.orderNumber });
   const mail = await sendBuyerMail({
     to: r.order.buyer.email,
     subject: `[${r.rmaNumber}] Approved — order ${r.order.orderNumber}`,
     heading: 'Your request is approved',
-    text: fillTemplate(fulfilmentText('RETURN_EMAIL_APPROVED_TEXT'), { RMA: r.rmaNumber, ORDER: r.order.orderNumber }),
+    text: approvedText,
     html: p.noReturnNeeded
       ? ['<p style="margin:0 0 12px;"><strong>You do not need to send anything back.</strong> We settle it and email you the outcome.</p>']
-      : [`<p style="margin:0 0 6px;"><strong>Return instructions</strong></p><p style="margin:0 0 12px;white-space:pre-wrap;" dir="auto">${escapeHtml(instructions)}</p>`, ...(labelAtt ? ['<p style="margin:0 0 12px;">The return label is attached.</p>'] : []), '<p style="margin:0 0 12px;">When you have sent it, add the carrier and tracking number on your order page.</p>'],
+      : [`<p style="margin:0 0 6px;"><strong>Return instructions</strong></p><p style="margin:0 0 12px;white-space:pre-wrap;" dir="auto">${escapeHtml(instructions)}</p>`, ...(labelAtt ? ['<p style="margin:0 0 12px;">The return label is attached.</p>'] : []), `<p style="margin:0 0 12px;">${escapeHtml(SEND_TRACKING_LINE)}</p>`],
     cta: { href: orderUrl(r.order.orderNumber), label: 'Open your order' },
     attachments: labelAtt ? [labelAtt] : [],
     context: 'returns:approved',
+  });
+  await rmaEvent({
+    ticketId: r.ticketId, returnOpenedAt: r.createdAt, step: p.noReturnNeeded ? 'APPROVED_NO_RETURN' : 'APPROVED', fromStaff: true, authorId: actor.id,
+    body: p.noReturnNeeded ? `${approvedText}\n\n${NO_RETURN_LINE}` : `${approvedText}\n\nReturn instructions:\n${instructions}${labelKey ? '\n\nThe return label is attached.' : ''}\n\n${SEND_TRACKING_LINE}`,
+    attachments: labelTicketKey ? [ticketFileHref(labelTicketKey)] : [], attachmentNames: labelTicketKey && p.label ? [p.label.name.slice(0, 120)] : [],
   });
   await notifyUser(r.order.buyer.id, `${r.rmaNumber}: approved`, p.noReturnNeeded ? 'Nothing to send back.' : 'See the return instructions on your order page.', `/app/orders/${r.order.orderNumber}`);
   await audit('return.approve', r.rmaNumber, `by ${actor.email ?? 'staff'}${p.noReturnNeeded ? ' · no return needed' : ''}${labelKey ? ' · label' : ''} · email ${mail.ok ? 'ok' : mail.error}`);
@@ -256,14 +325,20 @@ export async function rejectReturn(p: { returnId: string; reason: string }, acto
   if (r.status !== 'REQUESTED') return { ok: false, message: `${r.rmaNumber} is already ${r.status.toLowerCase().replace(/_/g, ' ')}.` };
   const claim = await prisma.returnRequest.updateMany({ where: { id: r.id, status: 'REQUESTED' }, data: { status: 'DENIED', decidedAt: new Date(), decidedById: actor.id, decisionReason: reason } });
   if (claim.count !== 1) return { ok: false, message: 'Someone else decided this request a moment ago — reload.' };
+  // The buyer discusses a rejection on the return's ticket (the order page has no reply).
+  const ticketRef = await ticketRefOf(r.ticketId);
+  const text = fillTemplate(fulfilmentText('RETURN_EMAIL_REJECTED_TEXT'), {
+    RMA: r.rmaNumber, ORDER: r.order.orderNumber, REASON: withoutFinalStop(reason), TICKET: ticketRef ? `support ticket ${ticketRef}` : 'a support ticket',
+  });
   const mail = await sendBuyerMail({
     to: r.order.buyer.email,
     subject: `[${r.rmaNumber}] About your request — order ${r.order.orderNumber}`,
-    heading: 'We can not approve your request',
-    text: fillTemplate(fulfilmentText('RETURN_EMAIL_REJECTED_TEXT'), { RMA: r.rmaNumber, ORDER: r.order.orderNumber, REASON: reason }),
-    cta: { href: orderUrl(r.order.orderNumber), label: 'Open your order' },
+    heading: 'We cannot approve your request',
+    text,
+    cta: ticketRef ? { href: supportTicketsUrl(), label: `Open ticket ${ticketRef}` } : { href: orderUrl(r.order.orderNumber), label: 'Open your order' },
     context: 'returns:rejected',
   });
+  await rmaEvent({ ticketId: r.ticketId, returnOpenedAt: r.createdAt, step: 'DENIED', fromStaff: true, authorId: actor.id, body: text });
   await notifyUser(r.order.buyer.id, `${r.rmaNumber}: not approved`, reason.slice(0, 200), `/app/orders/${r.order.orderNumber}`);
   await audit('return.reject', r.rmaNumber, `by ${actor.email ?? 'staff'} · "${reason.slice(0, 160)}" · email ${mail.ok ? 'ok' : mail.error}`);
   return { ok: true, message: `${r.rmaNumber} rejected. ${mailOutcomeText(mail)}` };
@@ -280,6 +355,7 @@ export async function recordReturnShipment(p: { returnId: string; buyerId: strin
   if (!['APPROVED', 'LABEL_SENT', 'IN_TRANSIT'].includes(r.status)) return { ok: false, message: r.status === 'REQUESTED' ? 'Please wait for our approval before you send anything.' : `This request is ${r.status.toLowerCase().replace(/_/g, ' ')}.` };
   const claim = await prisma.returnRequest.updateMany({ where: { id: r.id, status: { in: ['APPROVED', 'LABEL_SENT', 'IN_TRANSIT'] } }, data: { status: 'IN_TRANSIT', returnCarrier: carrier, returnTracking: tracking } });
   if (claim.count !== 1) return { ok: false, message: 'The request changed meanwhile — reload.' };
+  await rmaEvent({ ticketId: r.ticketId, returnOpenedAt: r.createdAt, step: 'SENT_BACK', fromStaff: false, authorId: p.buyerId, body: `${r.rmaNumber}: sent back with ${carrier}, tracking number ${tracking}.` });
   await notifyAdmins(`${r.rmaNumber}: goods on their way back`, `${carrier} · ${tracking} — order ${r.order.orderNumber}`, `/admin/orders/${r.order.id}#returns`, 'SYSTEM');
   await audit('return.in-transit', r.rmaNumber, `${carrier} ${tracking}`);
   return { ok: true, message: `Thanks — we expect ${r.rmaNumber} via ${carrier} (${tracking}) and email you when it arrives.` };
@@ -294,14 +370,16 @@ export async function receiveReturn(p: { returnId: string; receivedAt: Date; not
   if (!['APPROVED', 'LABEL_SENT', 'IN_TRANSIT'].includes(r.status)) return { ok: false, message: r.status === 'REQUESTED' ? 'Approve the request first.' : `${r.rmaNumber} is ${r.status.toLowerCase().replace(/_/g, ' ')}.` };
   const claim = await prisma.returnRequest.updateMany({ where: { id: r.id, status: { in: ['APPROVED', 'LABEL_SENT', 'IN_TRANSIT'] } }, data: { status: 'RECEIVED', receivedAt: p.receivedAt, receivedById: actor.id, ...(p.note ? { inspectionNote: p.note.slice(0, 2000) } : {}) } });
   if (claim.count !== 1) return { ok: false, message: 'The return changed meanwhile — reload.' };
+  const text = fillTemplate(fulfilmentText('RETURN_EMAIL_RECEIVED_GOODS_TEXT'), { RMA: r.rmaNumber, ORDER: r.order.orderNumber, DATE: fmtDocDay(p.receivedAt) });
   const mail = await sendBuyerMail({
     to: r.order.buyer.email,
     subject: `[${r.rmaNumber}] We received the returned goods`,
     heading: 'We received the returned goods',
-    text: fillTemplate(fulfilmentText('RETURN_EMAIL_RECEIVED_GOODS_TEXT'), { RMA: r.rmaNumber, ORDER: r.order.orderNumber, DATE: fmtDocDay(p.receivedAt) }),
+    text,
     cta: { href: orderUrl(r.order.orderNumber), label: 'Open your order' },
     context: 'returns:goods-received',
   });
+  await rmaEvent({ ticketId: r.ticketId, returnOpenedAt: r.createdAt, step: 'GOODS_RECEIVED', fromStaff: true, authorId: actor.id, body: text });
   await audit('return.received', r.rmaNumber, `on ${p.receivedAt.toISOString().slice(0, 10)} by ${actor.email ?? 'staff'}`);
   return { ok: true, message: `${r.rmaNumber} received — inspect it next (grade + restock decision). ${mailOutcomeText(mail)}` };
 }
@@ -333,6 +411,10 @@ export async function inspectReturn(p: { returnId: string; grade: 'RESELL' | 'RE
     if (e instanceof Refused) return { ok: false, message: e.message };
     throw e;
   }
+  await rmaEvent({
+    ticketId: r.ticketId, returnOpenedAt: r.createdAt, step: 'INSPECTED', fromStaff: true, authorId: actor.id,
+    body: `Inspection of ${r.rmaNumber}: ${p.grade.toLowerCase()} — ${withoutFinalStop(note)}${p.restock ? ` · ${restocked} unit(s) back in sellable stock` : ' · nothing put back into stock'}.`,
+  });
   await audit('return.inspect', r.rmaNumber, `${p.grade} · restocked ${restocked} · "${note.slice(0, 160)}" · by ${actor.email ?? 'staff'}`);
   return { ok: true, message: `${r.rmaNumber} inspected (${p.grade.toLowerCase()}).${p.restock ? ` ${restocked} unit(s) back in sellable stock.` : ' Nothing was put back into stock.'} Resolve it next (refund / credit, repair, replacement or no action).` };
 }
@@ -347,7 +429,26 @@ export const OUTCOME_LABEL: Record<ReturnOutcome, string> = {
   NONE: 'No action',
 };
 
-/** Close the RMA with its outcome; a money outcome goes through the refund ledger + credit note. */
+/** What the buyer reads on the ticket about the money of a resolution (the mail says the same). */
+function moneyLines(out: CreditOutcome, currency: string): string[] {
+  const money = (c: number) => fmtDocMoney(c, currency);
+  const lines: string[] = [];
+  if (out.creditNote) lines.push(`Credit note ${out.creditNote.number} (${money(-out.creditNote.totalCents)}) — on your order page.`);
+  if (out.receivableCents > 0) lines.push(`${money(out.receivableCents)} of the invoice is no longer due.`);
+  if (out.refund?.method === 'STRIPE') lines.push(`${money(out.refund.amountCents)} was refunded to your card.`);
+  else if (out.refund) lines.push(`A refund of ${money(out.refund.amountCents)} is approved — the transfer is not sent yet; we email you the date and bank reference when it is.`);
+  return lines;
+}
+
+/**
+ * Close the RMA with its outcome, exactly once (./rma-case.ts resolveRmaOnce):
+ * the return is claimed before any money moves — a second click / tab, whatever
+ * outcome or refund method it chose, is told it is being / already resolved and
+ * moves nothing. A money outcome goes through the refund ledger + credit note,
+ * and the claim turns RESOLVED inside that transaction (one credit note, one
+ * refund, one card refund, one mail). A ticket the return opened is resolved
+ * with it.
+ */
 export async function resolveReturn(
   p: { returnId: string; outcome: ReturnOutcome; amountCents: number | null; method: RefundMethod | null; note: string },
   actor: Actor,
@@ -356,23 +457,41 @@ export async function resolveReturn(
   const note = p.note.trim().slice(0, 1000);
   const r = await loadReturn(p.returnId);
   if (!r) return { ok: false, message: 'Return not found.' };
-  const resolvable: Array<'APPROVED' | 'LABEL_SENT' | 'INSPECTED'> = r.noReturnNeeded ? ['APPROVED', 'LABEL_SENT', 'INSPECTED'] : ['INSPECTED'];
+  const resolvable = resolvableReturnStatuses(r.noReturnNeeded);
   if (!(resolvable as string[]).includes(r.status)) {
-    return { ok: false, message: r.status === 'RESOLVED' ? `${r.rmaNumber} is already resolved.` : r.noReturnNeeded ? 'Approve the request first.' : 'Receive and inspect the returned goods before you resolve it.' };
+    return {
+      ok: false,
+      message: r.status === 'RESOLVED'
+        ? `${r.rmaNumber} is already resolved (another tab or a colleague) — nothing was credited or refunded twice. Reload to see the outcome.`
+        : r.noReturnNeeded ? 'Approve the request first.' : 'Receive and inspect the returned goods before you resolve it.',
+    };
   }
   if (note.length < 5) return { ok: false, message: 'Write the outcome for the buyer (at least 5 characters).' };
-  let refundMsg = '';
-  if (p.outcome === 'FULL_REFUND' || p.outcome === 'PARTIAL_REFUND' || p.outcome === 'CREDIT') {
-    const amount = p.amountCents ?? 0;
-    if (amount <= 0) return { ok: false, message: 'Enter the amount to refund / credit.' };
-    const ref = await createRefund({ orderId: r.order.id, amountCents: amount, reason: `${r.rmaNumber}: ${note}`, method: p.method, returnId: r.id }, actor);
-    if (!ref.ok) return { ok: false, message: `${r.rmaNumber} not resolved — ${ref.message}` };
-    refundMsg = ` ${ref.message}`;
-  }
-  const claim = await prisma.returnRequest.updateMany({ where: { id: r.id, status: { in: resolvable } }, data: { status: 'RESOLVED', outcome: p.outcome, resolvedAt: new Date(), resolvedById: actor.id, resolutionNote: note } });
-  if (claim.count !== 1) return { ok: false, message: `${r.rmaNumber} changed meanwhile — reload.${refundMsg}` };
+  const withMoney = p.outcome === 'FULL_REFUND' || p.outcome === 'PARTIAL_REFUND' || p.outcome === 'CREDIT';
+  const amount = p.amountCents ?? 0;
+  if (withMoney && amount <= 0) return { ok: false, message: 'Enter the amount to refund / credit.' };
+  const settled = await resolveRmaOnce(
+    prisma,
+    { returnId: r.id, rmaNumber: r.rmaNumber, from: resolvable, outcome: p.outcome, note, actorId: actor.id },
+    withMoney
+      ? async (finish) => {
+          const ref = await createRefund({
+            orderId: r.order.id, amountCents: amount, reason: `${r.rmaNumber}: ${note}`, method: p.method, returnId: r.id,
+            // One card refund per return and amount (Stripe idempotency; the amount is appended).
+            stripeKey: `rma-${r.id}`,
+            inTx: async (tx) => {
+              if (!(await finish(tx))) throw new MoneyRefused(`${r.rmaNumber} was resolved meanwhile (another tab or a colleague).`);
+            },
+          }, actor);
+          return ref.ok ? { ok: true, value: ref } : { ok: false, message: ref.message, moneyMoved: !!ref.stripeRefundId };
+        }
+      : null,
+  );
+  if (!settled.ok) return settled;
+  const credit: CreditOutcome | null = settled.value?.outcome ?? null;
+  const refundMsg = settled.value ? ` ${settled.value.message}` : '';
   let mailText = '';
-  if (!refundMsg) {
+  if (!credit) {
     const mail = await sendBuyerMail({
       to: r.order.buyer.email,
       subject: `[${r.rmaNumber}] Outcome — order ${r.order.orderNumber}`,
@@ -383,15 +502,19 @@ export async function resolveReturn(
     });
     mailText = ` ${mailOutcomeText(mail)}`;
   }
+  await rmaEvent({
+    ticketId: r.ticketId, returnOpenedAt: r.createdAt, step: 'RESOLVED', fromStaff: true, authorId: actor.id,
+    body: [`${r.rmaNumber} is resolved — ${OUTCOME_LABEL[p.outcome].toLowerCase()}.`, note, ...(credit ? moneyLines(credit, r.order.currency) : [])].join('\n\n'),
+  });
   await notifyUser(r.order.buyer.id, `${r.rmaNumber}: ${OUTCOME_LABEL[p.outcome].toLowerCase()}`, note.slice(0, 200), `/app/orders/${r.order.orderNumber}`);
-  await audit('return.resolve', r.rmaNumber, `${p.outcome}${p.amountCents ? ` ${formatPrice(p.amountCents, r.order.currency)}` : ''} · by ${actor.email ?? 'staff'}`);
+  await audit('return.resolve', r.rmaNumber, `${p.outcome}${p.amountCents ? ` ${formatPrice(p.amountCents, r.order.currency)}` : ''}${credit?.creditNote ? ` · cn=${credit.creditNote.number}` : ''}${credit?.refund ? ` · refund ${credit.refund.id}` : ''} · by ${actor.email ?? 'staff'}`);
   return { ok: true, message: `${r.rmaNumber} resolved: ${OUTCOME_LABEL[p.outcome].toLowerCase()}.${refundMsg}${mailText}` };
 }
 
 /** The buyer adds photos / files to their open request (more than fit in one upload). */
 export async function addReturnFiles(p: { returnId: string; buyerId: string; files: File[] }): Promise<Result> {
   await ensureSettingsLoaded();
-  const r = await prisma.returnRequest.findUnique({ where: { id: p.returnId }, select: { id: true, rmaNumber: true, status: true, attachments: true, order: { select: { id: true, buyerId: true, orderNumber: true } } } });
+  const r = await prisma.returnRequest.findUnique({ where: { id: p.returnId }, select: { id: true, rmaNumber: true, status: true, attachments: true, ticketId: true, createdAt: true, order: { select: { id: true, buyerId: true, orderNumber: true } } } });
   if (!r || r.order.buyerId !== p.buyerId) return { ok: false, message: 'Request not found.' };
   if (!(OPEN_RETURN_STATUSES as readonly string[]).includes(r.status)) return { ok: false, message: `${r.rmaNumber} is closed — files can no longer be added.` };
   const room = returnMaxFiles() * 3 - r.attachments.length;
@@ -400,6 +523,10 @@ export async function addReturnFiles(p: { returnId: string; buyerId: string; fil
   if (!stored.ok) return { ok: false, message: stored.message };
   if (!stored.keys.length) return { ok: false, message: 'Choose at least one photo or PDF.' };
   await prisma.returnRequest.update({ where: { id: r.id }, data: { attachments: { push: stored.keys } } });
+  await rmaEvent({
+    ticketId: r.ticketId, returnOpenedAt: r.createdAt, step: 'FILES_ADDED', fromStaff: false, authorId: p.buyerId,
+    body: `${stored.keys.length} more photo(s) / file(s) for ${r.rmaNumber}.`, attachments: stored.ticketHrefs, attachmentNames: stored.names,
+  });
   await notifyAdmins(`${r.rmaNumber}: ${stored.keys.length} file(s) added by the buyer`, `Order ${r.order.orderNumber}`, `/admin/orders/${r.order.id}#returns`, 'SYSTEM');
   await audit('return.files', r.rmaNumber, `+${stored.keys.length}`);
   return { ok: true, message: `${stored.keys.length} file(s) added to ${r.rmaNumber}.` };
