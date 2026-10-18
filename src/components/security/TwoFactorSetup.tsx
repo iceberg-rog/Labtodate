@@ -18,6 +18,21 @@ function secretFromUri(uri: string): string {
   }
 }
 
+/** The issuer (brand) of an otpauth:// URI; '' when it has none. */
+function issuerFromUri(uri: string): string {
+  try {
+    return (new URL(uri).searchParams.get('issuer') ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/** "labtodate-recovery-codes.txt" from the brand; a safe file name whatever it is. */
+function recoveryCodesFileName(site: string): string {
+  const slug = site.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  return `${slug ? `${slug}-` : ''}recovery-codes.txt`;
+}
+
 /**
  * Set up an authenticator app: confirm the password, scan the QR code (or type
  * the key), enter a code to prove it works, then save the 10 recovery codes.
@@ -86,7 +101,9 @@ export function TwoFactorSetup({ email, redirectTo, compact }: { email: string; 
   }
 
   const secret = secretFromUri(uri);
-  const codesText = `lab2date recovery codes for ${email}\nEach code works once. Keep them somewhere safe (password manager, printed).\n\n${codes.join('\n')}\n`;
+  // The brand the server put in the authenticator URI (the live SITE_NAME).
+  const site = issuerFromUri(uri);
+  const codesText = `${site ? `${site} recovery codes` : 'Recovery codes'} for ${email}\nEach code works once. Keep them somewhere safe (password manager, printed).\n\n${codes.join('\n')}\n`;
 
   return (
     <div className={compact ? 'space-y-4' : 'rounded-2xl border bg-card p-6 shadow-sm space-y-4'} data-testid="two-factor-setup">
@@ -187,7 +204,7 @@ export function TwoFactorSetup({ email, redirectTo, compact }: { email: string; 
               onClick={() => {
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(new Blob([codesText], { type: 'text/plain' }));
-                a.download = 'lab2date-recovery-codes.txt';
+                a.download = recoveryCodesFileName(site);
                 a.click();
               }}
             >

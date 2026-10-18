@@ -7,13 +7,22 @@ import { authClient } from '@/lib/auth-client';
 import { Button } from '@/components/ui/button';
 import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
 import type { AuthCaptchaFlags } from '@/lib/security/captcha-shared';
+import { mailCooldownNotice, noteMailRequest } from '@/lib/auth-mail-notice';
 
-export default function ForgotPasswordInner({ captcha: flags }: { captcha: AuthCaptchaFlags }) {
+export default function ForgotPasswordInner({ captcha: flags, mailCooldownSec }: { captcha: AuthCaptchaFlags; mailCooldownSec: number }) {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
+  // The e-mail guard's per-address wait: inside it the request is answered
+  // like a sent one and nothing is sent (no account enumeration) — say so.
+  const [cooldown, setCooldown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const captcha = useCaptcha('password_reset', { required: flags.password_reset, start: 'focus' });
+
+  function showSent() {
+    setCooldown(mailCooldownNotice(mailCooldownSec, noteMailRequest(email, mailCooldownSec)));
+    setSent(true);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -41,10 +50,10 @@ export default function ForgotPasswordInner({ captcha: flags }: { captcha: AuthC
         setError(err.message);
         return;
       }
-      setSent(true);
+      showSent();
     } catch {
       // Same generic success to avoid leaking which emails are registered.
-      setSent(true);
+      showSent();
     } finally {
       setLoading(false);
     }
@@ -60,9 +69,10 @@ export default function ForgotPasswordInner({ captcha: flags }: { captcha: AuthC
           <h1 className="text-xl font-bold tracking-tight">Check your email</h1>
         </div>
         <p className="text-sm text-muted-foreground mt-3 leading-relaxed">
-          If an account exists for <strong className="text-foreground">{email}</strong>, we just sent a password-reset link to it.
+          If an account exists for <strong className="text-foreground">{email}</strong>, we sent a password-reset link to it.
           The link expires in 1 hour. Don&apos;t forget to check spam.
         </p>
+        {cooldown && <p className="text-sm text-muted-foreground mt-3 leading-relaxed" data-testid="mail-cooldown">{cooldown}</p>}
         <div className="mt-6 flex items-center gap-2">
           <Button asChild variant="outline" size="sm" className="rounded-full font-semibold">
             <Link href="/auth/sign-in"><ArrowLeft className="h-4 w-4" /> Back to sign-in</Link>

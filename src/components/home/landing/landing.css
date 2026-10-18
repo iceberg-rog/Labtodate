@@ -92,6 +92,8 @@ html.cursor #lnd-cur { opacity: 1; }
 html:not(.js) .lnd .sec { height: auto; }
 html.js .lnd .sec:not(.on) *, html.js .lnd .sec:not(.on) *::before, html.js .lnd .sec:not(.on) *::after { animation-play-state: paused !important; }
 .lnd .stick { position: sticky; top: 0; height: 100vh; height: 100svh; overflow: hidden; padding: 0 var(--gutter); }
+/* while the cookie notice shows (CookieConsent sets --cookie-bar-h) a pinned station ends above it: no button under the bar */
+.lnd .stick { height: calc(100svh - var(--cookie-bar-h, 0px)); }
 html:not(.js) .lnd .stick { position: relative; height: auto; min-height: 100svh; padding-top: 96px; padding-bottom: 60px; }
 .lnd h1, .lnd h2, .lnd h3 { margin: 0; font-weight: 800; line-height: 1.04; letter-spacing: -0.04em; }
 .lnd h2 { font-size: clamp(1.9rem, 3.8vw, 3.2rem); }

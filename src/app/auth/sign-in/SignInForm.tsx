@@ -11,20 +11,31 @@ import { VerifyEmailStep } from '../VerifyEmailStep';
 import { TwoFactorStep } from './TwoFactorStep';
 import { CAPTCHA_NOT_SOLVED, useCaptcha } from '@/components/security/Captcha';
 import type { AuthCaptchaFlags } from '@/lib/security/captcha-shared';
+import { mailCooldownNotice, noteMailRequest } from '@/lib/auth-mail-notice';
 
 // ?error= codes this page can receive: from a magic link (better-auth appends
 // them to errorCallbackURL) or from the magic-link guard in src/lib/auth.ts.
-const LINK_ERRORS: Record<string, string> = {
+const linkErrors = (site: string): Record<string, string> => ({
   INVALID_TOKEN: 'That sign-in link has expired or was already used. Enter your email below to get a new one.',
   EXPIRED_TOKEN: 'That sign-in link has expired or was already used. Enter your email below to get a new one.',
-  new_user_signup_disabled: 'There’s no lab2date account for that email yet — create one with “Sign up” below.',
+  new_user_signup_disabled: `There’s no ${site} account for that email yet — create one with “Sign up” below.`,
   ACCOUNT_SUSPENDED: 'This account is suspended. Contact support if you think this is a mistake.',
   ACCOUNT_DELETED: 'Your account was deleted. A confirmation was sent to your e-mail address.',
   MAGIC_LINK_DISABLED:
     'E-mailed sign-in links are switched off for this account (staff or two-factor sign-in). Sign in with your password and authenticator app.',
-};
+});
 
-export default function SignInPage({ captcha: flags }: { captcha: AuthCaptchaFlags }) {
+export default function SignInPage({
+  captcha: flags,
+  site,
+  mailCooldownSec,
+}: {
+  captcha: AuthCaptchaFlags;
+  /** The brand (Settings → Brand → SITE_NAME). */
+  site: string;
+  /** The e-mail guard's per-address wait (Settings → Security). */
+  mailCooldownSec: number;
+}) {
   const router = useRouter();
   const params = useSearchParams();
   // Default to the role-aware dispatcher (/auth/continue) so admins land on
@@ -38,9 +49,10 @@ export default function SignInPage({ captcha: flags }: { captcha: AuthCaptchaFla
   const [loading, setLoading] = useState<'password' | 'magic' | null>(null);
   const [error, setError] = useState<string | null>(() => {
     const code = params.get('error');
-    return code ? (LINK_ERRORS[code] ?? 'That sign-in link couldn’t be used. Please sign in again.') : null;
+    return code ? (linkErrors(site)[code] ?? 'That sign-in link couldn’t be used. Please sign in again.') : null;
   });
   const [magicSent, setMagicSent] = useState(false);
+  const [cooldown, setCooldown] = useState<string | null>(null);
   // Progressive bot check: password sign-in asks for it once the server says
   // so (after a few wrong passwords for the account or from the network).
   const signinCheck = useCaptcha('signin', { required: flags.signin });
@@ -120,6 +132,9 @@ export default function SignInPage({ captcha: flags }: { captcha: AuthCaptchaFla
       setError(err.message || 'Could not send the magic link.');
       return;
     }
+    // Inside the per-address wait the request is answered like a sent one
+    // (no account enumeration) while nothing is sent: the screen says so.
+    setCooldown(mailCooldownNotice(mailCooldownSec, noteMailRequest(email, mailCooldownSec)));
     setMagicSent(true);
   }
 
@@ -168,9 +183,11 @@ export default function SignInPage({ captcha: flags }: { captcha: AuthCaptchaFla
         </div>
         <h1 className="text-xl font-bold tracking-tight">Check your email</h1>
         <p className="text-sm text-muted-foreground mt-2">
-          We emailed <strong className="text-foreground">{email}</strong>. If it has a lab2date account, the email
-          contains a sign-in link that expires in 10 minutes.
+          Check <strong className="text-foreground">{email}</strong>: if it has a {site} account that can use sign-in
+          links, we sent it a link that expires in 10 minutes; otherwise an e-mail on how to sign in or create an
+          account.
         </p>
+        {cooldown && <p className="text-sm text-muted-foreground mt-3" data-testid="mail-cooldown">{cooldown}</p>}
         <Button variant="outline" onClick={() => setMagicSent(false)} className="mt-6 w-full">
           Use a different email
         </Button>
@@ -182,7 +199,7 @@ export default function SignInPage({ captcha: flags }: { captcha: AuthCaptchaFla
     <>
       <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">Welcome back</h1>
-        <p className="text-sm text-muted-foreground mt-1">Sign in to your lab2date account.</p>
+        <p className="text-sm text-muted-foreground mt-1">Sign in to your {site} account.</p>
       </div>
 
       <form onSubmit={handlePassword} className="space-y-4 rounded-2xl border bg-card p-6 shadow-sm">

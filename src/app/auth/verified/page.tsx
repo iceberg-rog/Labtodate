@@ -4,6 +4,7 @@ import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { getServerSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { safeRedirect } from '@/lib/safe-redirect';
+import { authCaptchaFlags } from '@/lib/security/captcha';
 import { Button } from '@/components/ui/button';
 import SetPasswordButton from './SetPasswordButton';
 
@@ -34,6 +35,7 @@ export default async function EmailVerifiedPage({
     select: { password: true },
   });
   if (!credential || credential.password) redirect(next);
+  const captcha = await authCaptchaFlags();
 
   return (
     <div className="rounded-2xl border border-border bg-card p-8 shadow-sm">
@@ -52,7 +54,7 @@ export default async function EmailVerifiedPage({
       </p>
 
       <div className="mt-6 space-y-3">
-        <SetPasswordButton email={session.user.email} />
+        <SetPasswordButton email={session.user.email} captcha={captcha.password_reset} />
         <Button asChild variant="outline" size="lg" className="w-full rounded-xl font-semibold">
           <Link href={next}>
             Continue <ArrowRight className="h-4 w-4" />
