@@ -64,8 +64,12 @@ export interface CreditSettlement {
 
 export type DocPaymentBox =
   | { kind: 'INSTRUCTIONS'; reference: string; amountCents: number; dueDate: string | null; bankAvailable: boolean }
-  /** paidAt = value date of the payment that completed it (payments ledger). */
-  | { kind: 'PAID'; paidAt: string | null; method: string | null; amountCents?: number }
+  /**
+   * paidAt = value date of the payment that completed it (payments ledger);
+   * amountCents = what was received. writtenOffCents: a short payment accepted
+   * within UNDERPAYMENT_TOLERANCE_CENTS — printed as "Received … — … written off".
+   */
+  | { kind: 'PAID'; paidAt: string | null; method: string | null; amountCents?: number; writtenOffCents?: number }
   | { kind: 'DUE'; dueDate: string | null; reference: string; amountCents: number }
   /** Paid in part (e.g. a VAT correction raised the total): what came in, what is still due. */
   | { kind: 'PARTLY_PAID'; paidCents: number; paidAt: string | null; openCents: number; dueDate: string | null; reference: string }
@@ -130,6 +134,8 @@ export interface DocumentSnapshot {
   totals: { goodsCents: number; shippingCents: number; netCents: number; taxCents: number; totalCents: number };
   payment: DocPaymentBox;
   notes: string[];
+  /** The accepted offer's remark to the buyer, printed under "Remark" (only when set). */
+  remarks?: string[];
   terms: string[];
   clauses: string[];
   original: { number: string; issueDate: string } | null;
@@ -150,19 +156,42 @@ type Addr = Record<string, unknown>;
 const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
 /**
+ * The postcode / city / region lines of an address in the destination's own
+ * order (what carriers and AP departments expect):
+ *   US, CA, AU    "Boston, MA 02115" · "Toronto, ON M5V 2T6" · "Melbourne, VIC 3000"
+ *   GB, IE        "London" then the postcode on its own line ("SW1A 1AA")
+ *   elsewhere     "1000 AA Amsterdam" (postcode before the city), ", region" after it
+ */
+export function localityLines(parts: { postalCode: string | null; city: string | null; region: string | null }, countryCode: string | null): string[] {
+  const { postalCode: zip, city, region } = parts;
+  const cc = (countryCode ?? '').toUpperCase();
+  if (cc === 'US' || cc === 'CA' || cc === 'AU') {
+    const tail = [region, zip].filter(Boolean).join(' ');
+    const line = [city, tail].filter(Boolean).join(', ');
+    return line ? [line] : [];
+  }
+  if (cc === 'GB' || cc === 'IE') {
+    return [[city, region].filter(Boolean).join(', '), zip ?? ''].filter(Boolean);
+  }
+  const line = [[zip, city].filter(Boolean).join(' '), region].filter(Boolean).join(', ');
+  return line ? [line] : [];
+}
+
+/**
  * Address JSON (checkout / Stripe / payment-page shape) → printable party.
  * `countryName` prints the country in full (document language) instead of
- * its ISO code; `country` keeps the code.
+ * its ISO code; `country` keeps the code. The postcode / city / region follow
+ * the destination's own format (localityLines).
  */
 export function partyFromAddress(raw: unknown, fallbackName: string, countryName?: (code: string) => string): DocPartySnapshot | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Addr;
   const a = ((o.address as Addr) && typeof o.address === 'object' ? o.address : o) as Addr;
-  const cityLine = [str(a.postal_code) ?? str(a.postalCode), str(a.city)].filter(Boolean).join(' ');
   const country = str(a.country);
   const isCode = !!country && /^[A-Za-z]{2}$/.test(country);
   const countryLine = isCode && countryName ? countryName(country!.toUpperCase()) : country;
-  const lines = [str(a.line1), str(a.line2), [cityLine, str(a.state) ?? str(a.region)].filter(Boolean).join(', ') || null, countryLine]
+  const locality = localityLines({ postalCode: str(a.postal_code) ?? str(a.postalCode), city: str(a.city), region: str(a.state) ?? str(a.region) }, isCode ? country : null);
+  const lines = [str(a.line1), str(a.line2), ...locality, countryLine]
     .filter((x): x is string => !!x);
   const party: DocPartySnapshot = {
     name: str(o.name) ?? fallbackName,

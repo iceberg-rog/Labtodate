@@ -1,23 +1,27 @@
+import type { FiscalDocument } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded, settingString } from '@/lib/settings';
 import { companyCopyAddress, sendInternalEmail, trySendEmail, type EmailAttachment } from '@/lib/email';
-import { escapeHtml } from '@/lib/email-html';
+import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
 import { logError } from '@/lib/observability';
-import { currentProforma, documentAttachment, issueProforma, reissueProforma } from '@/lib/documents/issue';
-import { absoluteDocumentHref } from '@/lib/documents';
+import { currentProforma, documentAttachment, issueProforma, reissueProforma, snapshotOf, type IssueFailCode } from '@/lib/documents/issue';
 import { vatTreatmentWithRate } from '@/lib/tax/determine';
 import { formatPrice } from '@/lib/utils';
+import { fmtDueDate } from '@/lib/orders/payment-due';
+import { mailLayout, mailTable, siteBase } from '@/lib/quotes/mail';
+import { mailOrderDocument } from '@/lib/orders/internal';
 
 /**
  * Checkout emails — every sentence states what is actually true for THIS
- * order: a payable order gets its proforma (bank details, reference, total);
- * an order on hold is told exactly what is open and that nothing is due yet;
- * a released hold gets the final total and the proforma.
+ * order: a payable order gets its proforma (bank details, reference, total,
+ * pay-by date — all read from the issued proforma); an order on hold is told
+ * exactly what is open and that nothing is due yet; a released hold gets the
+ * final total and the proforma. One branded layout (mailLayout). The proforma
+ * goes to the order's document recipients (accounts-payable address, a copy to
+ * the account — lib/orders/internal.ts mailOrderDocument) and is marked sent.
+ * Consumers (customerType CONSUMER) also get the withdrawal information
+ * (CONSUMER_WITHDRAWAL_TEXT).
  */
-
-function siteBase(): string {
-  return (process.env.BETTER_AUTH_URL ?? '').replace(/\/+$/, '');
-}
 
 const HOLD_TITLE: Record<string, string> = {
   COMPLIANCE: 'Export compliance review',
@@ -25,7 +29,8 @@ const HOLD_TITLE: Record<string, string> = {
   ADDRESS_REVIEW: 'Address change under review',
   SHIPPING_PENDING: 'Shipping cost to be confirmed',
   PAYMENT_REVIEW: 'Payment under review',
-  INVOICE_PENDING: 'Invoice not issued yet',
+  // Paid order: the invoice is withheld; unpaid order: the proforma waits for the seller's details.
+  INVOICE_PENDING: 'Proforma / invoice not issued yet',
 };
 export const holdTitle = (code: string | null | undefined) => (code ? HOLD_TITLE[code] ?? code : '');
 
@@ -40,42 +45,57 @@ async function loadOrder(orderId: string) {
 
 function totalsTable(o: OrderForMail, opts: { shippingPending: boolean; vatPending: boolean }): string {
   const cur = o.currency;
-  const row = (label: string, value: string, bold = false) =>
-    `<tr><td style="padding:4px 12px 4px 0;${bold ? 'font-weight:700;' : 'color:#374151;'}">${label}</td><td style="padding:4px 0;text-align:right;${bold ? 'font-weight:700;' : ''}">${value}</td></tr>`;
-  const items = o.items
-    .map((i) => row(`${escapeHtml(i.titleSnapshot)} — ${i.quantity} × ${formatPrice(i.priceCentsSnapshot, cur)}`, formatPrice(i.priceCentsSnapshot * i.quantity, cur)))
-    .join('');
+  const money = (c: number) => escapeHtml(formatPrice(c, cur));
   const vatText = opts.vatPending
     ? 'to be confirmed'
-    : `${formatPrice(o.taxCents, cur)}${o.vatTreatment ? ` (${escapeHtml(vatTreatmentWithRate(o.vatTreatment, o.vatRateBp))})` : ''}`;
-  return `<table style="border-collapse:collapse;font-size:14px;min-width:320px;">
-${items}
-${row(o.vatTreatment === 'MARGIN_SCHEME' ? 'Subtotal (margin scheme: VAT included, not shown)' : 'Subtotal (excl. VAT)', formatPrice(o.subtotalCents, cur))}
-${row('Shipping', opts.shippingPending ? 'to be confirmed' : o.shippingCents ? formatPrice(o.shippingCents, cur) : 'free')}
-${row('VAT', vatText)}
-${row(opts.shippingPending || opts.vatPending ? 'Total so far' : 'Total to pay', formatPrice(o.totalCents, cur), true)}
-</table>`;
+    : `${money(o.taxCents)}${o.vatTreatment ? ` (${escapeHtml(vatTreatmentWithRate(o.vatTreatment, o.vatRateBp))})` : ''}`;
+  return mailTable([
+    ...o.items.map((i): [string, string] => [`<span dir="auto">${escapeHtml(i.titleSnapshot)}</span> — ${i.quantity} × ${money(i.priceCentsSnapshot)}`, money(i.priceCentsSnapshot * i.quantity)]),
+    [o.vatTreatment === 'MARGIN_SCHEME' ? 'Subtotal (margin scheme: VAT included, not shown)' : 'Subtotal (excl. VAT)', money(o.subtotalCents)],
+    ['Shipping', opts.shippingPending ? 'to be confirmed' : o.shippingCents ? money(o.shippingCents) : 'free'],
+    ['VAT', vatText],
+    [opts.shippingPending || opts.vatPending ? 'Total so far' : 'Total to pay', money(o.totalCents), true],
+  ]);
 }
 
-function bankBlock(reference: string, amountCents: number, currency: string): string {
-  const iban = settingString('BANK_IBAN');
-  if (!iban) return '<p>Our team sends you the bank details for this order.</p>';
-  const name = settingString('COMPANY_LEGAL_NAME') || settingString('SITE_NAME');
-  return `<p style="margin:12px 0 4px;"><strong>Pay by bank transfer</strong></p>
-<table style="font-size:14px;border-collapse:collapse;">
-<tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Amount</td><td><strong>${formatPrice(amountCents, currency)}</strong></td></tr>
-<tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Beneficiary</td><td>${escapeHtml(name)}</td></tr>
-<tr><td style="padding:2px 12px 2px 0;color:#6b7280;">IBAN</td><td>${escapeHtml(iban)}</td></tr>
-${settingString('BANK_SWIFT') ? `<tr><td style="padding:2px 12px 2px 0;color:#6b7280;">BIC</td><td>${escapeHtml(settingString('BANK_SWIFT'))}</td></tr>` : ''}
-<tr><td style="padding:2px 12px 2px 0;color:#6b7280;">Reference</td><td><strong>${escapeHtml(reference)}</strong></td></tr>
-</table>`;
+/** How to pay — exactly what the issued proforma says (bank, reference, amount, pay-by date). */
+function payBlock(pf: FiscalDocument): string {
+  const snap = snapshotOf(pf);
+  const b = snap.bank;
+  const due = pf.dueDate ?? (snap.dueDate ? new Date(snap.dueDate) : null);
+  const mono = (v: string) => `<span style="font-family:ui-monospace,monospace;">${escapeHtml(v)}</span>`;
+  const rows: Array<[string, string, boolean?]> = [
+    ['Amount', escapeHtml(formatPrice(snap.totals.totalCents, pf.currency)), true],
+    ...(b
+      ? [
+          ['Beneficiary', `<span dir="auto">${escapeHtml(b.beneficiary)}</span>`] as [string, string],
+          ...(b.bankName ? [['Bank', `<span dir="auto">${escapeHtml(b.bankName)}</span>`] as [string, string]] : []),
+          ['IBAN', mono(b.iban)] as [string, string],
+          ...(b.bic ? [['BIC', mono(b.bic)] as [string, string]] : []),
+        ]
+      : []),
+    ['Reference', `<strong>${escapeHtml(pf.number)}</strong>`],
+    ...(due ? [['Pay by', `<strong>${escapeHtml(fmtDueDate(due))}</strong>`] as [string, string]] : []),
+  ];
+  return `<h3 style="color:#0E4F40;margin:16px 0 6px;font-size:15px;">Pay by bank transfer</h3>${mailTable(rows)}`;
 }
 
-async function proformaFor(orderId: string): Promise<{ number: string | null; attachment: EmailAttachment | null; note: string | null }> {
+/** Consumers: the withdrawal right in the order confirmation (EU consumer law). */
+function withdrawalBlock(o: OrderForMail): string {
+  if (o.customerType !== 'CONSUMER') return '';
+  const text = settingString('CONSUMER_WITHDRAWAL_TEXT').trim();
+  if (!text) return '';
+  return `<div style="margin:16px 0 12px;padding:10px 12px;border-radius:8px;background:#f9fafb;border:1px solid #e5e7eb;font-size:13px;"><p style="margin:0 0 6px;font-weight:700;">Your right of withdrawal</p><p style="margin:0;">${escapeHtmlLines(text)}</p></div>`;
+}
+
+type ProformaForMail = { doc: FiscalDocument | null; attachment: EmailAttachment | null; note: string | null; code: IssueFailCode | null };
+
+async function proformaFor(orderId: string): Promise<ProformaForMail> {
   // A proforma issued before the total changed (freight / VAT / address) is
   // replaced by a revision — the buyer must never pay a stale amount. The same
   // when the payment term restarted (hold released): the printed due date must
-  // be the one the reminders and the auto-cancel sweep use (Order.dueAt).
+  // be the one the reminders and the auto-cancel sweep use (Order.dueAt), and
+  // for a proforma issued without bank details (before they were required).
   const [order, current] = await Promise.all([
     prisma.order.findUnique({ where: { id: orderId }, select: { totalCents: true, dueAt: true } }),
     currentProforma(prisma, orderId),
@@ -86,13 +106,25 @@ async function proformaFor(orderId: string): Promise<{ number: string | null; at
   // moved the destination while the order was on hold — no revision is issued
   // while a pre-payment hold is open): every change is an AddressChange row.
   const staleDetails = !!current && (await prisma.addressChange.count({ where: { orderId, createdAt: { gt: current.createdAt } } })) > 0;
-  const pf = staleTotal || staleDue || staleDetails
-    ? await reissueProforma(orderId, staleTotal ? 'Final total confirmed (shipping / VAT / address)' : staleDetails ? 'Billing / delivery details updated' : 'Payable now — the payment term starts today (hold released)')
+  const staleBank = !!current && !snapshotOf(current).bank;
+  const pf = staleTotal || staleDue || staleDetails || staleBank
+    ? await reissueProforma(orderId, staleTotal ? 'Final total confirmed (shipping / VAT / address)' : staleDetails ? 'Billing / delivery details updated' : staleBank ? 'Bank details added' : 'Payable now — the payment term starts today (hold released)')
     : await issueProforma(orderId);
-  if (!pf.ok) return { number: null, attachment: null, note: pf.message };
+  if (!pf.ok) return { doc: null, attachment: null, note: pf.message, code: pf.code };
   const att = await documentAttachment(pf.document);
   if (att.error) await logError('checkout.proforma.pdf', new Error(att.error));
-  return { number: pf.document.number, attachment: att.attachment, note: null };
+  return { doc: pf.document, attachment: att.attachment, note: null, code: null };
+}
+
+/** No proforma could be issued: the sentence that is true instead (the order page always has the state). */
+function noProformaText(o: OrderForMail, pf: ProformaForMail): string {
+  if (pf.code === 'SELLER_INCOMPLETE') {
+    return '<strong>Nothing is due yet</strong> — please do not transfer any money for this order yet. We email you the proforma invoice (payment request) with our bank details as soon as it is ready.';
+  }
+  if (pf.code === 'MISSING_DETAILS') {
+    return `Please add your billing and delivery details on your <a href="${siteBase()}/app/orders/${o.orderNumber}/payment">payment page</a> — the proforma invoice (payment request) is issued as soon as they are complete.`;
+  }
+  return `Your proforma invoice (payment request, with the bank details and the transfer reference) is on your <a href="${siteBase()}/app/orders/${o.orderNumber}/payment">payment page</a>.`;
 }
 
 /** A payable bank-transfer order: proforma attached, bank details, next steps. */
@@ -103,28 +135,52 @@ export async function sendCheckoutConfirmation(orderId: string): Promise<{ email
     if (!o) return { emailed: false, proforma: null };
     const pf = await proformaFor(o.id);
     const base = siteBase();
-    const reference = pf.number ?? o.orderNumber;
-    const html = `<div style="font-family:system-ui,sans-serif;max-width:600px;">
-<h2 style="color:#0E4F40;">Order ${o.orderNumber} received</h2>
-<p>Hi ${escapeHtml(o.buyer.name || 'there')},</p>
-<p>Thank you for your order. <strong>No payment has been taken yet.</strong> Please pay by bank transfer; we dispatch once your payment is received and verified.</p>
-${totalsTable(o, { shippingPending: false, vatPending: false })}
-${bankBlock(reference, o.totalCents, o.currency)}
-${pf.attachment ? `<p>Your proforma invoice <strong>${escapeHtml(pf.number ?? '')}</strong> is attached (PDF).</p>` : pf.number ? `<p><a href="${absoluteDocumentHref('proforma', o.orderNumber, 'pdf')}">Download your proforma invoice ${escapeHtml(pf.number)}</a>.</p>` : ''}
-<p>After the transfer, upload the bank receipt on your <a href="${base}/app/orders/${o.orderNumber}/payment">payment page</a> — it speeds up the verification.</p>
-<p style="color:#6b7280;font-size:12px;">${o.poNumber ? `Your PO number: ${escapeHtml(o.poNumber)} · ` : ''}<a href="${base}/app/orders/${o.orderNumber}">View your order</a></p>
-</div>`;
-    const subject = `Order ${o.orderNumber} received — pay ${formatPrice(o.totalCents, o.currency)} by bank transfer`;
-    const sent = await trySendEmail({ to: o.buyer.email, subject, html, attachments: pf.attachment ? [pf.attachment] : [] }, 'checkout:confirmation');
+    const paymentPage = `${base}/app/orders/${o.orderNumber}/payment`;
+    const greeting = `Hi <span dir="auto">${escapeHtml(o.buyer.name || 'there')}</span>,`;
+    const footer = [`${o.poNumber ? `Your PO number: ${escapeHtml(o.poNumber)} · ` : ''}<a href="${base}/app/orders/${o.orderNumber}">View your order</a>`];
+    let sent: { emailed: boolean };
+    if (pf.doc) {
+      const html = mailLayout({
+        heading: `Order ${o.orderNumber} received`,
+        body: [
+          greeting,
+          `Thank you for your order. <strong>No payment has been taken yet.</strong> Please pay by bank transfer by <strong>${escapeHtml(fmtDueDate(pf.doc.dueDate ?? o.dueAt ?? new Date()))}</strong>; we dispatch once your payment is received and verified.`,
+          totalsTable(o, { shippingPending: false, vatPending: false }),
+          payBlock(pf.doc),
+          pf.attachment ? `Your proforma invoice <strong>${escapeHtml(pf.doc.number)}</strong> is attached (PDF).` : `Your proforma invoice <strong>${escapeHtml(pf.doc.number)}</strong> is on your payment page.`,
+          'After the transfer, upload the bank receipt on your payment page — it speeds up the verification.',
+          withdrawalBlock(o),
+        ].filter(Boolean),
+        cta: { href: paymentPage, label: 'Go to the payment page' },
+        footer,
+      });
+      const subject = `Order ${o.orderNumber} received — pay ${formatPrice(o.totalCents, o.currency)} by bank transfer (proforma ${pf.doc.number})`;
+      sent = await mailOrderDocument({ doc: pf.doc, order: o, subject, html, attachment: pf.attachment, context: 'checkout:confirmation' });
+    } else {
+      const html = mailLayout({
+        heading: `Order ${o.orderNumber} received`,
+        body: [
+          greeting,
+          `Thank you for your order. <strong>No payment has been taken yet.</strong>`,
+          totalsTable(o, { shippingPending: false, vatPending: false }),
+          noProformaText(o, pf),
+          withdrawalBlock(o),
+        ].filter(Boolean),
+        cta: { href: `${base}/app/orders/${o.orderNumber}`, label: 'View your order' },
+        footer,
+      });
+      const r = await trySendEmail({ to: o.buyer.email, subject: `Order ${o.orderNumber} received`, html }, 'checkout:confirmation');
+      sent = { emailed: r.ok };
+    }
     const ops = process.env.SUPPORT_INTAKE_EMAIL || companyCopyAddress();
     if (ops) {
       await sendInternalEmail({
         to: ops,
-        subject: `[order] ${o.orderNumber} — ${formatPrice(o.totalCents, o.currency)} awaiting bank transfer`,
-        html: `<p>${escapeHtml(o.buyer.name)} (${escapeHtml(o.buyer.email)}) placed order <strong>${o.orderNumber}</strong>${pf.number ? ` (proforma ${escapeHtml(pf.number)})` : ''}.</p><p><a href="${base}/admin/orders/${o.id}">Open the order</a></p>`,
+        subject: `[order] ${o.orderNumber} — ${formatPrice(o.totalCents, o.currency)} ${pf.doc ? 'awaiting bank transfer' : 'received, no proforma yet'}`,
+        html: `<p>${escapeHtml(o.buyer.name)} (${escapeHtml(o.buyer.email)}) placed order <strong>${o.orderNumber}</strong>${pf.doc ? ` (proforma ${escapeHtml(pf.doc.number)})` : ''}.</p>${pf.note ? `<p>${escapeHtml(pf.note)}</p>` : ''}<p><a href="${base}/admin/orders/${o.id}">Open the order</a></p>`,
       }, 'checkout:confirmation-ops');
     }
-    return { emailed: sent.ok, proforma: pf.number };
+    return { emailed: sent.emailed, proforma: pf.doc?.number ?? null };
   } catch (e) {
     await logError('checkout.sendCheckoutConfirmation', e);
     return { emailed: false, proforma: null };
@@ -139,15 +195,18 @@ export async function sendCheckoutOnHold(orderId: string, messages: string[]): P
     if (!o) return false;
     const base = siteBase();
     const holds = o.openHolds;
-    const html = `<div style="font-family:system-ui,sans-serif;max-width:600px;">
-<h2 style="color:#0E4F40;">Order ${o.orderNumber} received — total to be confirmed</h2>
-<p>Hi ${escapeHtml(o.buyer.name || 'there')},</p>
-<p>Thank you for your order. The items are reserved for you. <strong>Nothing is due yet</strong> — please do not transfer any money for this order until we send you the final total.</p>
-<ul>${messages.map((m) => `<li>${escapeHtml(m)}</li>`).join('')}</ul>
-${totalsTable(o, { shippingPending: holds.includes('SHIPPING_PENDING'), vatPending: holds.includes('VAT_REVIEW') })}
-<p>You will receive an email with the final total and the payment details as soon as our team has completed the open point${holds.length > 1 ? 's' : ''}.</p>
-<p style="color:#6b7280;font-size:12px;"><a href="${base}/app/orders/${o.orderNumber}">View your order</a></p>
-</div>`;
+    const html = mailLayout({
+      heading: `Order ${o.orderNumber} received — total to be confirmed`,
+      body: [
+        `Hi <span dir="auto">${escapeHtml(o.buyer.name || 'there')}</span>,`,
+        'Thank you for your order. The items are reserved for you. <strong>Nothing is due yet</strong> — please do not transfer any money for this order until we send you the final total.',
+        `<ul style="margin:0 0 12px;padding-left:20px;">${messages.map((m) => `<li>${escapeHtml(m)}</li>`).join('')}</ul>`,
+        totalsTable(o, { shippingPending: holds.includes('SHIPPING_PENDING'), vatPending: holds.includes('VAT_REVIEW') }),
+        `You will receive an email with the final total and the payment details as soon as our team has completed the open point${holds.length > 1 ? 's' : ''}.`,
+        withdrawalBlock(o),
+      ].filter(Boolean),
+      cta: { href: `${base}/app/orders/${o.orderNumber}`, label: 'View your order' },
+    });
     const sent = await trySendEmail({ to: o.buyer.email, subject: `Order ${o.orderNumber} received — we confirm the final total before payment`, html }, 'checkout:on-hold');
     const ops = process.env.SUPPORT_INTAKE_EMAIL || companyCopyAddress();
     if (ops) {
@@ -164,31 +223,39 @@ ${totalsTable(o, { shippingPending: holds.includes('SHIPPING_PENDING'), vatPendi
   }
 }
 
-/** Every hold is resolved: the final total and the proforma. */
+/**
+ * Every hold is resolved: the final total and the proforma. No mail when the
+ * proforma still can not be issued because the seller's details are
+ * incomplete (the order is back on hold; the buyer was told nothing is due).
+ */
 export async function sendHoldReleased(orderId: string): Promise<{ emailed: boolean; proforma: string | null; note: string | null }> {
   try {
     await ensureSettingsLoaded();
     const o = await loadOrder(orderId);
     if (!o) return { emailed: false, proforma: null, note: 'order not found' };
     const pf = await proformaFor(o.id);
+    if (pf.code === 'SELLER_INCOMPLETE') return { emailed: false, proforma: null, note: pf.note };
     const base = siteBase();
-    const reference = pf.number ?? o.orderNumber;
-    const html = `<div style="font-family:system-ui,sans-serif;max-width:600px;">
-<h2 style="color:#0E4F40;">Order ${o.orderNumber} confirmed — final total</h2>
-<p>Hi ${escapeHtml(o.buyer.name || 'there')},</p>
-<p>We completed the open points of your order. This is the final total; you can now pay.</p>
-${totalsTable(o, { shippingPending: false, vatPending: false })}
-${bankBlock(reference, o.totalCents, o.currency)}
-${pf.attachment ? `<p>Your proforma invoice <strong>${escapeHtml(pf.number ?? '')}</strong> is attached (PDF).</p>` : ''}
-<p>After the transfer, upload the bank receipt on your <a href="${base}/app/orders/${o.orderNumber}/payment">payment page</a>.</p>
-</div>`;
-    const sent = await trySendEmail({
-      to: o.buyer.email,
-      subject: `Order ${o.orderNumber}: final total ${formatPrice(o.totalCents, o.currency)} — ready for payment`,
-      html,
-      attachments: pf.attachment ? [pf.attachment] : [],
-    }, 'checkout:hold-released');
-    return { emailed: sent.ok, proforma: pf.number, note: pf.note };
+    const html = mailLayout({
+      heading: `Order ${o.orderNumber} confirmed — final total`,
+      body: [
+        `Hi <span dir="auto">${escapeHtml(o.buyer.name || 'there')}</span>,`,
+        pf.doc
+          ? `We completed the open points of your order. This is the final total; you can now pay — by <strong>${escapeHtml(fmtDueDate(pf.doc.dueDate ?? o.dueAt ?? new Date()))}</strong>.`
+          : 'We completed the open points of your order. This is the final total.',
+        totalsTable(o, { shippingPending: false, vatPending: false }),
+        pf.doc ? payBlock(pf.doc) : noProformaText(o, pf),
+        pf.doc ? (pf.attachment ? `Your proforma invoice <strong>${escapeHtml(pf.doc.number)}</strong> is attached (PDF).` : `Your proforma invoice <strong>${escapeHtml(pf.doc.number)}</strong> is on your payment page.`) : '',
+        pf.doc ? 'After the transfer, upload the bank receipt on your payment page.' : '',
+        withdrawalBlock(o),
+      ].filter(Boolean),
+      cta: { href: `${base}/app/orders/${o.orderNumber}/payment`, label: 'Go to the payment page' },
+    });
+    const subject = `Order ${o.orderNumber}: final total ${formatPrice(o.totalCents, o.currency)} — ready for payment${pf.doc ? ` (proforma ${pf.doc.number})` : ''}`;
+    const sent = pf.doc
+      ? await mailOrderDocument({ doc: pf.doc, order: o, subject, html, attachment: pf.attachment, context: 'checkout:hold-released' })
+      : await trySendEmail({ to: o.buyer.email, subject, html }, 'checkout:hold-released').then((r) => ({ emailed: r.ok }));
+    return { emailed: sent.emailed, proforma: pf.doc?.number ?? null, note: pf.note };
   } catch (e) {
     await logError('checkout.sendHoldReleased', e);
     return { emailed: false, proforma: null, note: e instanceof Error ? e.message : String(e) };

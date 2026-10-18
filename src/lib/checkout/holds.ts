@@ -38,7 +38,14 @@ export function prepayTermDays(paymentTerms: unknown): number {
   return settingInt('PAYMENT_TERM_DAYS', 14);
 }
 
-export const PRE_PAYMENT_HOLDS: readonly HoldCode[] = ['COMPLIANCE', 'VAT_REVIEW', 'ADDRESS_REVIEW', 'SHIPPING_PENDING'];
+/**
+ * INVOICE_PENDING on an UNPAID order: its proforma could not be issued because
+ * the seller's own legal / bank details are incomplete (lib/documents/issue.ts
+ * sellerDetailsMissing) — not payable until staff complete them and issue it
+ * (releasing it sends the proforma like any other pre-payment hold). Every
+ * caller asks this for unpaid orders only.
+ */
+export const PRE_PAYMENT_HOLDS: readonly HoldCode[] = ['COMPLIANCE', 'VAT_REVIEW', 'ADDRESS_REVIEW', 'SHIPPING_PENDING', 'INVOICE_PENDING'];
 type Actor = { id: string; email?: string | null };
 type Result = { ok: boolean; message: string };
 

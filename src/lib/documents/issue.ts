@@ -39,7 +39,7 @@ import {
 import { fmtDocMoney, renderDocumentHtml } from './render';
 import { addDaysEndOfDay } from '@/lib/orders/payment-due';
 import { htmlToPdf, pdfPageCount } from './pdf';
-import { companyLogoDataUri } from './logo';
+import { companyLogoDataUri, LogoUnavailableError } from './logo';
 import { DOC_LABEL_KEYS, DOC_LOCALES, defaultDocLabel, docLabelSettingKey, fillLabel, type DocLabelKey, type DocLanguage } from './labels';
 import { orderDetailsProblems } from '@/lib/orders/details';
 import { QUOTE_REF as quoteReference } from '@/lib/quotes/offer';
@@ -85,6 +85,8 @@ export type IssueFailCode =
   | 'MISSING_DETAILS'
   | 'NO_INVOICE'
   | 'NOTHING_TO_CREDIT'
+  /** The seller's own legal / bank details are incomplete (Settings → Company / Payments): no payment request. */
+  | 'SELLER_INCOMPLETE'
   | 'ERROR';
 
 export type IssueResult =
@@ -95,13 +97,69 @@ type Tx = Prisma.TransactionClient;
 
 const PAID_STATES = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'];
 
-/** Holds that make an unpaid order NOT payable yet (lib/checkout/holds.ts) — no payment request. */
-const PRE_PAYMENT_HOLDS = ['COMPLIANCE', 'VAT_REVIEW', 'ADDRESS_REVIEW', 'SHIPPING_PENDING'];
+/**
+ * Holds that make an unpaid order NOT payable yet (lib/checkout/holds.ts) — no
+ * payment request. INVOICE_PENDING on an UNPAID order: its proforma could not
+ * be issued because the seller's own details are incomplete (see
+ * sellerDetailsMissing); callers only ask this for unpaid orders.
+ */
+const PRE_PAYMENT_HOLDS = ['COMPLIANCE', 'VAT_REVIEW', 'ADDRESS_REVIEW', 'SHIPPING_PENDING', 'INVOICE_PENDING'];
 export function prePaymentHoldMessage(o: { orderNumber: string; holdReason: string | null; openHolds: string[] }): string | null {
   const open = [...o.openHolds, ...(o.holdReason ? [o.holdReason] : [])].filter((h) => PRE_PAYMENT_HOLDS.includes(h));
   if (!open.length) return null;
-  const what: Record<string, string> = { COMPLIANCE: 'an export-compliance review', VAT_REVIEW: 'a VAT decision', ADDRESS_REVIEW: 'an address-change review', SHIPPING_PENDING: 'the shipping cost' };
+  const what: Record<string, string> = {
+    COMPLIANCE: 'an export-compliance review',
+    VAT_REVIEW: 'a VAT decision',
+    ADDRESS_REVIEW: 'an address-change review',
+    SHIPPING_PENDING: 'the shipping cost',
+    INVOICE_PENDING: 'our payment details to be completed',
+  };
   return `Order ${o.orderNumber} is waiting for ${Array.from(new Set(open)).map((h) => what[h]).join(' and ')} — no proforma (payment request) is issued until that is done.`;
+}
+
+/**
+ * What a payment request needs from the SELLER (Settings → Company and
+ * Payments & credit terms): the legal name, registered address, KvK number,
+ * VAT ID and the IBAN the buyer pays to. Without them no proforma is issued —
+ * the order waits (sellerIncompleteHold) instead of the buyer receiving a
+ * payment request without bank details or legal identity.
+ */
+export function sellerDetailsMissing(): string[] {
+  const s = (key: string) => settingString(key).trim();
+  const missing: string[] = [];
+  if (!s('COMPANY_LEGAL_NAME')) missing.push('legal company name (Settings → Company)');
+  if (!s('COMPANY_ADDRESS')) missing.push('registered address (Settings → Company)');
+  if (!s('COMPANY_KVK')) missing.push('KvK number (Settings → Company)');
+  if (!s('COMPANY_VAT')) missing.push('VAT ID (Settings → Company)');
+  if (!s('BANK_IBAN')) missing.push('IBAN (Settings → Payments & credit terms)');
+  return missing;
+}
+
+/** Staff sentence for a proforma refused for incomplete seller details. */
+export function sellerIncompleteMessage(orderNumber: string, missing: string[]): string {
+  return `No proforma (payment request) issued for order ${orderNumber}: the seller details are incomplete — missing ${missing.join(', ')}. The order waits on the “Proforma / invoice not issued” hold and the buyer is told nothing is due yet. Complete Settings → Company / Payments & credit terms, then use “Issue the proforma now” on the order.`;
+}
+
+/**
+ * Put an unpaid order whose proforma was refused for incomplete seller details
+ * on the INVOICE_PENDING hold (not payable; lib/checkout/holds.ts treats it as
+ * a pre-payment hold) and alert the admins — at most once an hour per order.
+ * Inside the caller's transaction when `db` is one (offer acceptance).
+ */
+async function sellerIncompleteHold(db: Tx | typeof prisma, order: { id: string; orderNumber: string }, missing: string[]): Promise<string> {
+  const message = sellerIncompleteMessage(order.orderNumber, missing);
+  await writeHold(order.id, 'INVOICE_PENDING', `Proforma not issued — missing seller details: ${missing.join(', ')}. Complete Settings → Company / Payments & credit terms, then “Issue the proforma now”.`, db, { unpaid: true });
+  try {
+    const title = `Order ${order.orderNumber}: no proforma — complete Settings → Company / Payments`;
+    const recent = await prisma.notification.findFirst({ where: { title, createdAt: { gte: new Date(Date.now() - 3_600_000) } }, select: { id: true } });
+    if (!recent) {
+      const { notifyAdmins } = await import('@/lib/observability');
+      await notifyAdmins(title, `Missing: ${missing.join(', ')}. The order waits on a hold (nothing is due for the buyer) until the details are complete and the proforma is issued from the order page.`, `/admin/orders/${order.id}`, 'SYSTEM');
+    }
+  } catch {
+    /* the hold is the record; alerting is best effort */
+  }
+  return message;
 }
 const QUOTE_REF = (id: string) => quoteReference(id);
 
@@ -278,13 +336,44 @@ interface VatPlan {
   reasons: string[];
 }
 
+/** A text field of the accepted offer's terms (SourcingRequest.offerTerms), trimmed; null when absent. */
+function offerTerm(order: Pick<OrderForDoc, 'sourcingRequest'>, key: string): string | null {
+  const t = order.sourcingRequest?.offerTerms;
+  const v = t && typeof t === 'object' ? (t as Record<string, unknown>)[key] : null;
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+/**
+ * What the accepted offer says about the unit itself — its description and
+ * serial number (offerTerms.itemDescription / itemSerial) — printed with the
+ * goods line of a quote order, so the documents name the supplied unit.
+ */
+export function offerItemDetail(order: Pick<OrderForDoc, 'sourcingRequest'>, labels: Pick<Record<DocLabelKey, string>, 'SERIAL_NO'>): string[] {
+  const description = offerTerm(order, 'itemDescription');
+  const serial = offerTerm(order, 'itemSerial');
+  return [description, serial ? `${labels.SERIAL_NO} ${serial}` : null].filter((x): x is string => !!x);
+}
+
+/**
+ * The accepted offer's remark to the buyer (SourcingRequest.quotedNote),
+ * printed under "Remark" — only when set, and not when it merely repeats the
+ * item description already on the goods line.
+ */
+export function offerRemarks(order: Pick<OrderForDoc, 'sourcingRequest'>): string[] {
+  const note = order.sourcingRequest?.quotedNote?.trim();
+  if (!note) return [];
+  return note === offerTerm(order, 'itemDescription') ? [] : [note];
+}
+
 function orderDocLines(order: OrderForDoc, ctx: DocContext): Array<Omit<DocLineSnapshot, 'vatRateBp' | 'taxCents'>> {
-  const lines: Array<Omit<DocLineSnapshot, 'vatRateBp' | 'taxCents'>> = order.items.map((i) => ({
+  const offerDetail = offerItemDetail(order, ctx.labels);
+  const firstGoods = order.items.findIndex((i) => i.lineType !== 'SHIPPING' && i.lineType !== 'SERVICE' && i.lineType !== 'DISCOUNT');
+  const lines: Array<Omit<DocLineSnapshot, 'vatRateBp' | 'taxCents'>> = order.items.map((i, idx) => ({
     description: i.titleSnapshot,
     // Brand · condition · warranty exactly as promised at the moment of sale
-    // (OrderItem snapshot; a quote order: the accepted offer's warranty) —
-    // never re-read from the live listing.
-    detail: [i.brandSnapshot, i.conditionSnapshot, i.warrantySnapshot ? `${ctx.labels.WARRANTY}: ${i.warrantySnapshot}` : null]
+    // (OrderItem snapshot; a quote order: the accepted offer's warranty, item
+    // description and serial number) — never re-read from the live listing.
+    detail: [i.brandSnapshot, i.conditionSnapshot, i.warrantySnapshot ? `${ctx.labels.WARRANTY}: ${i.warrantySnapshot}` : null, ...(idx === firstGoods ? offerDetail : [])]
       .filter(Boolean)
       .join(' · ') || null,
     qty: i.quantity,
@@ -356,6 +445,8 @@ interface SnapshotArgs {
   payment: DocPaymentBox;
   refs: Array<{ label: string; value: string }>;
   notes: string[];
+  /** The accepted offer's remark (printed under "Remark"). */
+  remarks?: string[];
   terms: string[];
   original: { number: string; issueDate: string } | null;
   legacy?: boolean;
@@ -400,6 +491,7 @@ function buildSnapshot(a: SnapshotArgs): DocumentSnapshot {
     totals: { goodsCents: goods, shippingCents: shipping, netCents: goods + shipping, taxCents: tax, totalCents: goods + shipping + tax },
     payment: a.payment,
     notes: a.notes,
+    ...(a.remarks?.length ? { remarks: a.remarks } : {}),
     terms: a.terms,
     clauses: noRussiaClause(a.order, a.ctx),
     original: a.original,
@@ -517,7 +609,8 @@ async function issueProformaTx(
       ...(existing ? [{ label: L.REPLACES, value: existing.number }] : []),
       ...commercialRefs(order, opts.ctx),
     ],
-    notes: sr?.quotedNote?.trim() ? [sr.quotedNote.trim()] : [],
+    notes: [],
+    remarks: offerRemarks(order),
     terms: textLines('PROFORMA_TERMS_TEXT'),
     original: null,
     warnings: opts.supersede ? [`Revision: ${opts.supersede.reason}`] : [],
@@ -574,6 +667,11 @@ function fail(e: unknown): IssueResult {
  * exists). With `opts.tx` it runs inside the caller's transaction (offer
  * acceptance) — then no VIES call is made and the PDF is NOT rendered (call
  * ensureDocumentPdf after the commit).
+ *
+ * Never without the seller's legal and bank details (sellerDetailsMissing):
+ * then nothing is issued, the order is put on the INVOICE_PENDING hold (not
+ * payable) with the admins alerted, and the result is SELLER_INCOMPLETE — the
+ * acceptance / checkout goes on without a payment request.
  */
 export async function issueProforma(
   orderId: string,
@@ -585,6 +683,10 @@ export async function issueProforma(
     if (opts.tx) {
       const order = await loadOrder(opts.tx, orderId);
       if (!order) return { ok: false, code: 'NOT_FOUND', message: 'Order not found.' };
+      const current = await currentProforma(opts.tx, orderId);
+      if (current) return { ok: true, document: current, created: false, warnings: [] };
+      const sellerGaps = sellerDetailsMissing();
+      if (sellerGaps.length) return { ok: false, code: 'SELLER_INCOMPLETE', message: await sellerIncompleteHold(opts.tx, order, sellerGaps), missing: sellerGaps };
       const vat = await resolveOrderVat(order, { skipVies: true });
       const r = await issueProformaTx(opts.tx, orderId, { actorId: opts.actorId, dueDate: opts.dueDate, vat, ctx });
       return { ok: true, document: r.document, created: r.created, warnings: [] };
@@ -600,6 +702,8 @@ export async function issueProforma(
     if (held) return { ok: false, code: 'NOT_PAYABLE', message: held };
     const missingDetails = proformaDetailsMissing(order);
     if (missingDetails) return { ok: false, code: 'MISSING_DETAILS', message: missingDetails };
+    const sellerGaps = sellerDetailsMissing();
+    if (sellerGaps.length) return { ok: false, code: 'SELLER_INCOMPLETE', message: await sellerIncompleteHold(prisma, order, sellerGaps), missing: sellerGaps };
     const vat = await resolveOrderVat(order);
     const r = await prisma.$transaction((tx) => issueProformaTx(tx, orderId, { actorId: opts.actorId, dueDate: opts.dueDate, vat, ctx }));
     return { ok: true, document: r.document, created: r.created, warnings: [] };
@@ -623,6 +727,9 @@ export async function reissueProforma(orderId: string, reason: string, opts: { a
     if (held) return { ok: false, code: 'NOT_PAYABLE', message: held };
     const missingDetails = proformaDetailsMissing(order);
     if (missingDetails) return { ok: false, code: 'MISSING_DETAILS', message: missingDetails };
+    // A revision is a new payment request: the same seller-details gate as the first one.
+    const sellerGaps = sellerDetailsMissing();
+    if (sellerGaps.length) return { ok: false, code: 'SELLER_INCOMPLETE', message: await sellerIncompleteHold(prisma, order, sellerGaps), missing: sellerGaps };
     const vat = await resolveOrderVat(order);
     const ctx = await docContext();
     const r = await prisma.$transaction((tx) => issueProformaTx(tx, orderId, { actorId: opts.actorId, dueDate: opts.dueDate, vat, supersede: { reason }, ctx }));
@@ -669,8 +776,11 @@ export function paymentFacts(order: Pick<OrderForDoc, 'payments' | 'totalCents' 
   /** Value date of the payment that completed it (or of the latest payment when not complete). */
   paidAt: Date | null;
   method: string | null;
+  /** Paid in full only thanks to the tolerance: the shortfall accepted (bank charges), else 0. */
+  writtenOffCents: number;
 } {
   const due = Math.max(0, order.totalCents - Math.max(0, toleranceCents));
+  const shortfall = (inFull: boolean, paid: number) => (inFull ? Math.max(0, order.totalCents - paid) : 0);
   let sum = 0;
   let completedAt: Date | null = null;
   let lastAt: Date | null = null;
@@ -681,10 +791,11 @@ export function paymentFacts(order: Pick<OrderForDoc, 'payments' | 'totalCents' 
     method = p.method;
     if (!completedAt && sum >= due) completedAt = p.receivedAt;
   }
-  if ((order.payments ?? []).length) return { paidCents: sum, inFull: !!completedAt, paidAt: completedAt ?? lastAt, method };
+  if ((order.payments ?? []).length) return { paidCents: sum, inFull: !!completedAt, paidAt: completedAt ?? lastAt, method, writtenOffCents: shortfall(!!completedAt, sum) };
   const legacyPaid = order.financialStatus === 'PAID' && order.amountPaidCents === 0 && (order.paymentMethodManual ?? '').toUpperCase() !== 'INVOICE' && PAID_STATES.includes(order.status);
-  if (legacyPaid) return { paidCents: order.totalCents, inFull: true, paidAt: order.paidAt ?? order.paymentVerifiedAt ?? null, method: null };
-  return { paidCents: order.amountPaidCents, inFull: order.amountPaidCents >= due && order.amountPaidCents > 0, paidAt: order.paidAt ?? null, method: null };
+  if (legacyPaid) return { paidCents: order.totalCents, inFull: true, paidAt: order.paidAt ?? order.paymentVerifiedAt ?? null, method: null, writtenOffCents: 0 };
+  const inFull = order.amountPaidCents >= due && order.amountPaidCents > 0;
+  return { paidCents: order.amountPaidCents, inFull, paidAt: order.paidAt ?? null, method: null, writtenOffCents: shortfall(inFull, order.amountPaidCents) };
 }
 
 /**
@@ -722,20 +833,22 @@ export function readableIssueError(e: unknown, what = 'invoice'): string {
  * Put an order on a hold with its reason — the same shape as
  * lib/checkout/holds.ts addHold (openHolds + holdReason by priority + a
  * "CODE: detail" note), written here so issuing stays free of the request /
- * notification layer.
+ * notification layer. `unpaid`: the order is not payable while it is held
+ * (payableSince cleared, as addHold does for pre-payment holds).
  */
-async function writeHold(orderId: string, code: 'VAT_REVIEW' | 'INVOICE_PENDING', detail: string): Promise<void> {
-  const o = await prisma.order.findUnique({ where: { id: orderId }, select: { openHolds: true, holdNote: true, holdReason: true, holdAt: true } });
+async function writeHold(orderId: string, code: 'VAT_REVIEW' | 'INVOICE_PENDING', detail: string, db: Tx | typeof prisma = prisma, opts: { unpaid?: boolean } = {}): Promise<void> {
+  const o = await db.order.findUnique({ where: { id: orderId }, select: { openHolds: true, holdNote: true, holdReason: true, holdAt: true } });
   if (!o) return;
   const open = Array.from(new Set([...o.openHolds, ...(o.holdReason ? [o.holdReason] : []), code]));
   const notes = (o.holdNote ?? '').split(' | ').filter((p) => p && !p.startsWith(`${code}:`));
-  await prisma.order.update({
+  await db.order.update({
     where: { id: orderId },
     data: {
       openHolds: open,
       holdReason: primaryHold(open),
       holdNote: [...notes, `${code}: ${detail}`].join(' | ').slice(0, 2000),
       holdAt: o.holdAt ?? new Date(),
+      ...(opts.unpaid ? { payableSince: null } : {}),
     },
   });
 }
@@ -863,8 +976,9 @@ export async function issueInvoice(
       const { alloc, issueDate } = await allocateWithIssueDate(tx, 'INVOICE', loadNumberingSettings());
       const dueDate = payKind === 'PAID' ? null : dueDateFor(issueDate);
       const supply = supplyDatesFor(order, issueDate, payKind === 'DUE' ? null : pay.paidAt);
+      // A short payment accepted within the tolerance: what came in and what was written off.
       const payment: DocPaymentBox = payKind === 'PAID'
-        ? { kind: 'PAID', paidAt: pay.paidAt ? pay.paidAt.toISOString() : null, method: paymentMethodLabel(order), amountCents: pay.paidCents }
+        ? { kind: 'PAID', paidAt: pay.paidAt ? pay.paidAt.toISOString() : null, method: paymentMethodLabel(order), amountCents: pay.paidCents, ...(pay.writtenOffCents > 0 ? { writtenOffCents: pay.writtenOffCents } : {}) }
         : payKind === 'PARTLY_PAID'
           ? { kind: 'PARTLY_PAID', paidCents: pay.paidCents, paidAt: pay.paidAt ? pay.paidAt.toISOString() : null, openCents: order.totalCents - pay.paidCents, dueDate: dueDate ? dueDate.toISOString() : null, reference: alloc.number }
           : { kind: 'DUE', dueDate: dueDate ? dueDate.toISOString() : null, reference: alloc.number, amountCents: order.totalCents };
@@ -878,8 +992,9 @@ export async function issueInvoice(
           ...(replaces ? [{ label: L.REPLACES, value: replaces.number }] : []),
           ...commercialRefs(order, ctx),
         ],
-        // The accepted offer's note (terms agreed with the buyer) is part of the deal: on the invoice too.
-        notes: [...(sr?.quotedNote?.trim() ? [sr.quotedNote.trim()] : []), ...(opts.replaceCredited ? [opts.replaceCredited.reason] : [])],
+        // The accepted offer's remark (agreed with the buyer) is part of the deal: on the invoice too.
+        notes: opts.replaceCredited ? [opts.replaceCredited.reason] : [],
+        remarks: offerRemarks(order),
         terms: textLines('INVOICE_TERMS_TEXT'), original: null, warnings, ctx,
         advancePaymentDate: supply.advancePaymentDate,
       });
@@ -1173,10 +1288,23 @@ function parseBankSnapshot(snapshot: string | null | undefined): Partial<NonNull
 }
 
 /**
+ * Whether an order may get LEGACY documents at all: only an order CREATED
+ * before the documents cutover (4_business_core) — never one created after it,
+ * whatever value date staff entered for its payment — and never while its
+ * invoice is withheld (INVOICE_PENDING: the regular, numbered invoice is
+ * issued once the hold is resolved).
+ */
+export function legacyDocumentsAllowed(o: { createdAt: Date; openHolds: string[]; holdReason: string | null }, cutover: Date | null): boolean {
+  if (!cutover || o.createdAt >= cutover) return false;
+  return !o.openHolds.includes('INVOICE_PENDING') && o.holdReason !== 'INVOICE_PENDING';
+}
+
+/**
  * Freeze the documents an order already had BEFORE 4_business_core, exactly
  * as the old renderer produced them (old numbers, series LEGACY), so they stop
- * changing. Idempotent. Used by prisma/backfill-legacy-documents.ts and lazily
- * by the download route.
+ * changing. Idempotent. Used by prisma/backfill-legacy-documents.ts and, via
+ * ensureLegacyDocuments, whenever an order's documents are read. Only for
+ * orders created before the cutover (legacyDocumentsAllowed).
  */
 export async function freezeLegacyDocuments(orderId: string): Promise<{ proforma: FiscalDocument | null; invoice: FiscalDocument | null }> {
   await ensureSettingsLoaded();
@@ -1184,7 +1312,7 @@ export async function freezeLegacyDocuments(orderId: string): Promise<{ proforma
   const out = { proforma: null as FiscalDocument | null, invoice: null as FiscalDocument | null };
   if (!cutover) return out;
   const order = await loadOrder(prisma, orderId);
-  if (!order) return out;
+  if (!order || !legacyDocumentsAllowed(order, cutover)) return out;
   const sr = order.sourcingRequest;
   // Legacy documents keep the English texts they were printed with.
   const ctx = docContextFrom(await loadDocFacts());
@@ -1283,10 +1411,14 @@ export function snapshotOf(doc: Pick<FiscalDocument, 'snapshot'>): DocumentSnaps
   return doc.snapshot as unknown as DocumentSnapshot;
 }
 
-/** HTML of an issued document (preview) — from its snapshot only. */
-export async function documentHtml(doc: Pick<FiscalDocument, 'snapshot'>, opts: { compact?: boolean } = {}): Promise<string> {
+/**
+ * HTML of an issued document (preview) — from its snapshot only. `strictLogo`
+ * (the stored PDF): a configured logo that can not be loaded throws
+ * LogoUnavailableError instead of falling back to the company name.
+ */
+export async function documentHtml(doc: Pick<FiscalDocument, 'snapshot'>, opts: { compact?: boolean; strictLogo?: boolean } = {}): Promise<string> {
   const snap = snapshotOf(doc);
-  return renderDocumentHtml(snap, { logoDataUri: await companyLogoDataUri(snap.seller.logoPath), compact: opts.compact });
+  return renderDocumentHtml(snap, { logoDataUri: await companyLogoDataUri(snap.seller.logoPath, { strict: opts.strictLogo }), compact: opts.compact });
 }
 
 export type PdfResult =
@@ -1322,12 +1454,16 @@ export async function ensureDocumentPdf(docId: string): Promise<PdfResult> {
   try {
     const snap = snapshotOf(doc);
     const pageLabel = (snap.labels?.PAGE_OF ?? 'Page {PAGE} of {PAGES}').trim();
-    let pdf = await htmlToPdf(await documentHtml(doc), { footerText: documentFooterText(snap), pageLabel });
+    // The stored PDF is the record: rendered with the logo or not at all (a
+    // logo that failed to load → RENDER, and the next request tries again).
+    let pdf = await htmlToPdf(await documentHtml(doc, { strictLogo: true }), { footerText: documentFooterText(snap), pageLabel });
     // A few lines over one page (e.g. only the footer on page 2): try the
     // compact layout and keep it when it saves a page. Rendered once, stored.
     const pages = pdfPageCount(pdf);
     if (pages > 1) {
-      const compact = await htmlToPdf(await documentHtml(doc, { compact: true }), { footerText: documentFooterText(snap), pageLabel }).catch(() => null);
+      const compact = await documentHtml(doc, { compact: true, strictLogo: true })
+        .then((html) => htmlToPdf(html, { footerText: documentFooterText(snap), pageLabel }))
+        .catch(() => null);
       if (compact && pdfPageCount(compact) > 0 && pdfPageCount(compact) < pages) pdf = compact;
     }
     const sum = sha256(pdf);
@@ -1343,28 +1479,34 @@ export async function ensureDocumentPdf(docId: string): Promise<PdfResult> {
     }
     return { ok: true, bytes: pdf, sha256: sum, key, rendered: true };
   } catch (e) {
+    if (e instanceof LogoUnavailableError) {
+      await import('@/lib/observability').then((m) => m.logError('documents.logo', new Error(`${doc.number}: ${e.message} The PDF was not stored; the next download retries.`))).catch(() => {});
+    }
     return { ok: false, error: e instanceof Error ? e.message : String(e), reason: 'RENDER' };
   }
 }
 
 /**
  * A fiscal document whose stored copy is gone or was changed: every admin is
- * alerted (at most once an hour per document) and it is logged — it is never
+ * alerted in-app (at most once an hour per document), the super-admins also by
+ * e-mail (at most once a day per document), and it is logged — it is never
  * re-rendered or served.
  */
 async function alertDocumentIntegrity(number: string, kind: 'INTEGRITY' | 'MISSING', detail: string): Promise<void> {
   try {
     const title = kind === 'INTEGRITY' ? `Fiscal document ${number} failed its integrity check` : `Fiscal document ${number}: stored PDF missing`;
-    const { logError, notifyAdmins } = await import('@/lib/observability');
+    const body = `${detail}. It is not served to anyone (buyers see “document unavailable — our team has been alerted”). Restore the original object from the backup / bucket version history; never re-issue or replace it.`;
+    const href = `/admin/orders?q=${encodeURIComponent(number)}`;
+    const { audit, logError, notifyAdmins } = await import('@/lib/observability');
     await logError('documents.integrity', new Error(`${number}: ${detail}`));
     const recent = await prisma.notification.findFirst({ where: { title, createdAt: { gte: new Date(Date.now() - 3_600_000) } }, select: { id: true } });
-    if (recent) return;
-    await notifyAdmins(
-      title,
-      `${detail}. It is not served to anyone (buyers see “document unavailable — our team has been alerted”). Restore the original object from the backup / bucket version history; never re-issue or replace it.`,
-      `/admin/orders?q=${encodeURIComponent(number)}`,
-      'SYSTEM',
-    );
+    if (!recent) await notifyAdmins(title, body, href, 'SYSTEM');
+    // The e-mail: one per document per day (the audit row is the marker).
+    const mailed = await prisma.auditLog.findFirst({ where: { action: 'documents.integrity.alert', target: number, createdAt: { gte: new Date(Date.now() - 86_400_000) } }, select: { id: true } });
+    if (mailed) return;
+    await audit('documents.integrity.alert', number, `${kind}: ${detail}`);
+    const { alertSuperAdmins } = await import('@/lib/security/alerts');
+    await alertSuperAdmins(title, [body], href);
   } catch {
     /* alerting must never break the request */
   }
@@ -1403,8 +1545,8 @@ export async function ensureLegacyDocuments(orderId: string): Promise<void> {
   if (!cutover) return;
   const have = await prisma.fiscalDocument.findMany({ where: { orderId }, select: { kind: true } });
   if (have.some((d) => d.kind === 'INVOICE')) return;
-  const o = await prisma.order.findUnique({ where: { id: orderId }, select: { createdAt: true, status: true, paidAt: true, paymentVerifiedAt: true } });
-  if (!o || o.createdAt >= cutover) return;
+  const o = await prisma.order.findUnique({ where: { id: orderId }, select: { createdAt: true, status: true, paidAt: true, paymentVerifiedAt: true, openHolds: true, holdReason: true } });
+  if (!o || !legacyDocumentsAllowed(o, cutover)) return;
   const paidAt = o.paidAt ?? o.paymentVerifiedAt;
   const legacyInvoice = PAID_STATES.includes(o.status) && !!paidAt && paidAt < cutover;
   const legacyProforma = !have.some((d) => d.kind === 'PROFORMA') && o.status === 'PENDING_PAYMENT';
@@ -1415,6 +1557,26 @@ export async function ensureLegacyDocuments(orderId: string): Promise<void> {
     const { logError } = await import('@/lib/observability');
     await logError('documents.freezeLegacy', e);
   }
+}
+
+/**
+ * The revision that replaced a proforma, followed to the end of the chain
+ * (-r2 may itself be replaced by -r3): the last one, and whether it can be
+ * paid (neither void nor replaced). Bounded, so a broken chain never loops.
+ * `find` reads one document by id.
+ */
+export async function proformaChainHead(
+  find: (id: string) => Promise<Pick<FiscalDocument, 'number' | 'voidedAt' | 'supersededById'> | null>,
+  firstId: string,
+  maxHops = 25,
+): Promise<{ number: string; payable: boolean } | null> {
+  let doc = await find(firstId);
+  for (let hop = 0; doc?.supersededById && hop < maxHops; hop++) {
+    const after = await find(doc.supersededById);
+    if (!after) break;
+    doc = after;
+  }
+  return doc ? { number: doc.number, payable: !doc.voidedAt && !doc.supersededById } : null;
 }
 
 export async function getOrderDocuments(orderId: string): Promise<OrderDocuments> {

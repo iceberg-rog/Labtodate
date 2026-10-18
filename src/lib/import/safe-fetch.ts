@@ -34,6 +34,8 @@ export interface SafeFetchResult {
   contentType: string;
   body: string;            // UTF-8 decoded (we hand-decode after size check)
   bytes: number;
+  /** The raw response bytes (binary bodies such as images). */
+  raw: Buffer;
 }
 
 export class SafeFetchError extends Error {
@@ -221,6 +223,7 @@ function doRequest(
             contentType,
             body: buf.toString('utf8'),
             bytes: buf.length,
+            raw: buf,
           },
         });
       });

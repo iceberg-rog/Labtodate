@@ -1212,7 +1212,8 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
     : { openHolds: [] as string[], payableSince: now };
   const orderTerms = { kind: 'PREPAY', days: preview.dueDays, text: terms?.paymentTerms.text ?? fillPaymentTermsText(offerDefaults().paymentTermsText, preview.dueDays), incoterm: terms?.incoterm ?? null, incotermPlace: terms?.incotermPlace ?? null, leadTime: terms?.leadTime ?? null };
 
-  let order: { id: string; orderNumber: string; proformaId: string; number: string };
+  // proformaId / number null: no proforma yet — the seller's details are incomplete (the order waits on a hold).
+  let order: { id: string; orderNumber: string; proformaId: string | null; number: string | null };
   try {
     order = await prisma.$transaction(async (tx) => {
       const claim = await tx.sourcingRequest.updateMany({
@@ -1292,15 +1293,16 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
       }
       // The proforma: gap-free PF number + immutable snapshot, in THIS transaction.
       const pf = await issueProforma(created.id, { tx, actorId: session.user.id, dueDate });
-      if (!pf.ok) throw new Error(`Proforma could not be issued: ${pf.message}`);
-      const number = pf.document.number;
-      await tx.sourcingRequest.update({ where: { id: sr.id }, data: { proformaNumber: number } });
+      // SELLER_INCOMPLETE (no IBAN / KvK … in Settings): the order is accepted and waits on a hold, no payment request yet.
+      if (!pf.ok && pf.code !== 'SELLER_INCOMPLETE') throw new Error(`Proforma could not be issued: ${pf.message}`);
+      const number = pf.ok ? pf.document.number : null;
+      if (number) await tx.sourcingRequest.update({ where: { id: sr.id }, data: { proformaNumber: number } });
       await tx.quoteMessage.create({
         data: {
           sourcingRequestId: sr.id,
           authorId: session.user.id,
           fromStaff: false,
-          body: `Offer accepted (revision ${sr.offerRevision}): ${money(preview.totalCents)} incl. ${preview.vatRateBp ? `VAT ${pctLabel(preview.vatRateBp)}` : 'VAT 0%'} for "${itemTitle}". Order ${created.orderNumber} and proforma ${number} were created — payment due by ${fmtDay(dueDate)}.${r.prep.complianceNote ? ` Note: ${r.prep.complianceNote}` : ''}`,
+          body: `Offer accepted (revision ${sr.offerRevision}): ${money(preview.totalCents)} incl. ${preview.vatRateBp ? `VAT ${pctLabel(preview.vatRateBp)}` : 'VAT 0%'} for "${itemTitle}". ${number ? `Order ${created.orderNumber} and proforma ${number} were created — payment due by ${fmtDay(dueDate)}.` : `Order ${created.orderNumber} was created; the proforma (payment request) follows by e-mail — nothing is due yet.`}${r.prep.complianceNote ? ` Note: ${r.prep.complianceNote}` : ''}`,
         },
       });
       if (p.saveProfile !== false) {
@@ -1317,7 +1319,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         };
         await tx.billingProfile.upsert({ where: { userId: buyerId }, update: profile, create: { userId: buyerId, ...profile } });
       }
-      return { ...created, proformaId: pf.document.id, number };
+      return { ...created, proformaId: pf.ok ? pf.document.id : null, number };
     });
   } catch (e) {
     const raced = e instanceof AcceptRaceError || (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002');
@@ -1338,7 +1340,7 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
 
   await audit(
     'quote.offer.accept',
-    order.number,
+    order.number ?? order.orderNumber,
     `order=${order.orderNumber} r${sr.offerRevision} total=${money(preview.totalCents)} vat=${preview.vatTreatment} ${pctLabel(preview.vatRateBp)} by ${session.user.email} ip=${ip ?? '-'} ua="${(ua ?? '-').slice(0, 120)}" terms=${requireTermsAcceptance() ? `${termsOfSaleUrl()} accepted` : 'not required'}${r.prep.complianceNote ? ' · compliance hold' : ''}`,
   );
 
@@ -1348,10 +1350,12 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
     // Render the issued proforma ONCE from its snapshot and store it; the email attaches exactly those bytes.
     // Compliance hold (REVIEW country): no payment request until staff clear it —
     // the proforma goes out then (clearOrderHold), not now.
-    const onHold = !!r.prep.complianceNote;
-    const doc = onHold ? { attachment: null, error: null } : await documentAttachment({ id: order.proformaId, number: order.number });
+    // No proforma at all (seller details incomplete — the order waits on a hold): no payment request either.
+    const holdNote = r.prep.complianceNote ?? (order.proformaId ? null : 'Our team is completing the payment details for this order.');
+    const onHold = !!holdNote;
+    const doc = onHold || !order.proformaId ? { attachment: null, error: null } : await documentAttachment({ id: order.proformaId, number: order.number ?? order.orderNumber });
     const attachments = doc.attachment ? [doc.attachment] : [];
-    const bank = await prisma.fiscalDocument.findUnique({ where: { id: order.proformaId }, select: { snapshot: true } });
+    const bank = order.proformaId ? await prisma.fiscalDocument.findUnique({ where: { id: order.proformaId }, select: { snapshot: true } }) : null;
     const snap = bank?.snapshot as { bank?: { beneficiary: string; bankName: string; iban: string; bic: string } | null } | null;
     const b = snap?.bank ?? null;
     const payRows: Array<[string, string, boolean?]> = b
@@ -1373,27 +1377,27 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
           ? `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong>.`
           : `You accepted our offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>. We created order <strong>${order.orderNumber}</strong> and proforma invoice <strong>${order.number}</strong>${doc.attachment ? ' (attached as PDF)' : ''}.`,
         offerMailRows({ qty: preview.qty, unitCents: preview.unitCents, goodsCents: preview.goodsCents, shippingCents: preview.shippingCents, vatDecided: true, vatRateBp: preview.vatRateBp, vatCents: preview.vatCents, vatLabel: preview.vatLabel, totalCents: preview.totalCents, currency }),
-        r.prep.complianceNote
-          ? `<p style="margin:0 0 12px;padding:10px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;"><strong>Please do not pay yet.</strong> ${escapeHtml(r.prep.complianceNote)} We email you as soon as the check is done.</p>`
+        holdNote
+          ? `<p style="margin:0 0 12px;padding:10px;border-radius:8px;background:#fffbeb;border:1px solid #fcd34d;"><strong>Please do not pay yet.</strong> ${escapeHtml(holdNote)} We email you as soon as ${r.prep.complianceNote ? 'the check is done' : 'it is ready'}.</p>`
           : `<h3 style="color:#0E4F40;margin:16px 0 6px;font-size:15px;">How to pay</h3>${mailTable(payRows)}${b ? '' : '<p style="margin:0 0 12px;">Our bank details are on the payment page.</p>'}`,
         onHold ? '' : 'After paying, upload your bank receipt on the payment page so we can verify it and ship.',
       ].filter(Boolean),
       cta: { href: paymentUrl, label: 'Go to the payment page' },
       footer: onHold
-        ? ['We send you the proforma invoice with the bank details as soon as the check is done.']
+        ? [`We send you the proforma invoice with the bank details as soon as ${r.prep.complianceNote ? 'the check is done' : 'it is ready'}.`]
         : [`${doc.attachment ? 'Your proforma invoice is attached.' : 'Your proforma invoice is ready on the payment page.'} You can also <a href="${pdfUrl}">download the PDF</a> at any time (sign-in required).`],
     });
     const buyerMail = await trySendEmail({
       to: sr.buyerEmail,
       subject: onHold
-        ? `Order ${order.orderNumber} received — export check before payment (${headerText(itemTitle, 70)})`
+        ? `Order ${order.orderNumber} received — ${r.prep.complianceNote ? 'export check' : 'payment details follow'} before payment (${headerText(itemTitle, 70)})`
         : `Proforma invoice ${order.number} — order ${order.orderNumber} (${headerText(itemTitle, 80)})`,
       html: proformaHtml,
       attachments,
     }, 'quotes:accept');
-    if (buyerMail.ok && !onHold) await markDocumentSent(order.proformaId);
+    if (buyerMail.ok && !onHold && order.proformaId) await markDocumentSent(order.proformaId);
     const copyTo = companyCopyAddress();
-    if (copyTo) await sendInternalEmail({ to: copyTo, subject: `[copy] Proforma invoice ${order.number} — order ${order.orderNumber}`, html: proformaHtml, attachments }, 'quotes:accept-copy');
+    if (copyTo) await sendInternalEmail({ to: copyTo, subject: `[copy] Proforma invoice ${order.number ?? '(not issued yet)'} — order ${order.orderNumber}`, html: proformaHtml, attachments }, 'quotes:accept-copy');
     // Staff / assigned seller — sellers never see who the buyer is.
     const inbox = staffQuoteInbox(sr);
     await sendInternalEmail({
@@ -1403,24 +1407,24 @@ export async function acceptOffer(input: z.input<typeof AcceptInput>): Promise<A
         heading: 'Offer accepted',
         body: [
           `${inbox.toSeller ? 'The buyer' : `<span dir="auto">${escapeHtml(sr.buyerName)}</span> &lt;${escapeHtml(sr.buyerEmail)}&gt;${details.billing.legalName ? ` (<span dir="auto">${escapeHtml(details.billing.legalName)}</span>)` : ''}`} accepted the offer for <strong dir="auto">${escapeHtml(itemTitle)}</strong>${inbox.toSeller && !sellerSeesSellPrice() ? '' : `: <strong>${escapeHtml(money(preview.totalCents))}</strong> (${escapeHtml(preview.vatLabel)})`}.`,
-          `Order <strong>${order.orderNumber}</strong> · proforma <strong>${order.number}</strong> · payment due ${escapeHtml(fmtDay(dueDate))}.${r.prep.complianceNote ? ` <strong>On compliance hold:</strong> ${escapeHtml(r.prep.complianceNote)}` : ' Awaiting the buyer’s bank transfer.'}`,
+          `Order <strong>${order.orderNumber}</strong> · proforma <strong>${order.number ?? 'NOT issued — company / payment details incomplete (order on hold)'}</strong> · payment due ${escapeHtml(fmtDay(dueDate))}.${r.prep.complianceNote ? ` <strong>On compliance hold:</strong> ${escapeHtml(r.prep.complianceNote)}` : ' Awaiting the buyer’s bank transfer.'}`,
           buyerMail.ok ? '' : `<strong>The proforma email to the buyer could not be delivered</strong> (${escapeHtml(buyerMail.error)}).`,
         ].filter(Boolean),
         cta: { href: `${siteBase()}${inbox.toSeller ? `/app/seller/inbox/${sr.id}` : `/admin/quotes/${sr.id}`}`, label: 'Open the quote' },
       }),
     }, 'quotes:accept-staff');
-    await notifyUser(buyerId, `Offer accepted — order ${order.orderNumber}`, `Proforma ${order.number} is ready. Pay ${money(preview.totalCents)} by bank transfer by ${fmtDay(dueDate)} and upload the receipt.`, `/app/orders/${order.orderNumber}/payment`);
+    await notifyUser(buyerId, `Offer accepted — order ${order.orderNumber}`, order.number ? `Proforma ${order.number} is ready. Pay ${money(preview.totalCents)} by bank transfer by ${fmtDay(dueDate)} and upload the receipt.` : 'We email you the proforma (payment request) as soon as it is ready — nothing is due yet.', `/app/orders/${order.orderNumber}/payment`);
     if (sr.assignedToId && sr.assignedTo?.role === 'SELLER') {
       await notifyUser(sr.assignedToId, `Offer accepted — ${QUOTE_REF(sr.id)}`, `The buyer accepted the offer for "${itemTitle}". Awaiting payment.`, `/app/seller/inbox/${sr.id}`);
     }
     await notifyAdmins(
       `Offer accepted — order ${order.orderNumber}`,
-      `${itemTitle} · ${money(preview.totalCents)} · proforma ${order.number}${buyerMail.ok ? '' : ' · proforma email to the buyer FAILED'}${doc.attachment ? '' : ' · PDF not attached'}${r.prep.complianceNote ? ' · COMPLIANCE HOLD' : ''}`,
+      `${itemTitle} · ${money(preview.totalCents)} · proforma ${order.number ?? 'NOT ISSUED (company / payment details incomplete)'}${buyerMail.ok ? '' : ' · proforma email to the buyer FAILED'}${doc.attachment ? '' : ' · PDF not attached'}${r.prep.complianceNote ? ' · COMPLIANCE HOLD' : ''}`,
       `/admin/quotes/${sr.id}`,
       'ORDER_FROM_QUOTE',
     );
     if (!buyerMail.ok || doc.error) {
-      await audit('quote.offer.accept.mail', order.number, `${buyerMail.ok ? 'email ok' : `email failed: ${buyerMail.error}`}${doc.error ? ` · pdf: ${doc.error}` : ''}`);
+      await audit('quote.offer.accept.mail', order.number ?? order.orderNumber, `${buyerMail.ok ? 'email ok' : `email failed: ${buyerMail.error}`}${doc.error ? ` · pdf: ${doc.error}` : ''}`);
     }
   };
   after(() => sendAll().catch((e) => logError('quotes:accept-after', e)));

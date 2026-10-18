@@ -22,6 +22,13 @@ import { DOC_LABEL_DEFS, fillLabel, type DocLabelKey } from './labels';
 
 const DEFAULT_LOCALE = { lang: 'en', dateLocale: 'en-GB', moneyLocale: 'en-IE', timeZone: 'Europe/Amsterdam' };
 
+/**
+ * What proformas issued without bank details printed (before issuing required
+ * them). Kept only to re-render those documents as they were; no new document
+ * prints it (issue.ts sellerDetailsMissing).
+ */
+const LEGACY_NO_BANK_DETAILS = 'Our bank details will be sent to you by email. Please quote {REFERENCE} as the reference of your transfer.';
+
 export function fmtDocDate(d: Date | string, locale: { dateLocale?: string; timeZone?: string } = {}): string {
   return new Date(d).toLocaleDateString(locale.dateLocale ?? DEFAULT_LOCALE.dateLocale, { day: 'numeric', month: 'long', year: 'numeric', timeZone: locale.timeZone ?? DEFAULT_LOCALE.timeZone });
 }
@@ -132,6 +139,11 @@ const CSS = `
   body.compact .brand img { max-height: 52px; }
 `;
 
+/** A free-text block (offer remark, credit reason) under its heading. */
+function noteBlock(heading: string, text: string): string {
+  return `<section class="notes"><div class="muted" style="font-size:8pt;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:3px;">${esc(heading)}</div><div dir="auto">${esc(text)}</div></section>`;
+}
+
 const STAMP_CLASS: Record<string, string> = {
   PROFORMA: 'st-unpaid',
   INVOICE_PAID: 'st-paid',
@@ -222,7 +234,10 @@ export function renderDocumentHtml(doc: DocumentSnapshot, opts: { logoDataUri?: 
     const over = margin || doc.vat.rows.length > 1 || r.rateBp === 0 ? `<tr><td class="sub" colspan="2">${esc(L('VAT_OVER'))} ${money(r.baseCents)}</td></tr>` : '';
     return `<tr><td>${label}</td><td>${money(r.taxCents)}</td></tr>${over}`;
   }).join('');
-  const totalLabel = isCredit ? L('TOTAL_CREDITED') : p?.kind === 'PAID' ? L('TOTAL_PAID') : p?.kind === 'PARTLY_PAID' ? L('TOTAL') : L('TOTAL_DUE');
+  // A short payment accepted within the tolerance: the total stays the invoiced
+  // amount, so it is not "Total paid" — the payment box says what came in.
+  const writtenOff = p?.kind === 'PAID' && (p.writtenOffCents ?? 0) > 0 ? p.writtenOffCents ?? 0 : 0;
+  const totalLabel = isCredit ? L('TOTAL_CREDITED') : p?.kind === 'PAID' ? (writtenOff ? L('TOTAL') : L('TOTAL_PAID')) : p?.kind === 'PARTLY_PAID' ? L('TOTAL') : L('TOTAL_DUE');
   const totals = `
     <table class="totals">
       <tr><td>${esc(margin ? L('SUBTOTAL_MARGIN') : L('SUBTOTAL'))}</td><td>${money(doc.totals.netCents)}</td></tr>
@@ -252,13 +267,15 @@ export function renderDocumentHtml(doc: DocumentSnapshot, opts: { logoDataUri?: 
             <tr><td>${esc(L('AMOUNT'))}</td><td>${money(p.amountCents)}</td></tr>
             ${p.dueDate ? `<tr><td>${esc(L('PAY_BY'))}</td><td>${esc(day(p.dueDate))}</td></tr>` : ''}
           </table>`
-        : `<p>${esc(fillLabel(L('NO_BANK_DETAILS'), { REFERENCE: '\u0001' })).replace('\u0001', `<strong class="mono">${esc(p.reference)}</strong>`)}</p>`}
+        : `<p>${esc(fillLabel((doc.labels as Record<string, string> | undefined)?.NO_BANK_DETAILS ?? LEGACY_NO_BANK_DETAILS, { REFERENCE: '\u0001' })).replace('\u0001', `<strong class="mono">${esc(p.reference)}</strong>`)}</p>`}
     </div>`;
   } else if (p?.kind === 'PAID') {
-    const paidLine = p.paidAt ? fillLabel(L('PAID_IN_FULL_ON'), { DATE: date(p.paidAt) }) : L('PAID_IN_FULL');
+    const paidLine = writtenOff
+      ? filled('RECEIVED_WRITTEN_OFF', { PAID: money(p.amountCents ?? doc.totals.totalCents - writtenOff), DATE: p.paidAt ? date(p.paidAt) : '—', WRITTEN_OFF: money(writtenOff) }, ['PAID'])
+      : `<strong>${esc(p.paidAt ? fillLabel(L('PAID_IN_FULL_ON'), { DATE: date(p.paidAt) }) : L('PAID_IN_FULL'))}</strong>`;
     box = `<div class="box paid">
       <h3>${esc(L('BOX_RECEIVED'))}</h3>
-      <p><strong>${esc(paidLine)}</strong>${p.method ? ` — ${esc(p.method)}` : ''}.</p>
+      <p>${paidLine}${p.method ? ` — ${esc(p.method)}` : ''}.</p>
       <p class="muted">${esc(L('NO_PAYMENT_DUE'))}</p>
     </div>`;
   } else if (p?.kind === 'DUE') {
@@ -359,7 +376,7 @@ export function renderDocumentHtml(doc: DocumentSnapshot, opts: { logoDataUri?: 
   ${legalBlock}
   ${pendingBlock}
 
-  ${doc.notes.map((n) => `<section class="notes"><div class="muted" style="font-size:8pt;font-weight:700;letter-spacing:.12em;text-transform:uppercase;margin-bottom:3px;">${esc(L('NOTE'))}</div><div dir="auto">${esc(n)}</div></section>`).join('')}
+  ${[...(doc.remarks ?? []).map((n) => noteBlock(L('REMARK'), n)), ...doc.notes.map((n) => noteBlock(L('NOTE'), n))].join('')}
 
   ${doc.terms.length ? `<ul class="terms">${doc.terms.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}
   ${doc.clauses.length ? `<div class="clauses">${doc.clauses.map((t) => `<p>${esc(t)}</p>`).join('')}</div>` : ''}

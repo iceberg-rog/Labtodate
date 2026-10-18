@@ -1,7 +1,7 @@
-import { Prisma } from '@prisma/client';
+import { Prisma, type FiscalDocument } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { ensureSettingsLoaded, settingBool } from '@/lib/settings';
-import { companyCopyAddress, sendInternalEmail, trySendEmail } from '@/lib/email';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { companyCopyAddress, sendInternalEmail, trySendEmail, type EmailAttachment } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
 import { logError, notifyAdmins } from '@/lib/observability';
 import { generateOrderNumber } from '@/lib/orders/checkout-tx';
@@ -10,6 +10,8 @@ import { documentAttachment, issueInvoice, markDocumentSent, readableIssueError,
 import { fmtDocMoney } from '@/lib/documents/render';
 import { settingString } from '@/lib/settings';
 import { settingText } from '@/lib/finance/texts';
+import { billingEmailOf, documentRecipients, type DocumentRecipients } from '@/lib/orders/recipients';
+import { mailLayout, mailTable } from '@/lib/quotes/mail';
 
 /**
  * Server-internal order helpers. Deliberately NOT a 'use server' module: every
@@ -21,6 +23,64 @@ import { settingText } from '@/lib/finance/texts';
 
 function siteBase(): string {
   return (process.env.BETTER_AUTH_URL ?? '').replace(/\/+$/, '');
+}
+
+// ── document e-mails (proforma, invoice, credit note) ───────────────────────
+
+/** What a document e-mail needs from its order. */
+export interface DocumentMailOrder {
+  invoiceEmail: string | null;
+  billingAddress: unknown;
+  buyer: { email: string };
+}
+
+/** Who gets an order's documents: the accounts-payable address, the account in copy (lib/orders/recipients.ts). Read after ensureSettingsLoaded(). */
+export function orderDocumentRecipients(o: DocumentMailOrder): DocumentRecipients {
+  return documentRecipients({ invoiceEmail: o.invoiceEmail, billingEmail: billingEmailOf(o.billingAddress), accountEmail: o.buyer.email });
+}
+
+/** "ap@lab.nl (copy to buyer@lab.nl)" — for staff messages. */
+export function recipientsLabel(r: { to: string; cc: string[] }): string {
+  return r.cc.length ? `${r.to} (copy to ${r.cc.join(', ')})` : r.to;
+}
+
+export interface DocumentMailResult {
+  /** The primary recipient's mail server accepted it (the document is then marked sent). */
+  emailed: boolean;
+  to: string;
+  cc: string[];
+  error: string | null;
+}
+
+/**
+ * E-mail one issued document — its STORED PDF (`attachment`, from
+ * documentAttachment) — the same way for every document: to the order's
+ * document recipients (AP address, a "[copy]" to the account e-mail when it
+ * differs and INVOICE_EMAIL_CC_ACCOUNT is on) or only to `to` when staff typed
+ * an address, plus a "[copy]" to the billing inbox (COMPANY_EMAIL) unless
+ * `companyCopy` is false. Marks the document sent when the primary mail went
+ * out (the first send time is kept). Never throws.
+ */
+export async function mailOrderDocument(p: {
+  doc: Pick<FiscalDocument, 'id'>;
+  order: DocumentMailOrder;
+  subject: string;
+  html: string;
+  attachment: EmailAttachment | null;
+  context: string;
+  to?: string | null;
+  companyCopy?: boolean;
+}): Promise<DocumentMailResult> {
+  const r: DocumentRecipients = p.to ? { to: p.to, cc: [] } : orderDocumentRecipients(p.order);
+  const attachments = p.attachment ? [p.attachment] : [];
+  const sent = await trySendEmail({ to: r.to, subject: p.subject, html: p.html, attachments }, p.context);
+  if (sent.ok) await markDocumentSent(p.doc.id);
+  for (const cc of r.cc) await trySendEmail({ to: cc, subject: `[copy] ${p.subject}`, html: p.html, attachments }, `${p.context}-account-copy`);
+  const copyTo = p.companyCopy === false ? null : companyCopyAddress();
+  if (copyTo && ![r.to, ...r.cc].some((a) => a.toLowerCase() === copyTo.toLowerCase())) {
+    await sendInternalEmail({ to: copyTo, subject: `[copy] ${p.subject}`, html: p.html, attachments }, `${p.context}-copy`);
+  }
+  return { emailed: sent.ok, to: r.to, cc: r.cc, error: sent.ok ? null : sent.error };
 }
 
 export type InvoiceMailResult = {
@@ -37,6 +97,118 @@ export type InvoiceMailResult = {
   /** Why no invoice was issued (VAT review / missing details / not paid). */
   notIssuedReason: string | null;
 };
+
+/**
+ * Subject and body of the e-mail that carries an issued document (branded
+ * layout). Everything it states comes from the document's frozen snapshot:
+ *  - proforma: the payment request — amount, bank details, reference, pay-by;
+ *  - invoice: paid / partly paid / due texts (Settings → Email texts), the
+ *    amount received (a short payment accepted within the tolerance included);
+ *  - credit note: the invoice it credits and what happens to the money.
+ * `again`: staff re-send the document (Documents → Resend).
+ */
+export function documentMail(
+  doc: Pick<FiscalDocument, 'kind' | 'number' | 'currency' | 'dueDate' | 'snapshot'>,
+  o: { orderNumber: string; buyerName: string | null; attached: boolean; replaces?: string | null; again?: boolean },
+): { subject: string; html: string } {
+  const snap = (doc.snapshot ?? {}) as {
+    payment?: { kind?: string; paidCents?: number; openCents?: number; amountCents?: number; reference?: string; dueDate?: string | null; originalNumber?: string } | null;
+    bank?: { beneficiary: string; bankName: string; iban: string; bic: string } | null;
+    totals?: { totalCents: number };
+    terms?: string[];
+  };
+  const pay = snap.payment ?? null;
+  const money = (c: number) => fmtDocMoney(c, doc.currency);
+  const fmtDay = (d: Date | string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const total = snap.totals?.totalCents ?? 0;
+  const orderUrl = `${siteBase()}/app/orders/${o.orderNumber}`;
+  const hi = `Hi <span dir="auto">${escapeHtml(o.buyerName || 'there')}</span>,`;
+  const number = escapeHtml(doc.number);
+  const again = o.again ? `We are sending you ${doc.kind === 'PROFORMA' ? 'proforma invoice' : doc.kind === 'INVOICE' ? 'invoice' : 'credit note'} <strong>${number}</strong> for order <strong>${escapeHtml(o.orderNumber)}</strong> again.` : '';
+  const file = o.attached ? `<strong>${number}</strong> is attached (PDF).` : `<strong>${number}</strong> is ready to download.`;
+  const footer = settingString('EMAIL_INVOICE_FOOTER');
+
+  if (doc.kind === 'PROFORMA') {
+    const b = snap.bank ?? null;
+    const due = pay?.dueDate ?? (doc.dueDate ? doc.dueDate.toISOString() : null);
+    const mono = (v: string) => `<span style="font-family:ui-monospace,monospace;">${escapeHtml(v)}</span>`;
+    const rows: Array<[string, string, boolean?]> = [
+      ['Amount', escapeHtml(money(pay?.amountCents ?? total)), true],
+      ...(b
+        ? [
+            ['Beneficiary', `<span dir="auto">${escapeHtml(b.beneficiary)}</span>`] as [string, string],
+            ...(b.bankName ? [['Bank', `<span dir="auto">${escapeHtml(b.bankName)}</span>`] as [string, string]] : []),
+            ['IBAN', mono(b.iban)] as [string, string],
+            ...(b.bic ? [['BIC', mono(b.bic)] as [string, string]] : []),
+          ]
+        : []),
+      ['Reference', `<strong>${number}</strong>`],
+      ...(due ? [['Pay by', `<strong>${escapeHtml(fmtDay(due))}</strong>`] as [string, string]] : []),
+    ];
+    return {
+      subject: `Proforma invoice ${doc.number} — order ${o.orderNumber}`,
+      html: mailLayout({
+        heading: `Proforma invoice ${doc.number}`,
+        body: [
+          hi,
+          again || `Here is the proforma invoice (payment request) for order <strong>${escapeHtml(o.orderNumber)}</strong>.`,
+          mailTable(rows),
+          b ? 'Please pay by bank transfer, quoting the reference, and upload the bank receipt on your payment page.' : 'The bank details are on the proforma invoice.',
+          `Your proforma invoice ${file}`,
+        ],
+        cta: { href: `${orderUrl}/payment`, label: 'Go to the payment page' },
+      }),
+    };
+  }
+
+  if (doc.kind === 'CREDIT_NOTE') {
+    return {
+      subject: `Credit note ${doc.number} — order ${o.orderNumber}`,
+      html: mailLayout({
+        heading: `Credit note ${doc.number}`,
+        body: [
+          hi,
+          again || `Here is credit note <strong>${number}</strong> for order <strong>${escapeHtml(o.orderNumber)}</strong>.`,
+          `It credits ${pay?.originalNumber ? `invoice <strong>${escapeHtml(pay.originalNumber)}</strong>` : 'the invoice'} for <strong>${escapeHtml(money(Math.abs(total)))}</strong>.`,
+          ...(snap.terms ?? []).map((t) => escapeHtml(t)),
+          `Your credit note ${file}`,
+        ],
+        cta: { href: orderUrl, label: 'View your order' },
+        footer: footer ? [escapeHtml(footer)] : [],
+      }),
+    };
+  }
+
+  const kind = pay?.kind ?? 'DUE';
+  const vars = {
+    // Paid: the amount that really came in (a short payment accepted within the tolerance is less than the total).
+    AMOUNT: money(kind === 'PAID' ? pay?.amountCents ?? total : total),
+    ORDER: o.orderNumber,
+    NUMBER: doc.number,
+    DUE: doc.dueDate ? fmtDay(doc.dueDate) : '',
+  };
+  const bodyText = kind === 'PAID'
+    ? settingText('EMAIL_INVOICE_PAID_BODY', vars, ['AMOUNT', 'ORDER'])
+    : kind === 'PARTLY_PAID'
+      ? settingText('EMAIL_INVOICE_PARTLY_PAID_BODY', { ...vars, PAID: money(pay?.paidCents ?? 0), OPEN: money(pay?.openCents ?? 0) }, ['OPEN', 'DUE'])
+      : settingText('EMAIL_INVOICE_DUE_BODY', vars, ['AMOUNT', 'DUE']);
+  const heading = kind === 'PAID' && !o.again ? settingString('EMAIL_INVOICE_PAID_HEADING') || 'Payment received — thank you' : `Invoice ${doc.number}`;
+  return {
+    subject: `${o.replaces ? 'Corrected invoice' : 'Invoice'} ${doc.number} — order ${o.orderNumber}${kind === 'PAID' ? ' (paid)' : ''}`,
+    html: mailLayout({
+      heading,
+      body: [
+        hi,
+        ...(again ? [again] : []),
+        ...(o.replaces ? [`This corrected invoice replaces invoice <strong>${escapeHtml(o.replaces)}</strong>, which is credited in full.`] : []),
+        bodyText.html,
+        `Your invoice ${file} <a href="${absoluteDocumentHref('doc', doc.number, 'pdf')}">Download the invoice (PDF)</a>.`,
+      ],
+      cta: { href: orderUrl, label: 'View your order' },
+      footer: footer ? [escapeHtml(footer)] : [],
+    }),
+  };
+}
 
 /**
  * Issue the order's INVOICE (lib/documents/issue.ts: sequential number, VAT
@@ -60,12 +232,9 @@ export async function sendOrderInvoice(
     if (!order) return { issued: false, number: null, emailed: false, pdfAttached: false, to: null, error: 'order not found', notIssuedReason: 'order not found' };
     // The invoice goes to the accounts-payable address given at checkout (older orders: the
     // e-mail in their billing details — the same one printed on the invoice); the account
-    // e-mail gets a copy (INVOICE_EMAIL_CC_ACCOUNT).
-    const bill = order.billingAddress && typeof order.billingAddress === 'object' ? (order.billingAddress as Record<string, unknown>) : {};
-    const billEmail = typeof bill.email === 'string' && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(bill.email.trim()) ? bill.email.trim() : null;
-    const apEmail = order.invoiceEmail || billEmail;
-    const invoiceTo = apEmail || order.buyer.email;
-    const ccAccount = !!apEmail && apEmail.toLowerCase() !== order.buyer.email.toLowerCase() && settingBool('INVOICE_EMAIL_CC_ACCOUNT');
+    // e-mail gets a copy (INVOICE_EMAIL_CC_ACCOUNT) — one rule for every document mail.
+    const recipients = orderDocumentRecipients(order);
+    const invoiceTo = recipients.to;
     const issued = await issueInvoice(orderId, { actorId: opts.actorId, vatDecision: opts.vatDecision, replaceCredited: opts.replaceCredited });
     if (!issued.ok) {
       if (issued.code !== 'NOT_PAID' && issued.code !== 'NOT_FOUND') {
@@ -81,50 +250,26 @@ export async function sendOrderInvoice(
     const docRow = issued.document;
     const number = docRow.number;
     const att = await documentAttachment(docRow);
-    const pdfUrl = absoluteDocumentHref('invoice', order.orderNumber, 'pdf');
-    const snap = (docRow.snapshot ?? {}) as { payment?: { kind?: string; paidCents?: number; openCents?: number; dueDate?: string | null; amountCents?: number } | null; refs?: Array<{ label: string; value: string }> };
-    const pay = snap.payment ?? null;
-    const kind = pay?.kind ?? 'DUE';
-    const money = (c: number) => fmtDocMoney(c, order.currency);
-    const due = docRow.dueDate ? docRow.dueDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '';
-    const replaces = opts.replaceCredited ? (docRow.originalDocumentId ? (await prisma.fiscalDocument.findUnique({ where: { id: docRow.originalDocumentId }, select: { number: true } }))?.number ?? null : null) : null;
-    const vars = { AMOUNT: money(order.totalCents), ORDER: order.orderNumber, NUMBER: number, DUE: due };
-    const bodyText = kind === 'PAID'
-      ? settingText('EMAIL_INVOICE_PAID_BODY', vars, ['AMOUNT', 'ORDER'])
-      : kind === 'PARTLY_PAID'
-        ? settingText('EMAIL_INVOICE_PARTLY_PAID_BODY', { ...vars, PAID: money(pay?.paidCents ?? 0), OPEN: money(pay?.openCents ?? 0) }, ['OPEN', 'DUE'])
-        : settingText('EMAIL_INVOICE_DUE_BODY', vars, ['AMOUNT', 'DUE']);
-    const heading = kind === 'PAID' ? settingString('EMAIL_INVOICE_PAID_HEADING') || 'Payment received — thank you' : `Invoice ${number}`;
-    const subject = `${replaces ? 'Corrected invoice' : 'Invoice'} ${number} — order ${order.orderNumber}${kind === 'PAID' ? ' (paid)' : ''}`;
-    const footer = settingString('EMAIL_INVOICE_FOOTER');
-    const html = `
-      <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">${escapeHtml(heading)}</h2>
-        <p>Hi <span dir="auto">${escapeHtml(order.buyer.name || 'there')}</span>,</p>
-        ${replaces ? `<p>This corrected invoice replaces invoice <strong>${escapeHtml(replaces)}</strong>, which is credited in full.</p>` : ''}
-        <p>${bodyText.html}</p>
-        <p>${att.attachment ? `Your invoice <strong>${number}</strong> is attached (PDF).` : `Your invoice <strong>${number}</strong> is ready.`}</p>
-        <p><a href="${pdfUrl}">Download the invoice (PDF)</a> · <a href="${siteBase()}/app/orders/${order.orderNumber}">View your order</a></p>
-        ${footer ? `<p style="color:#6b7280;font-size:12px;">${escapeHtml(footer)}</p>` : ''}
-      </div>`;
-    const attachments = att.attachment ? [att.attachment] : [];
-    // Only send once per invoice (a retry after a bounce re-sends; a second verify click does not).
+    const content = documentMail(docRow, {
+      orderNumber: order.orderNumber,
+      buyerName: order.buyer.name,
+      attached: !!att.attachment,
+      replaces: opts.replaceCredited ? (docRow.originalDocumentId ? (await prisma.fiscalDocument.findUnique({ where: { id: docRow.originalDocumentId }, select: { number: true } }))?.number ?? null : null) : null,
+    });
+    // Only send once per invoice (a retry after a bounce re-sends; a second verify
+    // click does not). Staff re-send it on purpose with “Resend” (Documents).
     if (!issued.created && docRow.sentAt) {
-      return { issued: true, number, emailed: true, pdfAttached: !!att.attachment, to: invoiceTo, error: null, notIssuedReason: null };
+      return { issued: true, number, emailed: true, pdfAttached: !!att.attachment, to: recipientsLabel(recipients), error: null, notIssuedReason: null };
     }
-    const sent = await trySendEmail({ to: invoiceTo, subject, html, attachments }, 'orders:invoice');
-    if (sent.ok) await markDocumentSent(docRow.id);
-    if (ccAccount) await trySendEmail({ to: order.buyer.email, subject: `[copy] ${subject}`, html, attachments }, 'orders:invoice-account-copy');
-    const copyTo = companyCopyAddress();
-    if (copyTo) await sendInternalEmail({ to: copyTo, subject: `[copy] ${subject}`, html, attachments }, 'orders:invoice-copy');
+    const mail = await mailOrderDocument({ doc: docRow, order, subject: content.subject, html: content.html, attachment: att.attachment, context: 'orders:invoice' });
     if (att.error) await logError('sendOrderInvoice:pdf', new Error(att.error));
     return {
       issued: true,
       number,
-      emailed: sent.ok,
+      emailed: mail.emailed,
       pdfAttached: !!att.attachment,
-      to: ccAccount ? `${invoiceTo} (copy to ${order.buyer.email})` : invoiceTo,
-      error: sent.ok ? null : sent.error,
+      to: recipientsLabel(mail),
+      error: mail.error,
       notIssuedReason: null,
     };
   } catch (e) {

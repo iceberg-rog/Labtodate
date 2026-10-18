@@ -10,10 +10,10 @@ import {
   documentFilename,
   documentHtml,
   ensureDocumentPdf,
-  freezeLegacyDocuments,
   getOrderDocuments,
   issueProforma,
   prePaymentHoldMessage,
+  proformaChainHead,
 } from './issue';
 import { fmtDocDate } from './render';
 
@@ -110,25 +110,29 @@ export async function handleDocumentRequest(
   // A void or replaced proforma is not payable: the buyer never gets its bytes
   // (they say "Payment request" with the IBAN and amount) — only what to do.
   if (byNumber && byNumber.kind === 'PROFORMA' && (byNumber.voidedAt || byNumber.supersededById) && !isAdmin) {
-    const next = byNumber.supersededById ? await prisma.fiscalDocument.findUnique({ where: { id: byNumber.supersededById }, select: { number: true, voidedAt: true } }) : null;
+    // Name the CURRENT revision (the head of the chain), and say "pay it" only when it is payable.
+    const head = byNumber.supersededById
+      ? await proformaChainHead((id) => prisma.fiscalDocument.findUnique({ where: { id }, select: { number: true, voidedAt: true, supersededById: true } }), byNumber.supersededById)
+      : null;
     return textPage(
       410,
       `Proforma ${byNumber.number} is no longer payable`,
       byNumber.voidedAt
         ? `This proforma was voided on ${fmtDocDate(byNumber.voidedAt)}${byNumber.voidReason ? ` (${byNumber.voidReason})` : ''}. No payment is due for it — please do not transfer money for it.`
-        : `This proforma was replaced by ${next?.number ?? 'a newer revision'}. Please do not pay this one${next && !next.voidedAt ? ` — pay ${next.number}, on your order page` : ''}.`,
+        : head?.payable
+          ? `This proforma was replaced by ${head.number}. Please do not pay this one — pay ${head.number}, on your order page.`
+          : `This proforma was replaced by ${head?.number ?? 'a newer revision'}, which is no longer payable either. Please do not transfer money for it — your order page shows what is due.`,
       [{ href: back, label: 'Go to your order' }],
     );
   }
 
   let doc: FiscalDocument | null = byNumber;
   if (!doc && order) {
-    let docs = await getOrderDocuments(order.id);
+    // (getOrderDocuments freezes an order's pre-cutover documents itself —
+    // only for orders created before the cutover, never while an invoice is
+    // withheld — so a download can never mint a document of its own.)
+    const docs = await getOrderDocuments(order.id);
     if (kind === 'proforma') {
-      if (!docs.proforma) {
-        await freezeLegacyDocuments(order.id).catch((e) => logError('documents.freezeLegacy', e));
-        docs = await getOrderDocuments(order.id);
-      }
       if (!docs.proforma && order.status === 'PENDING_PAYMENT' && order.buyerId !== session.user.id) {
         // Staff opening a link never creates a fiscal document: issuing is an
         // explicit action on the order page (Documents → Issue proforma).
@@ -142,7 +146,13 @@ export async function handleDocumentRequest(
       if (!docs.proforma && order.status === 'PENDING_PAYMENT') {
         // The buyer asks for their own payment request (their payment page issues it the same way).
         const issued = await issueProforma(order.id);
-        if (!issued.ok) return textPage(409, 'Proforma not available', issued.message, [{ href: back, label: 'Go back' }]);
+        if (!issued.ok) {
+          // The seller's own details are incomplete: the order now waits on a hold — tell the buyer what is true.
+          const message = issued.code === 'SELLER_INCOMPLETE'
+            ? `Your proforma invoice for order ${order.orderNumber} is being prepared — our team is completing the payment details. Nothing is due yet; we email it to you as soon as it is ready.`
+            : issued.message;
+          return textPage(409, 'Proforma not available yet', message, [{ href: back, label: 'Go back' }]);
+        }
         doc = issued.document;
       } else if (!docs.proforma) {
         const last = docs.proformaHistory.at(-1);
@@ -161,10 +171,6 @@ export async function handleDocumentRequest(
         doc = docs.proforma;
       }
     } else if (kind === 'invoice') {
-      if (!docs.invoice) {
-        await freezeLegacyDocuments(order.id).catch((e) => logError('documents.freezeLegacy', e));
-        docs = await getOrderDocuments(order.id);
-      }
       doc = docs.invoice;
       if (!doc) {
         const paid = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'].includes(order.status);

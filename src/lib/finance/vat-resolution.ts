@@ -224,12 +224,49 @@ export async function recordManualVies(orderId: string, actor: Actor, input: { v
 }
 
 /**
- * The destination of a PAID order changed (staff edit, or a buyer change that
- * staff approve): when the VAT rules for the new destination differ from what
- * was charged / invoiced, the order goes on VAT review (shipping stops) with
- * the reason — never silently shipped against a wrong invoice.
+ * What a VAT treatment prints on an invoice beyond the amounts: its legal text
+ * (intra-EU 0%, export 0%, margin scheme, OSS) — or none (home-rate supplies:
+ * DOMESTIC_STANDARD and EU_B2C_HOME print the same invoice). Two treatments in
+ * the same class at the same rate and amount make the same invoice.
  */
-export async function vatCheckAfterDestinationChange(orderId: string): Promise<string | null> {
+export function vatInvoiceClass(t: string | null | undefined): 'ICS' | 'EXPORT' | 'MARGIN' | 'OSS' | 'HOME' | 'UNKNOWN' {
+  switch (t) {
+    case 'EU_ICS_ZERO': return 'ICS';
+    case 'EXPORT_ZERO': return 'EXPORT';
+    case 'MARGIN_SCHEME': return 'MARGIN';
+    case 'EU_B2C_OSS': return 'OSS';
+    case 'DOMESTIC_STANDARD':
+    case 'EU_B2C_HOME': return 'HOME';
+    default: return 'UNKNOWN';
+  }
+}
+
+/**
+ * Does the VAT the rules give for the new destination change the invoice?
+ * Only when the VAT amount, the rate or the treatment's invoice class (its
+ * legal text) differs — not when merely the code differs (a home-rate sale
+ * labelled DOMESTIC_STANDARD vs EU_B2C_HOME at the same 21% is the same invoice).
+ * Older orders priced before the VAT rules (no / legacy treatment) compare by amount.
+ */
+export function vatUnchangedAfterMove(
+  d: { reviewRequired: boolean; blocked: boolean; taxCents: number; rateBp: number; treatment: string },
+  charged: { taxCents: number; vatRateBp: number | null; treatment: string | null },
+): boolean {
+  if (d.reviewRequired || d.blocked || d.taxCents !== charged.taxCents) return false;
+  if (charged.vatRateBp != null && charged.vatRateBp !== d.rateBp) return false;
+  const cls = vatInvoiceClass(charged.treatment);
+  return cls === 'UNKNOWN' || cls === vatInvoiceClass(d.treatment);
+}
+
+/**
+ * The destination of a PAID order changed (staff edit, or a buyer change that
+ * staff approve): when the VAT rules for the new destination change the
+ * invoice (amount, rate or legal text — vatUnchangedAfterMove), the order goes
+ * on VAT review (shipping stops) with the reason — never silently shipped
+ * against a wrong invoice. When they do not, the check is recorded (audit) and
+ * a VAT review an earlier destination check opened is released.
+ */
+export async function vatCheckAfterDestinationChange(orderId: string, actor?: Actor): Promise<string | null> {
   await ensureSettingsLoaded();
   const o = await loadPaidOrder(orderId);
   if (!o || !(PAID.includes(o.status) || onTerms(o))) return null;
@@ -237,12 +274,23 @@ export async function vatCheckAfterDestinationChange(orderId: string): Promise<s
   const inv = await orderInvoice(prisma, o.id);
   const invoiced = inv && (await creditedOnInvoice(prisma, inv.id)) < inv.totalCents ? inv : null;
   const chargedTreatment = (invoiced?.vatTreatment ?? o.vatTreatment) as string | null;
-  const same = !d.reviewRequired && !d.blocked && d.taxCents === o.taxCents && (!chargedTreatment || chargedTreatment === 'LEGACY_UNSPECIFIED' || chargedTreatment === d.treatment);
-  if (same) return null;
+  if (vatUnchangedAfterMove(d, { taxCents: o.taxCents, vatRateBp: o.vatRateBp, treatment: chargedTreatment })) {
+    const cur = (c: number) => fmtDocMoney(c, o.currency);
+    await audit('order.vat.destination-check', o.orderNumber, `unchanged after the destination change: ${vatTreatmentLabel(d.treatment)} — VAT ${cur(d.taxCents)} as charged${invoiced ? ` on invoice ${invoiced.number}` : ''}`);
+    const openReview = (o.holdNote ?? '').split(' | ').some((p) => p.startsWith('VAT_REVIEW: The destination changed after payment'));
+    if (openReview && (o.openHolds.includes('VAT_REVIEW') || o.holdReason === 'VAT_REVIEW')) {
+      const { releaseHold } = await import('@/lib/checkout/holds');
+      await releaseHold(o.id, 'VAT_REVIEW', actor ?? { id: 'system', email: 'VAT check after the address change' }, `VAT unchanged for the new destination (${vatTreatmentLabel(d.treatment)}, ${cur(d.taxCents)}).`);
+    }
+    return null;
+  }
   const cur = (c: number) => fmtDocMoney(c, o.currency);
+  const what = d.taxCents !== o.taxCents
+    ? `VAT ${cur(d.taxCents)} instead of the ${cur(o.taxCents)} charged`
+    : `the same VAT amount (${cur(d.taxCents)}), but ${vatInvoiceClass(d.treatment) !== vatInvoiceClass(chargedTreatment) ? `under another legal basis than the ${vatTreatmentLabel(chargedTreatment ?? 'LEGACY_UNSPECIFIED')} charged` : `at ${d.rateBp / 100}% instead of ${(o.vatRateBp ?? 0) / 100}%`}`;
   const detail = d.reviewRequired || d.blocked
     ? `The destination changed after payment and the VAT rules cannot decide it automatically: ${d.reasons.join(' ')}`
-    : `The destination changed after payment: the VAT rules now give ${vatTreatmentLabel(d.treatment)} — VAT ${cur(d.taxCents)} instead of the ${cur(o.taxCents)} charged${invoiced ? ` on invoice ${invoiced.number}` : ''}. ${invoiced ? 'Correct the invoice (credit note + corrected invoice), or keep it with a recorded reason.' : 'Decide the VAT before the invoice is issued.'}`;
+    : `The destination changed after payment: the VAT rules now give ${vatTreatmentLabel(d.treatment)} — ${what}${invoiced ? ` on invoice ${invoiced.number}` : ''}. ${invoiced ? 'Correct the invoice (credit note + corrected invoice), or keep it with a recorded reason.' : 'Decide the VAT before the invoice is issued.'}`;
   const { addHold } = await import('@/lib/checkout/holds');
   await addHold(o.id, 'VAT_REVIEW', detail);
   await notifyAdmins(`Order ${o.orderNumber}: VAT review after an address change`, detail.slice(0, 400), `/admin/orders/${o.id}`, 'SYSTEM');

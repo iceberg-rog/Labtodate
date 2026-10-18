@@ -1,10 +1,9 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { trySendEmail } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
 import { formatPrice } from '@/lib/utils';
 import { audit, logError, notifyAdmins } from '@/lib/observability';
-import { documentAttachment, getOrderDocuments, markDocumentSent, reissueProforma } from '@/lib/documents/issue';
+import { documentAttachment, getOrderDocuments, reissueProforma } from '@/lib/documents/issue';
 import type { VatLineInput } from '@/lib/tax/determine';
 import { decideVatForDetails } from '@/lib/quotes/engine';
 import { addHold, evaluateAddressChange, hasPrePaymentHold, recordAddressChange, type AddressChangeVerdict } from '@/lib/checkout/holds';
@@ -13,13 +12,15 @@ import { emailProformaRevision, paymentTermDays, vatIdRule } from '@/lib/quotes/
 import { mailLayout, siteBase } from '@/lib/quotes/mail';
 import { billingAddressJson, detailsDiffer, orderDetailsProblems, shippingAddressJson, type DetailsFieldErrors, type OrderDetails } from './details';
 import { effectiveDueDate, fmtDueDate } from './payment-due';
+import { mailOrderDocument, recipientsLabel } from './internal';
 
 /**
  * Save the billing + delivery details of an UNPAID order (buyer on the payment
  * page, or staff on the order page). Server-internal: the caller checks who
  * may do this. Re-checks the country policy and, for orders priced by the VAT
  * rules, the VAT; when anything printed on the proforma changes a new proforma
- * revision replaces the old one and is emailed to the buyer.
+ * revision replaces the old one and is emailed to the order's document
+ * recipients (the accounts-payable address, a copy to the account).
  *
  * One address rule for every write path (s2a, A12 — lib/checkout/holds.ts):
  *  - every change is kept old → new (AddressChange), BLOCK countries are refused,
@@ -28,11 +29,50 @@ import { effectiveDueDate, fmtDueDate } from './payment-due';
  *    paying (it changes the zone shipping and the VAT); staff may switch it, which
  *    puts the order on ADDRESS_REVIEW until "Re-price & approve" (zone shipping +
  *    VAT for the new destination);
- *  - a QUOTE order keeps the offer's goods + freight and its VAT follows the new
- *    details at once (s2b).
+ *  - a QUOTE order's freight, Incoterm and place were quoted for one destination
+ *    (the offer's destination country, else the address it was accepted with):
+ *    the buyer can not move it to another country ("ask us for a new offer");
+ *    staff may, which puts the order on ADDRESS_REVIEW — no proforma revision
+ *    goes out until the freight, Incoterm and place are re-quoted (or staff
+ *    approve that they still apply). The VAT follows the details (s2b).
  * While a pre-payment hold is open no proforma revision is issued: the release
  * of the last hold issues and emails it (lib/checkout/notify.ts sendHoldReleased).
  */
+
+/** The destination country the accepted offer was priced for (offerTerms.destinationCountry), when stated. */
+export function offerDestinationCountry(offerTerms: unknown): string | null {
+  const t = offerTerms && typeof offerTerms === 'object' ? (offerTerms as Record<string, unknown>) : null;
+  const c = typeof t?.destinationCountry === 'string' ? t.destinationCountry.trim().toUpperCase() : '';
+  return /^[A-Z]{2}$/.test(c) ? c : null;
+}
+
+export const QUOTE_COUNTRY_LOCKED = 'The delivery country of an accepted offer cannot be changed here. Ask us for a new offer.';
+
+/**
+ * The destination rule of an unpaid order's details save (pure):
+ *  - `pricedFor`: the country the order was priced for — its delivery country,
+ *    or, before there is one, the destination country the accepted offer states;
+ *  - a buyer moving it to another country is refused (checkout and quote orders);
+ *  - staff moving a QUOTE order: `quoteReview` — ADDRESS_REVIEW, no revision
+ *    until the freight, Incoterm and place are re-quoted.
+ */
+export function destinationChangeRule(p: { isQuote: boolean; prevShip: string | null; offerDestination: string | null; nextShip: string; actor: 'BUYER' | 'STAFF' }):
+  | { refused: { error: string; fieldErrors: DetailsFieldErrors } }
+  | { refused: null; pricedFor: string | null; countryChanged: boolean; quoteReview: boolean } {
+  const pricedFor = p.prevShip ?? (p.isQuote ? p.offerDestination : null);
+  const countryChanged = !!pricedFor && pricedFor !== p.nextShip;
+  if (countryChanged && p.actor === 'BUYER') {
+    return {
+      refused: p.isQuote
+        ? { error: `${QUOTE_COUNTRY_LOCKED} Nothing was saved.`, fieldErrors: { d_country: `stays ${pricedFor} for this offer` } }
+        : {
+            error: 'The delivery country cannot be changed while paying: it changes the shipping and VAT of this order. Nothing was saved — contact us to change the destination.',
+            fieldErrors: { d_country: `stays ${pricedFor} for this order` },
+          },
+    };
+  }
+  return { refused: null, pricedFor, countryChanged, quoteReview: p.isQuote && countryChanged };
+}
 
 export type SaveDetailsResult = { error?: string; notice?: string; warning?: string; fieldErrors?: DetailsFieldErrors; revision?: string | null };
 
@@ -46,7 +86,7 @@ export async function saveOrderDetails(
     include: {
       items: { include: { product: { select: { vatScheme: true } } }, orderBy: { id: 'asc' } },
       buyer: { select: { id: true, email: true, name: true } },
-      sourcingRequest: { select: { id: true, validUntilAt: true } },
+      sourcingRequest: { select: { id: true, validUntilAt: true, offerTerms: true } },
     },
   });
   if (!order) return { error: 'Order not found.' };
@@ -57,33 +97,26 @@ export async function saveOrderDetails(
     return { error: opts.actor.kind === 'BUYER' ? 'Your payment receipt is being verified, so the details are locked. Contact support if something must change.' : 'A payment receipt is waiting for verification — verify or reject it first.' };
   }
 
+  const isQuote = !!order.sourcingRequestId;
   const prevShip = addressCountry(order.shippingAddress);
   const nextShip = d.delivery.country;
-  const countryChanged = !!prevShip && prevShip !== nextShip;
-  let verdict: Extract<AddressChangeVerdict, { ok: true }>;
-  if (!order.sourcingRequestId) {
-    if (countryChanged && opts.actor.kind === 'BUYER') {
-      return {
-        error: 'The delivery country cannot be changed while paying: it changes the shipping and VAT of this order. Nothing was saved — contact us to change the destination.',
-        fieldErrors: { d_country: `stays ${prevShip} for this order` },
-      };
-    }
-    const v = await evaluateAddressChange(order, nextShip, opts.actor.kind);
-    if (!v.ok) return { error: v.message, fieldErrors: { d_country: 'not allowed' } };
-    verdict = v;
-  } else {
-    verdict = {
-      ok: true,
-      hold: null,
-      reviewStatus: 'NONE',
-      note: countryChanged
-        ? `Destination changed ${prevShip} → ${nextShip} by ${opts.actor.kind === 'BUYER' ? 'the buyer' : 'staff'} before payment: the offer's goods and freight stand, the VAT follows the new details.`
-        : 'Billing / delivery details updated before payment.',
-      countryChanged,
-    };
-  }
-  // Checkout order moved to another country by staff: shipping + VAT are re-priced
-  // on approval (holds.ts approveAddressChange), not here.
+  const rule = destinationChangeRule({ isQuote, prevShip, offerDestination: offerDestinationCountry(order.sourcingRequest?.offerTerms), nextShip, actor: opts.actor.kind });
+  if (rule.refused) return rule.refused;
+  const { pricedFor } = rule;
+  const v = await evaluateAddressChange(order, nextShip, opts.actor.kind);
+  if (!v.ok) return { error: v.message, fieldErrors: { d_country: 'not allowed' } };
+  const verdict: Extract<AddressChangeVerdict, { ok: true }> = rule.quoteReview
+    ? {
+        ...v,
+        hold: 'ADDRESS_REVIEW',
+        reviewStatus: 'PENDING',
+        countryChanged: true,
+        note: `Destination of the accepted offer changed ${pricedFor} → ${nextShip} by staff before payment: its freight, Incoterm and place were quoted for ${pricedFor}. Re-quote them (cancel the order and send a new offer), or approve the change if they still apply — no proforma revision is issued until then.`,
+      }
+    : v;
+  // Moved to another country by staff: a checkout order's shipping + VAT are
+  // re-priced on approval (holds.ts approveAddressChange), not here; a quote
+  // order waits for the freight / Incoterm re-quote (its VAT follows now).
   const addressReview = verdict.hold === 'ADDRESS_REVIEW';
 
   const lines: VatLineInput[] = order.items.map((i) => ({
@@ -98,7 +131,7 @@ export async function saveOrderDetails(
   }
   // Engine-priced orders (quote acceptance, new checkout) follow the rules for
   // the new details; interim flat-rate orders keep their amount (checked when invoiced).
-  const enginePriced = !addressReview && !!order.vatTreatment && order.vatTreatment !== 'LEGACY_UNSPECIFIED' && order.vatRateBp != null;
+  const enginePriced = (!addressReview || isQuote) && !!order.vatTreatment && order.vatTreatment !== 'LEGACY_UNSPECIFIED' && order.vatRateBp != null;
   const dec = vat.decision;
   if (enginePriced && (dec.blocked || dec.reviewRequired)) {
     return { error: `The VAT can not be determined for these details right now: ${dec.reasons.join(' ')} Try again later${opts.actor.kind === 'BUYER' ? ', or contact support' : ''}.` };
@@ -192,6 +225,9 @@ export async function saveOrderDetails(
   let revision: string | null = null;
   let revisionMail: 'sent' | 'failed' | 'off' | null = null;
   let revisionError: string | null = null;
+  let revisionTo = order.buyer.email;
+  // The seller's own details are incomplete: no revision, the order waits on a hold (issue.ts).
+  let sellerIncomplete = false;
   const due = effectiveDueDate({ dueAt: order.dueAt, createdAt: order.createdAt, payableSince: order.payableSince, legacyValidUntil: order.sourcingRequest?.validUntilAt ?? null }, paymentTermDays());
   if (docs.proforma && (changedDetails || amountChanged) && !heldNow) {
     const why = `${opts.actor.kind === 'BUYER' ? 'Billing / delivery details updated by the buyer' : `Billing / delivery details updated by staff (${opts.actor.email})`}${amountChanged ? ` — VAT now ${dec.treatment}, total ${formatPrice(newTotal, order.currency)} (was ${formatPrice(order.totalCents, order.currency)})` : ''}.`;
@@ -200,8 +236,10 @@ export async function saveOrderDetails(
       revision = re.document.number;
       if (emailProformaRevision() && !review && !order.holdReason) {
         const att = await documentAttachment(re.document);
-        const sent = await trySendEmail({
-          to: order.buyer.email,
+        // To the accounts-payable address just saved, a copy to the account (one rule for every document mail).
+        const mail = await mailOrderDocument({
+          doc: re.document,
+          order: { invoiceEmail: d.billing.invoiceEmail || null, billingAddress: billing, buyer: order.buyer },
           subject: `Updated proforma invoice ${re.document.number} — order ${order.orderNumber}`,
           html: mailLayout({
             heading: `Updated proforma ${re.document.number}`,
@@ -214,22 +252,24 @@ export async function saveOrderDetails(
             ],
             cta: { href: `${siteBase()}/app/orders/${order.orderNumber}/payment`, label: 'Go to the payment page' },
           }),
-          attachments: att.attachment ? [att.attachment] : [],
-        }, 'orders:proforma-revision');
-        revisionMail = sent.ok ? 'sent' : 'failed';
-        revisionError = sent.ok ? null : sent.error;
-        if (sent.ok) await markDocumentSent(re.document.id);
+          attachment: att.attachment,
+          context: 'orders:proforma-revision',
+        });
+        revisionMail = mail.emailed ? 'sent' : 'failed';
+        revisionError = mail.error;
+        revisionTo = recipientsLabel(mail);
       } else {
         revisionMail = 'off';
       }
     } else {
-      await logError('orders:proforma-revision', new Error(re.message));
+      sellerIncomplete = re.code === 'SELLER_INCOMPLETE';
+      if (!sellerIncomplete) await logError('orders:proforma-revision', new Error(re.message));
       revisionError = re.message;
     }
   }
   await notifyAdmins(
     `Order ${order.orderNumber}: ${opts.actor.kind === 'BUYER' ? 'buyer' : 'staff'} ${orderDetailsProblems(before, { vatIdRule: vatIdRule() }).length ? 'added' : 'updated'} billing & delivery details`,
-    `${d.billing.legalName} · ship to ${d.delivery.city}, ${d.delivery.country}${amountChanged ? ` · total now ${formatPrice(newTotal, order.currency)} (was ${formatPrice(order.totalCents, order.currency)})` : ''}${revision ? ` · proforma ${revision}` : ''}${review ? ' · COMPLIANCE HOLD' : ''}${addressReview ? ' · ADDRESS REVIEW (re-price & approve)' : ''}`,
+    `${d.billing.legalName} · ship to ${d.delivery.city}, ${d.delivery.country}${amountChanged ? ` · total now ${formatPrice(newTotal, order.currency)} (was ${formatPrice(order.totalCents, order.currency)})` : ''}${revision ? ` · proforma ${revision}` : ''}${review ? ' · COMPLIANCE HOLD' : ''}${addressReview ? (isQuote ? ' · ADDRESS REVIEW (re-quote freight / Incoterm / place)' : ' · ADDRESS REVIEW (re-price & approve)') : ''}`,
     `/admin/orders/${order.id}`,
   );
   await audit(opts.actor.kind === 'BUYER' ? 'order.details.buyer' : 'order.details.staff', order.orderNumber, `${d.billing.legalName} / ${d.delivery.country}${amountChanged ? ` · total ${order.totalCents}→${newTotal}` : ''}${revision ? ` · ${revision}` : ''} by ${opts.actor.email}`);
@@ -237,11 +277,20 @@ export async function saveOrderDetails(
   const you = opts.actor.kind === 'BUYER';
   const parts = ['Details saved.'];
   if (amountChanged) parts.push(`The VAT follows ${you ? 'your' : 'the'} details: the total is now ${formatPrice(newTotal, order.currency)} (was ${formatPrice(order.totalCents, order.currency)}).`);
-  if (revision) parts.push(`Proforma ${revision} replaces the previous one${revisionMail === 'sent' ? (you ? ' — we emailed it to you' : ` — emailed to ${order.buyer.email}`) : ''}. Use ${revision} as the transfer reference.`);
+  if (revision) parts.push(`Proforma ${revision} replaces the previous one${revisionMail === 'sent' ? (you ? ' — we emailed it to you' : ` — emailed to ${revisionTo}`) : ''}. Use ${revision} as the transfer reference.`);
   if (review) parts.push(`${review.reason}${you ? ' Please wait for our email before paying.' : ' The order is on compliance hold.'}`);
-  if (addressReview) parts.push(`The destination changed (${prevShip} → ${nextShip}): the order is on hold until shipping and VAT are re-priced for it — “Re-price for the new address & approve” under Pricing, VAT & holds.`);
+  if (addressReview) {
+    parts.push(isQuote
+      ? `The destination of the accepted offer changed (${pricedFor} → ${nextShip}): the order is on hold — re-quote the freight, Incoterm and place (cancel the order and send a new offer), or approve the change under Pricing, VAT & holds if they still apply. No proforma revision is issued until then.`
+      : `The destination changed (${prevShip} → ${nextShip}): the order is on hold until shipping and VAT are re-priced for it — “Re-price for the new address & approve” under Pricing, VAT & holds.`);
+  }
   if (heldNow && docs.proforma && (changedDetails || amountChanged)) parts.push(you ? 'We email you the updated proforma as soon as you can pay.' : 'The updated proforma is issued and emailed when the hold is released.');
-  if (revisionMail === 'failed') return { revision, warning: `${parts.join(' ')} The email with the new proforma to ${order.buyer.email} could not be delivered (${revisionError})${you ? '; download it below' : ''}.` };
+  if (sellerIncomplete) {
+    if (you) parts.push('We email you the updated proforma (payment request) as soon as it is ready — nothing is due until then.');
+    else return { revision, warning: `${parts.join(' ')} ${revisionError}` };
+    return { revision, notice: parts.join(' ') };
+  }
+  if (revisionMail === 'failed') return { revision, warning: `${parts.join(' ')} The email with the new proforma to ${revisionTo} could not be delivered (${revisionError})${you ? '; download it below' : ''}.` };
   if (revisionError && !revision) return { revision, warning: `${parts.join(' ')} The proforma could not be updated right now (${revisionError}); ${you ? 'our team has been notified' : 'retry with “Re-issue proforma”'}.` };
   return { revision, notice: parts.join(' ') };
 }

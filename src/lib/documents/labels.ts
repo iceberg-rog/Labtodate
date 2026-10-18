@@ -8,7 +8,10 @@
  * before this existed carry no labels: the renderer then uses DOC_LABELS.en,
  * whose texts are exactly what those documents printed.
  *
- * Placeholders: {DATE} {AMOUNT} {NUMBER} {REFERENCE} {PAID} {OPEN} {DUE} {METHOD}.
+ * Placeholders: {DATE} {AMOUNT} {NUMBER} {REFERENCE} {PAID} {OPEN} {DUE} {METHOD} {WRITTEN_OFF}.
+ *
+ * There is no "bank details follow by e-mail" text: a proforma is only issued
+ * with the seller's bank and legal details (issue.ts sellerDetailsMissing).
  */
 
 export type DocLanguage = 'en' | 'nl';
@@ -57,6 +60,7 @@ export const DOC_LABEL_DEFS = {
   COL_VAT: { label: 'Column — VAT rate', en: 'VAT', nl: 'Btw' },
   COL_AMOUNT: { label: 'Column — amount', en: 'Amount', nl: 'Bedrag' },
   WARRANTY: { label: 'Line detail — warranty', en: 'Warranty', nl: 'Garantie' },
+  SERIAL_NO: { label: 'Line detail — serial number (accepted offer)', en: 'Serial no.', nl: 'Serienummer' },
   SHIPPING_LINE: { label: 'Shipping line', en: 'Shipping & handling', nl: 'Verzend- en behandelkosten' },
   SUBTOTAL: { label: 'Subtotal (excl. VAT)', en: 'Subtotal (excl. VAT)', nl: 'Subtotaal (excl. btw)' },
   SUBTOTAL_MARGIN: { label: 'Subtotal (margin scheme)', en: 'Subtotal', nl: 'Subtotaal' },
@@ -74,10 +78,10 @@ export const DOC_LABEL_DEFS = {
   BIC: { label: 'Payment box — BIC', en: 'BIC / SWIFT', nl: 'BIC / SWIFT' },
   REFERENCE: { label: 'Payment box — reference', en: 'Reference', nl: 'Betalingskenmerk' },
   AMOUNT: { label: 'Payment box — amount', en: 'Amount', nl: 'Bedrag' },
-  NO_BANK_DETAILS: { label: 'Proforma without bank details', en: 'Our bank details will be sent to you by email. Please quote {REFERENCE} as the reference of your transfer.', nl: 'Onze bankgegevens ontvangt u per e-mail. Vermeld {REFERENCE} als betalingskenmerk.' },
   BOX_RECEIVED: { label: 'Paid invoice — box heading', en: 'Payment received', nl: 'Betaling ontvangen' },
   PAID_IN_FULL_ON: { label: 'Paid invoice — paid line', en: 'Paid in full on {DATE}', nl: 'Volledig betaald op {DATE}' },
   PAID_IN_FULL: { label: 'Paid invoice — paid line without a date', en: 'Paid in full', nl: 'Volledig betaald' },
+  RECEIVED_WRITTEN_OFF: { label: 'Paid invoice — short payment accepted (tolerance)', en: 'Received {PAID} on {DATE} — {WRITTEN_OFF} bank charges written off', nl: 'Ontvangen {PAID} op {DATE} — {WRITTEN_OFF} bankkosten afgeboekt' },
   NO_PAYMENT_DUE: { label: 'Paid invoice — nothing due', en: 'No payment is due.', nl: 'Er staat geen bedrag meer open.' },
   BOX_DUE: { label: 'Unpaid invoice — box heading', en: 'Payment due', nl: 'Te betalen' },
   DUE_LINE: { label: 'Unpaid invoice — amount and date', en: '{AMOUNT} by {DATE}', nl: '{AMOUNT} vóór {DATE}' },
@@ -86,6 +90,7 @@ export const DOC_LABEL_DEFS = {
   CREDIT_LINE: { label: 'Credit note — box line', en: 'This document credits invoice {NUMBER}.', nl: 'Dit document crediteert factuur {NUMBER}.' },
   CREDIT_LINE_DESC: { label: 'Credit note — line of a partial credit', en: 'Credit on invoice {NUMBER}', nl: 'Creditering op factuur {NUMBER}' },
   NOTE: { label: 'Note heading', en: 'Note', nl: 'Opmerking' },
+  REMARK: { label: 'Remark heading (the accepted offer’s remark to the buyer)', en: 'Remark', nl: 'Opmerking bij de offerte' },
   VAT_LEGAL_PREFIX: { label: 'VAT legal text prefix', en: 'VAT:', nl: 'Btw:' },
   CUSTOMER_VAT_ID: { label: 'VAT legal text — customer VAT ID', en: 'Customer VAT ID', nl: 'Btw-id afnemer' },
   SELLER_KVK: { label: 'Seller — KvK number', en: 'KvK (Chamber of Commerce)', nl: 'KvK-nummer' },
