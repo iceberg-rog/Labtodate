@@ -8,6 +8,9 @@ import { createTestimonial, deleteTestimonial, toggleTestimonial, updateTestimon
 import { ConfirmSubmitButton } from '@/components/admin/ConfirmSubmitButton';
 import { AdminActionForm } from '@/components/admin/AdminActionForm';
 import { getCatalogPolicy } from '@/lib/catalog/policy';
+import { ensureSettingsLoaded } from '@/lib/settings';
+import { envRead, getHomeLayout, homeValue } from '@/lib/home-sections';
+import { siteName } from '@/lib/brand/identity';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Testimonials' };
@@ -15,6 +18,11 @@ export const metadata = { title: 'Testimonials' };
 export default async function AdminTestimonialsPage() {
   await requireCapability('content:cms');
   const { requireConsentToPublish } = await getCatalogPolicy();
+  await ensureSettingsLoaded();
+  // the homepage shows testimonials only while its extra module is switched on (Admin → Homepage; off by default)
+  const moduleOn = getHomeLayout(envRead).extras.includes('testimonials');
+  const heading = homeValue(envRead, 'TEST_HEADING');
+  const site = siteName();
   const list = await prisma.testimonial.findMany({
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
   });
@@ -25,8 +33,8 @@ export default async function AdminTestimonialsPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Testimonials</h1>
         <p className="text-muted-foreground mt-1">
-          Short customer quotes shown in the “Loved by people who buy expensive things” section of the homepage.
-          {published.length === 0 && ' The section is hidden on the homepage until at least one testimonial is published.'}
+          Short customer quotes for the homepage module “{heading}” — shown when the Testimonials module is on (Admin → Homepage).
+          {published.length === 0 && ' The module stays hidden until at least one testimonial is published.'}
         </p>
       </div>
 
@@ -35,20 +43,27 @@ export default async function AdminTestimonialsPage() {
         <div className="flex-1 text-sm">
           <p className="font-bold">What is this for?</p>
           <p className="text-muted-foreground mt-1">
-            Each published testimonial appears as a rotating quote card on the homepage. Quotes should be short
-            (≤2 sentences) and credited with a real person + organisation who agreed to be quoted. With none
-            published, the homepage simply leaves the section out.
+            Up to six published testimonials appear as quote cards in the homepage’s Testimonials module, below the 3D stations —
+            only while that module is switched on in Admin → Homepage. Quotes should be short (≤2 sentences) and credited
+            with a real person + organisation who agreed to be quoted. With none published, the module is left out.
             {requireConsentToPublish
               ? ' A testimonial goes live only once you record who approved it and when (Settings → Catalog & claims).'
               : ' Consent recording is switched OFF in Settings → Catalog & claims.'}
           </p>
-          <Link
-            href="/#testimonials"
-            target="_blank"
-            className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-primary hover:underline"
-          >
-            Preview on the live homepage <ArrowRight className="h-3 w-3" />
-          </Link>
+          {moduleOn ? (
+            <Link
+              href="/#testimonials"
+              target="_blank"
+              className="inline-flex items-center gap-1 mt-2 text-xs font-semibold text-primary hover:underline"
+            >
+              {published.length ? 'See them on the live homepage' : 'Open the live homepage'} <ArrowRight className="h-3 w-3" />
+            </Link>
+          ) : (
+            <p className="mt-2 text-xs font-semibold text-amber-700 dark:text-amber-400">
+              The Testimonials module is off, so visitors see none of these.{' '}
+              <Link href="/admin/homepage" className="underline">Switch it on in Admin → Homepage</Link> (Extra modules), then preview the draft there.
+            </p>
+          )}
         </div>
       </div>
 
@@ -186,7 +201,7 @@ export default async function AdminTestimonialsPage() {
           </p>
           {(published.length > 0 ? published : [{
             id: 'sample',
-            quote: 'Lab2date saved us 6 weeks of vendor RFP — they matched our shortlist and shipped a refurb HPLC under budget.',
+            quote: `${site} found the HPLC on our shortlist and sent a written offer within the week.`,
             author: 'Sample Customer',
             role: 'Lab Director',
             company: 'Acme Biotech',

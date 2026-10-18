@@ -188,7 +188,6 @@ test('release v2 keys say “not applied yet” until the package that reads the
     FAQ_TEXT: 'PKG-15',
     PRIVACY_POLICY_TEXT: 'PKG-08',
     COOKIE_POLICY_TEXT: 'PKG-08',
-    SOCIAL_LINKS: 'PKG-13',
     OG_DEFAULT_IMAGE_URL: 'PKG-14',
     OG_LOCALE: 'PKG-14',
     SELLER_PROGRAMME_PUBLIC: 'PKG-12',

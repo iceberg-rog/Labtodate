@@ -9,7 +9,7 @@ import { introShapes, introMobile, glDpr, drawPoster, themeLight, setWord } from
 
 export function initPoster() {
   const html = document.documentElement; const box = document.getElementById('poster');
-  if (!box) return null;
+  if (!box) { window.__l2dPoster = null; return null; }   // (the intro is switched off in Admin → Homepage: no poster)
   const cv = box.firstElementChild; const gl = document.getElementById('gl');
   const VW = () => Math.max(1, innerWidth || html.clientWidth || 1280);
   const VH = () => Math.max(1, (gl && gl.offsetHeight) || innerHeight || html.clientHeight || 720);

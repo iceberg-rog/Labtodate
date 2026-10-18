@@ -1,11 +1,11 @@
 import { Star } from 'lucide-react';
-import { HOME_DEFAULTS } from '@/lib/home-sections';
+import { homeField } from '@/lib/home-sections';
 import { prisma } from '@/lib/db';
 import { publicTestimonialWhere } from '@/lib/catalog/consent';
 
 export async function Testimonials({
-  heading = HOME_DEFAULTS.testHeading,
-  meta = HOME_DEFAULTS.testMeta,
+  heading = homeField('TEST_HEADING')!.default,
+  meta = '',
 }: {
   heading?: string;
   meta?: string;
@@ -25,7 +25,7 @@ export async function Testimonials({
   // sample quotes credited to real-sounding people (fake-review risk).
   if (list.length === 0) return null;
   return (
-    <section data-hud="VOICES" className="border-y border-[hsl(var(--teal)/0.1)] bg-[hsl(var(--teal)/0.02)]">
+    <section id="testimonials" data-hud="VOICES" className="border-y border-[hsl(var(--teal)/0.1)] bg-[hsl(var(--teal)/0.02)]">
       <div className="container-px py-24">
         <div className="text-center mb-14 max-w-2xl mx-auto">
           <div className="inline-flex items-center gap-2 mb-4">

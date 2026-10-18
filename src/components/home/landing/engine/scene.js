@@ -10,7 +10,7 @@ import { NOISE } from './noise.glsl.js';
 import { createGlobe, GLOBE_RADIUS, GLOBE_RING_K, GLOBE_RING_TILT } from './labglobe.js';
 import {
   CFG, GAMES, $, $$, params, HERO, DEBUG, tune, reduced, PHONE_UA, clamp, smooth, easeIO, lerp, VW, VH, state, metrics, measure,
-  computeScroll, updateDom, hooks, boot, endBoot, fullBoot, noGL, yieldNow, whenIdle, scrollNow, on, IDX, TEXT,
+  computeScroll, updateDom, hooks, boot, endBoot, fullBoot, noGL, yieldNow, whenIdle, scrollNow, on, IDX, TEXT, KIND, kindScroll,
 } from './core.js';
 import { LOOK, LOOK_LIGHT, introLook, PAPER, themeLight, INTRO_BLOOM, introLayout, introShapes } from './intro.mjs';
 
@@ -1491,7 +1491,7 @@ export async function run() {
     // on the way to the games (from the first scroll down the intro, or the route coming back up): the clip of the card
     // the visitor arrives at is fetched ahead (one clip: 0.5 MB at 640, 1.2 MB at 1024) and loaded into the player (its
     // first frame decoded), so it starts the moment the card is in focus. A 3G-class line needs the whole way for it.
-    const onWay = (state.active >= 1 && state.active <= 3) || (state.active === 0 && scrollNow() > VH() * 0.3);
+    const onWay = (state.kind >= 1 && state.kind <= 3) || (state.kind === 0 && scrollNow() > VH() * 0.3);
     if (!onStage && gvIdx < 0 && VIDEO_ON && !vKilled && onWay) {
       const e = clamp(ai, 0, GAMES.length - 1); const s = GAMES[e] && clipFor(GAMES[e]);   // af: 0 above the games, the last card below
       if (s && blobUrls.has(s)) { gvIdx = e; gvReady = false; gv.muted = !soundOn; gv.src = blobUrls.get(s); } else if (s) prefetchVid(e);
@@ -1604,7 +1604,7 @@ export async function run() {
   const conn = navigator.connection || {};
   const frugal = !!conn.saveData || /(^|-)2g$/.test(conn.effectiveType || '');
   const prefetchGlobe = () => {
-    if (lazyQA || frugal) return;
+    if (lazyQA || frugal || IDX.suppliers < 0) return;   // (no route station: no globe to fetch)
     for (const k of ['night', 'lights', 'day', 'pack', 'regionNight', 'regionLights', ...(LIGHT ? ['atlas', 'atlasRegion', 'borders'] : [])]) {
       if (!GLOBE_FILES[k]) continue;
       const r = fetch(GLOBE_FILES[k], { priority: 'low' }); r.catch(() => {}); // createGlobe reports failures
@@ -1616,6 +1616,7 @@ export async function run() {
   const geoEl = $('#geo'); let geoLabels = [];
   function startGlobe() {
     if (DEBUG && params.has('noglobe')) return null;   // (QA: the route without its globe)
+    if (IDX.suppliers < 0) return null;   // (the route station is switched off in Admin → Homepage: never downloaded)
     if (!globeLoad) globeLoad = loadGlobe();
     return globeLoad;
   }
@@ -1630,7 +1631,7 @@ export async function run() {
       if (globe.anchors && globe.anchors.shelter && geoEl) {   // the hub: a glass chip with the brand mark (crisp at any DPR)
         nodeChip = document.createElement('div'); nodeChip.className = 'geo-node';
         nodeChip.innerHTML = '<i></i><b><svg viewBox="0 0 64 46" aria-hidden="true"><g fill="url(#l2d-mark-grad)"><circle cx="8" cy="31" r="2.4"/><circle cx="17" cy="22" r="3.6"/><circle cx="27" cy="11" r="6.2"/><circle cx="38" cy="16" r="4.4"/><circle cx="47" cy="24" r="3.2"/><circle cx="55" cy="31" r="2.2"/></g></svg><em></em></b>';
-        nodeChip.querySelector('em').textContent = TEXT.geo_node || 'Labtodate hub · Netherlands';
+        nodeChip.querySelector('em').textContent = TEXT.geo_node || '';   // (site name · company city, or Admin → Homepage)
         geoEl.appendChild(nodeChip);
       }
       layoutGlobe();
@@ -1932,10 +1933,46 @@ export async function run() {
   };
   let shock = 0;
   on(window, 'pointerdown', (e) => {
-    if (state.active === 1 && HERO === 'logo' && !reduced && !(e.target.closest && e.target.closest('a,button'))) { roofFlash = 1; roofNextFlash = 6 + Math.random() * 4; return; }   // call the lightning
-    if (state.active !== 0 && state.active !== 6) return;
+    if (state.kind === 1 && HERO === 'logo' && !reduced && !(e.target.closest && e.target.closest('a,button'))) { roofFlash = 1; roofNextFlash = 6 + Math.random() * 4; return; }   // call the lightning
+    if (state.kind !== 0 && state.kind !== 6) return;
     state.tmx = state.mx = (e.clientX / VW()) * 2 - 1; state.tmy = state.my = -((e.clientY / VH()) * 2 - 1); shock = 1;
   });
+
+  /* ---------- the instruments' cards are links: a click (or a tap that did not scroll) on the card in focus opens its
+     category, or the listing chosen in Admin → Homepage; one on a card behind it turns the list to that card. Over a
+     card the pointer shows it can be clicked. (The list, the “Browse …” link and the no-WebGL cards are plain links.) */
+  const cardNdc = new THREE.Vector2(); const cardHits = [];
+  const onUi = (t) => !!(t && t.closest && t.closest('a,button,input,select,textarea,label,[role="tab"],.wk-ui,.wk-pager,.lnd-rail,.tour-bar'));
+  const cardAt = (cx, cy) => {
+    if (state.kind !== 2 || !tower.visible || !cards.length) return -1;
+    cardNdc.set((cx / VW()) * 2 - 1, -((cy / VH()) * 2 - 1)); ray.setFromCamera(cardNdc, camera);
+    cardHits.length = 0;
+    ray.intersectObjects(cards.filter((c, i) => cardGroups[i].visible && c.material.uniforms.uVis.value > 0.5), false, cardHits);
+    return cardHits.length ? cards.indexOf(cardHits[0].object) : -1;
+  };
+  let press = null;
+  on(window, 'pointerdown', (e) => { press = e.isPrimary && e.button === 0 ? { x: e.clientX, y: e.clientY, t: performance.now(), sy: window.scrollY } : null; }, true);
+  on(window, 'pointerup', (e) => {
+    const p = press; press = null;
+    if (!p || e.button !== 0 || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 8 || Math.abs(window.scrollY - p.sy) > 4 || performance.now() - p.t > 900) return;
+    const t = e.target; if (!(t && t.closest && t.closest('.lnd')) || onUi(t)) return;
+    const i = cardAt(e.clientX, e.clientY); if (i < 0) return;
+    const g = GAMES[i];
+    if (i === state.game && g) location.assign(g.href || `/marketplace?category=${encodeURIComponent(g.slug)}`);
+    else document.dispatchEvent(new CustomEvent('l2d:pick-game', { detail: { index: i } }));
+  });
+  let hoverRaf = 0, hoverX = 0, hoverY = 0;
+  on(window, 'pointermove', (e) => {
+    if (e.pointerType === 'touch') return;
+    hoverX = e.clientX; hoverY = e.clientY;
+    if (hoverRaf) return;
+    hoverRaf = requestAnimationFrame(() => {
+      hoverRaf = 0; if (!live()) return;
+      const t = state.kind === 2 ? document.elementFromPoint(hoverX, hoverY) : null;
+      const hot = !!t && !!t.closest && !!t.closest('.lnd') && !onUi(t) && cardAt(hoverX, hoverY) >= 0;
+      document.documentElement.classList.toggle('card-hot', hot);
+    });
+  }, { passive: true });   // (html.card-hot is removed with the others on unmount: core.js disposeCore)
 
   /* ---------- intro choreography: the hand-off from the poster.
      The particles start where the poster drew them, assembled and still. The canvas fades in as the poster fades out
@@ -2056,7 +2093,7 @@ export async function run() {
     // state as the RenderPass, so the programs, buffers and driver-side shader variants are all warm.
     // (while the boot screen still covers the page the whole job is done in one go: nobody can see it)
     stillFrames = Math.abs(scrollNow() - state.scroll) < 1 ? stillFrames + 1 : 0;
-    const globeWork = boot.up || stillFrames > 20 || state.active >= 2;
+    const globeWork = boot.up || stillFrames > 20 || state.kind >= 2;
     if (globeState === 'upload' && globeWork) {
       for (let n = boot.up ? globeUploads.length : 1; n > 0 && globeUploads.length; n--) renderer.initTexture(globeUploads.shift());
       if (!globeUploads.length) globeState = 'warm';
@@ -2088,8 +2125,11 @@ export async function run() {
     { const cap = 0.35 * VH(); state.scroll = clamp(state.scroll, target - cap, target + cap); }   // never more than a third of a screen behind
     vel = lerp(vel, (target - lastScroll) / Math.max(sdt, 1e-3) / VH(), 0.15); lastScroll = target;
 
-    const sc = computeScroll(state.scroll);
-    updateDom(sc, computeScroll(target));
+    // (the DOM works in the sections shown, the world below in station kinds: Admin → Homepage may hide or reorder
+    // stations, core.js kindScroll)
+    const scDom = computeScroll(state.scroll);
+    updateDom(scDom, computeScroll(target));
+    const sc = kindScroll(scDom);
     if (globeState === 'idle' && Math.max(sc.i, sc.j) >= 2) startGlobe(); // within one station of the route
 
     // camera between stations
@@ -2128,7 +2168,8 @@ export async function run() {
 
     // intro logo (reduced motion: the poster stands in for it)
     const L = sc.local;
-    logoA.visible = near(ST[0]) && !posterHold;
+    // (a station switched off in Admin → Homepage never shows, also not while the camera flies past its place)
+    logoA.visible = IDX.intro >= 0 && near(ST[0]) && !posterHold;
     if (logoA.visible) {
       const wk = smooth(0, 1400, now - wakeAt);   // 0 while the poster is over it, then eases in
       const u = logoA.material.uniforms; u.uTime.value = t; u.uWake.value = wk;
@@ -2144,7 +2185,7 @@ export async function run() {
     }
     logoR.visible = logoA.visible;
     // outro logo
-    if (logoB) logoB.visible = full && logoBReady && near(ST[6]);
+    if (logoB) logoB.visible = full && logoBReady && IDX.cta >= 0 && near(ST[6]);
     if (logoB && logoB.visible) {
       const u = logoB.material.uniforms; u.uTime.value = t;
       u.uAssemble.value = sc.j === 6 ? (sc.i === 6 ? 0.35 + smooth(0, 0.8, L[6]) * 0.65 : sc.t * 0.35) : 0;
@@ -2153,7 +2194,7 @@ export async function run() {
     shock = Math.max(0, shock - dt * 1.6);
 
     // emblem
-    roof.visible = full && HERO === 'logo' && near(ST[1]);
+    roof.visible = full && HERO === 'logo' && IDX.hero >= 0 && near(ST[1]);
     if (roof.visible) {
       roof.rotation.y = Math.sin(t * 0.3) * 0.16 + mx * 0.3; roof.rotation.x = -my * 0.1 + Math.sin(t * 0.23) * 0.04;
       roofWind = lerp(roofWind, mx * 0.32 + Math.sin(t * 0.4) * 0.04, 1 - Math.exp(-dt * 1.5));
@@ -2163,7 +2204,7 @@ export async function run() {
       const fl = roofFlash * (0.6 + 0.4 * Math.abs(Math.sin(t * 47)));   // flicker
       roofU.uFlash.value = fl; if (lightsAt === 'hero') keyLight.intensity = (26 + fl * 140) * KEY_K();
     }
-    emblem.visible = full && HERO === 'emblem' && near(ST[1]);
+    emblem.visible = full && HERO === 'emblem' && IDX.hero >= 0 && near(ST[1]);
     if (emblem.visible) {
       emblem.rotation.y = Math.sin(t * 0.35) * 0.35 + mx * 0.45 + L[1] * 0.8;
       emblem.rotation.x = Math.sin(t * 0.27) * 0.12 - my * 0.3;
@@ -2173,8 +2214,8 @@ export async function run() {
     }
 
     // games: the camera does the travelling; cards hold their places on the helix
-    tower.visible = full && (near(ST[2]) || (sc.i === 2 || sc.j === 2));
-    if (full) updateVideos(gamesSnap(L[2] * (GAMES.length - 1)), dt, sc.i === 2 && sc.j === 2);
+    tower.visible = full && IDX.categories >= 0 && (near(ST[2]) || (sc.i === 2 || sc.j === 2));
+    if (full && IDX.categories >= 0) updateVideos(gamesSnap(L[2] * (GAMES.length - 1)), dt, sc.i === 2 && sc.j === 2);
     if (tower.visible) {
       const n = cards.length; const af = gamesSnap(L[2] * (n - 1));
       spineSpin += dt * (reduced ? 0 : 0.04 + Math.min(Math.abs(vel), 3) * 0.12);
@@ -2209,7 +2250,7 @@ export async function run() {
       const inRoute = sc.i === 3 && sc.j === 3;
       // (the clock runs while the route is the station on screen, in its transitions too, and the globe shows it as it
       // is at any scroll: a small scroll back never sends it to the start)
-      if (state.active === 3) storyT = reduced ? 1 : Math.min(1, storyT + dt / STORY_S);
+      if (state.kind === 3) storyT = reduced ? 1 : Math.min(1, storyT + dt / STORY_S);
       const drawIn = 0.35 + Math.max(inRoute ? smooth(0, 0.5, L[3]) : 0, smooth(0, 0.1, storyT)) * 0.65;   // (continuous into the transitions)
       gDraw = sc.j === 3 ? (inRoute ? drawIn : sc.t * drawIn) : (sc.i === 3 ? 1 : 0);
       const park = inRoute ? 1 : sc.j === 3 ? smooth(0.75, 1, sc.t) : sc.i === 3 ? 1 - smooth(0, 0.25, sc.t) : 0;
@@ -2473,7 +2514,8 @@ export async function run() {
 
   // 1. the intro
   buildIntroLogos();
-  camera.position.set(...STN[0].pos); camera.lookAt(...STN[0].look); nebula.position.copy(camera.position);
+  { const s0 = STN[KIND[0] >= 0 ? KIND[0] : 0];   // (the first station shown: the intro unless it is switched off)
+    camera.position.set(...s0.pos); camera.lookAt(...s0.look); nebula.position.copy(camera.position); }
   await Promise.all([compileAll(), ready(compileSupport())]);
   if (!live()) { teardown(); return handle; }
   markB('intro-compiled');
