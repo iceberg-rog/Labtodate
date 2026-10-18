@@ -129,10 +129,13 @@ export async function releaseHold(orderId: string, code: HoldCode, actor: Actor,
 const ORDER_PRICING_INCLUDE = { items: { include: { product: { select: { vatScheme: true, shippingClass: true, weightKg: true } } } } } satisfies Prisma.OrderInclude;
 type PricedOrder = Prisma.OrderGetPayload<{ include: typeof ORDER_PRICING_INCLUDE }>;
 
-function repriceable(o: PricedOrder): string | null {
+function repriceable(o: PricedOrder, opts: { vatOnly?: boolean } = {}): string | null {
   if (o.status !== 'PENDING_PAYMENT') return `The order is ${o.status.toLowerCase().replace(/_/g, ' ')} — its amounts can no longer change here (corrections after payment are credit notes).`;
   if (o.paymentSubmittedAt) return 'The buyer already submitted a payment for this order — reject or verify that payment first.';
-  if (o.sourcingRequestId) return 'This order comes from an accepted quote: its shipping and VAT are those of the offer. Change them through the quote.';
+  // A quote order keeps the offer's prices and freight; only a VAT left open at
+  // acceptance (VAT review: VIES down, VAT ID of another company) is decided here.
+  const vatOpen = o.openHolds.includes('VAT_REVIEW') || o.holdReason === 'VAT_REVIEW' || o.vatTreatment === 'REVIEW_REQUIRED';
+  if (o.sourcingRequestId && !(opts.vatOnly && vatOpen)) return 'This order comes from an accepted quote: its shipping and VAT are those of the offer. Change them through the quote.';
   return null;
 }
 
@@ -142,6 +145,7 @@ async function decideVat(o: PricedOrder, shippingCents: number): Promise<{ decis
   const business = o.customerType !== 'CONSUMER';
   const raw = business ? o.buyerVatId ?? ((o.billingAddress as { vat?: string } | null)?.vat ?? null) : null;
   const vies = raw ? await checkVatId(raw) : null;
+  const legalName = (o.billingAddress as { company?: unknown } | null)?.company;
   const [s, countries] = await Promise.all([loadTaxSettings(), loadCountryFacts()]);
   const decision = determineVat(
     {
@@ -149,6 +153,7 @@ async function decideVat(o: PricedOrder, shippingCents: number): Promise<{ decis
       billingCountry: bill,
       customerKind: business ? 'BUSINESS' : 'CONSUMER',
       vatId: vies && vies.country ? vies : null,
+      buyerLegalName: typeof legalName === 'string' ? legalName : null,
       lines: [
         ...o.items.map((i) => ({ netCents: i.priceCentsSnapshot * i.quantity, lineType: 'GOODS' as const, scheme: i.product?.vatScheme === 'MARGIN' ? ('MARGIN' as const) : ('STANDARD' as const) })),
         ...(shippingCents > 0 ? [{ netCents: shippingCents, lineType: 'SHIPPING' as const }] : []),
@@ -242,7 +247,7 @@ export async function recheckOrderVat(orderId: string, actor: Actor): Promise<Re
   await ensureSettingsLoaded();
   const o = await prisma.order.findUnique({ where: { id: orderId }, include: ORDER_PRICING_INCLUDE });
   if (!o) return { ok: false, message: 'Order not found.' };
-  const why = repriceable(o);
+  const why = repriceable(o, { vatOnly: true });
   if (why) return { ok: false, message: why };
   const { decision, viesCheck, vatId } = await decideVat(o, o.shippingCents);
   if (decision.blocked) return { ok: false, message: `The VAT rules refuse this sale: ${decision.reasons.join(' ')}` };

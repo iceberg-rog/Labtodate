@@ -25,6 +25,10 @@ const textList = (v: string): string | null => {
   return parts.some((p) => p.length > 80) ? 'each entry may have at most 80 characters.' : null;
 };
 
+/** A site path ("/legal/terms", not "//host") or an https:// link. */
+export const termsLink = (v: string): string | null =>
+  /^(\/(?!\/)[^\s]*|https:\/\/[^\s/]+[^\s]*)$/.test(v.trim()) ? null : 'a site path such as /legal/terms or a full https:// link.';
+
 export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   {
     key: 'QUOTE_REFERENCE_PREFIX', label: 'Quote reference prefix', group: 'Quotes & offers', type: 'string', default: 'RFQ',
@@ -81,9 +85,9 @@ export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
     hint: 'On: the buyer ticks “I accept this offer and the General Terms of Sale” before accepting. The acceptance is recorded with time, IP and browser.',
   },
   {
-    key: 'TERMS_OF_SALE_URL', label: 'Terms of Sale link', group: 'Quotes & offers', type: 'string', default: '/terms',
-    validate: (v) => (/^(\/[^\s]*|https?:\/\/[^\s]+)$/.test(v) ? null : 'a site path such as /terms or a full https:// link.'),
-    hint: 'Linked from the acceptance step and the offer email.',
+    key: 'TERMS_OF_SALE_URL', label: 'Terms of Sale link', group: 'Quotes & offers', type: 'string', default: '/legal/terms',
+    validate: termsLink,
+    hint: 'Linked as “General Terms of Sale” from the acceptance step and the offer email. Default /legal/terms (the Terms text under Documents & legal texts); the version the buyer accepted is stored on the order.',
   },
   {
     key: 'PROFORMA_REVISION_EMAIL', label: 'Email a revised proforma when the buyer changes details', group: 'Quotes & offers', type: 'bool', default: 'true', options: ON_OFF,
@@ -92,11 +96,11 @@ export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
 
   // ── Supplier proposals (A30) ───────────────────────────────────────────
   {
-    key: 'SELLER_OFFERS_REQUIRE_APPROVAL', label: 'Supplier prices need lab2date review', group: 'Quotes & offers', type: 'bool', default: 'true', options: ON_OFF,
-    hint: 'On (recommended): a supplier’s price is a proposal to lab2date; staff review it, add the margin and send the offer to the buyer. Off: the supplier’s price plus the margin below goes to the buyer immediately.',
+    key: 'SELLER_OFFERS_REQUIRE_APPROVAL', label: 'Supplier prices need staff review', group: 'Quotes & offers', type: 'bool', default: 'true', options: ON_OFF,
+    hint: 'On (recommended): a supplier’s price is a proposal to your team; staff review it, add the margin and send the offer to the buyer. Off: the supplier’s price plus the margin below goes to the buyer immediately (the supplier is told only their own price).',
   },
   {
-    key: 'SELLER_OFFER_MARKUP_PCT', label: 'lab2date margin on supplier prices (%)', group: 'Quotes & offers', type: 'percent', default: '15', min: 0, max: 100,
+    key: 'SELLER_OFFER_MARKUP_PCT', label: 'Your margin on supplier prices (%)', group: 'Quotes & offers', type: 'percent', default: '15', min: 0, max: 100,
     hint: 'Added to a supplier’s price to get the buyer price (prefilled for review, or applied automatically when review is off).',
   },
   {
@@ -111,7 +115,7 @@ export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
   },
   {
     key: 'SELLER_SEES_SELL_PRICE', label: 'Suppliers see the buyer price', group: 'Quotes & offers', type: 'bool', default: 'false', options: ON_OFF,
-    hint: 'Off (default): the supplier sees only their own proposal and the deal status, never lab2date’s price or margin.',
+    hint: 'Off (default): the supplier sees only their own proposal and the deal status, never your price to the buyer or your margin.',
   },
 
   // ── Workflow ───────────────────────────────────────────────────────────
@@ -122,7 +126,7 @@ export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
       const ok = parts.every((p) => /^(VIP|URGENT|HIGH|NORMAL|LOW):\d{1,4}$/.test(p)) && parts.some((p) => p.startsWith('NORMAL:'));
       return ok ? null : 'use PRIORITY:hours pairs, e.g. VIP:2,URGENT:2,HIGH:8,NORMAL:24,LOW:72 (NORMAL is required).';
     },
-    hint: 'The SLA clock runs while a request waits for lab2date (new request, or the buyer wrote last). It stops when staff reply or send an offer.',
+    hint: 'The SLA clock runs while a request waits for your team (new request, or the buyer wrote last). It stops when staff reply or send an offer.',
   },
   {
     key: 'QUOTE_AUTO_ARCHIVE_ON_CLOSE', label: 'Archive a quote when it is closed', group: 'Quotes & offers', type: 'bool', default: 'false', options: ON_OFF,
@@ -133,6 +137,22 @@ export const QUOTE_SETTING_DEFS: readonly SettingDefinitionInput[] = [
     default: 'Price too high,Lead time too long,Bought elsewhere,Budget not approved,No longer needed,Other',
     validate: textList,
     hint: 'Shown in the decline dialog (optional for the buyer). Staff see the reason on the quote and in the Lost tab.',
+  },
+  {
+    key: 'QUOTE_CLOSE_REASONS', label: 'Reasons staff give when closing a request without a deal', group: 'Quotes & offers', type: 'list',
+    default: 'No suitable unit found,Buyer stopped responding,Price not acceptable,Bought elsewhere,Duplicate request,Other',
+    validate: textList,
+    hint: 'Shown in the “Close (no deal)” dialog. The reason (and the optional note) is stored on the quote, posted in the conversation and included in the e-mail to the buyer.',
+  },
+  {
+    key: 'QUOTE_MSG_VAT_ID_UNCHECKED', label: 'Acceptance while the EU VAT ID check (VIES) is down', group: 'Quotes & offers', type: 'string',
+    default: 'We could not check your VAT ID with the EU service right now. Your order is placed; we confirm the VAT before asking for payment.',
+    hint: 'Shown to the buyer on the acceptance step and in the order e-mail when VIES does not answer (Tax & VAT → VIES down policy “manual review”). The order waits on a VAT review: no proforma or payment request until staff confirm the VAT.',
+  },
+  {
+    key: 'QUOTE_MSG_VAT_REVIEW', label: 'Acceptance when the VAT needs a staff decision', group: 'Quotes & offers', type: 'string',
+    default: 'We need to confirm the VAT for these billing details. Your order is placed; we confirm the VAT before asking for payment.',
+    hint: 'Shown to the buyer when the VAT rules cannot decide on their own (e.g. the VAT ID is registered to another company name). The order waits on a VAT review before the proforma is sent.',
   },
   {
     key: 'BUYER_CAN_CANCEL_UNPAID_ORDER', label: 'Buyer can cancel an unpaid order', group: 'Quotes & offers', type: 'bool', default: 'true', options: ON_OFF,

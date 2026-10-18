@@ -43,6 +43,8 @@ export async function decideVat(input: {
   billingCountry: string | null;
   vatId: string | null;
   isBusiness: boolean;
+  /** Registered company name from the billing details (compared with the VIES name). */
+  buyerLegalName?: string | null;
   lines: VatLineInput[];
   skipVies?: boolean;
 }): Promise<VatOutcome> {
@@ -62,6 +64,7 @@ export async function decideVat(input: {
       billingCountry: input.billingCountry,
       customerKind: input.isBusiness || input.vatId ? 'BUSINESS' : 'UNKNOWN',
       vatId: vatId && vatId.country ? vatId : null,
+      buyerLegalName: input.buyerLegalName ?? null,
       lines: input.lines,
     },
     settings,
@@ -82,6 +85,7 @@ export async function decideVatForDetails(details: OrderDetails, lines: VatLineI
     vatId: opts.isBusiness === false ? null : details.billing.vatId,
     // Order.customerType (checkout, 7a) when known; else a legal name = a business.
     isBusiness: opts.isBusiness ?? !!details.billing.legalName,
+    buyerLegalName: details.billing.legalName,
     lines,
     skipVies: opts.skipVies,
   });
@@ -108,6 +112,7 @@ export async function offerVatAtSend(buyerUserId: string | null, spec: OfferLine
     billingCountry: profile.country,
     vatId: profile.vatId,
     isBusiness: !!profile.legalName,
+    buyerLegalName: profile.legalName,
     lines: offerVatLines(spec),
   });
   const d = out.decision;

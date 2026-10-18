@@ -1,8 +1,9 @@
 import type { OfferCardProps } from '@/components/quotes/OfferCard';
 import type { OfferFormProps } from '@/components/quotes/OfferForm';
-import { vatTreatmentLabel } from '@/lib/tax/determine';
+import { vatTreatmentLabel, type VatDecision } from '@/lib/tax/determine';
+import { decodeEntities } from '@/lib/marketplace/import-clean';
 import { formatPrice } from '@/lib/utils';
-import { isoDay, offerPhase, PAID_ORDER_STATES, offerMaxCents } from './offer';
+import { isoDay, offerPhase, PAID_ORDER_STATES, offerMaxCents, sentence } from './offer';
 import { daysFrom, incotermLabel, offerAmounts, parseOfferTerms, pctLabel } from './pricing';
 import type { OfferDefaults } from './policy';
 
@@ -11,6 +12,89 @@ import type { OfferDefaults } from './policy';
  * seller inbox thread and the admin quote workspace — so every side shows the
  * same offer, the same totals and the same state. Pure (the pages load the data).
  */
+
+// ── The offered item (offerTerms, next to the pricing snapshot of pricing.ts) ──
+
+export type OfferItemCondition = 'NEW' | 'REFURBISHED' | 'USED';
+
+/**
+ * What the offer says it sells and where to: frozen in offerTerms with the
+ * offer (itemTitle / itemDescription / itemCondition / itemSerial,
+ * destinationCountry) and printed on the order line, the proforma and the
+ * invoice. allowUnpublished: staff offered a listing that is not published.
+ */
+export interface OfferItem {
+  itemTitle: string | null;
+  itemDescription: string | null;
+  itemCondition: OfferItemCondition | null;
+  itemSerial: string | null;
+  /** ISO country the offer (freight, VAT) is priced for; null = any. */
+  destinationCountry: string | null;
+  allowUnpublished: boolean;
+}
+
+const txt = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+
+/** Tolerant read of the item part of a stored offerTerms JSON. */
+export function parseOfferItem(raw: unknown): OfferItem {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const cond = txt(o.itemCondition);
+  const dest = txt(o.destinationCountry);
+  return {
+    itemTitle: txt(o.itemTitle),
+    itemDescription: txt(o.itemDescription),
+    itemCondition: cond === 'NEW' || cond === 'REFURBISHED' || cond === 'USED' ? cond : null,
+    itemSerial: txt(o.itemSerial),
+    destinationCountry: dest && /^[A-Z]{2}$/.test(dest) ? dest : null,
+    allowUnpublished: o.allowUnpublished === true,
+  };
+}
+
+/**
+ * The goods line of a quote: the offer's item title, else the listing title,
+ * else what the buyer asked for — as plain text (imported titles carry HTML
+ * entities such as "&#8211;").
+ */
+export function offerItemTitle(sr: { offerTerms?: unknown; product?: { title: string } | null; productCategory?: string | null }): string {
+  const t = parseOfferItem(sr.offerTerms).itemTitle ?? sr.product?.title ?? sr.productCategory ?? 'Requested equipment';
+  return decodeEntities(t).replace(/\s+/g, ' ').trim() || 'Requested equipment';
+}
+
+/** Prefill of the offer composer's item fields (the current offer, else the listing). */
+export function offerItemPrefill(sr: { offerTerms?: unknown; product?: { title: string } | null; productCategory?: string | null; similarToProductId?: string | null; productId?: string | null }): OfferItem & { titleRequired: boolean } {
+  const cur = parseOfferItem(sr.offerTerms);
+  return {
+    ...cur,
+    itemTitle: cur.itemTitle ?? (sr.product ? decodeEntities(sr.product.title) : null),
+    // A request without its own listing ("Let us find it", "similar to …") has no title to fall back on.
+    titleRequired: !sr.productId || !!sr.similarToProductId,
+  };
+}
+
+/**
+ * The buyer's explanation of a VAT decision — plain language, never the
+ * engine's staff reasons ("… (policy)", "keep the export evidence"). A decision
+ * that already carries a buyer explanation (VAT engine) keeps it.
+ */
+export function buyerVatExplanation(d: Pick<VatDecision, 'treatment' | 'rateBp' | 'shippingRateBp' | 'lines'> & { buyerExplanation?: string | null }): string {
+  if (d.buyerExplanation) return d.buyerExplanation;
+  const pct = pctLabel(d.rateBp);
+  const main = ((): string => {
+    switch (d.treatment) {
+      case 'DOMESTIC_STANDARD': return `VAT ${pct} applies to this delivery.`;
+      case 'EU_ICS_ZERO': return '0% VAT: intra-EU supply to a business with a valid EU VAT ID (reverse charge — you account for the VAT in your country).';
+      case 'EU_B2C_HOME': return `VAT ${pct}: delivery within the EU without a confirmed EU VAT ID.`;
+      case 'EU_B2C_OSS': return `VAT ${pct} of the delivery country.`;
+      case 'EXPORT_ZERO': return '0% VAT: the goods are exported outside the EU.';
+      case 'MARGIN_SCHEME': return 'Margin scheme for second-hand goods: the VAT is included in the price and not shown separately.';
+      default: return 'The VAT is confirmed by our team before payment.';
+    }
+  })();
+  const freight = d.lines.some((l) => l.lineType === 'SHIPPING') && d.shippingRateBp !== d.rateBp
+    ? ` Freight: VAT ${pctLabel(d.shippingRateBp)}.`
+    : '';
+  return `${main}${freight}`;
+}
 
 export type SrForOffer = {
   id: string;
@@ -115,14 +199,14 @@ export function offerCardProps(
 
   const voidReason =
     phase !== 'void' ? null
-      : sr.status === 'DECLINED' ? `${viewer === 'BUYER' ? 'You declined this offer' : 'The buyer declined this offer'}${sr.lostReason ? ` — ${sr.lostReason}` : ''}.`
-      : sr.status === 'CLOSED' ? `${sr.lostReason ? `${sr.lostReason}.` : 'Closed without a deal.'}${order?.status === 'CANCELED' ? ` Order ${order.orderNumber} was canceled — no payment is due.` : ''}`
+      : sr.status === 'DECLINED' ? sentence(`${viewer === 'BUYER' ? 'You declined this offer' : 'The buyer declined this offer'}${sr.lostReason ? ` — ${sr.lostReason}` : ''}`)
+      : sr.status === 'CLOSED' ? `${sr.lostReason ? sentence(sr.lostReason) : 'Closed without a deal.'}${order?.status === 'CANCELED' ? ` Order ${order.orderNumber} was canceled — no payment is due.` : ''}`
       : order?.status === 'CANCELED' ? `Order ${order.orderNumber} was canceled — this offer can no longer be accepted.`
       : null;
 
   return {
     quoteId: sr.id,
-    itemTitle: sr.product?.title ?? sr.productCategory ?? 'Requested equipment',
+    itemTitle: offerItemTitle(sr),
     currency,
     revision: sr.offerRevision ?? 0,
     amounts,
@@ -165,9 +249,10 @@ export interface OfferFormContext {
   stock?: OfferFormProps['stock'];
 }
 
-/** Offer composer props for staff / the assigned seller; null when no offer can be sent. */
+/** Offer composer props for staff / the assigned seller; null when no offer can be sent.
+ *  A declined offer can be re-quoted on the same request (revision + 1). */
 export function offerFormProps(sr: SrForOffer & { archivedAt?: Date | null }, order: OrderForOffer, ctx: OfferFormContext): Omit<OfferFormProps, 'quoteId' | 'onResult'> | null {
-  if (sr.status !== 'PENDING' && sr.status !== 'RESPONDED') return null;
+  if (sr.status !== 'PENDING' && sr.status !== 'RESPONDED' && sr.status !== 'DECLINED') return null;
   const phase = offerPhase(sr, order);
   if (phase === 'accepted') return null; // legacy: paid / proof in flight
   const terms = parseOfferTerms(sr.offerTerms);
@@ -216,8 +301,8 @@ export function offerFormProps(sr: SrForOffer & { archivedAt?: Date | null }, or
 /** Why staff can't change the price any more (accepted), else null. */
 export function priceLockedMessage(sr: { status: string; proformaNumber: string | null }, order: OrderForOffer): string | null {
   if (sr.status !== 'ACCEPTED') return null;
-  if (order?.status === 'CANCELED') return 'The accepted order was canceled — this quote is finished. Open a new quote for the buyer to send a new offer.';
-  return `Price locked — the buyer accepted this offer${order ? ` (order ${order.orderNumber}` : ''}${sr.proformaNumber ? `${order ? ', ' : ' ('}proforma ${sr.proformaNumber})` : order ? ')' : ''}. To change it, cancel the order in the Deal panel (unpaid) or refund it (paid), then make a new offer on a new quote.`;
+  if (order?.status === 'CANCELED') return 'The accepted order was canceled — this quote is finished. Use “New quote for this buyer” to start a new request and send a new offer.';
+  return `Price locked — the buyer accepted this offer${order ? ` (order ${order.orderNumber}` : ''}${sr.proformaNumber ? `${order ? ', ' : ' ('}proforma ${sr.proformaNumber})` : order ? ')' : ''}. To change it, cancel the order (“Cancel order” in the Deal panel while unpaid, a refund once paid), then use “New quote for this buyer”.`;
 }
 
 export { pctLabel };

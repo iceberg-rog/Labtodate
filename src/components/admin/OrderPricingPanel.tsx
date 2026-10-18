@@ -74,11 +74,11 @@ export async function OrderPricingPanel({ orderId }: { orderId: string }) {
                   <button type="submit" className="h-8 px-3 rounded-full bg-primary text-primary-foreground text-xs font-bold">Set shipping</button>
                 </OrderActionForm>
               )}
-              {code === 'VAT_REVIEW' && unpaid && checkoutOrder && (
+              {code === 'VAT_REVIEW' && unpaid && (
                 <OrderActionForm action={recheckVatAction} className="flex items-center gap-2 flex-wrap">
                   <input type="hidden" name="orderId" value={o.id} />
                   <button type="submit" className="h-8 px-3 rounded-full bg-primary text-primary-foreground text-xs font-bold">Re-check VAT now (VIES)</button>
-                  <span className="text-[11px] text-muted-foreground">Applies the VAT rules again with a live VIES check; releases the hold when they decide.</span>
+                  <span className="text-[11px] text-muted-foreground">Applies the VAT rules again with a live VIES check{checkoutOrder ? '' : ' (the offer’s prices and freight stay)'}; releases the hold when they decide.</span>
                 </OrderActionForm>
               )}
               {code === 'COMPLIANCE' && (
@@ -124,7 +124,7 @@ export async function OrderPricingPanel({ orderId }: { orderId: string }) {
         <Item label="PO number" value={o.poNumber ?? '—'} />
         <Item label="Invoice email" value={o.invoiceEmail ?? 'account email'} />
         <Item label="VAT treatment" value={`${vatTreatmentLabel(o.vatTreatment)}${o.vatRateBp != null ? ` · goods ${pct(o.vatRateBp)}` : ''}${o.shippingVatRateBp != null ? ` · shipping ${pct(o.shippingVatRateBp)}` : ''}`} />
-        <Item label="Buyer VAT ID" value={o.buyerVatId ? `${o.buyerVatId}${vies?.status ? ` · VIES ${vies.status === 'UNAVAILABLE' ? 'could not check' : vies.status.toLowerCase().replace('_', ' ')}` : ''}${vies?.consultationNumber ? ` · ${vies.consultationNumber}` : ''}${vies?.error ? ` · ${vies.error}` : ''}` : '—'} />
+        <Item label="Buyer VAT ID" value={o.buyerVatId ? `${o.buyerVatId}${vies?.status ? ` · VIES ${vies.status === 'UNAVAILABLE' ? 'could not check' : vies.status.toLowerCase().replace('_', ' ')}` : ''}${vies?.name ? ` · registered to ${vies.name}` : ''}${vies?.consultationNumber ? ` · ${vies.consultationNumber}` : ''}${vies?.error ? ` · ${vies.error}` : ''}` : '—'} />
         <Item label="Shipping" value={snap?.shipping ? `${snap.shipping.status === 'TO_BE_CONFIRMED' && o.shippingCents === 0 ? 'to be confirmed' : formatPrice(o.shippingCents, cur)}${snap.shipping.zone ? ` · zone ${snap.shipping.zone}` : ''}` : formatPrice(o.shippingCents, cur)} />
         <Item label="Payment method chosen" value={snap?.paymentMethod ? snap.paymentMethod.replace('_', ' ').toLowerCase() : '—'} />
         {o.vatNote && <div className="sm:col-span-2 text-xs text-muted-foreground leading-relaxed"><span className="font-semibold text-foreground">Why: </span>{o.vatNote}</div>}

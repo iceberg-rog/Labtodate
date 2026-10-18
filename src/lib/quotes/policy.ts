@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   settingBool,
   settingEnum,
@@ -9,6 +10,7 @@ import {
 } from '@/lib/settings';
 import { parseSlaHours, type MarkupRounding } from './pricing';
 import type { VatIdRule } from '@/lib/orders/details';
+import { DEFAULT_TERMS_TEXT } from '@/lib/catalog/texts';
 
 /**
  * Typed reads of the quotes / offers / payment-page settings (Admin → Settings
@@ -122,6 +124,30 @@ export function declineReasons(): string[] {
   return settingList('QUOTE_DECLINE_REASONS');
 }
 
+/** Reasons staff pick when closing a request without a deal (QUOTE_CLOSE_REASONS). */
+export function closeReasons(): string[] {
+  return settingList('QUOTE_CLOSE_REASONS');
+}
+
+export type MediationMode = 'MASK_CONTACTS' | 'STAFF_REVIEW' | 'OFF';
+/** How supplier messages reach the buyer (Settings → Suppliers → MESSAGE_MEDIATION_MODE). */
+export function mediationMode(): MediationMode {
+  const m = settingString('MESSAGE_MEDIATION_MODE');
+  return m === 'STAFF_REVIEW' || m === 'OFF' ? m : 'MASK_CONTACTS';
+}
+
+/** Buyer text when an accepted offer waits for a VAT decision (QUOTE_MSG_VAT_*). */
+export function vatReviewBuyerText(kind: 'VIES_UNAVAILABLE' | 'REVIEW'): string {
+  return kind === 'VIES_UNAVAILABLE'
+    ? settingString('QUOTE_MSG_VAT_ID_UNCHECKED') || 'We could not check your VAT ID with the EU service right now. Your order is placed; we confirm the VAT before asking for payment.'
+    : settingString('QUOTE_MSG_VAT_REVIEW') || 'We need to confirm the VAT for these billing details. Your order is placed; we confirm the VAT before asking for payment.';
+}
+
+/** Customer mails may invite a reply only when replies reach a person (TRANSACTIONAL_REPLY_TO). */
+export function repliesReachUs(): boolean {
+  return !!settingString('TRANSACTIONAL_REPLY_TO').trim();
+}
+
 export function cancelReasons(): string[] {
   return settingList('ORDER_CANCEL_REASONS');
 }
@@ -134,8 +160,27 @@ export function requireTermsAcceptance(): boolean {
   return settingBool('OFFER_REQUIRE_TERMS_ACCEPTANCE');
 }
 
+/** Built-in Terms of Sale page (the public terms text, LEGAL_TERMS_TEXT). */
+export const DEFAULT_TERMS_OF_SALE_URL = '/legal/terms';
+
 export function termsOfSaleUrl(): string {
-  return settingString('TERMS_OF_SALE_URL') || '/terms';
+  return settingString('TERMS_OF_SALE_URL') || DEFAULT_TERMS_OF_SALE_URL;
+}
+
+/** The Terms of Sale link as an absolute URL (mail clients need one). */
+export function termsOfSaleHref(siteBase: string): string {
+  const u = termsOfSaleUrl();
+  return u.startsWith('/') ? `${siteBase}${u}` : u;
+}
+
+/**
+ * Version of the terms a buyer accepts: sha256 of the Terms text as configured
+ * now (Settings → Documents & legal texts → LEGAL_TERMS_TEXT, else the built-in
+ * text) — stored on the order with the time and IP of the acceptance.
+ */
+export function termsTextVersion(): string {
+  const text = settingString('LEGAL_TERMS_TEXT') || DEFAULT_TERMS_TEXT;
+  return `sha256:${createHash('sha256').update(text.replace(/\r\n/g, '\n')).digest('hex')}`;
 }
 
 export function requireDetailsBeforePayment(): boolean {
