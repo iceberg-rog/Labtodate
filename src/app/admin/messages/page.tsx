@@ -158,7 +158,7 @@ export default async function AdminMessagesPage(
           </div>
           <p className="text-lg font-bold">Nothing here</p>
           <p className="text-sm text-muted-foreground mt-2 max-w-sm mx-auto">
-            Customer chats from the floating <strong>lab2date Assistant</strong> on the public site land here.
+            Customer chats from the floating <strong>Labtodate Assistant</strong> on the public site land here.
             The AI answers within site scope; if a user requests a human, they jump into <em>Awaiting human</em>.
           </p>
         </div>

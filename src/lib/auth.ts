@@ -153,7 +153,7 @@ export const auth = betterAuth({
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL: process.env.BETTER_AUTH_URL,
-  appName: 'lab2date',
+  appName: 'Labtodate',
 
   emailAndPassword: {
     enabled: true,
@@ -175,26 +175,26 @@ export const auth = betterAuth({
       }
       await sendEmail({
         to: user.email,
-        subject: 'Your lab2date password was changed',
+        subject: 'Your Labtodate password was changed',
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
             <h2 style="color:#0E4F40;">Your password was changed</h2>
-            <p>The password on your lab2date account was just reset, and every device that was signed in has been signed out.</p>
+            <p>The password on your Labtodate account was just reset, and every device that was signed in has been signed out.</p>
             <p style="color:#6b7280;font-size:13px;">If this wasn't you, reset your password again right away at <a href="${SITE_URL}/auth/forgot-password">${SITE_URL}/auth/forgot-password</a> and contact support.</p>
           </div>
         `,
-        text: `The password on your lab2date account was just reset and all devices were signed out. If this wasn't you, reset it again at ${SITE_URL}/auth/forgot-password and contact support.`,
+        text: `The password on your Labtodate account was just reset and all devices were signed out. If this wasn't you, reset it again at ${SITE_URL}/auth/forgot-password and contact support.`,
       }).catch((e) => console.error('[auth] password-changed notice failed:', e));
     },
     sendResetPassword: async ({ user, url }) => {
       await sendEmail({
         to: user.email,
-        subject: 'Reset your lab2date password',
+        subject: 'Reset your Labtodate password',
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
             <h2 style="color:#0E4F40;">Reset your password</h2>
             <p>Hi ${escapeHtml(user.name || 'there')},</p>
-            <p>We received a request to reset the password on your lab2date account. Click the button below — the link expires in 1 hour.</p>
+            <p>We received a request to reset the password on your Labtodate account. Click the button below — the link expires in 1 hour.</p>
             <p style="margin:24px 0;">
               <a href="${escapeHtml(url)}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
                 Reset password
@@ -203,7 +203,7 @@ export const auth = betterAuth({
             <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email — your password won't change.</p>
           </div>
         `,
-        text: `Reset your lab2date password: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.`,
+        text: `Reset your Labtodate password: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.`,
       });
     },
     resetPasswordTokenExpiresIn: 60 * 60, // 1 hour
@@ -223,7 +223,7 @@ export const auth = betterAuth({
       const note = !user.emailVerified && (await hasPassword(user.id)) ? PASSWORD_REMOVAL_NOTE : null;
       await sendEmail({
         to: user.email,
-        subject: 'Verify your lab2date email',
+        subject: 'Verify your Labtodate email',
         html: `
           <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
             <h2 style="color:#0E4F40;">Confirm your email</h2>
@@ -238,7 +238,7 @@ export const auth = betterAuth({
             <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
           </div>
         `,
-        text: `Verify your lab2date email: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.${note ? `\n\n${note}` : ''}`,
+        text: `Verify your Labtodate email: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.${note ? `\n\n${note}` : ''}`,
       });
     },
   },
@@ -388,6 +388,19 @@ export const auth = betterAuth({
         return { context: { query: { ...(ctx.query ?? {}), disableCookieCache: true } } };
       }
 
+      // Bots fill in every field they can find, including one no human can
+      // see. The sign-up form carries an off-screen "company_url" input that
+      // a real visitor always leaves empty, so a filled one is a script and
+      // the account is never created — the same trick the public quote,
+      // support and blog-comment forms already use.
+      if (ctx.path === '/sign-up/email') {
+        const hp = (ctx.body as { company_url?: unknown } | undefined)?.company_url;
+        if (typeof hp === 'string' && hp.trim()) {
+          console.warn('[auth] refused a sign-up that filled the honeypot field');
+          throw new APIError('BAD_REQUEST', { message: 'Could not create your account.' });
+        }
+      }
+
       if (!ctx.path.startsWith('/sign-in/') && !SUSPENSION_GATED.includes(ctx.path)) return;
       const body = (ctx.body ?? {}) as { email?: unknown; password?: unknown; name?: unknown; type?: unknown };
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
@@ -439,38 +452,38 @@ export const auth = betterAuth({
         if (!exists) {
           await sendEmail({
             to: email,
-            subject: 'Sign-in request for lab2date',
+            subject: 'Sign-in request for Labtodate',
             html: `
               <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-                <h2 style="color: #047857;">No lab2date account yet</h2>
-                <p>Someone asked for a sign-in link for this address, but there's no lab2date account for it.</p>
+                <h2 style="color: #047857;">No Labtodate account yet</h2>
+                <p>Someone asked for a sign-in link for this address, but there's no Labtodate account for it.</p>
                 <p>To get started, <a href="${SITE_URL}/auth/sign-up">create an account</a>.</p>
                 <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore the email.</p>
               </div>
             `,
-            text: `There's no lab2date account for this address. Create one at ${SITE_URL}/auth/sign-up\n\nIf you didn't request this, ignore the email.`,
+            text: `There's no Labtodate account for this address. Create one at ${SITE_URL}/auth/sign-up\n\nIf you didn't request this, ignore the email.`,
           });
           return;
         }
         const note = !exists.emailVerified && (await hasPassword(exists.id)) ? PASSWORD_REMOVAL_NOTE : null;
         await sendEmail({
           to: email,
-          subject: 'Your lab2date sign-in link',
+          subject: 'Your Labtodate sign-in link',
           html: `
             <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-              <h2 style="color: #047857;">Sign in to lab2date</h2>
+              <h2 style="color: #047857;">Sign in to Labtodate</h2>
               <p>Click the link below to sign in. It expires in 10 minutes.</p>
               <p style="margin: 24px 0;">
                 <a href="${escapeHtml(url)}"
                    style="background:#047857;color:white;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:600;">
-                  Sign in to lab2date
+                  Sign in to Labtodate
                 </a>
               </p>
               ${note ? `<p style="color:#374151;">${note}</p>` : ''}
               <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore the email.</p>
             </div>
           `,
-          text: `Sign in to lab2date: ${url}\n\nThis link expires in 10 minutes.${note ? `\n\n${note}` : ''}`,
+          text: `Sign in to Labtodate: ${url}\n\nThis link expires in 10 minutes.${note ? `\n\n${note}` : ''}`,
         });
       },
     }),
@@ -496,32 +509,32 @@ export const auth = betterAuth({
             // and silently drop the password they just typed — explain instead.
             await sendEmail({
               to: email,
-              subject: 'You already have a lab2date account',
+              subject: 'You already have a Labtodate account',
               html: `
                 <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
                   <h2 style="color:#0E4F40;margin:0 0 8px;">You already have an account</h2>
-                  <p style="color:#374151;">Someone (hopefully you) tried to create a lab2date account with this address, but it already has one.</p>
+                  <p style="color:#374151;">Someone (hopefully you) tried to create a Labtodate account with this address, but it already has one.</p>
                   <p style="color:#374151;"><a href="${SITE_URL}/auth/sign-in">Sign in</a>, or <a href="${SITE_URL}/auth/forgot-password">reset your password</a> if you don't remember it.</p>
                   <p style="color:#6b7280;font-size:13px;">If this wasn't you, you can safely ignore this email — nothing has changed.</p>
                 </div>
               `,
-              text: `This address already has a lab2date account. Sign in at ${SITE_URL}/auth/sign-in or reset your password at ${SITE_URL}/auth/forgot-password.\n\nIf this wasn't you, ignore this email — nothing has changed.`,
+              text: `This address already has a Labtodate account. Sign in at ${SITE_URL}/auth/sign-in or reset your password at ${SITE_URL}/auth/forgot-password.\n\nIf this wasn't you, ignore this email — nothing has changed.`,
             });
             return;
           }
         }
         await sendEmail({
           to: email,
-          subject: `${otp} is your lab2date verification code`,
+          subject: `${otp} is your Labtodate verification code`,
           html: `
             <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
               <h2 style="color:#0E4F40;margin:0 0 8px;">Confirm your email</h2>
-              <p style="color:#374151;">Enter this code to finish creating your lab2date account:</p>
+              <p style="color:#374151;">Enter this code to finish creating your Labtodate account:</p>
               <p style="font-size:34px;font-weight:800;letter-spacing:8px;color:#0E4F40;background:#f3f4f6;border-radius:12px;padding:16px;text-align:center;margin:20px 0;">${otp}</p>
               <p style="color:#6b7280;font-size:13px;">This code expires in 10 minutes. If you didn't sign up, you can safely ignore this email.</p>
             </div>
           `,
-          text: `Your lab2date verification code is ${otp}. It expires in 10 minutes.`,
+          text: `Your Labtodate verification code is ${otp}. It expires in 10 minutes.`,
         });
       },
     }),

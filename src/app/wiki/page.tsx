@@ -28,7 +28,7 @@ export default async function WikiIndexPage() {
           The handbook for lab equipment.
         </h1>
         <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
-          Glossary, comparison guides, and how-tos curated by lab2date&apos;s sourcing team.
+          Glossary, comparison guides, and how-tos curated by Labtodate&apos;s sourcing team.
         </p>
       </header>
 

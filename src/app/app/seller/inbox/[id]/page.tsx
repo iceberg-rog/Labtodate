@@ -36,11 +36,11 @@ export default async function SellerQuoteDetailPage(props: { params: Promise<{ i
 
   if (sr.assignedToId !== session.user.id && role !== 'ADMIN') notFound();
 
-  // Sellers never see who the buyer is — lab2date mediates. Admins (acting as
+  // Sellers never see who the buyer is — Labtodate mediates. Admins (acting as
   // the mediator) still see the real buyer to coordinate.
   const isAdmin = role === 'ADMIN';
-  const buyerName = isAdmin ? sr.buyerName : 'lab2date Buyer';
-  const buyerEmail = isAdmin ? sr.buyerEmail : 'Hidden — reply here, lab2date relays it';
+  const buyerName = isAdmin ? sr.buyerName : 'Labtodate Buyer';
+  const buyerEmail = isAdmin ? sr.buyerEmail : 'Hidden — reply here, Labtodate relays it';
   // Declined / closed: the proforma is void and its unpaid order canceled.
   const dealEnded = sr.status === 'DECLINED' || sr.status === 'CLOSED';
 
@@ -85,12 +85,12 @@ export default async function SellerQuoteDetailPage(props: { params: Promise<{ i
         id: m.id,
         body: m.body,
         createdAt: m.createdAt.toISOString(),
-        // Sellers see the other side as "lab2date Buyer", and staff messages
-        // as "lab2date team" — never a person's name.
+        // Sellers see the other side as "Labtodate Buyer", and staff messages
+        // as "Labtodate team" — never a person's name.
         authorName: m.author?.id === session.user.id
           ? 'You'
           : isAdmin ? (m.author?.name ?? null)
-          : m.fromStaff ? 'lab2date team' : 'lab2date Buyer',
+          : m.fromStaff ? 'Labtodate team' : 'Labtodate Buyer',
         authorEmail: isAdmin ? (m.author?.email ?? null) : null,
         isMine: m.author?.id === session.user.id,
         fromStaff: m.fromStaff,

@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { shippingAddressIsComplete } from '@/lib/orders/display';
 import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { Prisma } from '@prisma/client';
@@ -88,26 +89,6 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
   };
   const wantsAddrUpdate = !!(addrFields.line1 || addrFields.city || addrFields.postal || addrFields.country || addrFields.vat || addrFields.company);
 
-  // Receipt upload — required for BANK_TRANSFER / OTHER, optional for INVOICE.
-  const file = formData.get('proof');
-  let proofUrl: string | null = null;
-  if (file && typeof file !== 'string' && (file as File).size > 0) {
-    const f = file as File;
-    if (f.size > 8_000_000) redirect(`/app/orders/${orderNumber}/payment?err=large`);
-    if (!ALLOWED_MIME.includes(f.type as (typeof ALLOWED_MIME)[number])) {
-      redirect(`/app/orders/${orderNumber}/payment?err=type`);
-    }
-    const ext = (f.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
-    const buf = Buffer.from(await f.arrayBuffer());
-    const up = await uploadObject(`order-proofs/${order.orderNumber}-${Date.now()}.${ext}`, buf, f.type);
-    proofUrl = up.url;
-  }
-  // Without a file there is nothing for an admin to verify for a transfer or
-  // an "other" payment — refuse instead of queueing an empty proof.
-  if ((method === 'BANK_TRANSFER' || method === 'OTHER') && !proofUrl) {
-    redirect(`/app/orders/${orderNumber}/payment?err=proofreq`);
-  }
-
   // Merge shipping address (preserve existing fields not touched in the form).
   let newShippingAddress = order.shippingAddress;
   if (wantsAddrUpdate) {
@@ -129,6 +110,35 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
         country: addrFields.country || (existingAddr.country as string | undefined) || '',
       },
     };
+  }
+
+  // A receipt with nowhere to ship to is not a complete submission. Without
+  // this the buyer could declare "I paid" on an order carrying no address at
+  // all: it then sat in the verify queue looking settled, and nothing in the
+  // flow brought them back to finish it. Checked before the upload so a
+  // refused submission leaves no orphan object in the bucket.
+  if (!shippingAddressIsComplete(newShippingAddress)) {
+    redirect(`/app/orders/${orderNumber}/payment?err=addrreq`);
+  }
+
+  // Receipt upload — required for BANK_TRANSFER / OTHER, optional for INVOICE.
+  const file = formData.get('proof');
+  let proofUrl: string | null = null;
+  if (file && typeof file !== 'string' && (file as File).size > 0) {
+    const f = file as File;
+    if (f.size > 8_000_000) redirect(`/app/orders/${orderNumber}/payment?err=large`);
+    if (!ALLOWED_MIME.includes(f.type as (typeof ALLOWED_MIME)[number])) {
+      redirect(`/app/orders/${orderNumber}/payment?err=type`);
+    }
+    const ext = (f.name.split('.').pop() || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8);
+    const buf = Buffer.from(await f.arrayBuffer());
+    const up = await uploadObject(`order-proofs/${order.orderNumber}-${Date.now()}.${ext}`, buf, f.type);
+    proofUrl = up.url;
+  }
+  // Without a file there is nothing for an admin to verify for a transfer or
+  // an "other" payment — refuse instead of queueing an empty proof.
+  if ((method === 'BANK_TRANSFER' || method === 'OTHER') && !proofUrl) {
+    redirect(`/app/orders/${orderNumber}/payment?err=proofreq`);
   }
 
   // BUG-038: claim the transition atomically. The PENDING_PAYMENT precondition

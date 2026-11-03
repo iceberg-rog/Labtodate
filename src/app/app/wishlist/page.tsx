@@ -60,7 +60,7 @@ export default async function WishlistPage() {
                 slug: w.product.slug,
                 title: w.product.title,
                 brand: w.product.brand?.name ?? '—',
-                supplier: 'lab2date Verified Supplier',
+                supplier: 'Labtodate Verified Supplier',
                 illustration: (w.product.illustration ?? 'balance') as IllustrationName,
                 imageUrl: w.product.images?.[0] ?? null,
                 condition: w.product.condition,

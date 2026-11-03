@@ -39,7 +39,7 @@ export default async function TermsPage() {
       </p>
       <h2>6. Returns</h2>
       <p>
-        If an item materially differs from its description, contact <a href={`mailto:${c.email}`}>{c.email}</a> within
+        If an item materially differs from its description, contact <a href={c.contactHref}>{c.contactLabel}</a> within
         7 days of delivery for a resolution or refund under buyer protection.
       </p>
       <h2>7. Liability</h2>
@@ -49,7 +49,7 @@ export default async function TermsPage() {
         qualification and compliance.
       </p>
       <h2>8. Contact</h2>
-      <p>{c.legal} · <a href={`mailto:${c.email}`}>{c.email}</a></p>
+      <p>{c.legal} · <a href={c.contactHref}>{c.contactLabel}</a></p>
     </LegalShell>
   );
 }

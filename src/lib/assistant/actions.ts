@@ -312,8 +312,8 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
       notifTitle: `New reply · ${ref}`,
       notifBody: `An operator replied: ${body.slice(0, 120)}`,
       notifHref: '/app#chat-open',
-      emailSubject: `[${ref}] We replied to your chat on lab2date`,
-      emailHtml: `<p>Hi,</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app">Open lab2date</a> to continue the conversation.</p>`,
+      emailSubject: `[${ref}] We replied to your chat on Labtodate`,
+      emailHtml: `<p>Hi,</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app">Open Labtodate</a> to continue the conversation.</p>`,
       dedupeKey: ref,
     });
   } else if (conv.guestEmail && z.string().email().safeParse(conv.guestEmail).success) {
@@ -326,7 +326,7 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
       notifTitle: '',
       notifBody: '',
       notifHref: '',
-      emailSubject: `[${ref}] We replied to your chat on lab2date`,
+      emailSubject: `[${ref}] We replied to your chat on Labtodate`,
       emailHtml: `<p>Hi ${escapeHtml(conv.guestName ?? 'there')},</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p>Re-open the chat at the bottom-right of <a href="${process.env.BETTER_AUTH_URL || 'https://labtodate.com'}">labtodate.com</a> to continue.</p>`,
       dedupeKey: ref,
     });

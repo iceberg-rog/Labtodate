@@ -26,7 +26,7 @@ const TEMPLATES: { name: string; title: string; body: string; kind: Kind; href: 
   {
     name: 'Maintenance window',
     title: 'Scheduled maintenance · Saturday 02:00 UTC',
-    body: 'lab2date will be in read-only mode for ~20 minutes while we ship a database upgrade. No data loss; checkout will pause briefly.',
+    body: 'Labtodate will be in read-only mode for ~20 minutes while we ship a database upgrade. No data loss; checkout will pause briefly.',
     kind: 'SYSTEM',
     href: '',
   },
@@ -212,7 +212,7 @@ export function AnnouncementComposer({
               </div>
               <article className="border border-border rounded-xl bg-background overflow-hidden">
                 <div className="border-b border-border p-3">
-                  <p className="text-[10px] text-muted-foreground">From: <strong>lab2date</strong> &lt;notifications@lab2date&gt;</p>
+                  <p className="text-[10px] text-muted-foreground">From: <strong>Labtodate</strong> &lt;notifications@lab2date&gt;</p>
                   <p className="text-[10px] text-muted-foreground">Subject: <strong>{title || '(no subject)'}</strong></p>
                 </div>
                 <div className="p-3 text-xs">
@@ -221,7 +221,7 @@ export function AnnouncementComposer({
                   <p className="whitespace-pre-wrap leading-relaxed mt-2">{body || 'Message…'}</p>
                   <div className="mt-3">
                     <span className="inline-block bg-primary text-primary-foreground px-3 py-1.5 rounded-md text-[11px] font-bold">
-                      View on lab2date
+                      View on Labtodate
                     </span>
                   </div>
                 </div>

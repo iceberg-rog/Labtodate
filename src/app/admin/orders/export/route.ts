@@ -94,7 +94,7 @@ export async function GET(req: Request) {
   });
 
   const csv = '﻿' + [header.join(','), ...rows].join('\n');
-  const filename = `lab2date-orders${ids.length > 0 ? `-selected-${orders.length}` : range ? `-${range}` : ''}-${new Date().toISOString().slice(0, 10)}.csv`;
+  const filename = `labtodate-orders${ids.length > 0 ? `-selected-${orders.length}` : range ? `-${range}` : ''}-${new Date().toISOString().slice(0, 10)}.csv`;
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',

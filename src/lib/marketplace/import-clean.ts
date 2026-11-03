@@ -1,7 +1,7 @@
 /**
  * Clean-up for listings imported from a supplier's WooCommerce shop.
  *
- * Imported products are sold as "lab2date Verified Supplier" (supplier
+ * Imported products are sold as "Labtodate Verified Supplier" (supplier
  * micro-sites are intentionally hidden), so the source shop's own name, its
  * links and its "see our website" sales copy must not reach the product page.
  * Used by the runtime importer and by prisma/clean-imported-branding.ts for

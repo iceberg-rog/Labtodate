@@ -1,5 +1,5 @@
 /**
- * Curated, verified Unsplash photography for lab2date.
+ * Curated, verified Unsplash photography for Labtodate.
  * Every ID below was HTTP-checked to resolve (200) on the Unsplash CDN.
  * Real photography — no flat clip-art.
  */

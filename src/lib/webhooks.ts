@@ -72,7 +72,7 @@ function buildPayload(
     return {
       contentType: 'application/json',
       body: JSON.stringify({
-        username: 'lab2date',
+        username: 'Labtodate',
         embeds: [
           {
             title: `[${tag}] ${title}`,

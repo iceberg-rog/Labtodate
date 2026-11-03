@@ -28,7 +28,7 @@ export function AdminTopBar({ email, unreadCount }: { email: string; unreadCount
       <div className="px-6 h-14 flex items-center gap-4">
         <Link href="/admin" className="flex items-center gap-2 group">
           <span className="font-bold tracking-tight group-hover:text-primary transition-colors">
-            lab2date
+            Labtodate
           </span>
           <span className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider">
             <ShieldCheck className="h-3 w-3" /> Admin

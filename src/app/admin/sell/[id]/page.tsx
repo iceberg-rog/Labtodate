@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { LocalTime } from '@/components/util/LocalTime';
 import { notFound } from 'next/navigation';
 import {
   ChevronLeft, Check, X, Mail, Phone, Building2, MapPin, Package,
@@ -171,7 +172,7 @@ export default async function AdminSellDetailPage(props: {
               {sub.location && (
                 <>
                   <span>·</span>
-                  <span className="inline-flex items-center gap-1"><MapPin className="h-3 w-3" /> {sub.location}{sub.country && `, ${sub.country}`}</span>
+                  <span className="inline-flex items-center gap-1"><MapPin className="h-3 w-3" /> {sub.location}{sub.country && !sub.location.toLowerCase().includes(sub.country.toLowerCase()) && `, ${sub.country}`}</span>
                 </>
               )}
             </p>
@@ -268,7 +269,7 @@ export default async function AdminSellDetailPage(props: {
                       <div className={`text-[11px] font-semibold inline-flex items-center gap-2 ${m.fromStaff ? 'flex-row-reverse' : ''}`}>
                         <span>{m.fromStaff ? 'Acquisitions' : sub.contactName}</span>
                         <span className="text-muted-foreground font-normal">
-                          {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          <LocalTime iso={m.createdAt.toISOString()} />
                         </span>
                       </div>
                       <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${

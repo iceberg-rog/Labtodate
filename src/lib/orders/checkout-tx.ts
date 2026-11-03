@@ -133,6 +133,28 @@ export function orderReservedStock(order: { sourcingRequestId: string | null }):
   return !order.sourcingRequestId;
 }
 
+/** Statuses in which a quote order has already taken its unit out of stock
+ *  (see consumeStockForPaidQuoteOrder). Mirrors REFUNDABLE in admin/actions. */
+const QUOTE_STOCK_CONSUMED = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED'];
+
+/**
+ * Does this order hold product stock *right now*, so that cancelling or
+ * refunding it has to give the unit back?
+ *
+ * Use this on paid-family orders. `orderReservedStock` answers the different,
+ * creation-time question ("did this order reserve when it was created?") and
+ * is the right one on the PENDING_PAYMENT cancel paths, where a quote order
+ * genuinely holds nothing yet.
+ *
+ *  - cart orders reserve at checkout, so they hold stock from creation;
+ *  - quote / proforma orders reserve nothing while the offer is open and only
+ *    consume their unit when the order is actually paid.
+ */
+export function orderHoldsStock(order: { sourcingRequestId: string | null; status: string }): boolean {
+  if (!order.sourcingRequestId) return true;
+  return QUOTE_STOCK_CONSUMED.includes(order.status);
+}
+
 export type CancelAndRestockResult = 'canceled' | 'noop';
 
 /**

@@ -50,9 +50,9 @@ export async function GET(req: Request, props: { params: Promise<{ id: string }>
   });
 
   // Same masking as the inbox page (src/app/app/inbox/[id]/page.tsx): a buyer
-  // only ever sees "lab2date Verified Supplier", a seller only "lab2date
+  // only ever sees "Labtodate Verified Supplier", a seller only "Labtodate
   // Buyer" — no real names, no emails, not even in this polling payload.
-  const counterpartLabel = thread.buyerId === session.user.id ? 'lab2date Verified Supplier' : 'lab2date Buyer';
+  const counterpartLabel = thread.buyerId === session.user.id ? 'Labtodate Verified Supplier' : 'Labtodate Buyer';
   return NextResponse.json({
     messages: messages.map((m) => {
       const isMine = m.author.id === session.user.id;

@@ -21,7 +21,7 @@ export default async function CaseStudiesPage() {
           Real labs. Real numbers.
         </h1>
         <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
-          How research teams cut procurement cost and time using lab2date.
+          How research teams cut procurement cost and time using Labtodate.
         </p>
       </header>
 

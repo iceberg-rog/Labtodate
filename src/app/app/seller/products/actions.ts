@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { foldAccents } from '@/lib/slug';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -82,7 +83,7 @@ function checkImages(images: string[], alreadyOnListing: readonly string[] = [])
 }
 
 function slugify(s: string): string {
-  return s
+  return foldAccents(s)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '')

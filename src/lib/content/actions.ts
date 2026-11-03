@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { foldAccents } from '@/lib/slug';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
@@ -11,7 +12,7 @@ import { audit } from '@/lib/observability';
  *  to a short random slug so the item still gets a working URL and edit link. */
 function slugify(s: string): string {
   return (
-    s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 90) ||
+    foldAccents(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 90) ||
     Math.random().toString(36).slice(2, 8)
   );
 }

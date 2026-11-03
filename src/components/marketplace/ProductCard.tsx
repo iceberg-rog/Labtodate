@@ -65,7 +65,7 @@ export function ProductCard({ p }: { p: ProductCardData }) {
           {p.title}
         </h3>
         <p className="text-xs text-muted-foreground">
-          lab2date
+          Labtodate
           {p.yearMade && ` · ${p.yearMade}`}
         </p>
         <div className="flex items-center justify-between pt-3 border-t mt-auto">

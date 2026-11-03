@@ -19,7 +19,9 @@ export default async function SellThanksPage({ searchParams }: { searchParams: P
         reply with a free valuation within <strong className="text-foreground">2 business days</strong>.
       </p>
       {sp.id && (
-        <p className="mt-3 text-xs text-muted-foreground font-mono">Ref: {sp.id}</p>
+        <p className="mt-3 text-xs text-muted-foreground font-mono">
+          Ref: SS-{sp.id.slice(-6).toUpperCase()}
+        </p>
       )}
 
       <div className="mt-10 text-left rounded-2xl border border-border bg-card p-6 space-y-4">

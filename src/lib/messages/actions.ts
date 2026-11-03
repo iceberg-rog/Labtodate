@@ -36,8 +36,8 @@ async function notifyRecipient(
     notifTitle: 'New message',
     notifBody: `You have a new message${about}.`,
     notifHref: href,
-    emailSubject: `[${ref}] New message on lab2date${productTitle ? ` about "${headerText(productTitle, 120)}"` : ''}`,
-    emailHtml: `<p>You have a new message${escapeHtml(about)} on lab2date.</p>
+    emailSubject: `[${ref}] New message on Labtodate${productTitle ? ` about "${headerText(productTitle, 120)}"` : ''}`,
+    emailHtml: `<p>You have a new message${escapeHtml(about)} on Labtodate.</p>
                 <p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}${href}">Open the conversation</a> to read and reply.</p>
                 <p style="color:#888;font-size:12px;">While a conversation is active we email at most once every couple of hours — newer messages are in your inbox.</p>`,
     dedupeKey: ref,
@@ -61,7 +61,7 @@ export async function startThreadWithSeller(
 
   // Imported listings belong to placeholder seller accounts nobody reads
   // (e.g. sales@<shop>.import). A thread there is a black hole, so the
-  // question goes to the lab2date team as a quote request on this product —
+  // question goes to the Labtodate team as a quote request on this product —
   // the mediated flow that emails the intake inbox and the buyer's replies.
   if (!isDeliverableEmail(product.seller.email)) {
     let quoteId: string;

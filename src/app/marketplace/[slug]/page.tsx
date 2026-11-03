@@ -51,7 +51,7 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
       title: product.title,
       description,
       type: 'website',
-      siteName: 'lab2date',
+      siteName: 'Labtodate',
       url: `/marketplace/${product.slug}`,
       images: product.images?.[0] ? [product.images[0]] : undefined,
     },
@@ -152,7 +152,7 @@ export default async function ProductDetailPage(props: PageProps) {
               : product.condition === 'REFURBISHED'
               ? 'https://schema.org/RefurbishedCondition'
               : 'https://schema.org/UsedCondition',
-          seller: { '@type': 'Organization', name: 'lab2date' },
+          seller: { '@type': 'Organization', name: 'Labtodate' },
         }
       : undefined,
   };
@@ -260,9 +260,15 @@ export default async function ProductDetailPage(props: PageProps) {
               <div>
                 <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground font-bold">Custom pricing</p>
                 <p className="text-2xl font-bold mt-2">Request a quote</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Typical response within 24 business hours from the supplier.
-                </p>
+                {/* Same promise the quote form and the buyer's quote list
+                    make (Settings -> quote turnaround). It used to say a flat
+                    "24 business hours" here while those said something else,
+                    so a buyer was told two different things about one quote. */}
+                {mk.quoteTurnaround && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Typical response within {mk.quoteTurnaround} from the supplier.
+                  </p>
+                )}
               </div>
             )}
 
@@ -323,7 +329,7 @@ export default async function ProductDetailPage(props: PageProps) {
             <Fact
               icon={MapPin}
               label="Supplier"
-              value="lab2date Verified Supplier"
+              value="Labtodate Verified Supplier"
             />
             <Fact icon={ShieldCheck} label="Warranty" value={mk.warranty} />
           </dl>
@@ -359,7 +365,7 @@ export default async function ProductDetailPage(props: PageProps) {
               <DetailRow label="Condition" value={conditionLabel} />
               <DetailRow label="Brand" value={product.brand?.name ?? '—'} />
               <DetailRow label="Category" value={product.category.name} />
-              <DetailRow label="Supplier" value="lab2date Verified Supplier" />
+              <DetailRow label="Supplier" value="Labtodate Verified Supplier" />
               <DetailRow label="Location" value={product.company?.country ?? 'EU'} />
               {product.yearMade && <DetailRow label="Year" value={String(product.yearMade)} />}
               <DetailRow label="Warranty" value={mk.warranty} />
@@ -478,7 +484,7 @@ export default async function ProductDetailPage(props: PageProps) {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-foreground truncate">
-                  lab2date Verified Supplier
+                  Labtodate Verified Supplier
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Inspected &amp; warrantied · ships worldwide
@@ -521,7 +527,7 @@ export default async function ProductDetailPage(props: PageProps) {
                   slug: s.slug,
                   title: s.title,
                   brand: s.brand?.name ?? '—',
-                  supplier: 'lab2date Verified Supplier',
+                  supplier: 'Labtodate Verified Supplier',
                   illustration: (s.illustration ?? 'balance') as IllustrationName,
                   imageUrl: s.images?.[0] ?? null,
                   condition: s.condition,

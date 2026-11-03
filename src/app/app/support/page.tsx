@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { LocalTime } from '@/components/util/LocalTime';
 import { LifeBuoy, Plus } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -16,7 +17,7 @@ export const dynamic = 'force-dynamic';
 // language so the buyer immediately knows whose move it is.
 const CUSTOMER_STATUS: Record<string, { label: string; variant: 'success' | 'warning' | 'accent' | 'secondary' }> = {
   OPEN:                  { label: 'Open',                  variant: 'warning' },
-  WAITING_ON_SUPPORT:    { label: 'Support is replying',   variant: 'accent' },
+  WAITING_ON_SUPPORT:    { label: 'Support will reply',    variant: 'accent' },
   WAITING_ON_CUSTOMER:   { label: 'Awaiting your reply',   variant: 'warning' },
   PENDING:               { label: 'Pending',               variant: 'accent' },
   RESOLVED:              { label: 'Resolved',              variant: 'success' },
@@ -96,7 +97,7 @@ export default async function CustomerSupportPage() {
                     >
                       <p className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1">
                         {m.fromStaff ? 'Support' : 'You'} ·{' '}
-                        {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        <LocalTime iso={new Date(m.createdAt).toISOString()} />
                       </p>
                       <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
                       <MessageAttachments urls={m.attachments} />

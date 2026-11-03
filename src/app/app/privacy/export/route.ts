@@ -40,7 +40,7 @@ export async function GET() {
   return new Response(JSON.stringify(payload, null, 2), {
     headers: {
       'Content-Type': 'application/json',
-      'Content-Disposition': `attachment; filename="lab2date-data-${uid}.json"`,
+      'Content-Disposition': `attachment; filename="labtodate-data-${uid}.json"`,
       'Cache-Control': 'no-store',
     },
   });

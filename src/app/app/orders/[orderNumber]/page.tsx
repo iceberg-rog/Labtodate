@@ -207,7 +207,7 @@ export default async function OrderDetailPage({
             {order.paymentVerificationStatus === 'AWAITING_VERIFICATION'
               ? 'Your payment proof is being reviewed'
               : order.paymentVerificationStatus === 'REJECTED'
-              ? 'Your payment proof needs attention'
+              ? 'We need something corrected'
               : 'Awaiting payment'}
           </p>
           <p className="mt-1">

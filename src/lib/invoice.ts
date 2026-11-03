@@ -64,11 +64,27 @@ function nl(v: number): string {
   return v.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/**
+ * Documents are dated in the COMPANY's zone — never the server's, never the
+ * reader's. The same invoice has to read identically for everyone who opens
+ * it, so this must not become a reader-local time the way the conversation
+ * screens did.
+ *
+ * The server runs UTC, and getDate()/getMonth() read the server's zone: a
+ * proforma issued at 00:30 Amsterdam printed the previous day's date.
+ */
+const DOCUMENT_TIME_ZONE = 'Europe/Amsterdam';
+
 function dateNL(iso: string): string {
-  const d = new Date(iso);
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  return `${dd}-${mm}-${d.getFullYear()}`;
+  // en-GB with 2-digit parts gives dd/mm/yyyy; the documents use dd-mm-yyyy.
+  return new Date(iso)
+    .toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      timeZone: DOCUMENT_TIME_ZONE,
+    })
+    .replace(/\//g, '-');
 }
 
 export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: string } {
@@ -82,8 +98,13 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
   const total = subtotal + shipping + tax;
   const docDate = dateNL(inv.dateISO);
   const isUnpaidInvoice = !isProforma && !!inv.unpaid;
+  // A final "Factuur" is only issued once the payment has been verified
+  // (callers pass unpaid=true until then), so it has to read as a receipt —
+  // never as another request for money the buyer has already transferred.
+  const isPaidInvoice = !isProforma && !isUnpaidInvoice;
+  const paidDateISO = isPaidInvoice ? (inv.deliveryDateISO || inv.dateISO) : null;
   const docTitle = isProforma ? 'Offerte' : isUnpaidInvoice ? 'Proforma-factuur' : 'Factuur';
-  const totalLabel = isProforma ? 'Offertebedrag' : 'Te betalen';
+  const totalLabel = isProforma ? 'Offertebedrag' : isPaidInvoice ? 'Voldaan' : 'Te betalen';
 
   const itemRows = inv.lines.map((l) => `
     <tr>
@@ -143,23 +164,45 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
     <table cellpadding="0" cellspacing="0" border="0" style="width:100%;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#111827;">
       <tr><td style="color:#6b7280;padding:2px 12px 2px 0;">Factuurnummer</td><td style="font-weight:700;text-align:right;">${esc(inv.number)}</td></tr>
       <tr><td style="color:#6b7280;padding:2px 12px 2px 0;">Factuurdatum</td><td style="font-weight:700;text-align:right;">${docDate}</td></tr>
-      ${inv.paymentTermDays ? `<tr><td style="color:#6b7280;padding:2px 12px 2px 0;">Betalingstermijn</td><td style="font-weight:700;text-align:right;">${inv.paymentTermDays} dagen</td></tr>` : ''}
+      ${inv.paymentTermDays && !isPaidInvoice ? `<tr><td style="color:#6b7280;padding:2px 12px 2px 0;">Betalingstermijn</td><td style="font-weight:700;text-align:right;">${inv.paymentTermDays} dagen</td></tr>` : ''}
       ${inv.clientNumber ? `<tr><td style="color:#6b7280;padding:2px 12px 2px 0;padding-top:8px;">Klantnummer</td><td style="font-weight:700;text-align:right;padding-top:8px;">${esc(String(inv.clientNumber))}</td></tr>` : ''}
       ${inv.deliveryDateISO ? `<tr><td style="color:#6b7280;padding:2px 12px 2px 0;">Leverdatum</td><td style="font-weight:700;text-align:right;">${dateNL(inv.deliveryDateISO)}</td></tr>` : ''}
     </table>`;
 
-  const factuurPaymentBox = !isProforma ? `
+  // Bank details are admin settings and can be blank on a fresh install. An
+  // empty "Naar IBAN" row would tell the buyer to wire money to nowhere, so
+  // say plainly that the details follow instead of printing a blank line.
+  const payeeRows = COMPANY.iban
+    ? `<tr><td style="color:#6b7280;padding:3px 12px 3px 0;">Naar IBAN</td><td style="font-weight:700;font-family:Consolas,Menlo,monospace;">${esc(COMPANY.iban)}</td></tr>
+          <tr><td style="color:#6b7280;padding:3px 12px 3px 0;">Op naam van</td><td style="font-weight:700;">${esc(COMPANY.name)}</td></tr>${COMPANY.bic ? `
+          <tr><td style="color:#6b7280;padding:3px 12px 3px 0;">BIC</td><td style="font-weight:700;font-family:Consolas,Menlo,monospace;">${esc(COMPANY.bic)}</td></tr>` : ''}`
+    : `<tr><td colspan="2" style="padding:6px 0 3px 0;color:#92400e;">Onze bankgegevens sturen wij u per e-mail. Nog niets ontvangen? Neem contact met ons op.</td></tr>`;
+
+  const amountDueBox = `
     <table cellpadding="0" cellspacing="0" border="0" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#111827;border:1px solid #d1d5db;border-radius:6px;padding:0;width:100%;max-width:380px;">
       <tr><td style="padding:12px 16px 4px 16px;font-weight:700;">Betaalgegevens</td></tr>
       <tr><td style="padding:0 16px 12px 16px;">
         <table cellpadding="0" cellspacing="0" border="0" style="width:100%;font-size:12px;">
           <tr><td style="color:#6b7280;padding:3px 12px 3px 0;">Te betalen</td><td style="font-weight:700;">${symbol} ${nl(total / 100)}${inv.dueDateISO ? ` <span style="font-weight:400;color:#6b7280;">(voor ${dateNL(inv.dueDateISO)})</span>` : ''}</td></tr>
-          <tr><td style="color:#6b7280;padding:3px 12px 3px 0;">Naar IBAN</td><td style="font-weight:700;font-family:Consolas,Menlo,monospace;">${esc(COMPANY.iban)}</td></tr>
-          <tr><td style="color:#6b7280;padding:3px 12px 3px 0;">Op naam van</td><td style="font-weight:700;">${esc(COMPANY.name)}</td></tr>
+          ${payeeRows}
           <tr><td style="color:#6b7280;padding:3px 12px 3px 0;">Omschrijving</td><td style="font-weight:700;">Factuur ${esc(inv.number)}</td></tr>
         </table>
       </td></tr>
-    </table>` : '';
+    </table>`;
+
+  const paidBox = `
+    <table cellpadding="0" cellspacing="0" border="0" style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#065f46;border:1px solid #6ee7b7;background:#ecfdf5;border-radius:6px;padding:0;width:100%;max-width:380px;">
+      <tr><td style="padding:12px 16px 4px 16px;font-weight:700;">Betaald — geen actie nodig</td></tr>
+      <tr><td style="padding:0 16px 12px 16px;">
+        <table cellpadding="0" cellspacing="0" border="0" style="width:100%;font-size:12px;color:#065f46;">
+          <tr><td style="padding:3px 12px 3px 0;">Voldaan op</td><td style="font-weight:700;">${dateNL(paidDateISO || inv.dateISO)}</td></tr>
+          <tr><td style="padding:3px 12px 3px 0;">Bedrag</td><td style="font-weight:700;">${symbol} ${nl(total / 100)}</td></tr>
+          <tr><td style="padding:3px 12px 3px 0;">Omschrijving</td><td style="font-weight:700;">Factuur ${esc(inv.number)}</td></tr>
+        </table>
+      </td></tr>
+    </table>`;
+
+  const factuurPaymentBox = isProforma ? '' : isPaidInvoice ? paidBox : amountDueBox;
 
   const vatNote = inv.buyerVatNumber ? `
     Btw verlegd, betreft intracommunautaire prestatie conform artikel 138, lid 1, Richtlijn 2006/112.<br>
@@ -219,6 +262,7 @@ export function renderInvoiceHtml(inv: InvoiceInput): { subject: string; html: s
 
     <!-- TITLE + CUSTOMER -->
     <h1 style="font-family:Arial,Helvetica,sans-serif;font-size:24px;font-weight:800;margin:32px 0 14px 0;color:#111827;">${docTitle}</h1>
+    ${isPaidInvoice ? `<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#065f46;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:6px;padding:8px 12px;margin:0 0 18px 0;"><strong>Betaald op ${dateNL(paidDateISO || inv.dateISO)}.</strong> Deze factuur is voldaan — u hoeft niets meer over te maken.</p>` : ''}
     ${isUnpaidInvoice ? `<p style="font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin:0 0 18px 0;"><strong>Proforma invoice — not paid yet.</strong> Transfer the amount below quoting the invoice number. Your final invoice is issued once the payment is verified.</p>` : ''}
     <div style="margin-bottom:24px;">${buyerBlock}</div>
 

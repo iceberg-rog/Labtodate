@@ -620,8 +620,15 @@ model SourcingRequest {
   timeframe       String?
   description     String
 
-  // Price quoted back to the buyer (proforma)
+  // Price quoted back to the buyer (proforma). quotedPriceCents is the TOTAL
+  // for the whole offer — every "quoted amount" screen reads it directly — and
+  // quotedUnitCents x quotedQuantity is how that total was reached, so the
+  // document can print a real line ("2 x EUR 1,200") instead of pretending a
+  // multi-unit deal is one unit at the total price. Null on quotes issued
+  // before quantities existed: treat as quantity 1 at quotedPriceCents.
   quotedPriceCents Int?
+  quotedUnitCents  Int?
+  quotedQuantity   Int?
   quotedCurrency   String?
   quotedNote       String?
   quotedAt         DateTime?

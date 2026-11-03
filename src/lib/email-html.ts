@@ -4,7 +4,7 @@
  * listing or an admin setting must go through escapeHtml() / escapeHtmlLines()
  * before it is interpolated into email HTML: otherwise a name like
  * `<a href="https://evil.example">Verify your account</a>` turns into a live
- * phishing link inside a lab2date-branded email. Values we generate ourselves
+ * phishing link inside a Labtodate-branded email. Values we generate ourselves
  * (order numbers, refs, ids, formatted amounts, BETTER_AUTH_URL links) are
  * safe as-is. Pure functions — safe to import anywhere.
  */

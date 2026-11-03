@@ -77,8 +77,9 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
     lines: [
       {
         title: sr.product?.title ?? sr.productCategory ?? 'Requested equipment',
-        qty: 1,
-        unitCents: sr.quotedPriceCents,
+        // Quotes issued before quantities existed stored only the total.
+        qty: sr.quotedQuantity ?? 1,
+        unitCents: sr.quotedUnitCents ?? sr.quotedPriceCents,
       },
     ],
     status: validUntil ? `Valid until ${validUntil.toISOString().slice(0, 10)}` : 'Awaiting acceptance',

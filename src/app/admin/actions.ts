@@ -1,11 +1,13 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { foldAccents } from '@/lib/slug';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/delete-guard';
 import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
-import { orderReservedStock } from '@/lib/orders/checkout-tx';
+import { orderReservedStock, orderHoldsStock } from '@/lib/orders/checkout-tx';
+import { consumeStockForPaidQuoteOrder } from '@/lib/orders/stock';
 import { sendOrderInvoice } from '@/lib/orders/internal';
 import { proxyProofUrl } from '@/lib/orders/display';
 import { expireOnlyApi } from '@/lib/stripe/session-api';
@@ -36,7 +38,7 @@ async function requireCap(cap: string) {
 }
 
 const slugify = (s: string) =>
-  s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) ||
+  foldAccents(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70) ||
   Math.random().toString(36).slice(2, 8);
 
 /** Slug guaranteed unique for the given table — avoids a unique-constraint 500. */
@@ -1445,7 +1447,9 @@ export async function refundOrder(formData: FormData): Promise<{ ok: boolean; me
   // Return the reserved unit(s) to stock so the item can be sold again. Proforma
   // orders never reserved stock, so restocking them would mint phantom units.
   // updateMany: a hard-deleted product no-ops instead of throwing mid-loop.
-  const restock = orderReservedStock(order);
+  // Refunds only ever run on paid-family orders, where a quote order has
+  // already consumed its unit — so ask whether it holds stock NOW.
+  const restock = orderHoldsStock(order);
   if (restock) {
     for (const it of order.items) {
       if (it.productId) {
@@ -1677,6 +1681,9 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
   if (updateRes.count !== 1) {
     return { ok: false, message: 'Order is no longer pending — refresh and check the current status.' };
   }
+  // Paid for real now: a quote order has to give up its unit (cart orders
+  // reserved theirs at checkout and are skipped inside).
+  await consumeStockForPaidQuoteOrder(order.id, 'order.paid.manual');
   await notifyUser(
     order.buyer.id,
     `Payment received — order ${order.orderNumber}`,
@@ -2319,7 +2326,7 @@ const AdminProductInput = z.object({
   description: z.string().max(100_000).nullish(),
   categoryId: z.string().min(1),
   brandId: z.string().nullish(),
-  companyId: z.string().nullish(),               // null = lab2date own inventory
+  companyId: z.string().nullish(),               // null = Labtodate own inventory
   condition: z.enum(['NEW', 'REFURBISHED', 'USED']),
   mode: z.enum(['BUY_NOW', 'QUOTE_ONLY', 'HYBRID']),
   priceCents: z.number().int().nonnegative().max(MAX_PRICE_CENTS, MAX_PRICE_MESSAGE).nullable(),
@@ -2566,7 +2573,7 @@ export async function updateCompany(slug: string, input: z.infer<typeof CreateCo
 
 /** Delete a shop. Refused while products, user accounts or lab facilities are
  *  linked: those FKs are ON DELETE SET NULL, so deleting would silently turn
- *  the shop's products into lab2date own inventory. */
+ *  the shop's products into Labtodate own inventory. */
 export async function deleteCompany(slug: string): Promise<{ ok: boolean; message: string }> {
   await requireAdmin();
   await requireCap('companies:manage');
@@ -2756,7 +2763,7 @@ export async function aiAnalyzeShop(url: string, persistSlug?: string): Promise<
   try {
     const result = await aiJson<AiRiskResult>({
       systemPrompt:
-        'You are an experienced procurement & e-commerce risk analyst for lab2date, a B2B marketplace for refurbished laboratory equipment in Europe. Evaluate a candidate supplier website by URL alone. Consider: legitimacy of the domain (TLD, branding), whether the URL looks like a real lab/scientific equipment retailer, signs of fraud or thin content, country jurisdiction, expected catalogue quality. Be honest and brief.',
+        'You are an experienced procurement & e-commerce risk analyst for Labtodate, a B2B marketplace for refurbished laboratory equipment in Europe. Evaluate a candidate supplier website by URL alone. Consider: legitimacy of the domain (TLD, branding), whether the URL looks like a real lab/scientific equipment retailer, signs of fraud or thin content, country jurisdiction, expected catalogue quality. Be honest and brief.',
       userPrompt:
         `Evaluate this candidate supplier URL: ${url}\n\nReturn a JSON object exactly: {"score": <0-100>, "verdict": "safe" | "caution" | "risky", "notes": "<1-3 short sentences explaining the risk assessment>"}.`,
       maxTokens: 400,
@@ -2823,9 +2830,9 @@ export async function aiSuggestShops(): Promise<{ ok: boolean; message?: string;
     // returns supplier sites with real URLs (no hallucinated domains).
     const out = await aiJsonWithWebSearch<{ suggestions: AiSuggestion[] }>({
       systemPrompt:
-        'You are an experienced sourcing analyst for lab2date, a Netherlands-based B2B marketplace for refurbished / surplus laboratory & analytical equipment (HPLC, GC, mass spec, spectroscopy, centrifuges, parts). Use the web_search tool to find REAL, currently-operating supplier websites that sell used/refurbished lab equipment. Verify each URL exists by searching for it. Prefer Woo / Shopify / Magento e-commerce sites with public catalogues; reject blog posts, directories, manufacturer official pages, news, or sites that do not actually sell instruments. STRICT GEO PRIORITY — fill the slate in this order: (1) Netherlands first (highest priority — same-country logistics), (2) Western Europe — Germany, Belgium, France, UK, Italy, Switzerland, Austria, Denmark, Spain, (3) rest of EU + UK, (4) USA / Canada / global only if EU coverage is exhausted.',
+        'You are an experienced sourcing analyst for Labtodate, a Netherlands-based B2B marketplace for refurbished / surplus laboratory & analytical equipment (HPLC, GC, mass spec, spectroscopy, centrifuges, parts). Use the web_search tool to find REAL, currently-operating supplier websites that sell used/refurbished lab equipment. Verify each URL exists by searching for it. Prefer Woo / Shopify / Magento e-commerce sites with public catalogues; reject blog posts, directories, manufacturer official pages, news, or sites that do not actually sell instruments. STRICT GEO PRIORITY — fill the slate in this order: (1) Netherlands first (highest priority — same-country logistics), (2) Western Europe — Germany, Belgium, France, UK, Italy, Switzerland, Austria, Denmark, Spain, (3) rest of EU + UK, (4) USA / Canada / global only if EU coverage is exhausted.',
       userPrompt:
-        `Find 5 to 8 candidate supplier websites for lab2date to potentially partner with. EXCLUDE these hostnames entirely — they are either already imported or have been BLOCKED by the operator: ${allExcluded.join(', ') || '(none)'}. Use web_search to verify each candidate is a REAL active site that actually sells refurbished lab instruments (centrifuges, HPLC, GC, mass spec, etc.) to other businesses. Do NOT invent URLs. Do NOT include manufacturer pages, blog posts, auction houses, or general scientific equipment listings without product pages. APPLY THE GEO PRIORITY: aim for at least 2 Netherlands-based suppliers if possible, then fill the rest with Western Europe, then other EU, then global. Return ONLY JSON: {"suggestions": [{"name": "<company name>", "url": "<https://full-url>", "country": "<2-3 letter country code>", "rationale": "<1-2 sentences explaining why they fit lab2date AND what country they're in>"}]}. Order the array from highest geo priority (NL) to lowest.`,
+        `Find 5 to 8 candidate supplier websites for Labtodate to potentially partner with. EXCLUDE these hostnames entirely — they are either already imported or have been BLOCKED by the operator: ${allExcluded.join(', ') || '(none)'}. Use web_search to verify each candidate is a REAL active site that actually sells refurbished lab instruments (centrifuges, HPLC, GC, mass spec, etc.) to other businesses. Do NOT invent URLs. Do NOT include manufacturer pages, blog posts, auction houses, or general scientific equipment listings without product pages. APPLY THE GEO PRIORITY: aim for at least 2 Netherlands-based suppliers if possible, then fill the rest with Western Europe, then other EU, then global. Return ONLY JSON: {"suggestions": [{"name": "<company name>", "url": "<https://full-url>", "country": "<2-3 letter country code>", "rationale": "<1-2 sentences explaining why they fit Labtodate AND what country they're in>"}]}. Order the array from highest geo priority (NL) to lowest.`,
       maxTokens: 4000,
       temperature: 0.2,
       maxSearches: 6,
@@ -3423,6 +3430,7 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
       message: 'Verification race — another admin acted on this order. Refresh to see the current state.',
     };
   }
+  await consumeStockForPaidQuoteOrder(order.id, 'order.payment.verified');
   await notifyUser(
     order.buyer.id,
     `Payment verified — order ${order.orderNumber}`,
@@ -3481,8 +3489,13 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
     },
   });
   if (!order) return { ok: false, message: 'Order not found.' };
-  if (order.paymentVerificationStatus !== 'AWAITING_VERIFICATION') {
-    return { ok: false, message: `Cannot reject — current state: ${order.paymentVerificationStatus ?? 'none'}.` };
+  // Sending an order back is not only for a bad receipt: an address may be
+  // wrong or missing, or the buyer may have declared a transfer we cannot
+  // find. Any order still awaiting payment can go back with a reason, with
+  // or without a receipt on file. Once it is paid the money has moved, so
+  // the correction belongs on the order itself, not back in the buyer lane.
+  if (order.status !== 'PENDING_PAYMENT') {
+    return { ok: false, message: `Cannot send this back — the order is ${order.status.toLowerCase().replace(/_/g, ' ')}.` };
   }
   // BUG-037: claim the transition atomically (mirror of verifyPayment). The
   // in-memory AWAITING_VERIFICATION check above races a concurrent verify /
@@ -3492,8 +3505,11 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
   const rejectRes = await prisma.order.updateMany({
     where: {
       id,
-      paymentVerificationStatus: 'AWAITING_VERIFICATION',
       status: 'PENDING_PAYMENT',
+      OR: [
+        { paymentVerificationStatus: null },
+        { paymentVerificationStatus: { in: ['AWAITING_VERIFICATION', 'REJECTED'] } },
+      ],
     },
     data: {
       paymentVerificationStatus: 'REJECTED',
@@ -3506,19 +3522,19 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
   if (rejectRes.count !== 1) {
     return {
       ok: false,
-      message: 'Rejection race — another admin already acted on this order (likely verified it). Refresh to see the current state.',
+      message: 'Race — another admin already acted on this order (likely verified it). Refresh to see the current state.',
     };
   }
   await notifyUser(
     order.buyer.id,
-    `Payment proof needs attention — order ${order.orderNumber}`,
-    `Your receipt was reviewed and we need to ask for a corrected proof. Reason: ${reason.slice(0, 120)}`,
+    `Action needed — order ${order.orderNumber}`,
+    `We need something corrected before we can continue. ${reason.slice(0, 120)}`,
     `/app/orders/${order.orderNumber}/payment`,
   );
   try {
     await sendEmail({
       to: order.buyer.email,
-      subject: `Payment proof needs attention — order ${order.orderNumber}`,
+      subject: `Action needed — order ${order.orderNumber}`,
       html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${escapeHtmlLines(reason)}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
       text: `We need a corrected receipt for order ${order.orderNumber}. Reason: ${reason}\nResubmit: ${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment`,
     });

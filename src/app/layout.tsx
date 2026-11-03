@@ -4,7 +4,6 @@ import './globals.css';
 import { Header } from '@/components/site/Header';
 import { Footer } from '@/components/site/Footer';
 import { CookieConsent } from '@/components/site/CookieConsent';
-import { Assistant } from '@/components/site/Assistant';
 import { PublicChrome } from '@/components/site/PublicChrome';
 import { ThemeScript } from '@/components/site/ThemeScript';
 import { getMarketing } from '@/lib/marketing';
@@ -101,7 +100,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <PublicChrome
           header={<Header searchPlaceholder={`Search ${mk.listings} instruments…`} />}
           footer={<Footer />}
-          overlays={<><CookieConsent /><Assistant name={process.env.ASSISTANT_NAME?.trim() || `${process.env.SITE_NAME?.trim() || 'Labtodate'} Assistant`} siteName={process.env.SITE_NAME?.trim() || 'Labtodate'} /></>}
+          /* Support runs on tickets, not live chat: the floating assistant is
+             deliberately not mounted. The widget, its /api/assistant route and
+             the admin Messages screen are all still here — re-add <Assistant />
+             to this overlay to bring it back. */
+          overlays={<CookieConsent />}
         >
           {children}
         </PublicChrome>

@@ -177,9 +177,9 @@ export function AdminProductForm({ initial, categories, brands, companies, onSub
               {brands.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           </Field>
-          <Field label="Shop / supplier" hint="Leave blank = lab2date own inventory.">
+          <Field label="Shop / supplier" hint="Leave blank = Labtodate own inventory.">
             <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} className={inputCls}>
-              <option value="">lab2date (own inventory)</option>
+              <option value="">Labtodate (own inventory)</option>
               {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </Field>

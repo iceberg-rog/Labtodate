@@ -194,6 +194,9 @@ export default async function BuyerQuoteDetailPage(
       status={sr.status}
       product={sr.product}
       productCategory={sr.productCategory}
+      companyName={sr.companyName}
+      budget={sr.budget}
+      timeframe={sr.timeframe}
       messages={sr.messages.map((m) => ({
         id: m.id,
         body: m.body,
@@ -203,7 +206,7 @@ export default async function BuyerQuoteDetailPage(
             ? 'You'
             : role === 'ADMIN'
               ? (m.author?.name ?? null)
-              : 'lab2date Verified Supplier',
+              : 'Labtodate Verified Supplier',
         authorEmail: role === 'ADMIN' ? (m.author?.email ?? null) : null,
         isMine: m.author?.id === session.user.id,
         fromStaff: m.fromStaff,

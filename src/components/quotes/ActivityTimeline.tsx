@@ -1,3 +1,4 @@
+import { LocalTime } from '@/components/util/LocalTime';
 import {
   ArrowUpRight, FileText, Lock, MessageSquare, ShieldAlert, ShoppingBag,
   Check, X, Inbox, UserPlus, RefreshCw,
@@ -38,10 +39,6 @@ const TONE: Record<TimelineEvent['kind'], string> = {
   magic_link_reissued:   'bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-300',
 };
 
-function dtFmt(d: Date): string {
-  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
 export function ActivityTimeline({ events }: { events: TimelineEvent[] }) {
   if (events.length === 0) return null;
   return (
@@ -56,7 +53,7 @@ export function ActivityTimeline({ events }: { events: TimelineEvent[] }) {
           <div className="text-[12px]">
             <p className="font-semibold">{e.title}</p>
             {e.detail && <p className="text-muted-foreground line-clamp-2">{e.detail}</p>}
-            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5">{dtFmt(e.at)}</p>
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-0.5"><LocalTime iso={e.at.toISOString()} /></p>
           </div>
         </li>
       ))}

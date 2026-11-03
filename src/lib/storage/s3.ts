@@ -17,8 +17,8 @@ import { isInlineSafeMime } from './file-type';
 const ENDPOINT = process.env.S3_ENDPOINT || 'http://localhost:9000';
 const REGION = process.env.S3_REGION || 'us-east-1';
 const BUCKET = process.env.S3_BUCKET || 'lab2date-media';
-const ACCESS_KEY = process.env.S3_ACCESS_KEY || 'lab2date';
-const SECRET_KEY = process.env.S3_SECRET_KEY || 'lab2date-secret';
+const ACCESS_KEY = process.env.S3_ACCESS_KEY || 'Labtodate';
+const SECRET_KEY = process.env.S3_SECRET_KEY || 'Labtodate-secret';
 const PUBLIC_URL = process.env.S3_PUBLIC_URL || `${ENDPOINT}/${BUCKET}`;
 
 export const s3 = new S3Client({

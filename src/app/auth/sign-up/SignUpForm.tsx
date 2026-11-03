@@ -26,6 +26,8 @@ export default function SignUpPage({ listings }: { listings: string }) {
 
   const [step, setStep] = useState<'form' | 'code'>('form');
   const [name, setName] = useState('');
+  // Left empty by anyone who can see the form; only scripts fill it in.
+  const [honeypot, setHoneypot] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -47,7 +49,12 @@ export default function SignUpPage({ listings }: { listings: string }) {
       return;
     }
     setLoading(true);
-    const { error: signErr } = await authClient.signUp.email({ name: fullName, email, password });
+    // company_url is the honeypot (see the hidden input below and the
+    // sign-up guard in src/lib/auth.ts); better-auth passes unknown body
+    // fields straight through to that hook.
+    const payload = { name: fullName, email, password, company_url: honeypot } as unknown as
+      Parameters<typeof authClient.signUp.email>[0];
+    const { error: signErr } = await authClient.signUp.email(payload);
     if (signErr) {
       setLoading(false);
       setError(authErrorMessage(signErr, 'Could not create your account.'));
@@ -73,7 +80,7 @@ export default function SignUpPage({ listings }: { listings: string }) {
         lead={
           <>
             We sent a 5-digit code to <strong className="text-foreground">{email}</strong>. If this address
-            already has a lab2date account, we emailed you sign-in instructions instead.
+            already has a Labtodate account, we emailed you sign-in instructions instead.
           </>
         }
         initialError={codeError}
@@ -97,6 +104,19 @@ export default function SignUpPage({ listings }: { listings: string }) {
 
       <form onSubmit={handleSignup} className="space-y-4 rounded-2xl border bg-card p-6 shadow-sm">
         <div>
+          <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', top: 'auto', width: 1, height: 1, overflow: 'hidden' }}>
+            <input
+              type="text"
+              name="company_url"
+              tabIndex={-1}
+              autoComplete="off"
+              value={honeypot}
+              onChange={(e) => setHoneypot(e.target.value)}
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
+            />
+          </div>
           <label htmlFor="name" className="text-sm font-medium block mb-1.5">Full name</label>
           <div className="relative">
             <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />

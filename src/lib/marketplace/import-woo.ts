@@ -154,7 +154,7 @@ export async function runWooImport(target: ImportTarget): Promise<number> {
     const priceCents = wooPriceToCents(w.prices);
     const images = (w.images ?? []).map((i) => i.src).filter(Boolean);
     // Strip the supplier's own name, links and "see our website" copy: the
-    // listing is sold as a lab2date Verified Supplier item.
+    // listing is sold as a Labtodate Verified Supplier item.
     const shortHtml = cleanSupplierHtml(w.short_description, supplier);
     const summary = stripHtml(shortHtml ?? '').slice(0, 280) || null;
 

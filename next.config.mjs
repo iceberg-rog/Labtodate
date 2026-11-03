@@ -59,6 +59,21 @@ const nextConfig = {
       },
     ];
   },
+  async redirects() {
+    // The addresses a visitor types, or an old link points at. Every one of
+    // these answered 404: the sign-in page lives under /auth, which nobody
+    // guesses. Temporary on purpose - these are conveniences, not moved pages.
+    return [
+      { source: '/login', destination: '/auth/sign-in', permanent: false },
+      { source: '/signin', destination: '/auth/sign-in', permanent: false },
+      { source: '/sign-in', destination: '/auth/sign-in', permanent: false },
+      { source: '/register', destination: '/auth/sign-up', permanent: false },
+      { source: '/signup', destination: '/auth/sign-up', permanent: false },
+      { source: '/sign-up', destination: '/auth/sign-up', permanent: false },
+      { source: '/account', destination: '/app', permanent: false },
+      { source: '/dashboard', destination: '/app', permanent: false },
+    ];
+  },
   async rewrites() {
     return [
       { source: '/media/:path*', destination: `${MINIO_INTERNAL}/:path*` },

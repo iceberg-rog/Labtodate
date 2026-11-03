@@ -26,7 +26,7 @@ export default async function CookiesPage() {
         without the session cookie.
       </p>
       <h2>Contact</h2>
-      <p><a href={`mailto:${c.email}`}>{c.email}</a></p>
+      <p><a href={c.contactHref}>{c.contactLabel}</a></p>
     </LegalShell>
   );
 }

@@ -69,12 +69,14 @@ function initials(name: string, email: string): string {
   const src = (name || email).trim();
   return src.split(/\s+/).slice(0, 2).map((s) => s[0]).filter(Boolean).join('').toUpperCase() || '?';
 }
+/** Complete phrase, "ago" included: the sub-minute case is "just now", and
+ *  gluing " ago" onto that at the call site read "just now ago". */
 function timeAgo(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   if (diff < 60_000) return 'just now';
-  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m`;
-  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h`;
-  return `${Math.floor(diff / 86400_000)}d`;
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`;
+  return `${Math.floor(diff / 86400_000)}d ago`;
 }
 
 function SlaBadge({ dueAtISO, status, mounted }: { dueAtISO: string | null; status: string; mounted: boolean }) {
@@ -224,7 +226,7 @@ export function QuoteRow(p: QuoteRowProps) {
               {p.lastReplyAtISO && (
                 <span className="inline-flex items-center gap-1" title="Last activity">
                   <span className={`h-1.5 w-1.5 rounded-full ${p.lastReplyByStaff ? 'bg-sky-500' : 'bg-amber-500'}`} />
-                  {mounted ? timeAgo(p.lastReplyAtISO) : '…'} ago · {p.lastReplyByStaff ? 'staff' : 'buyer'}
+                  {mounted ? timeAgo(p.lastReplyAtISO) : '…'} · {p.lastReplyByStaff ? 'staff' : 'buyer'}
                 </span>
               )}
               <span className="inline-flex items-center gap-1">

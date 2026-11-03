@@ -6,6 +6,7 @@ import { getStripe } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { sendOrderInvoice } from '@/lib/orders/internal';
 import { cancelOrderSaga } from '@/lib/orders/stripe-handoff';
+import { consumeStockForPaidQuoteOrder } from '@/lib/orders/stock';
 import { confirmedExpiredApi } from '@/lib/stripe/session-api';
 import { notifyAdmins, notifyUser, logError } from '@/lib/observability';
 
@@ -143,6 +144,10 @@ export async function POST(req: Request) {
           ...(buyerCountryFromBilling ? { buyerCountry: buyerCountryFromBilling } : {}),
         },
       });
+      if (updateRes.count === 1) {
+        // Won the flip: a quote order gives up its unit now.
+        await consumeStockForPaidQuoteOrder(orderId, 'stripe.webhook');
+      }
       if (updateRes.count !== 1) {
         // Did NOT flip PENDING(this session)→PAID. Re-read: an admin cancel that
         // won before our update (terminal), or an order now attached to a DIFFERENT

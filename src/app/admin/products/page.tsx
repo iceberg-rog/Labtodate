@@ -143,7 +143,7 @@ export default async function AdminProductsPage(
             {status ? ` · ${status.replace('_', ' ').toLowerCase()}` : ''}
             {qtyFilter === 'lastcopy' ? ' · last-copy (qty = 1)' : qtyFilter === 'oos' ? ' · sold out' : ''}
             {categorySlug ? ` · ${categories.find((c) => c.slug === categorySlug)?.name ?? categorySlug}` : ''}
-            {shopSlug === 'own' ? ' · lab2date own inventory' : shopSlug ? ` · ${shopCounts.find((s) => s.slug === shopSlug)?.name ?? shopSlug}` : ''}
+            {shopSlug === 'own' ? ' · Labtodate own inventory' : shopSlug ? ` · ${shopCounts.find((s) => s.slug === shopSlug)?.name ?? shopSlug}` : ''}
             {q ? ` · matching “${q}”` : ''}
             {totalPages > 1 ? ` · page ${page}/${totalPages}` : ''}
           </p>
@@ -191,7 +191,7 @@ export default async function AdminProductsPage(
               shopSlug === 'own' ? 'bg-primary text-primary-foreground' : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 ring-1 ring-emerald-200 dark:ring-emerald-800'
             }`}
           >
-            ★ lab2date own <span className="opacity-60 ml-1 tabular-nums">{ownCount}</span>
+            ★ Labtodate own <span className="opacity-60 ml-1 tabular-nums">{ownCount}</span>
           </Link>
           {shopCounts.filter((s) => s._count.products > 0).map((s) => (
             <Link

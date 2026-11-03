@@ -2,6 +2,15 @@ import { ensureSettingsLoaded } from '@/lib/settings';
 
 export async function legalContext() {
   await ensureSettingsLoaded();
+  // Never print an address on a domain we may not own. Fall through to the
+  // inbox the support form already delivers to, and when nothing at all is
+  // configured link to the contact page instead of an empty mailto:.
+  const contactEmail = (
+    process.env.SUPPORT_EMAIL ||
+    process.env.COMPANY_EMAIL ||
+    process.env.SUPPORT_INTAKE_EMAIL ||
+    ''
+  ).trim();
   return {
     site: process.env.SITE_NAME || 'Labtodate',
     legal: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'Labtodate',
@@ -9,10 +18,9 @@ export async function legalContext() {
     country: process.env.COMPANY_COUNTRY || '',
     vat: process.env.COMPANY_VAT || '',
     phone: process.env.COMPANY_PHONE || '',
-    email:
-      process.env.SUPPORT_EMAIL ||
-      process.env.COMPANY_EMAIL ||
-      'support@lab2date.com',
+    email: contactEmail,
+    contactHref: contactEmail ? `mailto:${contactEmail}` : '/contact',
+    contactLabel: contactEmail || 'our contact page',
   };
 }
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import { LocalTime } from '@/components/util/LocalTime';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -22,6 +23,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   AlertTriangle,
+  Undo2,
 } from 'lucide-react';
 import {
   setOrderFulfillment,
@@ -79,7 +81,7 @@ export type OrderRowProps = {
   buyerLifetimeLabel?: string | null;
   anonymised?: boolean;
   itemsCount: number;
-  dateLabel: string; // formatted "Ordered May 18, 2026 at 09:54"
+  dateISO: string; // rendered in the READER's zone by <LocalTime>, not the server's
   firstItemTitle: string | null;
   firstItemImage?: string | null;
   firstItemCategory?: string | null;
@@ -263,7 +265,13 @@ export function OrderRow(p: OrderRowProps) {
                 {copied ? <Check className="h-3 w-3 text-emerald-600 dark:text-emerald-400" /> : <Copy className="h-3 w-3 opacity-40" />}
               </button>
             </div>
-            <p className="text-[11px] text-muted-foreground">{p.dateLabel}</p>
+            <p className="text-[11px] text-muted-foreground">
+              Ordered{' '}
+              <LocalTime
+                iso={p.dateISO}
+                options={{ month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }}
+              />
+            </p>
             <h3 className="font-semibold text-[14px] leading-tight tracking-tight truncate">
               {p.firstItemSlug ? (
                 <button
@@ -584,6 +592,51 @@ export function OrderRow(p: OrderRowProps) {
             >
               <CreditCard className="h-3.5 w-3.5" /> Mark as paid
             </button>
+          )}
+          {/* An unpaid order can go back to the buyer with a reason — a missing
+              delivery address, a transfer we cannot find. Before this, the only
+              way back was rejecting a receipt, so an order with no receipt (or a
+              good one and a bad address) was stuck on our side. */}
+          {!showReject ? (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setShowReject(true); }}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md border border-amber-300 bg-white text-amber-800 text-xs font-bold hover:bg-amber-50 dark:bg-transparent dark:text-amber-300 dark:border-amber-800"
+              data-noopen
+            >
+              <Undo2 className="h-3.5 w-3.5" /> Ask buyer to fix
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 w-full mt-2" data-noopen onClick={(e) => e.stopPropagation()}>
+              <input
+                type="text"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                placeholder="What the buyer must correct (e.g. delivery address is incomplete)"
+                maxLength={500}
+                className="flex-1 h-8 px-2 rounded-md border border-amber-300 dark:border-amber-800 bg-card text-xs"
+              />
+              <button
+                type="button"
+                disabled={pending || rejectReason.trim().length < 4}
+                onClick={() => {
+                  runAction(rejectPayment, { reason: rejectReason.trim() }, () => {
+                    setShowReject(false);
+                    setRejectReason('');
+                  });
+                }}
+                className="h-8 px-3 rounded-md bg-amber-700 text-white text-xs font-bold disabled:opacity-50"
+              >
+                Send back
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowReject(false); setRejectReason(''); }}
+                className="h-8 px-2 rounded-md text-muted-foreground text-xs"
+              >
+                Cancel
+              </button>
+            </div>
           )}
           {canCancel && (
             <DestructiveAction

@@ -26,7 +26,7 @@ import https from 'node:https';
 const MAX_REDIRECTS = 5;
 const MAX_BODY_BYTES = 10 * 1024 * 1024;     // 10 MB
 const DEFAULT_TIMEOUT_MS = 12_000;
-const USER_AGENT = 'lab2date-url-importer/1.0 (+https://labtodate.com/admin)';
+const USER_AGENT = 'Labtodate-url-importer/1.0 (+https://labtodate.com/admin)';
 
 export interface SafeFetchResult {
   status: number;

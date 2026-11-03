@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { LocalTime } from '@/components/util/LocalTime';
 import { notFound } from 'next/navigation';
 import {
   ChevronLeft,
@@ -281,7 +282,7 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
                       )}
                       <span>·</span>
                       <span>
-                        {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        <LocalTime iso={m.createdAt.toISOString()} />
                       </span>
                     </p>
                     <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
@@ -452,12 +453,12 @@ export default async function AdminTicketDetailPage(props: { params: Promise<{ i
           {/* SLA / timestamps */}
           <SidebarCard title="Timeline" icon={<Hourglass className="h-3.5 w-3.5 text-primary" />}>
             <div className="space-y-1 text-[11px]">
-              <div className="flex justify-between"><span className="text-muted-foreground">Opened</span><span>{t.createdAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Opened</span><span><LocalTime iso={t.createdAt.toISOString()} /></span></div>
               {t.dueAt && (
-                <div className="flex justify-between"><span className="text-muted-foreground">SLA due</span><span className="font-semibold">{t.dueAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">SLA due</span><span className="font-semibold"><LocalTime iso={t.dueAt.toISOString()} /></span></div>
               )}
               {t.lastReplyAt && (
-                <div className="flex justify-between"><span className="text-muted-foreground">Last reply</span><span>{t.lastReplyByStaff ? 'support' : 'customer'} · {t.lastReplyAt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Last reply</span><span>{t.lastReplyByStaff ? 'support' : 'customer'} · <LocalTime iso={t.lastReplyAt.toISOString()} /></span></div>
               )}
             </div>
           </SidebarCard>

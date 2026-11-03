@@ -21,6 +21,7 @@ const ERR_MSG: Record<string, string> = {
   large: 'Receipt file must be under 8 MB.',
   type: 'Receipt must be a JPG / PNG / WEBP / GIF or PDF.',
   proofreq: 'Please attach the receipt file — it is required for bank transfers and "Other" payments.',
+  addrreq: 'Add the full delivery address first — recipient, street, city, postal code and a 2-letter country. We ship to it and print it on the invoice.',
   closed: 'This order is no longer accepting payment proof.',
   canceled: 'This order was canceled, so no payment is due. Please do not send a transfer for it.',
   expired: 'This proforma has expired, so it can no longer be paid. Ask us to re-issue it on the quote thread.',
@@ -73,8 +74,8 @@ export default async function PaymentWorkspacePage({
       buyer: { name: sourcing.buyerName, email: sourcing.buyerEmail, company: sourcing.companyName },
       lines: [{
         title: sourcing.product?.title ?? sourcing.productCategory ?? 'Requested equipment',
-        qty: 1,
-        unitCents: sourcing.quotedPriceCents,
+        qty: sourcing.quotedQuantity ?? 1,
+        unitCents: sourcing.quotedUnitCents ?? sourcing.quotedPriceCents,
       }],
       note: sourcing.quotedNote ?? null,
     });
@@ -315,9 +316,9 @@ export default async function PaymentWorkspacePage({
           {/* min-w-0 + overflow-wrap: the admin's reason is free text and may be
               one long unbroken word — it must wrap, not widen the page. */}
           <div className="text-sm flex-1 min-w-0 [overflow-wrap:anywhere]">
-            <p className="font-bold text-amber-900 dark:text-amber-300">Your receipt needs attention.</p>
+            <p className="font-bold text-amber-900 dark:text-amber-300">We need something corrected.</p>
             <p className="text-amber-800 dark:text-amber-300 mt-1">
-              {order.paymentRejectionReason || 'Please upload a corrected receipt below.'}
+              {order.paymentRejectionReason || 'Please check the details below and submit again.'}
             </p>
           </div>
         </div>
@@ -510,23 +511,24 @@ export default async function PaymentWorkspacePage({
               <Building2 className="h-5 w-5 text-primary" /> Shipping & billing info
             </h2>
             <p className="text-xs text-muted-foreground -mt-2">
-              Only filled-in fields are updated; leave blank to keep what's on file.
+              We ship to this address and print it on the invoice, so the starred fields
+              have to be filled in before we can accept the receipt. The rest can stay blank.
             </p>
 
             <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="Recipient name" name="addr_name" defaultValue={seed.name} />
+              <Field label="Recipient name" name="addr_name" defaultValue={seed.name} required />
               <Field label="Phone" name="addr_phone" defaultValue={seed.phone} />
             </div>
             <div className="grid sm:grid-cols-2 gap-3">
               <Field label="Company (optional)" name="addr_company" defaultValue={seed.company} />
               <Field label="VAT / reg. number (optional)" name="addr_vat" defaultValue={seed.vat} />
             </div>
-            <Field label="Address line 1" name="addr_line1" defaultValue={seed.line1} />
+            <Field label="Address line 1" name="addr_line1" defaultValue={seed.line1} required />
             <Field label="Address line 2 (optional)" name="addr_line2" defaultValue={seed.line2} />
             <div className="grid sm:grid-cols-[1fr_1fr_120px] gap-3">
-              <Field label="City" name="addr_city" defaultValue={seed.city} />
-              <Field label="Postal code" name="addr_postal" defaultValue={seed.postal} />
-              <Field label="Country (2-letter)" name="addr_country" defaultValue={seed.country} maxLength={2} placeholder="NL" />
+              <Field label="City" name="addr_city" defaultValue={seed.city} required />
+              <Field label="Postal code" name="addr_postal" defaultValue={seed.postal} required />
+              <Field label="Country (2-letter)" name="addr_country" defaultValue={seed.country} maxLength={2} placeholder="NL" required />
             </div>
           </section>
 
@@ -570,21 +572,27 @@ function Field({
   defaultValue,
   placeholder,
   maxLength,
+  required,
 }: {
   label: string;
   name: string;
   defaultValue?: string;
   placeholder?: string;
   maxLength?: number;
+  required?: boolean;
 }) {
   return (
     <label className="block">
-      <span className="block text-sm font-semibold mb-1.5">{label}</span>
+      <span className="block text-sm font-semibold mb-1.5">
+        {label}
+        {required && <span className="text-amber-700 dark:text-amber-400" aria-hidden="true"> *</span>}
+      </span>
       <input
         name={name}
         defaultValue={defaultValue ?? ''}
         placeholder={placeholder}
         maxLength={maxLength}
+        required={required}
         className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm"
       />
     </label>

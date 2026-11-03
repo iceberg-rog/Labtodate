@@ -31,7 +31,7 @@ export default async function SellerPayoutsPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Payouts &amp; statement</h1>
-        <p className="text-muted-foreground mt-1">Your sales on lab2date · {pct}% commission</p>
+        <p className="text-muted-foreground mt-1">Your sales on Labtodate · {pct}% commission</p>
       </div>
 
       {!me?.companyId ? (

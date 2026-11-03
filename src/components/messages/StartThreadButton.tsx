@@ -40,7 +40,7 @@ export function StartThreadButton({ productSlug, productTitle }: { productSlug: 
               <div>
                 <h3 className="text-lg font-bold">Message the seller</h3>
                 <p className="text-xs text-muted-foreground mt-1">
-                  We notify the seller — or the lab2date team for listings we manage — and email you when they reply.
+                  We notify the seller — or the Labtodate team for listings we manage — and email you when they reply.
                 </p>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground" aria-label="Close">

@@ -179,7 +179,7 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
                     slug: p.slug,
                     title: p.title,
                     brand: p.brand?.name ?? '—',
-                    supplier: 'lab2date',
+                    supplier: 'Labtodate',
                     illustration: (p.illustration ?? 'balance') as IllustrationName,
                     imageUrl: p.images?.[0] ?? null,
                     condition: p.condition,

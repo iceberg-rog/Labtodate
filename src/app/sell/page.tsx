@@ -18,7 +18,7 @@ export default async function SellPage() {
         <div className="container-px py-14 md:py-20 max-w-6xl mx-auto">
           <div className="inline-flex items-center gap-2 rounded-full bg-accent/15 border border-accent/30 px-3 py-1 text-xs font-bold text-primary mb-5">
             <Tag className="h-3.5 w-3.5" />
-            Sell to lab2date
+            Sell to Labtodate
           </div>
           <h1
             className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground leading-[1.05] max-w-3xl"

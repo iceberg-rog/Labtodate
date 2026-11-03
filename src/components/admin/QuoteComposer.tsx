@@ -15,10 +15,14 @@ export function QuoteComposer({
   quoteId,
   buyerEmail,
   canSendProforma,
+  proformaLockedReason,
 }: {
   quoteId: string;
   buyerEmail: string;
   canSendProforma: boolean;
+  /** Why the proforma option is gone, shown in its place so the admin is not
+   *  left looking for a button that was quietly removed. */
+  proformaLockedReason?: string | null;
 }) {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>('reply');
@@ -26,6 +30,7 @@ export function QuoteComposer({
   const [pending, start] = useTransition();
   const [body, setBody] = useState('');
   const [price, setPrice] = useState('');
+  const [qty, setQty] = useState('1');
   const [pnote, setPnote] = useState('');
   const [atts, setAtts] = useState<Att[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -59,16 +64,19 @@ export function QuoteComposer({
       try {
         if (mode === 'proforma') {
           const cents = Math.round(parseFloat(price) * 100);
-          if (!Number.isFinite(cents) || cents <= 0) { setErr('Enter a valid price.'); return; }
-          if (cents > MAX_PROFORMA_EUR * 100) { setErr('Max proforma amount is €1,000,000.'); return; }
+          if (!Number.isFinite(cents) || cents <= 0) { setErr('Enter a valid unit price.'); return; }
+          const q = Math.round(parseFloat(qty));
+          if (!Number.isFinite(q) || q < 1) { setErr('Enter a quantity of 1 or more.'); return; }
+          if (cents * q > MAX_PROFORMA_EUR * 100) { setErr('Max proforma amount is €1,000,000.'); return; }
           const r = await sendProforma({
             sourcingRequestId: quoteId,
             priceCents: cents,
+            quantity: q,
             currency: 'EUR',
             note: pnote.trim() || null,
           });
           if (r?.error) { setErr(r.error); return; }
-          setPrice(''); setPnote('');
+          setPrice(''); setQty('1'); setPnote('');
         } else {
           if (body.trim().length < 2) { setErr('Message too short.'); return; }
           const r = await replyToQuote({
@@ -115,7 +123,7 @@ export function QuoteComposer({
           >
             <Lock className="h-3 w-3" /> Internal note
           </button>
-          {canSendProforma && (
+          {canSendProforma ? (
             <button
               type="button"
               onClick={() => { setMode('proforma'); setOpen(true); }}
@@ -123,7 +131,15 @@ export function QuoteComposer({
             >
               <Send className="h-3 w-3" /> Send proforma
             </button>
-          )}
+          ) : proformaLockedReason ? (
+            <span
+              className="inline-flex items-start gap-1.5 text-[11px] text-muted-foreground max-w-[32rem]"
+              title={proformaLockedReason}
+            >
+              <Lock className="h-3 w-3 mt-0.5 shrink-0" />
+              <span>{proformaLockedReason}</span>
+            </span>
+          ) : null}
         </div>
       </div>
     );
@@ -183,23 +199,39 @@ export function QuoteComposer({
         {isProforma ? (
           <>
             <label className="block">
-              <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Price (EUR)</span>
+              <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Unit price (EUR) &amp; quantity</span>
               <div className="flex items-end gap-3 flex-wrap">
                 <input
                   type="number" min="0.01" max={MAX_PROFORMA_EUR} step="0.01"
                   value={price} onChange={(e) => setPrice(e.target.value)}
                   placeholder="18500.00"
                   required
-                  className="h-10 w-48 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+                  aria-label="Unit price in euro"
+                  className="h-10 w-40 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+                />
+                <span className="pb-2.5 text-sm text-muted-foreground">×</span>
+                <input
+                  type="number" min="1" max="9999" step="1"
+                  value={qty} onChange={(e) => setQty(e.target.value)}
+                  placeholder="1"
+                  required
+                  aria-label="Quantity"
+                  className="h-10 w-20 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
                 />
                 {(() => {
                   const cents = Math.round(parseFloat(price || '0') * 100);
+                  const q = Math.max(1, Math.round(parseFloat(qty || '1')) || 1);
                   return Number.isFinite(cents) && cents > 0 ? (
                     <div className="rounded-lg bg-accent/[0.10] border border-accent/30 px-3 py-1.5 text-xs">
                       <span className="text-muted-foreground">Buyer will see </span>
                       <strong className="tabular-nums">
-                        {formatPrice(cents, 'EUR')}
+                        {formatPrice(cents * q, 'EUR')}
                       </strong>
+                      {q > 1 && (
+                        <span className="text-muted-foreground">
+                          {' '}({q} × {formatPrice(cents, 'EUR')})
+                        </span>
+                      )}
                     </div>
                   ) : null;
                 })()}

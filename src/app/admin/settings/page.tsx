@@ -8,6 +8,7 @@ import {
   CreditCard,
   Bot,
   Building2,
+  AlertTriangle,
 } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
 import { SETTING_DEFS, getEffectiveSettings, getEnvOnlySettingKeys } from '@/lib/settings';
@@ -218,6 +219,21 @@ export default async function AdminSettingsPage(
 
   const fullGroups = [...groups, 'Logo', 'Webhooks'];
 
+  // lib/invoice.ts prints whatever is set and silently drops the rest, so an
+  // invoice with no registered address, no VAT number and no IBAN still
+  // renders as a tidy document -- no error, nothing in the logs. The gap only
+  // surfaces when a buyer asks where to wire the money, or when an invoice is
+  // refused. Name it here instead of letting it stay invisible. Issuing city
+  // and KvK are left out on purpose: both are optional by design.
+  const INVOICE_CRITICAL: { key: string; label: string; why: string }[] = [
+    { key: 'COMPANY_LEGAL_NAME', label: 'Legal company name', why: 'the seller named on every invoice' },
+    { key: 'COMPANY_ADDRESS', label: 'Company address', why: 'a registered address is required on an EU invoice' },
+    { key: 'COMPANY_COUNTRY', label: 'Country', why: 'part of that registered address' },
+    { key: 'COMPANY_VAT', label: 'VAT / reg. number', why: 'without it the buyer cannot reclaim VAT' },
+    { key: 'BANK_IBAN', label: 'Bank IBAN', why: 'the payment page tells buyers to contact support instead of showing an account' },
+  ];
+  const invoiceGaps = INVOICE_CRITICAL.filter((g) => !String(current[g.key] ?? '').trim());
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -268,6 +284,29 @@ export default async function AdminSettingsPage(
           </span>
         </div>
       </div>
+
+      {invoiceGaps.length > 0 && (
+        <div className="rounded-2xl border-2 border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-amber-700 dark:text-amber-300 mt-0.5 shrink-0" />
+          <div className="text-sm min-w-0">
+            <p className="font-bold text-amber-900 dark:text-amber-200">
+              Invoices and proformas are going out incomplete.
+            </p>
+            <p className="text-amber-800 dark:text-amber-300 mt-1">
+              A field left blank here is simply dropped from the document and the payment page —
+              no error, nothing in the logs. Still empty:
+            </p>
+            <ul className="mt-2 space-y-1 list-disc pl-5">
+              {invoiceGaps.map((g) => (
+                <li key={g.key} className="text-amber-900 dark:text-amber-200">
+                  <strong>{g.label}</strong>
+                  <span className="text-amber-800/80 dark:text-amber-300/80"> — {g.why}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
 
       <SettingsTabs groups={fullGroups} panels={panels} initial={requested || groups[0]} />
     </div>

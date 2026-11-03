@@ -19,7 +19,7 @@ export default async function BlogIndexPage() {
       <header className="mb-12">
         <p className="text-xs font-bold uppercase tracking-[0.18em] text-primary mb-2">Field notes</p>
         <h1 className="text-4xl md:text-6xl font-bold tracking-tight" style={{ letterSpacing: '-0.04em' }}>
-          The lab2date journal.
+          The Labtodate journal.
         </h1>
         <p className="mt-4 text-muted-foreground text-lg max-w-2xl">
           Buying guides, cost analyses, and technical deep-dives from procurement teams who&apos;ve done it before.

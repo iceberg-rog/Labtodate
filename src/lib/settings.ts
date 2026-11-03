@@ -76,7 +76,7 @@ export const SETTING_DEFS = [
   { key: 'AI_MODEL', label: 'AI model', secret: false, group: 'AI assistant',
     hint: 'e.g. gpt-4o-mini. Default: gpt-4o-mini.' },
   { key: 'ASSISTANT_NAME', label: 'Assistant name', secret: false, group: 'AI assistant', preview: '/',
-    hint: 'Display name of the on-site chat assistant. Default: lab2date Assistant.' },
+    hint: 'Display name of the on-site chat assistant. Default: Labtodate Assistant.' },
 ] as const;
 
 export type SettingKey = (typeof SETTING_DEFS)[number]['key'];

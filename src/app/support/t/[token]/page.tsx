@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation';
+import { LocalTime } from '@/components/util/LocalTime';
 import {
   ChevronLeft,
   ShieldCheck,
@@ -131,7 +132,7 @@ export default async function GuestTicketPage(
               >
                 <p className="text-[10px] font-bold uppercase tracking-wider opacity-70 mb-1">
                   {m.fromStaff ? 'Support' : t.name} ·{' '}
-                  {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  <LocalTime iso={new Date(m.createdAt).toISOString()} />
                 </p>
                 <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
                 <MessageAttachments urls={m.attachments} guestToken={params.token} />

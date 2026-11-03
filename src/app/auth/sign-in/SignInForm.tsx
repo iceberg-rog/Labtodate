@@ -14,7 +14,7 @@ import { VerifyEmailStep, sendVerificationCode } from '../VerifyEmailStep';
 const LINK_ERRORS: Record<string, string> = {
   INVALID_TOKEN: 'That sign-in link has expired or was already used. Enter your email below to get a new one.',
   EXPIRED_TOKEN: 'That sign-in link has expired or was already used. Enter your email below to get a new one.',
-  new_user_signup_disabled: 'There’s no lab2date account for that email yet — create one with “Sign up” below.',
+  new_user_signup_disabled: 'There’s no Labtodate account for that email yet — create one with “Sign up” below.',
   ACCOUNT_SUSPENDED: 'This account is suspended. Contact support if you think this is a mistake.',
 };
 
@@ -108,7 +108,7 @@ export default function SignInPage() {
         </div>
         <h1 className="text-xl font-bold tracking-tight">Check your email</h1>
         <p className="text-sm text-muted-foreground mt-2">
-          We emailed <strong className="text-foreground">{email}</strong>. If it has a lab2date account, the email
+          We emailed <strong className="text-foreground">{email}</strong>. If it has a Labtodate account, the email
           contains a sign-in link that expires in 10 minutes.
         </p>
         <Button variant="outline" onClick={() => setMagicSent(false)} className="mt-6 w-full">
@@ -122,7 +122,7 @@ export default function SignInPage() {
     <>
       <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">Welcome back</h1>
-        <p className="text-sm text-muted-foreground mt-1">Sign in to your lab2date account.</p>
+        <p className="text-sm text-muted-foreground mt-1">Sign in to your Labtodate account.</p>
       </div>
 
       <form onSubmit={handlePassword} className="space-y-4 rounded-2xl border bg-card p-6 shadow-sm">

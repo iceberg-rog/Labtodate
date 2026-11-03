@@ -32,6 +32,59 @@ import { logError } from '@/lib/observability';
  * Restocking a product that no longer exists is a no-op by definition, which is
  * the correct outcome — there is nothing to sell.
  */
+/**
+ * Take the unit(s) out of stock for an order that came from a quote/proforma,
+ * at the moment it is paid.
+ *
+ * Quote orders deliberately reserve nothing while the offer is open — an offer
+ * the buyer has not accepted must not hold inventory. But once the money is in,
+ * the unit IS gone, and before this existed a one-off used part stayed on sale
+ * after it had been sold and could be sold again to a second buyer.
+ *
+ * Cart orders are skipped: they already reserved at checkout
+ * (reserveAndCreateOrder), and decrementing here would double-count.
+ *
+ * Like releaseReservedStock this NEVER throws. It runs after the payment has
+ * been recorded, so a stock problem must not turn a successful payment into a
+ * 500 — it is logged for an operator to reconcile instead.
+ *
+ * Call it exactly once per order, guarded by the caller's atomic
+ * PENDING_PAYMENT -> PAID claim (count === 1).
+ */
+export async function consumeStockForPaidQuoteOrder(orderId: string, where: string): Promise<void> {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        orderNumber: true,
+        sourcingRequestId: true,
+        items: { select: { productId: true, quantity: true } },
+      },
+    });
+    // No order, or a cart order that already reserved at checkout.
+    if (!order || !order.sourcingRequestId) return;
+    for (const item of order.items) {
+      if (!item.productId || !Number.isFinite(item.quantity) || item.quantity <= 0) continue;
+      const dec = await prisma.product.updateMany({
+        where: { id: item.productId, quantity: { gte: item.quantity } },
+        data: { quantity: { decrement: item.quantity } },
+      });
+      if (dec.count !== 1) {
+        // The listing was edited, sold through another route or deleted between
+        // the proforma and the payment. The sale still stands; flag the drift.
+        await logError(
+          `${where}.consumeStockForPaidQuoteOrder`,
+          new Error(
+            `order ${order.orderNumber}: could not take ${item.quantity} off product ${item.productId} (stock too low or product gone)`,
+          ),
+        );
+      }
+    }
+  } catch (e) {
+    await logError(`${where}.consumeStockForPaidQuoteOrder`, e);
+  }
+}
+
 export async function releaseReservedStock(
   reserved: ReadonlyArray<{ productId: string; quantity: number }>,
   where: string,

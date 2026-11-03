@@ -277,7 +277,7 @@ export function UrlImportForm({ categories, companies }: Props) {
                 </Field>
                 <Field label={<span className="inline-flex items-center gap-1.5">Supplier{initialShop && companySlug === initialShop && <span className="inline-flex items-center px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 text-[9px] font-bold uppercase tracking-wider dark:bg-emerald-900/40 dark:text-emerald-300">auto-linked</span>}</span>}>
                   <select value={companySlug} onChange={(e) => setCompanySlug(e.target.value)} className={input}>
-                    <option value="">lab2date (own inventory)</option>
+                    <option value="">Labtodate (own inventory)</option>
                     {companies.map((c) => <option key={c.slug} value={c.slug}>{c.name}</option>)}
                   </select>
                 </Field>

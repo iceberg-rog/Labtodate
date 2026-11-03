@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { LocalTime } from '@/components/util/LocalTime';
 import { notFound } from 'next/navigation';
 import {
   ChevronLeft, Crown, ShieldAlert, AlertCircle, ShoppingBag, ExternalLink,
@@ -98,6 +99,16 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
   const ref = sr.proformaNumber ?? `RFQ-${sr.id.slice(-6).toUpperCase()}`;
   const title = sr.product?.title ?? sr.productCategory ?? 'General sourcing request';
   const canCompose = !sr.archivedAt && sr.status !== 'CLOSED' && sr.status !== 'ACCEPTED' && sr.status !== 'DECLINED';
+  // Re-issuing a proforma rewrites the linked order's amounts, and sendProforma
+  // refuses that once the order has left PENDING_PAYMENT (the money is settled).
+  // Work that out here so the composer can say so up front: before this, an
+  // admin was shown a normal price box, typed an amount, pressed Send and only
+  // then got "its amounts can no longer be changed" — while the buyer went on
+  // seeing the original figure, which read like the quote had half-succeeded.
+  const proformaLockedReason =
+    linkedOrder && linkedOrder.status !== 'PENDING_PAYMENT'
+      ? `Order ${linkedOrder.orderNumber} is ${linkedOrder.status.toLowerCase().replace(/_/g, ' ')}, so the amounts on this quote are final. Refund or cancel that order first, or open a new quote.`
+      : null;
   // Closing is for deals that went nowhere; a paid order is managed on the order.
   const canClose =
     sr.status !== 'CLOSED' && sr.status !== 'DECLINED' &&
@@ -269,7 +280,7 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
                             ? (m.author?.name ?? m.author?.email ?? 'Staff')
                             : sr.buyerName}
                           {' · '}
-                          {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          <LocalTime iso={m.createdAt.toISOString()} />
                         </p>
                         <p className="whitespace-pre-wrap leading-relaxed">{m.body}</p>
                         <MessageAttachments urls={m.attachments} />
@@ -283,7 +294,12 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
 
           {/* Composer — collapsed by default; expands to compose */}
           {canCompose && (
-            <QuoteComposer quoteId={sr.id} buyerEmail={sr.buyerEmail} canSendProforma />
+            <QuoteComposer
+              quoteId={sr.id}
+              buyerEmail={sr.buyerEmail}
+              canSendProforma={!proformaLockedReason}
+              proformaLockedReason={proformaLockedReason}
+            />
           )}
         </div>
 

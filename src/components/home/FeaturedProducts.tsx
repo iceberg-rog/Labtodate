@@ -38,7 +38,7 @@ export async function FeaturedProducts() {
               slug: p.slug,
               title: p.title,
               brand: p.brand?.name ?? '—',
-              supplier: 'lab2date Verified Supplier',
+              supplier: 'Labtodate Verified Supplier',
               illustration: (p.illustration ?? 'balance') as IllustrationName,
               imageUrl: p.images?.[0] ?? null,
               condition: p.condition,

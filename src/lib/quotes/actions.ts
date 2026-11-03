@@ -173,7 +173,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
     to: parsed.buyerEmail,
     subject: created.product
       ? `Quote request received: ${headerText(created.product.title, 120)}`
-      : 'lab2date sourcing request received',
+      : 'Labtodate sourcing request received',
     html: `
       <div style="font-family:system-ui,sans-serif;max-width:540px;">
         <h2 style="color:#0E4F40;">We&rsquo;ve got your request</h2>
@@ -196,7 +196,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   // placeholder addresses, so those go to the intake inbox. The request is
   // already saved: a failed staff notification must not fail the buyer's submit
   // (they'd see an error and resubmit, creating duplicates).
-  // Sellers never learn who the buyer is (lab2date mediates), so a seller copy
+  // Sellers never learn who the buyer is (Labtodate mediates), so a seller copy
   // carries no buyer identity and links to the seller inbox; staff and intake
   // copies link to the admin workspace, which labels internal notes.
   const sellerEmail = created.assignedTo?.email;
@@ -223,7 +223,7 @@ export async function submitSourcingRequest(input: SourcingInputType) {
         ${parsed.timeframe ? `<p><strong>Timeframe:</strong> ${escapeHtml(parsed.timeframe)}</p>` : ''}
         <p><strong>Description:</strong></p>
         <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
-        <p>Reply via lab2date dashboard: <a href="${assigneeLink}">${toSeller ? 'Open in seller inbox' : 'Open in admin'}</a></p>
+        <p>Reply via Labtodate dashboard: <a href="${assigneeLink}">${toSeller ? 'Open in seller inbox' : 'Open in admin'}</a></p>
       </div>
     `,
   }).catch((e) => console.error('[quotes] assignee notification failed', QUOTE_REF(created.id), e));
@@ -338,7 +338,7 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
         : `${process.env.BETTER_AUTH_URL ?? ''}/app/quotes/${sr.id}`;
       await sendEmail({
         to: sr.buyerEmail,
-        subject: 'New reply on your lab2date quote',
+        subject: 'New reply on your Labtodate quote',
         html: `<p>The supplier replied to your quote request.</p><p><a href="${buyerLink}">Open the thread</a></p>`,
       });
       if (sr.submittedById) {
@@ -388,12 +388,17 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
 
 const ProformaInput = z.object({
   sourcingRequestId: z.string().min(1),
+  // Per UNIT. With the default quantity of 1 this is also the total, so a
+  // caller that does not send a quantity behaves exactly as before.
   priceCents: z.number().int().positive().max(1_000_000_00),
+  quantity: z.number().int().positive().max(9_999).default(1),
   currency: z.string().min(3).max(3).default('EUR'),
   note: z.string().max(2000).optional().nullable(),
 });
 
-export async function sendProforma(input: z.infer<typeof ProformaInput>): Promise<QuoteActionResult> {
+// z.input, not z.infer: quantity and currency have zod defaults, so a caller
+// that omits them is valid — the parse fills them in.
+export async function sendProforma(input: z.input<typeof ProformaInput>): Promise<QuoteActionResult> {
   const result = ProformaInput.safeParse(input);
   if (!result.success) {
     const issue = result.error.issues[0];
@@ -405,6 +410,15 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
     return { error: 'This proforma could not be sent. Check the price and try again.' };
   }
   const parsed = result.data;
+  // One offer, three numbers: what a unit costs, how many, and the total the
+  // buyer owes. Everything downstream that says "the quoted amount" means the
+  // total; only the document line and the order line are per unit.
+  const quotedUnitCents = parsed.priceCents;
+  const quotedQuantity = parsed.quantity;
+  const quotedTotalCents = quotedUnitCents * quotedQuantity;
+  if (quotedTotalCents > 1_000_000_00) {
+    return { error: 'That comes to more than EUR 1,000,000 — lower the quantity or the unit price.' };
+  }
   await ensureSettingsLoaded();
   const session = await requireSession({ redirectTo: '/app' });
 
@@ -443,7 +457,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
   if (
     linkedOrder &&
     linkedOrder.status !== 'PENDING_PAYMENT' &&
-    (linkedOrder.subtotalCents !== parsed.priceCents || linkedOrder.currency !== parsed.currency)
+    (linkedOrder.subtotalCents !== quotedTotalCents || linkedOrder.currency !== parsed.currency)
   ) {
     return {
       error: `Order ${linkedOrder.orderNumber} is ${linkedOrder.status} — its amounts can no longer be changed by re-issuing a proforma. Refund/cancel the order first, or open a new quote.`,
@@ -478,7 +492,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
   // uses, so the proforma "Amount due" can never diverge from order.totalCents.
   // With DEFAULT_SHIPPING_CENTS / DEFAULT_TAX_PERCENT both 0 (current posture)
   // the total equals the subtotal and the single "Amount" line is unchanged.
-  const proformaSubtotalCents = parsed.priceCents;
+  const proformaSubtotalCents = quotedTotalCents;
   const proformaShippingCents = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
   const proformaTaxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
   const proformaTaxCents = Math.round((proformaSubtotalCents * proformaTaxPct) / 100);
@@ -508,7 +522,9 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
   await prisma.sourcingRequest.update({
     where: { id: sr.id },
     data: {
-      quotedPriceCents: parsed.priceCents,
+      quotedPriceCents: quotedTotalCents,
+      quotedUnitCents,
+      quotedQuantity,
       quotedCurrency: parsed.currency,
       quotedNote: parsed.note ?? null,
       quotedAt: now,
@@ -525,7 +541,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
       sourcingRequestId: sr.id,
       authorId: session.user.id,
       fromStaff: true,
-      body: `Quoted price: ${(parsed.priceCents / 100).toLocaleString()} ${parsed.currency} for "${itemTitle}". Proforma ${number} sent to the buyer (valid until ${validUntil.toISOString().slice(0, 10)}).${parsed.note ? `\n\nNote: ${parsed.note}` : ''}`,
+      body: `Quoted price: ${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} for "${itemTitle}". Proforma ${number} sent to the buyer (valid until ${validUntil.toISOString().slice(0, 10)}).${parsed.note ? `\n\nNote: ${parsed.note}` : ''}`,
     },
   });
 
@@ -545,7 +561,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
       // precondition; a concurrent payment wins and freezes the amounts —
       // BUG-023). The same-price-resend case for paid orders was already
       // allowed through by the freeze guard above and changes nothing here.
-      const subtotal = parsed.priceCents;
+      const subtotal = quotedTotalCents;
       const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
       const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
       const tax = Math.round((subtotal * taxPct) / 100);
@@ -566,12 +582,12 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
         // first issuance.
         await prisma.orderItem.updateMany({
           where: { orderId: existing.id },
-          data: { priceCentsSnapshot: subtotal },
+          data: { priceCentsSnapshot: quotedUnitCents, quantity: quotedQuantity },
         });
       }
       createdOrder = { id: existing.id, orderNumber: existing.orderNumber };
     } else {
-      const subtotal = parsed.priceCents;
+      const subtotal = quotedTotalCents;
       const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
       const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
       const tax = Math.round((subtotal * taxPct) / 100);
@@ -590,8 +606,8 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
             productId: sr.productId ?? null,
             titleSnapshot: itemTitle,
             brandSnapshot: null,
-            priceCentsSnapshot: subtotal,
-            quantity: 1,
+            priceCentsSnapshot: quotedUnitCents,
+            quantity: quotedQuantity,
           },
         },
       });
@@ -605,7 +621,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
     dateISO: now.toISOString(),
     currency: parsed.currency,
     buyer: { name: sr.buyerName, email: sr.buyerEmail, company: sr.companyName },
-    lines: [{ title: itemTitle, qty: 1, unitCents: parsed.priceCents }],
+    lines: [{ title: itemTitle, qty: quotedQuantity, unitCents: quotedUnitCents }],
     status: `Valid until ${validUntil.toISOString().slice(0, 10)}`,
     note: parsed.note ?? null,
   });
@@ -619,7 +635,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
     <div style="font-family:system-ui,sans-serif;max-width:600px;margin:0 auto;">
       <h2 style="color:#0E4F40;">Your proforma is ready — ${number}</h2>
       <p>Hi ${escapeHtml(sr.buyerName)},</p>
-      <p>Your quote for <strong>${escapeHtml(itemTitle)}</strong> is ready: <strong>${(parsed.priceCents / 100).toLocaleString()} ${escapeHtml(parsed.currency)}</strong>.</p>
+      <p>Your quote for <strong>${escapeHtml(itemTitle)}</strong> is ready: <strong>${(quotedTotalCents / 100).toLocaleString()} ${escapeHtml(parsed.currency)}</strong>.</p>
       ${createdOrder ? `
       <p>We've opened a <strong>purchase workspace</strong> for you to complete the order. Inside, you'll fill in billing &amp; shipping details and upload your payment proof.</p>
       <p style="margin:18px 0;">
@@ -647,12 +663,12 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
   await notifyUser(
     sr.submittedById,
     `Proforma ready — ${number}`,
-    `${(parsed.priceCents / 100).toLocaleString()} ${parsed.currency} for "${itemTitle}". Complete your purchase to confirm.`,
+    `${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} for "${itemTitle}". Complete your purchase to confirm.`,
     createdOrder ? `/app/orders/${createdOrder.orderNumber}/payment` : `/app/quotes/${sr.id}`,
   );
   await notifyAdmins(
     `Proforma sent — ${number}`,
-    `${itemTitle} · ${(parsed.priceCents / 100).toLocaleString()} ${parsed.currency} · expires ${validUntil.toISOString().slice(0, 10)}`,
+    `${itemTitle} · ${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} · expires ${validUntil.toISOString().slice(0, 10)}`,
     `/admin/quotes`,
     'QUOTE_APPROVED',
   );
@@ -663,7 +679,7 @@ export async function sendProforma(input: z.infer<typeof ProformaInput>): Promis
         actorEmail: session.user.email,
         action: 'quote.proforma.send',
         target: number,
-        meta: `${itemTitle} · ${(parsed.priceCents / 100).toLocaleString()} ${parsed.currency} · validUntil=${validUntil.toISOString().slice(0, 10)}`,
+        meta: `${itemTitle} · ${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} · validUntil=${validUntil.toISOString().slice(0, 10)}`,
       },
     });
   } catch {/* AuditLog model schema mismatch — non-fatal */}
@@ -841,7 +857,7 @@ export async function setQuoteStatus(
           <p>Hi ${escapeHtml(sr.buyerName)},</p>
           <p>Your request <strong>${ref}</strong>${itemTitle ? ` for <strong>${escapeHtml(itemTitle)}</strong>` : ''} was closed without a deal.</p>
           ${canceledOrder ? `<p>Order <strong>${canceledOrder}</strong> was canceled, so <strong>no payment is due</strong>. Please don&rsquo;t send a transfer for it. If you already paid, contact our support team and we&rsquo;ll sort it out.</p>` : ''}
-          <p>If you still need the item, you can open a new request on lab2date at any time.</p>
+          <p>If you still need the item, you can open a new request on Labtodate at any time.</p>
           <p style="margin:18px 0;">
             <a href="${buyerLink}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">View the quote</a>
           </p>
@@ -865,7 +881,7 @@ export async function setQuoteStatus(
       await notifyUser(
         sr.assignedToId,
         `Quote ${ref} was closed`,
-        'lab2date closed this request without a deal.',
+        'Labtodate closed this request without a deal.',
         sr.assignedTo?.role === 'SELLER' ? `/app/seller/inbox/${id}` : `/admin/quotes/${id}`,
       );
     }
@@ -1047,7 +1063,7 @@ export async function transferQuote(formData: FormData): Promise<{ ok: boolean; 
     await sendEmail({
       to: target.email,
       subject: `[${quoteRefOrProforma(sr)}] A quote was transferred to you`,
-      html: `<p>Quote <strong>${quoteRefOrProforma(sr)}</strong> was transferred to you on lab2date.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open the quote</a> to reply to the buyer.</p>`,
+      html: `<p>Quote <strong>${quoteRefOrProforma(sr)}</strong> was transferred to you on Labtodate.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open the quote</a> to reply to the buyer.</p>`,
     }).catch((e) => console.error('[quotes] transfer notification failed', quoteRefOrProforma(sr), e));
   }
   await audit('quote.transfer', quoteRefOrProforma(sr), `from=${session.user.email} to=${target.email}`);

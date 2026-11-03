@@ -36,7 +36,7 @@ export default async function NewAdminProductPage() {
         </Link>
         <h1 className="text-3xl font-bold tracking-tight">New product</h1>
         <p className="text-muted-foreground mt-1">
-          Add a product to your catalogue. Leave <strong>Shop</strong> empty to mark it as lab2date own
+          Add a product to your catalogue. Leave <strong>Shop</strong> empty to mark it as Labtodate own
           inventory. Status defaults to <strong>Published</strong> — admins skip the seller review queue.
         </p>
       </div>

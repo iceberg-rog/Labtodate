@@ -47,10 +47,10 @@ export default async function SellerInboxPage() {
             <li key={q.id}>
               <Link href={`/app/seller/inbox/${q.id}`} className="p-5 flex items-center gap-4 hover:bg-foreground/5 transition-colors">
                 <div className="flex-1 min-w-0">
-                  {/* Sellers never see who the buyer is — lab2date mediates (same
+                  {/* Sellers never see who the buyer is — Labtodate mediates (same
                       rule as the detail page). Admins see the real buyer. */}
                   <p className="text-[10px] uppercase tracking-wider font-bold text-muted-foreground mb-1 truncate">
-                    {role === 'ADMIN' ? `${q.buyerName} · ${q.buyerEmail}` : 'lab2date Buyer'}
+                    {role === 'ADMIN' ? `${q.buyerName} · ${q.buyerEmail}` : 'Labtodate Buyer'}
                   </p>
                   <p className="font-semibold truncate">
                     {q.product?.title ?? q.productCategory ?? 'General sourcing request'}

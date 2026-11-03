@@ -19,7 +19,7 @@ interface Message {
   authorName: string | null;
   authorEmail: string | null;
   isMine: boolean;
-  /** Written by lab2date staff or the assigned seller (drives the shield styling). */
+  /** Written by Labtodate staff or the assigned seller (drives the shield styling). */
   fromStaff?: boolean;
   /** Team-only note — only ever passed to admin viewers. */
   isInternalNote?: boolean;
@@ -37,6 +37,12 @@ interface Props {
   /** Category / lab-rental facility of a request without a product
    *  (e.g. "Lab rental: BioLab … (Berlin, Germany)") — names the thread. */
   productCategory?: string | null;
+  // What the buyer typed when they opened the request. The admin screen showed
+  // these back; the buyer's own page did not, so they could not check what
+  // budget or timeframe they had stated.
+  companyName?: string | null;
+  budget?: string | null;
+  timeframe?: string | null;
   messages: Message[];
   /** Role of the viewer in this thread. */
   viewerRole: 'BUYER' | 'SELLER' | 'ADMIN';
@@ -146,7 +152,7 @@ export function QuoteThread(p: Props) {
   function closeRequest() {
     if (
       !window.confirm(
-        "Close this request without a deal? The buyer's unpaid order (if any) is canceled, the buyer and the lab2date team are notified, and the request cannot be reopened.",
+        "Close this request without a deal? The buyer's unpaid order (if any) is canceled, the buyer and the Labtodate team are notified, and the request cannot be reopened.",
       )
     ) {
       return;
@@ -194,6 +200,9 @@ export function QuoteThread(p: Props) {
             <Meta label="Buyer" value={p.buyerName} />
             <Meta label="Email" value={p.buyerEmail} />
             <Meta label="Opened" value={new Date(p.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} />
+            {p.companyName?.trim() && <Meta label="Company" value={p.companyName} />}
+            {p.budget?.trim() && <Meta label="Budget" value={p.budget} />}
+            {p.timeframe?.trim() && <Meta label="Timeframe" value={p.timeframe} />}
           </div>
 
           <div className="mt-6 pt-5 border-t">
@@ -442,7 +451,7 @@ function Avatar({ name, mine, supplier }: { name: string | null; mine: boolean; 
 }
 
 function MessageBubble({ m, buyerName }: { m: Message; buyerName: string }) {
-  // Shield styling marks the lab2date side (staff or the assigned seller), from
+  // Shield styling marks the Labtodate side (staff or the assigned seller), from
   // the message's own flag — never from the display name.
   const isSupplier = !m.isMine && !!m.fromStaff;
   const ts = new Date(m.createdAt);

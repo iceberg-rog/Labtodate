@@ -39,9 +39,9 @@ export default async function ThreadPage(props: { params: Promise<{ id: string }
 
   const isBuyer = thread.buyerId === userId;
   // Identity is never exposed across the marketplace: a buyer only ever sees
-  // "lab2date Verified Supplier", a seller only ever sees "lab2date Buyer".
-  // All contact is mediated by lab2date — no real names, no emails, ever.
-  const counterpartLabel = isBuyer ? 'lab2date Verified Supplier' : 'lab2date Buyer';
+  // "Labtodate Verified Supplier", a seller only ever sees "Labtodate Buyer".
+  // All contact is mediated by Labtodate — no real names, no emails, ever.
+  const counterpartLabel = isBuyer ? 'Labtodate Verified Supplier' : 'Labtodate Buyer';
 
   return (
     <>

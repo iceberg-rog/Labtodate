@@ -223,7 +223,7 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
   // The acknowledgement goes to whatever address was typed into the form. Echo
   // the ticket's name/subject/body only when that is the signed-in user's own
   // (verified) address — otherwise anyone could use this form to make
-  // lab2date send their own text to any inbox. The team copy below has it all.
+  // Labtodate send their own text to any inbox. The team copy below has it all.
   const echo = !!session && p.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
   await sendEmail({
     to: p.email,

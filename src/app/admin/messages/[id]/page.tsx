@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { LocalTime } from '@/components/util/LocalTime';
 import { notFound } from 'next/navigation';
 import {
   ChevronLeft, Sparkles, Headphones, ShieldCheck, MessageCircle,
@@ -231,7 +232,7 @@ function Bubble({ m, customerName }: { m: any; customerName: string }) {
         <div className={`text-[11px] font-semibold inline-flex items-center gap-2 ${isAdmin ? 'flex-row-reverse' : ''}`}>
           <span>{isAdmin ? 'You' : isUser ? customerName : 'AI Assistant'}</span>
           <span className="text-muted-foreground font-normal">
-            {ts.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+            <LocalTime iso={ts.toISOString()} />
           </span>
         </div>
         <div className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap shadow-sm ${

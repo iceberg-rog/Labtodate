@@ -127,7 +127,7 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
   // Confirmation to the seller. This form needs no account and mails the
   // address that was typed, so the submission (name, item, summary) is echoed
   // only to the signed-in user's own address. Anyone else gets a generic
-  // receipt — otherwise the form relays arbitrary text from lab2date to any
+  // receipt — otherwise the form relays arbitrary text from Labtodate to any
   // inbox. The ops copy below carries the full (escaped) details.
   const echo = !!session && parsed.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
   await sendEmail({
@@ -140,7 +140,7 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
         <h2 style="color:#0E4F40;">Thanks${echo ? `, ${esc(parsed.contactName)}` : ''} — we&rsquo;ve got it</h2>
         <p>Our acquisitions team will review your submission and reply within <strong>2 business days</strong> with a valuation and next steps.</p>
         ${echo ? `<table style="border-collapse:collapse;font-size:14px;margin:16px 0;">${summaryRows}</table>` : ''}
-        ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t offer equipment to lab2date, you can ignore this email.</p>`}
+        ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t offer equipment to Labtodate, you can ignore this email.</p>`}
         <p style="color:#888;font-size:12px;">Reference: ${created.id}</p>
       </div>
     `,
@@ -704,7 +704,7 @@ export async function completeAcquisition(formData: FormData): Promise<void> {
     emailHtml: `<p>Hi ${esc(sub.contactName ?? 'there')},</p>
                 <p>We've wired <strong>${esc(paid)}</strong> to your bank for offer <strong>${ref}</strong>.</p>
                 <p><a href="${base}/app/sell-submissions/${id}">Open dashboard</a> to download the transfer receipt.</p>
-                <p>Thanks for selling through lab2date — the instrument is going to a new home.</p>`,
+                <p>Thanks for selling through Labtodate — the instrument is going to a new home.</p>`,
   });
   await audit('sell.completed', ref, `by=${session.user.email}`);
   revalidatePath(`/admin/sell/${id}`);

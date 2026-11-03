@@ -195,7 +195,17 @@ export default async function OrdersPage(props: { searchParams: Promise<{ filter
       ) : (
         <ul className="space-y-3">
           {visible.map((o) => {
-            const vis = STATUS[o.status] ?? STATUS.PENDING_PAYMENT;
+            const baseVis = STATUS[o.status] ?? STATUS.PENDING_PAYMENT;
+            // PENDING_PAYMENT covers two very different moments for the buyer:
+            // we are waiting for their receipt, or we already have it and are
+            // checking it. The second one still shouted "Awaiting payment" over
+            // a primary "Complete payment" button, which reads as if the upload
+            // had failed - the one thing most likely to make someone wire the
+            // money twice. The status line under it already said the truth.
+            const vis =
+              o.status === 'PENDING_PAYMENT' && o.paymentVerificationStatus === 'AWAITING_VERIFICATION'
+                ? { ...baseVis, label: 'Checking your receipt', nextLabel: 'View or replace receipt' }
+                : baseVis;
             const Icon = vis.Icon;
             const first = o.items[0];
             const imgUrl = first?.product?.images?.[0] ?? null;

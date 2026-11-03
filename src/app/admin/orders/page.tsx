@@ -391,6 +391,12 @@ export default async function AdminOrdersPage(
           rows={orders.map((o) => {
             const buyer = humaniseBuyer(o.buyer);
             const intel = intelByBuyer.get(o.buyer.id) ?? { paidCount: 0, lifetimeCents: 0 };
+            // "2nd order" and the REPEAT badge describe the customer's HISTORY, so
+            // they must not count the order they are printed on. They did: the
+            // moment a first-time buyer's only order was verified it joined the
+            // paid count, and its own card then announced a repeat customer on
+            // their 2nd order. Count what came before this row instead.
+            const paidBefore = Math.max(0, intel.paidCount - (PAID_STATES.includes(o.status) ? 1 : 0));
             const priority = computeOrderPriority({
               status: o.status,
               totalCents: o.totalCents,
@@ -400,7 +406,7 @@ export default async function AdminOrdersPage(
               // null-address case. A row with `{address: {}}` is just as
               // unshippable as one with `shippingAddress: null`.
               hasShippingAddress: shippingAddressIsComplete(o.shippingAddress),
-              buyerPaidOrderCount: intel.paidCount,
+              buyerPaidOrderCount: paidBefore,
               buyerLifetimeCents: intel.lifetimeCents,
             });
             const supplierNames = Array.from(new Set(o.items.map((i) => i.product?.seller?.name).filter(Boolean) as string[]));
@@ -414,11 +420,11 @@ export default async function AdminOrdersPage(
               buyerPrimary: buyer.primary,
               buyerSecondary: buyer.secondary,
               buyerCompany: o.buyer.company?.name ?? null,
-              buyerPaidOrderCount: intel.paidCount,
+              buyerPaidOrderCount: paidBefore,
               buyerLifetimeLabel: intel.lifetimeCents > 0 ? formatPrice(intel.lifetimeCents, o.currency) : null,
               anonymised: buyer.anonymised,
               itemsCount: o.items.reduce((s, i) => s + i.quantity, 0),
-              dateLabel: 'Ordered ' + new Date(o.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }),
+              dateISO: new Date(o.createdAt).toISOString(),
               firstItemTitle: o.items[0]?.titleSnapshot ?? null,
               firstItemImage: o.items[0]?.product?.images?.[0] ?? null,
               firstItemSlug: o.items[0]?.product?.slug ?? null,

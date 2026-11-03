@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { LocalTime } from '@/components/util/LocalTime';
 import { Bell, Tag, Megaphone, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
@@ -76,7 +77,7 @@ export default async function NotificationsPage() {
                     {n.body}
                   </p>
                   <p className="text-xs text-muted-foreground mt-2">
-                    {new Date(n.createdAt).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}
+                    <LocalTime iso={new Date(n.createdAt).toISOString()} options={{ dateStyle: 'medium', timeStyle: 'short' }} />
                   </p>
                 </div>
               </div>

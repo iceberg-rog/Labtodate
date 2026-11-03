@@ -592,9 +592,9 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
                 <p className="font-semibold inline-flex items-center gap-1.5">
                   <ShieldCheck className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-300" />
                   {process.env.STRIPE_SECRET_KEY?.startsWith('sk_live_')
-                    ? 'lab2date Stripe account (live mode)'
+                    ? 'Labtodate Stripe account (live mode)'
                     : process.env.STRIPE_SECRET_KEY?.startsWith('sk_test_')
-                    ? 'lab2date Stripe account (test mode)'
+                    ? 'Labtodate Stripe account (test mode)'
                     : 'Manual settlement · bank transfer (no Stripe)'}
                 </p>
               </div>

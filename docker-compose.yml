@@ -71,7 +71,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: setup
-    image: lab2date-setup:latest
+    image: lab2date-setup:${IMAGE_TAG:-latest}
     restart: "no"
     <<: *app-env
     depends_on:
@@ -89,7 +89,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runner
-    image: lab2date-web:latest
+    image: lab2date-web:${IMAGE_TAG:-latest}
     restart: unless-stopped
     <<: *app-env
     # Cap the container's RAM so a memory spike (e.g. the WASM image optimizer

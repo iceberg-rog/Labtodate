@@ -42,8 +42,8 @@ export default async function InboxPage() {
           {threads.map((t) => {
             const isBuyer = t.buyerId === userId;
             // Identity is never exposed: a buyer only ever sees
-            // "lab2date Verified Supplier"; a seller only "lab2date Buyer".
-            const otherName = isBuyer ? 'lab2date Verified Supplier' : 'lab2date Buyer';
+            // "Labtodate Verified Supplier"; a seller only "Labtodate Buyer".
+            const otherName = isBuyer ? 'Labtodate Verified Supplier' : 'Labtodate Buyer';
             const last = t.messages[0];
             const unread = last && last.authorId !== userId && !last.readAt;
             return (
