@@ -38,7 +38,10 @@ export default async function AppDashboardPage({ searchParams }: { searchParams:
         </p>
       )}
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Welcome back, {session.user.name.split(' ')[0]}</h1>
+        {/* "Welcome back" greeted brand-new accounts too. */}
+        <h1 className="text-3xl font-bold tracking-tight">
+          {orders + quotes + wishlistCount === 0 ? 'Welcome' : 'Welcome back'}, {session.user.name.split(' ')[0]}
+        </h1>
         <p className="text-muted-foreground mt-1">
           Role:{' '}
           <span className="inline-flex items-center rounded-full bg-accent/15 text-primary px-2 py-0.5 text-xs font-bold uppercase tracking-wider">

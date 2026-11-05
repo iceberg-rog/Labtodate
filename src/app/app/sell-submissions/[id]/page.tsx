@@ -16,6 +16,7 @@ import {
   saveAcquisitionShipping,
 } from '@/lib/sell/actions';
 import { ensureSettingsLoaded } from '@/lib/settings';
+import { siteValue } from '@/lib/site/content';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { ReplyForm } from '@/components/util/ReplyForm';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
@@ -116,6 +117,10 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
 
   // Company receiving address from settings (shown to seller during AWAITING_SHIPPING)
   const receivingAddress = (process.env.COMPANY_RECEIVING_ADDRESS || '').trim();
+  // Where a seller writes for ship-to details: the configured sell inbox, else
+  // support; nothing configured → the contact page (never a made-up address).
+  const acquisitionsEmail = (process.env.SELL_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '').trim();
+  const sellReplyTime = await siteValue('rules.sell_reply_time');
 
   return (
     <div className="space-y-6">
@@ -207,6 +212,8 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
         sub={sub}
         savedBank={savedBank}
         receivingAddress={receivingAddress}
+        acquisitionsEmail={acquisitionsEmail}
+        sellReplyTime={sellReplyTime}
         latestProposalCents={latestProposal?.priceCents ?? null}
         latestProposalCurrency={latestProposal?.currency ?? null}
       />
@@ -268,7 +275,7 @@ export default async function SellSubmissionDetailPage(props: { params: Promise<
               </div>
               <p className="text-sm font-bold">Conversation will start here</p>
               <p className="text-xs text-muted-foreground mt-1 max-w-xs mx-auto">
-                Our acquisitions team typically replies within 2 business days with questions and a valuation.
+                Our acquisitions team typically replies within {sellReplyTime} with questions and a valuation.
               </p>
             </div>
           ) : (
@@ -360,12 +367,18 @@ function StageCard({
   sub,
   savedBank,
   receivingAddress,
+  acquisitionsEmail,
+  sellReplyTime,
   latestProposalCents,
   latestProposalCurrency,
 }: {
   sub: any;
   savedBank: Record<string, string> | null;
   receivingAddress: string;
+  /** '' when none is configured (the card links to /contact then). */
+  acquisitionsEmail: string;
+  /** Admin → Site content → Response times. */
+  sellReplyTime: string;
   latestProposalCents: number | null;
   latestProposalCurrency: string | null;
 }) {
@@ -444,8 +457,17 @@ function StageCard({
             </div>
           ) : (
             <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 p-4 text-sm text-amber-900 dark:text-amber-300">
-              Our receiving address isn't configured yet — please email{' '}
-              <a href="mailto:acquisitions@lab2date.com" className="font-semibold underline">acquisitions@lab2date.com</a> for ship-to details.
+              {acquisitionsEmail ? (
+                <>
+                  Our receiving address isn't configured yet — please email{' '}
+                  <a href={`mailto:${acquisitionsEmail}`} className="font-semibold underline">{acquisitionsEmail}</a> for ship-to details.
+                </>
+              ) : (
+                <>
+                  Our receiving address isn't configured yet — please{' '}
+                  <Link href="/contact" className="font-semibold underline">contact us</Link> for ship-to details.
+                </>
+              )}
             </div>
           )}
           <p className="text-xs text-muted-foreground mt-2">
@@ -571,7 +593,7 @@ function StageCard({
         <div>
           <p className="font-bold">Awaiting acquisitions team review</p>
           <p className="text-sm text-muted-foreground mt-1">
-            We typically reply within <strong>2 business days</strong> with questions and a valuation. You'll get an email + notification the moment we do.
+            We typically reply within <strong>{sellReplyTime}</strong> with questions and a valuation. You'll get an email + notification the moment we do.
           </p>
         </div>
       </section>

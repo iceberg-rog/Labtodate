@@ -22,6 +22,9 @@ const nextConfig = {
   // src/lib/image-hosts.ts: images on any other host are loaded by the browser, not the optimizer
   env: { NEXT_PUBLIC_IMAGE_HOSTS: IMAGE_HOSTS.join(',') },
   output: 'standalone',
+  // Document PDFs: puppeteer-core is loaded at runtime from node_modules (not
+  // bundled); the standalone output traces it in.
+  serverExternalPackages: ['puppeteer-core'],
   experimental: {
     serverActions: {
       // File uploads posted through Server Actions (company logo, payment

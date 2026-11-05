@@ -11,10 +11,13 @@ export function SupportForm({
   defaultEmail = '',
   defaultName = '',
   signedIn = false,
+  replyTime,
 }: {
   defaultEmail?: string;
   defaultName?: string;
   signedIn?: boolean;
+  /** Admin → Site content → Response times (“1 business day”), passed in by the page. */
+  replyTime: string;
 }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +100,7 @@ export function SupportForm({
         {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Submit ticket <ArrowRight className="h-4 w-4" /></>}
       </Button>
       <p className="text-xs text-muted-foreground text-center">
-        You&apos;ll get a reference number by email and our reply within 1 business day.
+        You&apos;ll get a reference number by email and our reply within {replyTime}.
       </p>
     </form>
   );

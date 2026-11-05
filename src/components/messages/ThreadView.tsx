@@ -34,10 +34,14 @@ export function ThreadView({
   const [body, setBody] = useState('');
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
+  // Keep the newest message in view by scrolling the message LIST only.
+  // scrollIntoView also scrolled the whole window, so the page opened past the
+  // thread header and the first message.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
   // Polling for new messages every 5s.
@@ -109,7 +113,7 @@ export function ThreadView({
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+      <div ref={listRef} className="flex-1 overflow-y-auto space-y-3 pr-1">
         {messages.map((m) => (
           <div
             key={m.id}
@@ -121,11 +125,12 @@ export function ThreadView({
           >
             <p className="text-sm whitespace-pre-wrap leading-relaxed">{m.body}</p>
             <p className={`text-[10px] mt-1 ${m.isMine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
-              {new Date(m.createdAt).toLocaleString('en-US', { dateStyle: 'short', timeStyle: 'short' })}
+              {/* Same "Nov 5, 02:13 PM" format as the quote and ticket threads
+                  (the short date "11/5/26" reads as 11 May in Europe). */}
+              {new Date(m.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
             </p>
           </div>
         ))}
-        <div ref={endRef} />
       </div>
 
       <form onSubmit={handleSend} className="mt-4 flex gap-2">

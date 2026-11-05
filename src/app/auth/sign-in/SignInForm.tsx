@@ -18,7 +18,14 @@ const LINK_ERRORS: Record<string, string> = {
   ACCOUNT_SUSPENDED: 'This account is suspended. Contact support if you think this is a mistake.',
 };
 
-export default function SignInPage() {
+/** Admin-editable texts (Site content → Forms & sign-up), passed in by the page. */
+export interface SignInTexts {
+  title: string;
+  intro: string;
+  emailPlaceholder: string;
+}
+
+export default function SignInPage({ texts }: { texts: SignInTexts }) {
   const router = useRouter();
   const params = useSearchParams();
   // Default to the role-aware dispatcher (/auth/continue) so admins land on
@@ -36,6 +43,8 @@ export default function SignInPage() {
   });
   const [codeError, setCodeError] = useState<string | null>(null);
   const [magicSent, setMagicSent] = useState(false);
+  // Set by the reset-password page after a successful change.
+  const passwordChanged = params.get('reset') === '1';
 
   async function handlePassword(e: React.FormEvent) {
     e.preventDefault();
@@ -121,8 +130,8 @@ export default function SignInPage() {
   return (
     <>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Welcome back</h1>
-        <p className="text-sm text-muted-foreground mt-1">Sign in to your Labtodate account.</p>
+        <h1 className="text-2xl font-bold tracking-tight">{texts.title}</h1>
+        {texts.intro && <p className="text-sm text-muted-foreground mt-1">{texts.intro}</p>}
       </div>
 
       <form onSubmit={handlePassword} className="space-y-4 rounded-2xl border bg-card p-6 shadow-sm">
@@ -137,7 +146,7 @@ export default function SignInPage() {
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.com"
+              placeholder={texts.emailPlaceholder}
               className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -162,6 +171,11 @@ export default function SignInPage() {
           </div>
         </div>
 
+        {passwordChanged && !error && (
+          <p role="status" className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 dark:text-emerald-300 dark:bg-emerald-950/40 dark:border-emerald-800 rounded-md px-3 py-2">
+            Your password was changed. Sign in with your new password.
+          </p>
+        )}
         {error && (
           <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2">{error}</p>
         )}
@@ -183,7 +197,9 @@ export default function SignInPage() {
           type="button"
           variant="outline"
           onClick={handleMagicLink}
-          disabled={!email || loading !== null}
+          // Enabled with an empty email so a click says "Enter your email
+          // first" instead of silently doing nothing.
+          disabled={loading !== null}
           className="w-full"
         >
           {loading === 'magic' ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Mail className="h-4 w-4" /> Email me a magic link</>}

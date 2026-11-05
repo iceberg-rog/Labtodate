@@ -3,23 +3,24 @@
 import { useState, useRef, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, Send, Lock, Mail, EyeOff, ChevronUp, ChevronDown, Paperclip, X } from 'lucide-react';
-import { replyToQuote, sendProforma } from '@/lib/quotes/actions';
-import { formatPrice } from '@/lib/utils';
+import { replyToQuote } from '@/lib/quotes/actions';
+import { ProformaComposer, type ProformaDefaults } from './ProformaComposer';
 
 type Mode = 'reply' | 'internal' | 'proforma';
 type Att = { url: string; name: string; type: string };
-
-const MAX_PROFORMA_EUR = 1_000_000;
 
 export function QuoteComposer({
   quoteId,
   buyerEmail,
   canSendProforma,
   proformaLockedReason,
+  proformaDefaults,
 }: {
   quoteId: string;
   buyerEmail: string;
   canSendProforma: boolean;
+  /** Pre-filled quote composer (previous offer, buyer's billing details, settings). */
+  proformaDefaults: ProformaDefaults;
   /** Why the proforma option is gone, shown in its place so the admin is not
    *  left looking for a button that was quietly removed. */
   proformaLockedReason?: string | null;
@@ -29,9 +30,6 @@ export function QuoteComposer({
   const [open, setOpen] = useState(false);   // start COLLAPSED — workspace is conversation-first
   const [pending, start] = useTransition();
   const [body, setBody] = useState('');
-  const [price, setPrice] = useState('');
-  const [qty, setQty] = useState('1');
-  const [pnote, setPnote] = useState('');
   const [atts, setAtts] = useState<Att[]>([]);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -62,22 +60,8 @@ export function QuoteComposer({
     setErr(null);
     start(async () => {
       try {
-        if (mode === 'proforma') {
-          const cents = Math.round(parseFloat(price) * 100);
-          if (!Number.isFinite(cents) || cents <= 0) { setErr('Enter a valid unit price.'); return; }
-          const q = Math.round(parseFloat(qty));
-          if (!Number.isFinite(q) || q < 1) { setErr('Enter a quantity of 1 or more.'); return; }
-          if (cents * q > MAX_PROFORMA_EUR * 100) { setErr('Max proforma amount is €1,000,000.'); return; }
-          const r = await sendProforma({
-            sourcingRequestId: quoteId,
-            priceCents: cents,
-            quantity: q,
-            currency: 'EUR',
-            note: pnote.trim() || null,
-          });
-          if (r?.error) { setErr(r.error); return; }
-          setPrice(''); setQty('1'); setPnote('');
-        } else {
+        {
+
           if (body.trim().length < 2) { setErr('Message too short.'); return; }
           const r = await replyToQuote({
             sourcingRequestId: quoteId,
@@ -186,7 +170,7 @@ export function QuoteComposer({
             <p className="text-[11px] font-semibold text-amber-900 dark:text-amber-300">Team-only — never emailed, never shown to {buyerEmail}.</p>
           </>
         ) : isProforma ? (
-          <p className="text-[11px] font-semibold text-foreground">Sends a formal proforma invoice + payment instructions to {buyerEmail}.</p>
+          <p className="text-[11px] font-semibold text-foreground">Sends the quote as a PDF with the payment instructions to {buyerEmail}. Texts and layout: Admin → Documents.</p>
         ) : (
           <>
             <Mail className="h-3.5 w-3.5 text-primary shrink-0" />
@@ -195,61 +179,15 @@ export function QuoteComposer({
         )}
       </div>
 
+      {isProforma ? (
+        <ProformaComposer
+          quoteId={quoteId}
+          buyerEmail={buyerEmail}
+          d={proformaDefaults}
+          onDone={() => { setOpen(false); router.refresh(); }}
+        />
+      ) : (
       <form onSubmit={submit} className="p-5 space-y-3">
-        {isProforma ? (
-          <>
-            <label className="block">
-              <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Unit price (EUR) &amp; quantity</span>
-              <div className="flex items-end gap-3 flex-wrap">
-                <input
-                  type="number" min="0.01" max={MAX_PROFORMA_EUR} step="0.01"
-                  value={price} onChange={(e) => setPrice(e.target.value)}
-                  placeholder="18500.00"
-                  required
-                  aria-label="Unit price in euro"
-                  className="h-10 w-40 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-                />
-                <span className="pb-2.5 text-sm text-muted-foreground">×</span>
-                <input
-                  type="number" min="1" max="9999" step="1"
-                  value={qty} onChange={(e) => setQty(e.target.value)}
-                  placeholder="1"
-                  required
-                  aria-label="Quantity"
-                  className="h-10 w-20 px-3 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-                />
-                {(() => {
-                  const cents = Math.round(parseFloat(price || '0') * 100);
-                  const q = Math.max(1, Math.round(parseFloat(qty || '1')) || 1);
-                  return Number.isFinite(cents) && cents > 0 ? (
-                    <div className="rounded-lg bg-accent/[0.10] border border-accent/30 px-3 py-1.5 text-xs">
-                      <span className="text-muted-foreground">Buyer will see </span>
-                      <strong className="tabular-nums">
-                        {formatPrice(cents * q, 'EUR')}
-                      </strong>
-                      {q > 1 && (
-                        <span className="text-muted-foreground">
-                          {' '}({q} × {formatPrice(cents, 'EUR')})
-                        </span>
-                      )}
-                    </div>
-                  ) : null;
-                })()}
-              </div>
-            </label>
-            <label className="block">
-              <span className="block text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1">Note (optional)</span>
-              <textarea
-                value={pnote} onChange={(e) => setPnote(e.target.value.slice(0, 1500))}
-                rows={3}
-                placeholder="Lead time, condition, what's included, payment terms…"
-                className="w-full px-3 py-2.5 rounded-lg border border-input bg-background text-sm resize-y focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
-                maxLength={1500}
-              />
-              <div className="text-right text-[10px] text-muted-foreground mt-1 tabular-nums">{pnote.length} / 1500</div>
-            </label>
-          </>
-        ) : (
           <>
             {atts.length > 0 && (
               <div className="flex gap-2 flex-wrap">
@@ -279,7 +217,6 @@ export function QuoteComposer({
               <span className={body.length > 3800 ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}>{body.length} / 4000</span>
             </div>
           </>
-        )}
 
         {err && <p className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">{err}</p>}
 
@@ -314,11 +251,11 @@ export function QuoteComposer({
           >
             {pending ? <Loader2 className="h-4 w-4 animate-spin" />
               : isInternal ? <><Lock className="h-4 w-4" /> Post internal note</>
-              : isProforma ? <><Send className="h-4 w-4" /> Send proforma</>
               : <><Send className="h-4 w-4" /> Send reply</>}
           </button>
         </div>
       </form>
+      )}
     </section>
   );
 }

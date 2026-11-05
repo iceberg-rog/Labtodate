@@ -3,11 +3,16 @@ import { Clock, AlertTriangle, Banknote, XCircle, CheckCircle2 } from 'lucide-re
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { renderInvoiceHtml } from '@/lib/invoice';
-import { PrintButton } from '@/components/util/PrintButton';
+import { ensureLegacyQuoteDoc, snapshotOf } from '@/lib/documents/issue';
+import { DocumentViewer } from '@/components/documents/DocumentViewer';
 
 export const dynamic = 'force-dynamic';
-export const metadata = { title: 'Proforma invoice' };
+
+export async function generateMetadata(props: { params: Promise<{ id: string }> }) {
+  const { id } = await props.params;
+  const doc = await ensureLegacyQuoteDoc(id).catch(() => null);
+  return { title: doc ? `${snapshotOf(doc).texts.title} ${doc.number}` : 'Quote' };
+}
 
 // The linked order got past payment (a refund is still "settled" here).
 const SETTLED_STATES: readonly string[] = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'];
@@ -31,11 +36,6 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
     sr.assignedToId === session.user.id;
   if (!allowed) notFound();
 
-  // Persisted number is the authoritative reference; only fall back when an
-  // older quote was issued before slice B (legacy fallback keeps old proformas
-  // accessible — they don't get a unique persisted number).
-  const number = sr.proformaNumber ?? `PRO-${new Date((sr.quotedAt ?? sr.createdAt)).getFullYear()}-${sr.id.slice(-6).toUpperCase()}`;
-  const issuedAt = sr.proformaIssuedAt ?? sr.quotedAt ?? sr.createdAt;
   const validUntil = sr.validUntilAt;
   const isExpired = !!validUntil && validUntil.getTime() < Date.now();
   // A declined / closed quote (or a canceled order) voids the proforma: it must
@@ -68,34 +68,21 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
         ? `/app/seller/inbox/${sr.id}`
         : `/app/quotes/${sr.id}`;
 
-  const { html } = renderInvoiceHtml({
-    kind: 'PROFORMA',
-    number,
-    dateISO: issuedAt.toISOString(),
-    currency: sr.quotedCurrency || 'EUR',
-    buyer: { name: sr.buyerName, email: sr.buyerEmail, company: sr.companyName },
-    lines: [
-      {
-        title: sr.product?.title ?? sr.productCategory ?? 'Requested equipment',
-        // Quotes issued before quantities existed stored only the total.
-        qty: sr.quotedQuantity ?? 1,
-        unitCents: sr.quotedUnitCents ?? sr.quotedPriceCents,
-      },
-    ],
-    status: validUntil ? `Valid until ${validUntil.toISOString().slice(0, 10)}` : 'Awaiting acceptance',
-    note: sr.quotedNote ?? null,
-  });
+  // The frozen document the buyer was sent (quotes issued before editable
+  // documents are frozen now under the number they already carry).
+  const doc = await ensureLegacyQuoteDoc(sr.id);
+  if (!doc) notFound();
+  const docTitle = snapshotOf(doc).texts.title;
 
   return (
     <div className="container-px py-10 max-w-3xl mx-auto">
       {/* === Status header (proforma number + expiry banner) === */}
       <div className="flex items-start justify-between gap-4 flex-wrap mb-4 print:hidden">
         <div>
-          <p className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">Proforma invoice</p>
-          <h1 className="text-2xl font-bold font-mono mt-0.5">{number}</h1>
-          <p className="text-xs text-muted-foreground mt-1">Issued {issuedAt.toISOString().slice(0, 10)}</p>
+          <p className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">{docTitle}</p>
+          <h1 className="text-2xl font-bold font-mono mt-0.5">{doc.number}{doc.revision > 1 ? <span className="text-sm font-semibold text-muted-foreground"> · revision {doc.revision}</span> : null}</h1>
+          <p className="text-xs text-muted-foreground mt-1">Issued {doc.issuedAt.toISOString().slice(0, 10)}</p>
         </div>
-        <PrintButton />
       </div>
       {isVoid && (
         <div className="rounded-2xl border border-red-300 bg-red-50 text-red-900 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300 p-4 mb-5 flex items-start gap-3 text-sm">
@@ -147,10 +134,8 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
         </div>
       )}
 
-      {/* === Proforma document === */}
-      <div className="rounded-2xl border border-border bg-white p-8 print:border-0 print:p-0">
-        <div dangerouslySetInnerHTML={{ __html: html }} />
-      </div>
+      {/* === The document (same page the PDF is printed from) === */}
+      <DocumentViewer htmlUrl={`/api/documents/${doc.id}?format=html`} pdfUrl={`/api/documents/${doc.id}`} title={`${docTitle} ${doc.number}`} />
 
       {/* === Payment instructions block (snapshot at issuance time) === */}
       {sr.paymentInstructionsSnapshot && !isVoid && !isLapsed && !isSettled && (
@@ -162,7 +147,7 @@ export default async function ProformaPage(props: { params: Promise<{ id: string
 {sr.paymentInstructionsSnapshot}
           </pre>
           <p className="text-[11px] text-muted-foreground mt-3">
-            These details were captured when the quote was issued. They stay attached to this proforma
+            These details were captured when the quote was issued. They stay attached to this quote
             even if our banking details change later.
           </p>
         </section>

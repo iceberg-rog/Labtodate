@@ -273,7 +273,7 @@ export default async function BuyerQuotesPage(props: { searchParams: Promise<{ f
             } else if (deal.state === 'awaiting_buyer') {
               statusLine = `Supplier replied ${smartDate(q.lastReplyAt ?? q.updatedAt)} · they're drafting a formal quote`;
             } else if (deal.state === 'proforma_sent') {
-              statusLine = `Proforma ${ref} · valid until ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—'}`;
+              statusLine = `Proforma ${ref} · valid until ${q.validUntilAt ? q.validUntilAt.toLocaleDateString('en-GB', { month: 'short', day: 'numeric', timeZone: 'UTC' }) : '—'}`;
             } else if (deal.state === 'won_payment_pending') {
               statusLine = `Order ${orderNumber} · awaiting your bank-transfer receipt`;
             } else if (deal.state === 'won_paid') {

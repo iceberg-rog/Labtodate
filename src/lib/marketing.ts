@@ -1,6 +1,7 @@
 import { cache } from 'react';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
+import { getSiteTexts, siteClaims } from '@/lib/site/content';
 
 export interface Marketing {
   listings: string;
@@ -13,15 +14,10 @@ export interface Marketing {
   social: { linkedin: string; twitter: string; github: string };
 }
 
-// Defaults are intentionally empty so unset settings render nothing rather
-// than an unsupported claim. Admin can populate these from /admin/settings.
+// Financing has no admin text yet: unset renders nothing rather than an
+// unsupported claim. Claims, tagline and social links: see getMarketing().
 const D = {
-  quoteTurnaround: '',
-  warranty: '',
-  inspection: '',
   financing: '',
-  footerTagline:
-    'B2B marketplace for laboratory and analytical equipment.',
 };
 
 /** Cached per-request: real DB counts for marketing fallbacks. Cheap, but
@@ -48,19 +44,25 @@ export async function getMarketing(): Promise<Marketing> {
   const adminListings = process.env.STAT_LISTINGS?.trim() || '';
   const adminSuppliers = process.env.STAT_SUPPLIERS?.trim() || '';
   const needCounts = !adminListings || !adminSuppliers;
-  const real = needCounts ? await getRealCounts() : { listings: 0, suppliers: 0 };
+  const [real, claims, texts] = await Promise.all([
+    needCounts ? getRealCounts() : Promise.resolve({ listings: 0, suppliers: 0 }),
+    // Claims, tagline and social links are edited in Admin → Site content
+    // (a switched-off claim is '' here, so every consumer drops its sentence).
+    siteClaims(),
+    getSiteTexts(),
+  ]);
   return {
     listings: adminListings || String(real.listings),
     suppliers: adminSuppliers || String(real.suppliers),
-    quoteTurnaround: process.env.QUOTE_TURNAROUND?.trim() || D.quoteTurnaround,
-    warranty: process.env.WARRANTY_TEXT?.trim() || D.warranty,
-    inspection: process.env.INSPECTION_TEXT?.trim() || D.inspection,
+    quoteTurnaround: claims.quoteTurnaround,
+    warranty: claims.warranty,
+    inspection: claims.inspection,
     financing: process.env.FINANCING_TEXT === undefined ? D.financing : (process.env.FINANCING_TEXT?.trim() || ''),
-    footerTagline: process.env.FOOTER_TAGLINE?.trim() || D.footerTagline,
+    footerTagline: (texts['footer.tagline'] ?? '').trim(),
     social: {
-      linkedin: process.env.SOCIAL_LINKEDIN?.trim() || '',
-      twitter: process.env.SOCIAL_TWITTER?.trim() || '',
-      github: process.env.SOCIAL_GITHUB?.trim() || '',
+      linkedin: (texts['footer.linkedin'] ?? '').trim(),
+      twitter: (texts['footer.twitter'] ?? '').trim(),
+      github: (texts['footer.github'] ?? '').trim(),
     },
   };
 }

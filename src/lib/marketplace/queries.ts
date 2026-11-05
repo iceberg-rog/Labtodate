@@ -57,14 +57,14 @@ export { liveProductWhere };
  * shop's pricing rule doesn't hide (see applyShopPricing + the product page).
  * Imports are HYBRID, so matching `mode = BUY_NOW` alone returned nothing.
  */
-const PURCHASABLE_WHERE: Prisma.ProductWhereInput = {
+export const PURCHASABLE_WHERE: Prisma.ProductWhereInput = {
   mode: { in: ['BUY_NOW', 'HYBRID'] },
   priceCents: { gt: 0 },
   OR: [{ companyId: null }, { company: { pricingMode: { in: ['PASS_THROUGH', 'MARKUP_PERCENT'] } } }],
 };
 
 /** Everything a buyer has to request a quote for (the complement of the above). */
-const QUOTE_ONLY_WHERE: Prisma.ProductWhereInput = {
+export const QUOTE_ONLY_WHERE: Prisma.ProductWhereInput = {
   OR: [
     { mode: 'QUOTE_ONLY' },
     { priceCents: null },

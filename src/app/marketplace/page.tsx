@@ -2,8 +2,9 @@ import { Suspense } from 'react';
 import Link from 'next/link';
 import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
-import { listProducts, getCategories, getTopBrands } from '@/lib/marketplace/queries';
-import { getMarketing } from '@/lib/marketing';
+import { listProducts, getCategories, getTopBrands, liveProductWhere } from '@/lib/marketplace/queries';
+import { marketplaceFacets } from '@/lib/marketplace/facets';
+import { siteText } from '@/lib/site/content';
 import { getInventorySettings } from '@/lib/inventory/settings';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import { Filters } from '@/components/marketplace/Filters';
@@ -71,24 +72,32 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   // price/page) silently read `undefined` and the page showed all products.
   const sp = parseParams(await searchParams);
   const page = sp.page;
-  const mk = await getMarketing();
   const outLabel = (await getInventorySettings()).INVENTORY_OOS_LABEL || 'Out of stock';
 
-  const [result, categories, brands] = await Promise.all([
-    listProducts({
-      q: sp.q,
-      category: sp.category,
-      brand: sp.brand,
-      condition: sp.condition,
-      mode: sp.mode,
-      sort: sp.sort,
-      minPriceCents: sp.minEuro !== undefined ? sp.minEuro * 100 : undefined,
-      maxPriceCents: sp.maxEuro !== undefined ? sp.maxEuro * 100 : undefined,
-      page,
-    }),
+  const filters = {
+    q: sp.q,
+    category: sp.category,
+    brand: sp.brand,
+    condition: sp.condition,
+    mode: sp.mode,
+    sort: sp.sort,
+    minPriceCents: sp.minEuro !== undefined ? sp.minEuro * 100 : undefined,
+    maxPriceCents: sp.maxEuro !== undefined ? sp.maxEuro * 100 : undefined,
+  };
+  const [result, categories, brands, facets] = await Promise.all([
+    listProducts({ ...filters, page }),
     getCategories(),
     getTopBrands(12),
+    liveProductWhere().then((live) => marketplaceFacets(filters, live)),
   ]);
+  // Counts follow the other active filters; an option that would return
+  // nothing is hidden (unless it is the one currently selected).
+  const facetCategories = categories
+    .map((c) => ({ slug: c.slug, name: c.name, count: facets.categoryCounts.get(c.slug) ?? 0 }))
+    .filter((c) => c.count > 0 || c.slug === sp.category);
+  const facetBrands = brands
+    .map((b) => ({ slug: b.slug, name: b.name, count: facets.brandCounts.get(b.slug) ?? 0 }))
+    .filter((b) => b.count > 0 || b.slug === sp.brand);
 
   // Filters that carry over to pagination and the inline search box.
   const KEPT = ['q', 'category', 'brand', 'condition', 'mode', 'sort', 'minPrice', 'maxPrice'] as const;
@@ -101,6 +110,14 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   const activeCategoryName = sp.category
     ? categories.find((c) => c.slug === sp.category)?.name
     : null;
+  // Admin → Site content → Marketplace. {{stats.listings}} is this search's
+  // result count here; the claim part drops out while the claim is off.
+  const resultVars = { 'stats.listings': result.total.toLocaleString() };
+  const [title, subtitle, subtitleClaim] = await Promise.all([
+    siteText('marketplace.title'),
+    siteText('marketplace.subtitle', resultVars),
+    siteText('marketplace.subtitle_claim', resultVars),
+  ]);
 
   return (
     <div className="container-px py-10 md:py-14">
@@ -117,11 +134,13 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
           className="text-3xl md:text-5xl font-bold text-foreground"
           style={{ letterSpacing: '-0.035em' }}
         >
-          {activeCategoryName ? activeCategoryName : 'All lab instruments'}
+          {activeCategoryName ? activeCategoryName : title}
         </h1>
-        <p className="mt-3 text-muted-foreground max-w-2xl">
-          {result.total.toLocaleString()} listings{mk.inspection ? ` · ${mk.inspection} on every refurbished unit` : ''}
-        </p>
+        {(subtitle || subtitleClaim) && (
+          <p className="mt-3 text-muted-foreground max-w-2xl">
+            {[subtitle, subtitleClaim].filter(Boolean).join(' · ')}
+          </p>
+        )}
 
         {/* Inline search */}
         <form action="/marketplace" className="mt-6 max-w-xl">
@@ -151,8 +170,9 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
          *  SSR/CSR hydration text mismatch (#418). */}
         <Suspense fallback={<div className="lg:sticky lg:top-24 h-10 rounded-lg bg-foreground/5 animate-pulse" />}>
           <Filters
-            categories={categories.filter((c) => c._count.products > 0).map((c) => ({ slug: c.slug, name: c.name, count: c._count.products }))}
-            brands={brands.map((b) => ({ slug: b.slug, name: b.name, count: b._count.products }))}
+            categories={facetCategories}
+            brands={facetBrands}
+            hasPricedListings={facets.hasPricedListings}
           />
         </Suspense>
 
@@ -171,6 +191,13 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
             <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
               <p className="text-lg font-semibold">No instruments match these filters.</p>
               <p className="text-sm text-muted-foreground mt-2">Try removing a filter or broadening your search.</p>
+              <p className="text-sm mt-4">
+                Can&rsquo;t find it?{' '}
+                <Link href="/let-us-find-it" className="font-semibold text-primary hover:underline">
+                  Tell us what you need and we&rsquo;ll source it
+                </Link>
+                .
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">

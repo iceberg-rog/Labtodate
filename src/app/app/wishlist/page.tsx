@@ -5,6 +5,7 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { getInventorySettings } from '@/lib/inventory/settings';
 import { ProductCard } from '@/components/marketplace/ProductCard';
+import { WishlistRemoveButton } from '@/components/wishlist/WishlistRemoveButton';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 
 export const dynamic = 'force-dynamic';
@@ -56,8 +57,8 @@ export default async function WishlistPage() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {items.map((w) => (
+            <div key={w.id}>
             <ProductCard
-              key={w.id}
               p={{
                 slug: w.product.slug,
                 title: w.product.title,
@@ -75,6 +76,8 @@ export default async function WishlistPage() {
                 badge: w.product.status !== 'PUBLISHED' ? 'No longer listed' : w.product.quantity <= 0 ? outLabel : null,
               }}
             />
+            <WishlistRemoveButton slug={w.product.slug} title={w.product.title} />
+            </div>
           ))}
         </div>
       )}

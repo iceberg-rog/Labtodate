@@ -1,14 +1,15 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { checkoutShippingCents, checkoutVat } from '@/lib/documents/checkout-vat';
 import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
 import { prisma } from '@/lib/db';
 import { requireSession } from '@/lib/auth-server';
 import { getStripe, stripeConfigured } from '@/lib/stripe/client';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { sendEmail } from '@/lib/email';
-import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
+import { sendTemplatedEmail, sendTemplatedEmailSafe } from '@/lib/email-templates/send';
+import { siteLink } from '@/lib/email-templates/links';
 import { audit, logError, notifyAdmins, notifyUser } from '@/lib/observability';
 import { reserveAndCreateOrder } from '@/lib/orders/checkout-tx';
 import { sendOrderReceived } from '@/lib/orders/internal';
@@ -17,6 +18,7 @@ import { stripeCheckoutHandoff, type StripeSessionApi } from '@/lib/orders/strip
 import { safeExpire } from '@/lib/stripe/session-api';
 import { withUniqueTicketRef } from '@/lib/support/actions';
 import { ACTIVE_TICKET_STATUSES } from '@/lib/support/statuses';
+import { intakeEmail } from '@/lib/intake';
 
 export async function requestReturn(orderNumber: string, formData: FormData) {
   await ensureSettingsLoaded();
@@ -61,17 +63,29 @@ export async function requestReturn(orderNumber: string, formData: FormData) {
   );
   const ref = ticket.ref;
 
-  const ops =
-    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
-  await sendEmail({
+  // Staff copy: only a configured inbox (skipped and logged otherwise).
+  const ops = await intakeEmail('support', 'staff_return_request');
+  if (ops) await sendTemplatedEmailSafe({
+    key: 'staff_return_request',
     to: ops,
-    subject: `Return request ${ref} — order ${orderNumber}`,
-    html: `<p>${escapeHtml(session.user.name)} (${escapeHtml(session.user.email)}) requested a return/refund for <strong>${orderNumber}</strong>.</p><p>Reason: ${reason ? escapeHtmlLines(reason) : '—'}</p>`,
+    lang: 'en',
+    vars: {
+      'order.number': orderNumber,
+      'ticket.number': ref,
+      'buyer.name': session.user.name,
+      'buyer.email': session.user.email,
+      'return.reason': reason || '—',
+    },
   });
-  await sendEmail({
+  await sendTemplatedEmailSafe({
+    key: 'return_request_received',
     to: session.user.email,
-    subject: `[${ref}] We received your return request`,
-    html: `<p>We&rsquo;ve logged your return/refund request for order ${orderNumber}. Our team will follow up by email. Reference: ${ref}.</p>`,
+    vars: {
+      'customer.name': session.user.name,
+      'order.number': orderNumber,
+      'ticket.number': ref,
+      'link.order': siteLink(`/app/orders/${orderNumber}`),
+    },
   });
 
   revalidatePath(`/app/orders/${orderNumber}`);
@@ -175,6 +189,9 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
     postal: get('postal').slice(0, 24),
     state: get('state').slice(0, 80),
     country: country.kind === 'ok' ? country.code : '',
+    // B2B: printed on the invoice when given (optional for private buyers).
+    company: get('company').slice(0, 120),
+    vat: get('vat').replace(/\s+/g, '').toUpperCase().slice(0, 40),
   };
 
   const missing: string[] = [];
@@ -209,15 +226,19 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
   }
 
   const subtotal = product.priceCents;
-  const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-  const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-  const tax = Math.round((subtotal * taxPct) / 100);
+  const shipping = await checkoutShippingCents();
+  // VAT from Admin → Documents → VAT (default treatment), on goods + shipping.
+  const checkoutVatInfo = await checkoutVat(subtotal, shipping);
+  const taxPct = checkoutVatInfo.pct;
+  const tax = checkoutVatInfo.taxCents;
   const total = subtotal + shipping + tax;
 
   const shippingAddressPayload = {
     name: addr.name,
     phone: addr.phone,
     email: addr.email,
+    company: addr.company || null,
+    vat: addr.vat || null,
     address: {
       line1: addr.line1,
       line2: addr.line2 || null,
@@ -249,6 +270,8 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
       subtotalCents: subtotal,
       shippingCents: shipping,
       taxCents: tax,
+      vatTreatment: checkoutVatInfo.treatment,
+      vatRateBp: checkoutVatInfo.rateBp,
       totalCents: total,
       currency: product.currency,
       paidAt: null,

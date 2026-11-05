@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
 import { getActiveSession } from '@/lib/auth-server';
 import { safeRedirect } from '@/lib/safe-redirect';
+import { siteTexts } from '@/lib/site/content';
 import SignInForm from './SignInForm';
 
 export const metadata = { title: 'Sign in' };
@@ -17,9 +18,11 @@ export default async function SignInPage({
     const target = safeRedirect(typeof raw === 'string' ? raw : null);
     redirect(target.startsWith('/auth/') ? '/auth/continue' : target);
   }
+  // Admin → Site content → Forms & sign-up.
+  const tx = await siteTexts(['forms.signin_title', 'forms.signin_intro', 'forms.signin_ph_email'] as const);
   return (
     <Suspense>
-      <SignInForm />
+      <SignInForm texts={{ title: tx['forms.signin_title'], intro: tx['forms.signin_intro'], emailPlaceholder: tx['forms.signin_ph_email'] }} />
     </Suspense>
   );
 }

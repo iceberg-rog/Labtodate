@@ -1,6 +1,7 @@
 import { LifeBuoy, Clock, ShieldCheck } from 'lucide-react';
 import { getServerSession } from '@/lib/auth-server';
 import { SupportForm } from '@/components/support/SupportForm';
+import { siteValue } from '@/lib/site/content';
 
 export const metadata = { title: 'Support' };
 export const dynamic = 'force-dynamic';
@@ -8,6 +9,8 @@ export const dynamic = 'force-dynamic';
 export default async function SupportPage() {
   const session = await getServerSession();
   const signedIn = !!session?.user;
+  // Admin → Site content → Response times & numbers.
+  const replyTime = await siteValue('rules.support_reply_time');
   return (
     <div className="container-px py-12 md:py-20">
       <div className="grid lg:grid-cols-[1fr_1.3fr] gap-12 items-start max-w-6xl mx-auto">
@@ -23,7 +26,7 @@ export default async function SupportPage() {
             reference number and a reply by email.
           </p>
           <ul className="mt-8 space-y-4">
-            <li className="flex gap-3"><Clock className="h-5 w-5 text-primary flex-shrink-0" /><span className="text-sm">Replies within <strong>1 business day</strong></span></li>
+            <li className="flex gap-3"><Clock className="h-5 w-5 text-primary flex-shrink-0" /><span className="text-sm">Replies within <strong>{replyTime}</strong></span></li>
             <li className="flex gap-3"><ShieldCheck className="h-5 w-5 text-primary flex-shrink-0" /><span className="text-sm">Every ticket is tracked end to end</span></li>
           </ul>
         </div>
@@ -31,6 +34,7 @@ export default async function SupportPage() {
           defaultEmail={session?.user.email ?? ''}
           defaultName={session?.user.name ?? ''}
           signedIn={signedIn}
+          replyTime={replyTime}
         />
       </div>
     </div>

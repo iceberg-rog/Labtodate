@@ -13,11 +13,19 @@ export function isDeliverableEmail(addr: string | null | undefined): addr is str
   return !!m && !PLACEHOLDER_TLDS.has(m[1].toLowerCase());
 }
 
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer;
+  contentType: string;
+}
+
 interface SendEmailParams {
   to: string;
   subject: string;
   html?: string;
   text?: string;
+  /** Files sent with the message (issued PDFs). */
+  attachments?: EmailAttachment[];
 }
 
 // Resend HTTP API send — used when RESEND_API_KEY is set.
@@ -32,6 +40,7 @@ async function sendViaResendHttp(
   subject: string,
   html?: string,
   text?: string,
+  attachments?: EmailAttachment[],
 ): Promise<{ messageId?: string }> {
   const key = process.env.RESEND_API_KEY;
   if (!key) throw new Error('RESEND_API_KEY not set');
@@ -45,7 +54,16 @@ async function sendViaResendHttp(
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ from, to, subject, html, text }),
+      body: JSON.stringify({
+        from,
+        to,
+        subject,
+        html,
+        text,
+        ...(attachments?.length
+          ? { attachments: attachments.map((a) => ({ filename: a.filename, content: a.content.toString('base64'), content_type: a.contentType })) }
+          : {}),
+      }),
       signal: controller.signal,
     });
   } finally {
@@ -94,24 +112,48 @@ function buildTransport(): Transporter | null {
   });
 }
 
-export async function sendEmail({ to, subject: rawSubject, html, text: rawText }: SendEmailParams): Promise<void> {
+/**
+ * The From address: EMAIL_FROM, else the support / company inbox, else
+ * no-reply@ the site's own domain — never a made-up domain (it used to be
+ * no-reply@lab2date.local, which receiving servers reject or spam-file).
+ */
+function senderAddress(): string {
+  const set = (process.env.EMAIL_FROM || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || '').trim();
+  if (set) return set;
+  let host = 'labtodate.com';
+  try {
+    host = new URL(process.env.BETTER_AUTH_URL || 'https://labtodate.com').hostname.replace(/^www\./, '') || host;
+  } catch {
+    /* keep the default */
+  }
+  return `no-reply@${host}`;
+}
+
+export async function sendEmail({ to, subject: rawSubject, html, text: rawText, attachments }: SendEmailParams): Promise<void> {
   await ensureSettingsLoaded();
   // Subjects often carry user-typed parts (ticket subject, item title): keep
   // the header single-line and bounded. Callers escape their own HTML.
   const subject = headerText(rawSubject, 250);
   const text = rawText === undefined ? undefined : plainTextBody(rawText);
-  const addr = process.env.EMAIL_FROM || 'no-reply@lab2date.local';
+  const addr = senderAddress();
   const name = headerText(process.env.SITE_NAME || 'Labtodate', 80).replace(/"/g, '') || 'Labtodate';
   const from = addr.includes('<') ? addr : `"${name}" <${addr}>`;
   let result: { messageId?: string } | undefined;
   let sendError: Error | null = null;
   try {
     if (process.env.RESEND_API_KEY) {
-      result = await sendViaResendHttp(from, to, subject, html, text);
+      result = await sendViaResendHttp(from, to, subject, html, text, attachments);
     } else {
       const t = buildTransport();
       if (!t) throw new Error('No mail transport configured.');
-      result = await t.sendMail({ from, to, subject, html, text });
+      result = await t.sendMail({
+        from,
+        to,
+        subject,
+        html,
+        text,
+        attachments: attachments?.map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType })),
+      });
     }
   } catch (e) {
     sendError = e instanceof Error ? e : new Error(String(e));
@@ -123,7 +165,7 @@ export async function sendEmail({ to, subject: rawSubject, html, text: rawText }
     await prisma.emailLog.create({
       data: {
         toAddr: to,
-        subject,
+        subject: attachments?.length ? `${subject} [+${attachments.map((a) => a.filename).join(', ')}]`.slice(0, 500) : subject,
         status: sendError ? 'failed' : 'sent',
         error: sendError ? sendError.message.slice(0, 500) : null,
         messageId: result?.messageId ?? null,

@@ -4,7 +4,11 @@ import { getServerSession, requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { QuoteThread } from '@/components/quotes/QuoteThread';
+import { OfferDecision } from '@/components/quotes/OfferDecision';
 import { computeDealState } from '@/lib/quotes/deal-state';
+import { siteValue } from '@/lib/site/content';
+import { ensureLegacyQuoteDoc, snapshotOf } from '@/lib/documents/issue';
+import { fmtMoney } from '@/lib/documents/vars';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,6 +63,9 @@ export default async function BuyerQuoteDetailPage(
     where: { sourcingRequestId: sr.id },
     select: { orderNumber: true, status: true },
   });
+  // The offer as the buyer received it (the PDF): its total includes shipping and VAT.
+  const offerDoc = sr.quotedPriceCents != null && sr.proformaNumber ? await ensureLegacyQuoteDoc(sr.id).catch(() => null) : null;
+  const offer = offerDoc ? snapshotOf(offerDoc) : null;
 
   // Once admin verifies payment, the quote thread has done its job — every
   // further interaction (track, invoice, return, support) lives on the order
@@ -79,6 +86,8 @@ export default async function BuyerQuoteDetailPage(
   }
 
   const inHistoryMode = orderTakesOver && searchParams.history === '1';
+  // Admin → Site content → Response times & numbers.
+  const verifyTime = await siteValue('rules.payment_verify_time');
 
   return (
     <>
@@ -127,7 +136,7 @@ export default async function BuyerQuoteDetailPage(
           : isDead ? `Order ${linkedOrder.orderNumber} · ${s.toLowerCase()}`
           : `Accepted — order ${linkedOrder.orderNumber}`;
       const sub =
-        isPending ? 'Provide delivery details, upload your transfer receipt, and we\'ll verify within 1 business day.'
+        isPending ? `Provide delivery details, upload your transfer receipt, and we'll verify within ${verifyTime}.`
           : isPaid ? 'No action needed — you\'ll get an email when the shipment is on its way.'
           : isShipping ? 'Track your shipment + invoice from the order page.'
           : isDelivered ? 'Need help? Request a return from the order page.'
@@ -159,6 +168,20 @@ export default async function BuyerQuoteDetailPage(
       // The deal ended (declined / closed / its order canceled): the price card
       // stays for reference but must not read as a live, payable offer.
       const quoteVoid = sr.status === 'DECLINED' || sr.status === 'CLOSED' || linkedOrder?.status === 'CANCELED';
+      const currency = sr.quotedCurrency || 'EUR';
+      const qty = sr.quotedQuantity ?? 1;
+      const unit = sr.quotedUnitCents ?? sr.quotedPriceCents;
+      const amountLabel = offer
+        ? fmtMoney(offer.totalCents, offer.currency, 'en')
+        : `${(sr.quotedPriceCents / 100).toLocaleString()} ${currency}`;
+      const breakdown = offer
+        ? `${offer.lines.length > 1 ? `${offer.lines.length} lines` : qty > 1 ? `${qty} × ${fmtMoney(unit, currency, 'en')}` : '1 unit'}${offer.shippingCents ? ' + shipping' : ''} · ${offer.vat.rateBp ? `incl. ${offer.vat.rateBp / 100}% VAT` : 'VAT 0%'}`
+        : qty > 1 ? `${qty} × ${(unit / 100).toLocaleString()} ${currency}` : '1 unit';
+      const expired = !!sr.validUntilAt && sr.validUntilAt.getTime() < Date.now();
+      // Offer first, order on acceptance: the buyer decides here. Once accepted
+      // (an order exists) the banner above links to the purchase workspace.
+      const awaitingDecision =
+        isBuyer && !quoteVoid && !linkedOrder && sr.status === 'RESPONDED' && !!sr.proformaNumber && !!sr.submittedById;
       return (
         <div
           className={`mb-5 rounded-2xl border-2 p-5 flex items-center justify-between gap-4 flex-wrap ${
@@ -167,22 +190,27 @@ export default async function BuyerQuoteDetailPage(
         >
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
-              {quoteVoid ? 'Quoted price · void, no payment due' : 'Quoted price'}
+              {quoteVoid ? 'Offer · void, no payment due' : awaitingDecision ? 'Our offer · your decision' : 'Offer'}
             </p>
             <p className={`text-2xl font-bold data mt-1 ${quoteVoid ? 'line-through text-muted-foreground' : ''}`}>
-              {((sr.quotedPriceCents) / 100).toLocaleString()} {sr.quotedCurrency || 'EUR'}
+              {amountLabel}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {breakdown}
+              {sr.validUntilAt && !quoteVoid && (
+                <> · {expired ? 'expired' : 'valid until'} {sr.validUntilAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })}</>
+              )}
+              {' · '}
+              <a href={`/app/quotes/${sr.id}/proforma`} className="font-semibold text-primary hover:underline">
+                {quoteVoid ? 'View the void offer' : 'View / download the offer (PDF)'}
+              </a>
             </p>
           </div>
-          <a
-            href={`/app/quotes/${sr.id}/proforma`}
-            className={
-              quoteVoid
-                ? 'rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-muted-foreground hover:text-foreground'
-                : 'rounded-full bg-primary text-primary-foreground px-5 py-2.5 text-sm font-semibold hover:bg-primary/90'
-            }
-          >
-            {quoteVoid ? 'View void proforma' : 'View / download proforma'}
-          </a>
+          {awaitingDecision && !expired ? (
+            <OfferDecision quoteId={sr.id} amountLabel={amountLabel} />
+          ) : awaitingDecision && expired ? (
+            <p className="text-sm text-muted-foreground max-w-xs">This offer has expired. Reply below and we will confirm the price again.</p>
+          ) : null}
         </div>
       );
     })()}

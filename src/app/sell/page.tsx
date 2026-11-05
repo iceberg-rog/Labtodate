@@ -1,6 +1,6 @@
 import { Tag, Banknote, Truck, ShieldCheck, Clock, Search, FileCheck2, Handshake } from 'lucide-react';
 import { SellForm } from './SellForm';
-import { getMarketing } from '@/lib/marketing';
+import { siteTexts } from '@/lib/site/content';
 
 export const metadata = {
   title: 'Sell your lab equipment',
@@ -10,34 +10,49 @@ export const metadata = {
 export const dynamic = 'force-dynamic';
 
 export default async function SellPage() {
-  const mk = await getMarketing();
+  // Admin → Site content → Forms & sign-up (reply time: Response times & numbers).
+  const tx = await siteTexts([
+    'forms.sell_badge', 'forms.sell_title', 'forms.sell_title_accent', 'forms.sell_intro',
+    'forms.sell_stat1_value', 'forms.sell_stat1_label', 'forms.sell_stat2_value', 'forms.sell_stat2_label',
+    'forms.sell_stat3_value', 'forms.sell_stat3_label', 'forms.sell_step2', 'forms.sell_footer',
+  ] as const);
+  const stats = ([1, 2, 3] as const)
+    .map((n) => ({ value: tx[`forms.sell_stat${n}_value` as const], label: tx[`forms.sell_stat${n}_label` as const] }))
+    .filter((s) => s.value);
   return (
     <div>
       {/* Hero */}
       <section className="border-b border-foreground/5 bg-foreground/[0.02]">
         <div className="container-px py-14 md:py-20 max-w-6xl mx-auto">
-          <div className="inline-flex items-center gap-2 rounded-full bg-accent/15 border border-accent/30 px-3 py-1 text-xs font-bold text-primary mb-5">
-            <Tag className="h-3.5 w-3.5" />
-            Sell to Labtodate
-          </div>
+          {tx['forms.sell_badge'] && (
+            <div className="inline-flex items-center gap-2 rounded-full bg-accent/15 border border-accent/30 px-3 py-1 text-xs font-bold text-primary mb-5">
+              <Tag className="h-3.5 w-3.5" />
+              {tx['forms.sell_badge']}
+            </div>
+          )}
           <h1
             className="text-4xl md:text-5xl lg:text-6xl font-bold text-foreground leading-[1.05] max-w-3xl"
             style={{ letterSpacing: '-0.04em' }}
           >
-            Turn idle instruments into{' '}
-            <span className="text-primary">working capital.</span>
+            {tx['forms.sell_title']}
+            {tx['forms.sell_title_accent'] && (
+              <>
+                {' '}
+                <span className="text-primary">{tx['forms.sell_title_accent']}</span>
+              </>
+            )}
           </h1>
-          <p className="mt-6 text-lg text-muted-foreground leading-relaxed max-w-2xl">
-            Whether you&apos;re an individual, a lab, a dealer, or an institution clearing a facility —
-            submit your equipment and our acquisitions team comes back with a valuation. No listing
-            fees, no guesswork.
-          </p>
+          {tx['forms.sell_intro'] && (
+            <p className="mt-6 text-lg text-muted-foreground leading-relaxed max-w-2xl">{tx['forms.sell_intro']}</p>
+          )}
 
-          <div className="mt-10 grid grid-cols-2 lg:grid-cols-3 gap-px rounded-2xl overflow-hidden border border-border bg-border">
-            <Stat value="0%" label="Listing fees" />
-            <Stat value="Global" label="Logistics handled for you" />
-            <Stat value="One" label="Accountable counterparty" />
-          </div>
+          {stats.length > 0 && (
+            <div className="mt-10 grid grid-cols-2 lg:grid-cols-3 gap-px rounded-2xl overflow-hidden border border-border bg-border">
+              {stats.map((s) => (
+                <Stat key={s.value} value={s.value} label={s.label} />
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
@@ -62,7 +77,7 @@ export default async function SellPage() {
               </h2>
               <ol className="mt-6 space-y-5">
                 <Step n={1} icon={FileCheck2} title="Submit your equipment" body="Tell us what you have — the form on the right takes a few minutes." />
-                <Step n={2} icon={Search} title="Free valuation" body="Our acquisitions team replies within 2 business days with a market-based valuation." />
+                <Step n={2} icon={Search} title="Free valuation" body={tx['forms.sell_step2']} />
                 <Step n={3} icon={Handshake} title="We match a buyer" body="We route your item and negotiate on agreed terms." />
                 <Step n={4} icon={Clock} title="Ship & get paid" body="We coordinate logistics; you get paid once the buyer confirms receipt." />
               </ol>
@@ -76,7 +91,7 @@ export default async function SellPage() {
           </div>
 
           <div>
-            <SellForm />
+            <SellForm footer={tx['forms.sell_footer']} />
           </div>
         </div>
       </section>

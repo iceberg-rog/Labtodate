@@ -11,7 +11,7 @@ import { aiChat, type AIMessage } from '@/lib/ai';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins, notifyUser } from '@/lib/observability';
 import { notifyAndMaybeEmail } from '@/lib/notify-throttled';
-import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
+import { siteLink } from '@/lib/email-templates/links';
 
 const GUEST_COOKIE = 'lab2_asst_g';
 const GUEST_COOKIE_TTL_DAYS = 90;
@@ -306,14 +306,15 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
   });
   const ref = `CHT-${id.slice(-6).toUpperCase()}`;
   if (conv.userId) {
+    const user = await prisma.user.findUnique({ where: { id: conv.userId }, select: { email: true, name: true } });
     await notifyAndMaybeEmail({
       userId: conv.userId,
-      toEmail: (await prisma.user.findUnique({ where: { id: conv.userId }, select: { email: true } }))?.email ?? '',
+      toEmail: user?.email ?? '',
       notifTitle: `New reply · ${ref}`,
       notifBody: `An operator replied: ${body.slice(0, 120)}`,
       notifHref: '/app#chat-open',
-      emailSubject: `[${ref}] We replied to your chat on Labtodate`,
-      emailHtml: `<p>Hi,</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p><a href="${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app">Open Labtodate</a> to continue the conversation.</p>`,
+      emailKey: 'chat_reply',
+      emailVars: { 'customer.name': user?.name ?? '', 'chat.ref': ref, 'chat.reply': body.slice(0, 500), 'link.chat': siteLink('/app') },
       dedupeKey: ref,
     });
   } else if (conv.guestEmail && z.string().email().safeParse(conv.guestEmail).success) {
@@ -326,8 +327,8 @@ export async function adminReplyConversation(formData: FormData): Promise<void> 
       notifTitle: '',
       notifBody: '',
       notifHref: '',
-      emailSubject: `[${ref}] We replied to your chat on Labtodate`,
-      emailHtml: `<p>Hi ${escapeHtml(conv.guestName ?? 'there')},</p><p>An operator replied to your chat:</p><blockquote style="border-left:3px solid #ddd;padding-left:12px;color:#444;">${escapeHtmlLines(body.slice(0, 500))}</blockquote><p>Re-open the chat at the bottom-right of <a href="${process.env.BETTER_AUTH_URL || 'https://labtodate.com'}">labtodate.com</a> to continue.</p>`,
+      emailKey: 'chat_reply',
+      emailVars: { 'customer.name': conv.guestName ?? '', 'chat.ref': ref, 'chat.reply': body.slice(0, 500), 'link.chat': siteLink('/') },
       dedupeKey: ref,
     });
   }

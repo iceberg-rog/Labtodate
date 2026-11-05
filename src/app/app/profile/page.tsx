@@ -4,10 +4,12 @@ import { prisma } from '@/lib/db';
 import { ProfileForm } from './ProfileForm';
 import { EmailVerifyButton } from './EmailVerifyButton';
 import { AvatarUploader } from './AvatarUploader';
+import { DeleteAccountForm } from './DeleteAccountForm';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ProfilePage() {
+export default async function ProfilePage(props: { searchParams: Promise<{ delete?: string }> }) {
+  const sp = await props.searchParams;
   const session = await requireSession({ redirectTo: '/app/profile' });
   const me = await prisma.user.findUnique({
     where: { id: session.user.id },
@@ -62,6 +64,8 @@ export default async function ProfilePage() {
           Download my data (JSON)
         </a>
       </div>
+
+      <DeleteAccountForm notice={sp.delete} />
     </div>
   );
 }

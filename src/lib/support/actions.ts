@@ -7,11 +7,12 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
-import { sendEmail } from '@/lib/email';
-import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
+import { sendTemplatedEmail, sendTemplatedEmailSafe } from '@/lib/email-templates/send';
+import { siteLink } from '@/lib/email-templates/links';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { rateLimit } from '@/lib/ratelimit';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
+import { intakeEmail } from '@/lib/intake';
 
 // ────────────────────────────────────────────────────────────────────────────
 //   Slice A helpers — priority + SLA + linked-commerce auto-detection
@@ -214,53 +215,51 @@ export async function submitTicket(input: z.infer<typeof TicketInput>) {
     }),
   );
 
-  const site = process.env.SITE_NAME || 'Labtodate';
   // GUEST tickets get a magic-link button so the customer can follow up
   // without creating an account. REGISTERED tickets get a dashboard link.
-  const followUpHref = accessToken
-    ? `${process.env.BETTER_AUTH_URL ?? ''}/support/t/${accessToken}`
-    : `${process.env.BETTER_AUTH_URL ?? ''}/app/support`;
+  const followUpHref = accessToken ? siteLink(`/support/t/${accessToken}`) : siteLink('/app/support');
   // The acknowledgement goes to whatever address was typed into the form. Echo
   // the ticket's name/subject/body only when that is the signed-in user's own
   // (verified) address — otherwise anyone could use this form to make
   // Labtodate send their own text to any inbox. The team copy below has it all.
+  // The other two versions get no name/subject/body fields at all, so an admin
+  // editing their text cannot add them back.
   const echo = !!session && p.email.trim().toLowerCase() === session.user.email.trim().toLowerCase();
-  await sendEmail({
-    to: p.email,
-    subject: `[${ticket.ref}] We received your request`,
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">We&rsquo;re on it${echo ? `, ${escapeHtml(p.name)}` : ''}</h2>
-        <p>Your support ticket has been logged. Our team will reply by email.</p>
-        <p><strong>Reference:</strong> ${ticket.ref}${echo ? `<br><strong>Subject:</strong> ${escapeHtml(p.subject)}` : ''}</p>
-        ${echo ? `<blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(p.body)}</blockquote>` : ''}
-        <p style="margin:18px 0;">
-          <a href="${followUpHref}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-            ${accessToken ? 'View / reply to ticket' : 'Open in dashboard'}
-          </a>
-        </p>
-        ${accessToken ? `<p style="color:#888;font-size:11px;">This is a private link tied to your ticket — keep it to yourself.</p>` : ''}
-        ${echo ? '' : `<p style="color:#888;font-size:11px;">If you didn&rsquo;t contact ${escapeHtml(site)} support, you can ignore this email.</p>`}
-        <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
-      </div>`,
-  });
+  await sendTemplatedEmail(
+    echo
+      ? {
+          key: 'ticket_received',
+          to: p.email,
+          vars: {
+            'customer.name': p.name,
+            'ticket.number': ticket.ref,
+            'ticket.subject': p.subject,
+            'ticket.message': p.body,
+            'link.ticket': followUpHref,
+          },
+        }
+      : {
+          key: accessToken ? 'ticket_received_guest' : 'ticket_received_other_address',
+          to: p.email,
+          vars: { 'ticket.number': ticket.ref, 'link.ticket': followUpHref },
+        },
+  );
 
-  const ops =
-    process.env.SUPPORT_INTAKE_EMAIL ||
-    process.env.SUPPORT_EMAIL ||
-    process.env.COMPANY_EMAIL ||
-    'support@lab2date.com';
-  await sendEmail({
+  // Staff copy: only a configured inbox (skipped and logged otherwise).
+  const ops = await intakeEmail('support', 'staff_ticket_new');
+  if (ops) await sendTemplatedEmailSafe({
+    key: 'staff_ticket_new',
     to: ops,
-    subject: `New support ticket ${ticket.ref}: ${headerText(p.subject, 160)}`,
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:600px;">
-        <h2 style="color:#0E4F40;">New support ticket</h2>
-        <p>From <strong>${escapeHtml(p.name)}</strong> &lt;${escapeHtml(p.email)}&gt;${p.category ? ` · ${escapeHtml(p.category)}` : ''}</p>
-        <p><strong>${escapeHtml(p.subject)}</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(p.body)}</blockquote>
-        <p style="color:#888;font-size:12px;">Ref ${ticket.ref}</p>
-      </div>`,
+    lang: 'en',
+    vars: {
+      'ticket.number': ticket.ref,
+      'ticket.subject': p.subject,
+      'ticket.contact_name': p.name,
+      'ticket.contact_email': p.email,
+      'ticket.category': p.category || '—',
+      'ticket.message': p.body,
+      'link.admin': siteLink(`/admin/tickets/${ticket.id}`),
+    },
   });
 
   if (session?.user.id) {
@@ -377,20 +376,16 @@ export async function replyTicket(formData: FormData) {
   // admin UI. The "reply to this email" line is dead weight until slice D
   // (inbound parsing); the magic link line is the actionable one for guests.
   if (!isInternalNote) {
-    const site = process.env.SITE_NAME || 'Labtodate';
-    const continueLine = t.accessToken
-      ? `<p style="margin-top:18px;"><a href="${process.env.BETTER_AUTH_URL ?? ''}/support/t/${t.accessToken}" style="background:#0E4F40;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Open ticket ${t.ref}</a></p>`
-      : `<p style="margin-top:18px;"><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/support" style="background:#0E4F40;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">Open ticket ${t.ref}</a></p>`;
-    await sendEmail({
+    await sendTemplatedEmailSafe({
+      key: 'ticket_reply',
       to: t.email,
-      subject: `[${t.ref}] Reply from ${site} support`,
-      html: `
-        <div style="font-family:system-ui,sans-serif;max-width:560px;">
-          <h2 style="color:#0E4F40;">Re: ${escapeHtml(t.subject)}</h2>
-          <div style="font-size:14px;line-height:1.7;color:#333;">${escapeHtmlLines(body)}</div>
-          ${continueLine}
-          <p style="color:#888;font-size:12px;margin-top:18px;">Ref ${t.ref} · ${escapeHtml(site)}</p>
-        </div>`,
+      vars: {
+        'customer.name': t.name,
+        'ticket.number': t.ref,
+        'ticket.subject': t.subject,
+        'reply.body': body,
+        'link.ticket': t.accessToken ? siteLink(`/support/t/${t.accessToken}`) : siteLink('/app/support'),
+      },
     });
 
     if (t.submittedById) {
@@ -446,12 +441,19 @@ export async function customerReplyTicket(formData: FormData) {
     },
   });
 
-  const ops =
-    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
-  await sendEmail({
+  const ops = await intakeEmail('support', 'staff_ticket_customer_reply');
+  if (ops) await sendTemplatedEmailSafe({
+    key: 'staff_ticket_customer_reply',
     to: ops,
-    subject: `[${t.ref}] Customer reply: ${headerText(t.subject, 160)}`,
-    html: `<p>${escapeHtml(session.user.name)} replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
+    lang: 'en',
+    vars: {
+      'ticket.number': t.ref,
+      'ticket.subject': t.subject,
+      'reply.author': session.user.name,
+      'reply.author_email': session.user.email,
+      'reply.body': body,
+      'link.admin': siteLink(`/admin/tickets/${ticketId}`),
+    },
   });
 
   await notifyAdmins(
@@ -778,23 +780,15 @@ export async function reissueGuestMagicLink(
     },
   });
 
-  const site = process.env.SITE_NAME || 'Labtodate';
-  const href = `${process.env.BETTER_AUTH_URL ?? ''}/support/t/${newToken}`;
-  await sendEmail({
+  await sendTemplatedEmail({
+    key: 'ticket_link_reissued',
     to: t.email,
-    subject: `[${t.ref}] New link to view your ticket`,
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">Here&rsquo;s a fresh link, ${escapeHtml(t.name)}</h2>
-        <p>Your support team rotated the access link on ticket <strong>${t.ref}</strong>. Any previous link no longer works.</p>
-        <p style="margin:18px 0;">
-          <a href="${href}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-            View ticket ${t.ref}
-          </a>
-        </p>
-        <p style="color:#888;font-size:11px;">This link is valid for 14 days. Keep it private.</p>
-        <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
-      </div>`,
+    vars: {
+      'customer.name': t.name,
+      'ticket.number': t.ref,
+      'link.ticket': siteLink(`/support/t/${newToken}`),
+      'link.valid_days': String(Math.round(MAGIC_LINK_TTL_MS / 86_400_000)),
+    },
   });
 
   await audit('ticket.magiclink.reissue', t.ref, `by ${session.user.email}`);

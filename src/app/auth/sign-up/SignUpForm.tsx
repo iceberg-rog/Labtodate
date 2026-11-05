@@ -18,7 +18,16 @@ import {
 } from '@/lib/auth-rules';
 import { VerifyEmailStep, sendVerificationCode } from '../VerifyEmailStep';
 
-export default function SignUpPage({ listings }: { listings: string }) {
+/** Admin-editable texts (Site content → Forms & sign-up), passed in by the page. */
+export interface SignUpTexts {
+  title: string;
+  intro: string;
+  namePlaceholder: string;
+  emailLabel: string;
+  emailPlaceholder: string;
+}
+
+export default function SignUpPage({ texts }: { texts: SignUpTexts }) {
   const params = useSearchParams();
   // Role-aware landing after the account is verified + signed in. Only a
   // same-origin relative path is honoured (blocks open-redirect phishing).
@@ -96,10 +105,8 @@ export default function SignUpPage({ listings }: { listings: string }) {
   return (
     <>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Create your account</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Browse {listings && listings !== '0' ? `${listings} ` : 'lab '}instruments, request quotes, and track orders — all in one place.
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight">{texts.title}</h1>
+        {texts.intro && <p className="text-sm text-muted-foreground mt-1">{texts.intro}</p>}
       </div>
 
       <form onSubmit={handleSignup} className="space-y-4 rounded-2xl border bg-card p-6 shadow-sm">
@@ -128,14 +135,14 @@ export default function SignUpPage({ listings }: { listings: string }) {
               autoComplete="name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Dr. Jane Doe"
+              placeholder={texts.namePlaceholder}
               className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
         </div>
 
         <div>
-          <label htmlFor="email" className="text-sm font-medium block mb-1.5">Work email</label>
+          <label htmlFor="email" className="text-sm font-medium block mb-1.5">{texts.emailLabel}</label>
           <div className="relative">
             <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
             <input
@@ -145,7 +152,7 @@ export default function SignUpPage({ listings }: { listings: string }) {
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@university.edu"
+              placeholder={texts.emailPlaceholder}
               className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -165,9 +172,23 @@ export default function SignUpPage({ listings }: { listings: string }) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+              aria-describedby="password-hint"
               className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
+          {/* The button stays disabled until the password is long enough — say
+              why, live, instead of a silently greyed-out button. */}
+          <p
+            id="password-hint"
+            aria-live="polite"
+            className={`text-xs mt-1.5 ${password.length >= MIN_PASSWORD_LENGTH ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground'}`}
+          >
+            {password.length === 0
+              ? `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+              : password.length < MIN_PASSWORD_LENGTH
+                ? `${MIN_PASSWORD_LENGTH - password.length} more character${MIN_PASSWORD_LENGTH - password.length === 1 ? '' : 's'} needed.`
+                : 'Password length OK ✓'}
+          </p>
         </div>
 
         {error && (

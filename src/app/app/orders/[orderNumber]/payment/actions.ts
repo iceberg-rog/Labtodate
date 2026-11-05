@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { shippingAddressIsComplete } from '@/lib/orders/display';
+import { isExportRestricted } from '@/lib/orders/countries';
 import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { Prisma } from '@prisma/client';
@@ -88,6 +89,10 @@ export async function buyerSubmitPaymentProof(formData: FormData): Promise<void>
     company: get('addr_company').slice(0, 120),
   };
   const wantsAddrUpdate = !!(addrFields.line1 || addrFields.city || addrFields.postal || addrFields.country || addrFields.vat || addrFields.company);
+  // Sanctioned destinations need a manual compliance check — never via the form.
+  if (addrFields.country && isExportRestricted(addrFields.country)) {
+    redirect(`/app/orders/${orderNumber}/payment?err=restricted`);
+  }
 
   // Merge shipping address (preserve existing fields not touched in the form).
   let newShippingAddress = order.shippingAddress;
@@ -224,6 +229,9 @@ export async function buyerSetShippingAddress(formData: FormData): Promise<void>
   };
   if (!f.name || !f.phone || !f.line1 || !f.city || !f.postal || !/^[A-Z]{2}$/.test(f.country)) {
     redirect(`/app/orders/${orderNumber}?addr=missing`);
+  }
+  if (isExportRestricted(f.country)) {
+    redirect(`/app/orders/${orderNumber}?addr=restricted`);
   }
 
   const existing = (order.shippingAddress as Record<string, unknown> | null) ?? {};

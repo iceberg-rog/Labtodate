@@ -20,6 +20,8 @@ import { uploadObject } from '@/lib/storage/s3';
 import { readVerifiedUpload } from '@/lib/storage/file-type';
 import { isDeliverableEmail, sendEmail } from '@/lib/email';
 import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
+import { sendTemplatedEmail, sendTemplatedEmailSafe } from '@/lib/email-templates/send';
+import { siteLink } from '@/lib/email-templates/links';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { getStripe } from '@/lib/stripe/client';
 import { aiConfig } from '@/lib/ai';
@@ -1462,12 +1464,14 @@ export async function refundOrder(formData: FormData): Promise<{ ok: boolean; me
     }
     await checkLowStock(order.items.map((it) => it.productId)); // never throws
   }
-  await sendEmail({
+  await sendTemplatedEmailSafe({
+    key: 'order_refunded',
     to: order.buyer.email,
-    subject: `Refund issued for order ${order.orderNumber}`,
-    html: `<p>Hi ${escapeHtml(order.buyer.name)}, a refund for order <strong>${order.orderNumber}</strong> has been processed${
-      stripe && order.stripePaymentIntentId ? ' to your original payment method' : ''
-    }. It may take a few business days to appear.</p>`,
+    vars: {
+      'customer.name': order.buyer.name,
+      'order.number': order.orderNumber,
+      'link.order': siteLink(`/app/orders/${order.orderNumber}`),
+    },
   });
   await notifyUser(
     order.buyer.id,
@@ -1502,24 +1506,18 @@ function stripeExpireApi(): StripeSessionApi | null {
 }
 
 /**
- * Short buyer email for an order-state change (cancel / paid / delivered used
- * to be in-app only). Only system values (order number, fixed copy, link) go
- * into the HTML — no user-typed text. Best-effort: returns false, never throws.
+ * Short buyer email for an order-state change (cancel / delivered used to be
+ * in-app only): the templated e-mail `key` (Admin → Documents → E-mails) gets
+ * the order number and the order link. Best-effort: returns false, never
+ * throws. An e-mail the admin switched off counts as done (true).
  */
-async function emailBuyerOrderUpdate(to: string, orderNumber: string, subject: string, line: string): Promise<boolean> {
+async function emailBuyerOrderUpdate(to: string, orderNumber: string, key: 'order_canceled' | 'order_delivered'): Promise<boolean> {
   if (!isDeliverableEmail(to)) return true; // placeholder/seed address — nothing to send
   try {
-    const link = `${(process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '')}/app/orders/${orderNumber}`;
-    await sendEmail({
+    await sendTemplatedEmail({
+      key,
       to,
-      subject,
-      html: `
-        <div style="font-family:system-ui,sans-serif;max-width:540px;">
-          <h2 style="color:#0E4F40;">${escapeHtml(subject)}</h2>
-          <p>${escapeHtml(line)}</p>
-          <p><a href="${escapeHtml(link)}">View order ${orderNumber}</a></p>
-        </div>`,
-      text: `${line}\n\nView order ${orderNumber}: ${link}`,
+      vars: { 'order.number': orderNumber, 'link.order': siteLink(`/app/orders/${orderNumber}`) },
     });
     return true;
   } catch {
@@ -1581,12 +1579,7 @@ export async function cancelOrder(formData: FormData): Promise<{ ok: boolean; me
     `Your order was canceled before payment. No charge was made.${restocked ? ' Items are back in stock.' : ''}`,
     `/app/orders/${order.orderNumber}`,
   );
-  await emailBuyerOrderUpdate(
-    order.buyer.email,
-    order.orderNumber,
-    `Order ${order.orderNumber} canceled`,
-    'Your order was canceled before payment. No charge was made.',
-  );
+  await emailBuyerOrderUpdate(order.buyer.email, order.orderNumber, 'order_canceled');
   await notifyAdmins(
     `Order ${order.orderNumber}: canceled (pre-payment)`,
     `${restocked ? 'Reserved stock has been returned. ' : ''}No charge was made.`,
@@ -1692,12 +1685,6 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     `Your payment has been confirmed${method === 'BANK_TRANSFER' ? ' (bank transfer)' : method === 'INVOICE' ? ' (invoice)' : ''}. We'll prepare your order for shipping.`,
     `/app/orders/${order.orderNumber}`,
   );
-  await emailBuyerOrderUpdate(
-    order.buyer.email,
-    order.orderNumber,
-    `Payment received — order ${order.orderNumber}`,
-    `Your payment has been confirmed${method === 'BANK_TRANSFER' ? ' (bank transfer)' : method === 'INVOICE' ? ' (invoice)' : ''}. We'll prepare your order for shipping.`,
-  );
   await notifyAdmins(
     `Order ${order.orderNumber} marked PAID manually — ${(order.totalCents / 100).toFixed(2)} ${order.currency}`,
     `Method: ${method.toLowerCase().replace('_', ' ')}${proofUrl ? ' · receipt attached' : ''}${note ? ` · note: ${note.slice(0, 80)}` : ''}`,
@@ -1705,9 +1692,9 @@ export async function markOrderPaidManually(formData: FormData): Promise<{ ok: b
     'ORDER_PAID',
   );
   await audit('order.paid.manual', order.orderNumber, `${method}${proofUrl ? ' +proof' : ''}${note ? ` "${note.slice(0, 60)}"` : ''}`);
-  // The order is now PAID: email the real invoice (the checkout success page
-  // promises it). Never blocks — sendOrderInvoice swallows + logs failures.
-  await sendOrderInvoice(order.id);
+  // The order is now PAID: issue the invoice (+ receipt) and send them in the
+  // one "payment received" e-mail. Never blocks — failures are logged.
+  await sendOrderInvoice(order.id, session.user.id);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
   return {
@@ -2017,28 +2004,23 @@ export async function setOrderFulfillment(formData: FormData): Promise<{ ok: boo
   // into an error for a save that DID happen; report it in the message.
   let emailFailed = false;
   if (status === 'SHIPPED' && order.status !== 'SHIPPED') {
-    const site = process.env.SITE_NAME || 'Labtodate';
-    const base = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
-    await sendEmail({
+    await sendTemplatedEmail({
+      key: 'order_shipped',
       to: order.buyer.email,
-      subject: `Your order ${order.orderNumber} has shipped`,
-      html: `
-        <div style="font-family:system-ui,sans-serif;max-width:540px;">
-          <h2 style="color:#0E4F40;">Your order is on its way 🚚</h2>
-          <p>Hi ${escapeHtml(order.buyer.name)}, order <strong>${order.orderNumber}</strong> has shipped.</p>
-          ${carrier ? `<p><strong>Carrier:</strong> ${escapeHtml(carrier)}</p>` : ''}
-          ${trackingNumber ? `<p><strong>Tracking #:</strong> ${escapeHtml(trackingNumber)}</p>` : ''}
-          <p><a href="${base}/app/orders">Track it in your account</a></p>
-          <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
-        </div>`,
+      vars: {
+        'customer.name': order.buyer.name,
+        'order.number': order.orderNumber,
+        'shipping.carrier': carrier || '—',
+        'shipping.tracking': trackingNumber || '—',
+        'link.order': siteLink(`/app/orders/${order.orderNumber}`),
+      },
     }).catch(() => { emailFailed = true; });
   }
   if (status === 'DELIVERED' && order.status !== 'DELIVERED') {
     emailFailed = !(await emailBuyerOrderUpdate(
       order.buyer.email,
       order.orderNumber,
-      `Order ${order.orderNumber} delivered`,
-      'Your order has been marked as delivered. If anything is wrong with it, contact us from your order page.',
+      'order_delivered',
     ));
   }
   if (status !== order.status) {
@@ -3439,14 +3421,8 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     "Your payment has been verified. We will prepare your order for shipping.",
     `/app/orders/${order.orderNumber}`,
   );
-  try {
-    await sendEmail({
-      to: order.buyer.email,
-      subject: `Payment verified — order ${order.orderNumber}`,
-      html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>Your payment for order <strong>${order.orderNumber}</strong> has been verified. We will arrange shipping shortly.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}">View order</a></p>`,
-      text: `Your payment for order ${order.orderNumber} has been verified. We will arrange shipping shortly.`,
-    });
-  } catch { /* email failure non-fatal */ }
+  // The buyer's e-mail for this event is the one "payment received" message
+  // with the invoice (and receipt) attached — sent by sendOrderInvoice below.
   await notifyAdmins(
     `Payment verified — order ${order.orderNumber} (${(order.totalCents / 100).toFixed(2)} ${order.currency})`,
     `Verified by ${session.user.email}.`,
@@ -3454,9 +3430,9 @@ export async function verifyPayment(formData: FormData): Promise<{ ok: boolean; 
     'PAYMENT_VERIFIED',
   );
   await audit('order.payment.verify', order.orderNumber, `verifier=${session.user.email}`);
-  // The order is now PAID: email the real invoice (+ billing copy), as the
-  // checkout success page promises. Never blocks — failures are logged.
-  await sendOrderInvoice(order.id);
+  // The order is now PAID: issue the invoice (+ receipt) and e-mail them with
+  // the billing copy. Never blocks — failures are logged.
+  await sendOrderInvoice(order.id, session.user.id);
   revalidatePath('/admin/orders');
   revalidatePath(`/admin/orders/${id}`);
   revalidatePath('/app/quotes');
@@ -3534,11 +3510,15 @@ export async function rejectPayment(formData: FormData): Promise<{ ok: boolean; 
     `/app/orders/${order.orderNumber}/payment`,
   );
   try {
-    await sendEmail({
+    await sendTemplatedEmail({
+      key: 'payment_rejected',
       to: order.buyer.email,
-      subject: `Action needed — order ${order.orderNumber}`,
-      html: `<p>Hi ${escapeHtml(order.buyer.name ?? 'there')},</p><p>We reviewed the receipt for order <strong>${order.orderNumber}</strong> and need a corrected proof.</p><blockquote>${escapeHtmlLines(reason)}</blockquote><p>You can <a href="${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment">resubmit your receipt</a>.</p>`,
-      text: `We need a corrected receipt for order ${order.orderNumber}. Reason: ${reason}\nResubmit: ${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${order.orderNumber}/payment`,
+      vars: {
+        'customer.name': order.buyer.name ?? '',
+        'order.number': order.orderNumber,
+        'payment.rejection_reason': reason,
+        'link.payment': siteLink(`/app/orders/${order.orderNumber}/payment`),
+      },
     });
   } catch { /* email failure non-fatal */ }
   await notifyAdmins(

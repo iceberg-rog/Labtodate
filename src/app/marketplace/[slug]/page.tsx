@@ -24,6 +24,7 @@ import type { IllustrationName } from '@/components/illustrations/instruments';
 import { startCheckout } from '@/lib/orders/actions';
 import { addToCart } from '@/lib/cart/actions';
 import { getMarketing } from '@/lib/marketing';
+import { siteOn, siteRich, siteText } from '@/lib/site/content';
 import { submitReview } from '@/lib/reviews/actions';
 import { isWishlisted } from '@/lib/wishlist/actions';
 import { getServerSession } from '@/lib/auth-server';
@@ -70,6 +71,26 @@ export default async function ProductDetailPage(props: PageProps) {
   const reviewNote = searchParams?.review === 'needpurchase';
   const reviewInvalid = searchParams?.review === 'invalid';
   const mk = await getMarketing();
+  // Claim texts (Admin → Site content → Claims & promises). A text that uses a
+  // switched-off claim comes back empty, so its whole sentence/item goes.
+  const [trustOn, trustTexts, quoteLine, supplierLine, sectionOn, sectionTitle, sectionHtml] = await Promise.all([
+    siteOn('claims.trust_show'),
+    Promise.all(['claims.trust_1', 'claims.trust_2', 'claims.trust_3'].map((k) => siteText(k))),
+    siteText('claims.quote_line'),
+    siteText('claims.supplier_line'),
+    siteOn('claims.inspection_section_show'),
+    siteText('claims.inspection_section_title'),
+    siteRich('claims.inspection_section_body'),
+  ]);
+  const trustIcons = [ShieldCheck, Truck, RotateCcw];
+  const trustItems = trustOn
+    ? trustTexts.flatMap((s, i) => {
+        // "Title | small line"
+        const [title, ...rest] = s.split('|');
+        return title.trim() ? [{ icon: trustIcons[i], title: title.trim(), subtitle: rest.join('|').trim() }] : [];
+      })
+    : [];
+  const trustCols = ['', 'grid-cols-1', 'grid-cols-2', 'grid-cols-3'][trustItems.length];
 
   const session = await getServerSession();
 
@@ -108,9 +129,17 @@ export default async function ProductDetailPage(props: PageProps) {
           ? 'Checkout was not completed. No payment was taken.'
           : null;
   const similar = await getSimilarProducts(product.categoryId, product.slug, 4);
-  const companyListings = product.companyId
-    ? await prisma.product.count({ where: { companyId: product.companyId, status: 'PUBLISHED' } })
-    : 0;
+  // Listings of the same seller. A product without a shop is Labtodate's own
+  // inventory, so count the other own-inventory listings (it said "0" before).
+  const companyListings = await prisma.product.count({
+    where: { companyId: product.companyId ?? null, status: 'PUBLISHED' },
+  });
+  const sellerName = product.company?.name ?? (process.env.SITE_NAME || 'Labtodate');
+  const sellerWords = sellerName.trim().split(/\s+/).filter(Boolean);
+  const sellerInitials = (
+    sellerWords.length > 1 ? `${sellerWords[0][0]}${sellerWords[1][0]}` : sellerName.slice(0, 2)
+  ).toUpperCase();
+  const sellerLocation = product.company?.country ?? (process.env.COMPANY_COUNTRY || 'EU');
   // Aggregate for count+average (accurate over ALL reviews), but only render
   // the latest 24 — an unbounded findMany on a public page is a DoS lever.
   const [reviewAgg, reviews] = await Promise.all([
@@ -217,11 +246,13 @@ export default async function ProductDetailPage(props: PageProps) {
           />
 
           {/* Trust strip */}
-          <div className="mt-6 grid grid-cols-3 gap-3">
-            <TrustItem icon={ShieldCheck} title={mk.warranty} subtitle="On all refurbished" />
-            <TrustItem icon={Truck} title="Worldwide shipping" subtitle="Crated & insured" />
-            <TrustItem icon={RotateCcw} title="Buyer protection" subtitle="Refund if not as described" />
-          </div>
+          {trustItems.length > 0 && (
+            <div className={`mt-6 grid ${trustCols} gap-3`}>
+              {trustItems.map((t) => (
+                <TrustItem key={t.title} icon={t.icon} title={t.title} subtitle={t.subtitle} />
+              ))}
+            </div>
+          )}
         </div>
 
         {/* ── Right: detail ── */}
@@ -269,10 +300,8 @@ export default async function ProductDetailPage(props: PageProps) {
                     make (Settings -> quote turnaround). It used to say a flat
                     "24 business hours" here while those said something else,
                     so a buyer was told two different things about one quote. */}
-                {mk.quoteTurnaround && (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Typical response within {mk.quoteTurnaround} from the supplier.
-                  </p>
+                {quoteLine && (
+                  <p className="mt-1 text-xs text-muted-foreground">{quoteLine}</p>
                 )}
               </div>
             )}
@@ -337,7 +366,7 @@ export default async function ProductDetailPage(props: PageProps) {
               label="Supplier"
               value="Labtodate Verified Supplier"
             />
-            <Fact icon={ShieldCheck} label="Warranty" value={mk.warranty} />
+            {mk.warranty && <Fact icon={ShieldCheck} label="Warranty" value={mk.warranty} />}
           </dl>
         </div>
       </div>
@@ -372,9 +401,9 @@ export default async function ProductDetailPage(props: PageProps) {
               <DetailRow label="Brand" value={product.brand?.name ?? '—'} />
               <DetailRow label="Category" value={product.category.name} />
               <DetailRow label="Supplier" value="Labtodate Verified Supplier" />
-              <DetailRow label="Location" value={product.company?.country ?? 'EU'} />
+              <DetailRow label="Location" value={sellerLocation} />
               {product.yearMade && <DetailRow label="Year" value={String(product.yearMade)} />}
-              <DetailRow label="Warranty" value={mk.warranty} />
+              {mk.warranty && <DetailRow label="Warranty" value={mk.warranty} />}
               {specs &&
                 Object.entries(specs).map(([k, v]) => (
                   <DetailRow key={k} label={k} value={String(v)} />
@@ -382,16 +411,20 @@ export default async function ProductDetailPage(props: PageProps) {
             </dl>
           </section>
 
-          <section>
-            <h2 className="text-2xl font-bold mb-3" style={{ letterSpacing: '-0.025em' }}>
-              Inspection &amp; warranty
-            </h2>
-            <p className="text-base text-muted-foreground leading-relaxed">
-              Every item passes a {mk.inspection} by qualified technicians — calibration
-              verification, mechanical wear, and component-level diagnostics — and ships with a{' '}
-              {mk.warranty} and buyer protection.
-            </p>
-          </section>
+          {sectionOn && sectionHtml && (
+            <section>
+              {sectionTitle && (
+                <h2 className="text-2xl font-bold mb-3" style={{ letterSpacing: '-0.025em' }}>
+                  {sectionTitle}
+                </h2>
+              )}
+              {/* siteRich() output is escaped by construction (admin text, no HTML). */}
+              <div
+                className="text-base text-muted-foreground leading-relaxed [&_p+p]:mt-3 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:mt-3"
+                dangerouslySetInnerHTML={{ __html: sectionHtml }}
+              />
+            </section>
+          )}
 
           <section>
             <div className="flex items-center gap-3 mb-4">
@@ -485,16 +518,14 @@ export default async function ProductDetailPage(props: PageProps) {
               Sold by
             </p>
             <div className="flex items-center gap-3">
-              <div className="h-12 w-12 rounded-xl bg-primary text-primary-foreground flex items-center justify-center font-bold text-sm" style={{ letterSpacing: '-0.04em' }}>
-                L2
+              <div className="h-12 w-12 rounded-xl bg-primary text-primary-foreground flex items-center justify-center font-bold text-sm" style={{ letterSpacing: '-0.04em' }} aria-hidden>
+                {sellerInitials}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-foreground truncate">
                   Labtodate Verified Supplier
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  Inspected &amp; warrantied · ships worldwide
-                </p>
+                {supplierLine && <p className="text-xs text-muted-foreground">{supplierLine}</p>}
               </div>
             </div>
             <div className="mt-4 grid grid-cols-2 gap-3 pt-4 border-t border-border text-center">
@@ -503,7 +534,7 @@ export default async function ProductDetailPage(props: PageProps) {
                 <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">live listings</div>
               </div>
               <div>
-                <div className="text-base font-bold">{product.company?.country ?? '—'}</div>
+                <div className="text-base font-bold">{sellerLocation}</div>
                 <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">location</div>
               </div>
             </div>

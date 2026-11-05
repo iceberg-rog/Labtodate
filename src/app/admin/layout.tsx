@@ -20,6 +20,8 @@ import {
   Briefcase,
   FlaskConical,
   Boxes,
+  FileSignature,
+  PenSquare,
 } from 'lucide-react';
 import { requireSession, getAdminCaps } from '@/lib/auth-server';
 import { capsAllow, capsAllowSection } from '@/lib/capabilities';
@@ -165,12 +167,19 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
           {(can('content:cms') ||
             can('settings:view') ||
+            can('documents:edit') ||
             can('analytics:view') ||
             can('audit:view') ||
             can('errors:view')) && (
             <NavSection title="System">
               {can('content:cms') && (
                 <AdminNavLink href="/admin/homepage" icon={<Home className="h-4 w-4" />} label="Homepage" />
+              )}
+              {can('content:cms') && (
+                <AdminNavLink href="/admin/content" icon={<PenSquare className="h-4 w-4" />} label="Site content" />
+              )}
+              {can('documents:edit') && (
+                <AdminNavLink href="/admin/documents" icon={<FileSignature className="h-4 w-4" />} label="Documents" />
               )}
               {can('settings:view') && (
                 <AdminNavLink href="/admin/settings" icon={<Settings className="h-4 w-4" />} label="Settings" />

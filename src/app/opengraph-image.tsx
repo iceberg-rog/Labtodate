@@ -1,12 +1,28 @@
 import { ImageResponse } from 'next/og';
+import { isBuildPhase } from '@/lib/build-phase';
+import { siteDef } from '@/lib/site/defs';
 
 // Share card for og:image / twitter:image on every page that does not set its
-// own. next/og renders it at build time, so it needs no font files, no network
-// and no runtime work. Keep the markup satori-safe: flexbox only, and every
-// element with more than one child carries an explicit display:flex.
+// own. next/og renders it at build time, so it needs no font files and no
+// network. Keep the markup satori-safe: flexbox only, and every element with
+// more than one child carries an explicit display:flex.
 export const alt = 'Labtodate — refurbished and surplus lab equipment marketplace';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
+// Re-rendered hourly so the inspection claim follows Admin → Site content.
+export const revalidate = 3600;
+
+/** The inspection claim ('' while switched off). The build has no database: built-in text. */
+async function inspectionClaim(): Promise<string> {
+  const builtIn = siteDef('claims.inspection')?.def.default ?? '';
+  if (isBuildPhase()) return builtIn;
+  try {
+    const { siteClaims } = await import('@/lib/site/content');
+    return (await siteClaims()).inspection;
+  } catch {
+    return builtIn;
+  }
+}
 
 const LIME = '#A3E635';
 const INK = '#031110';
@@ -26,7 +42,8 @@ function Dot({ size: d, opacity }: { size: number; opacity: number }) {
   );
 }
 
-export default function OpengraphImage() {
+export default async function OpengraphImage() {
+  const inspection = await inspectionClaim();
   return new ImageResponse(
     (
       <div
@@ -77,19 +94,22 @@ export default function OpengraphImage() {
 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', alignItems: 'center' }}>
-            <div
-              style={{
-                padding: '10px 22px',
-                borderRadius: 999,
-                backgroundColor: LIME,
-                color: INK,
-                fontSize: 24,
-                fontWeight: 600,
-              }}
-            >
-              14-point inspection
-            </div>
-            <div style={{ marginLeft: 20, fontSize: 24, color: 'rgba(255,255,255,0.6)' }}>
+            {inspection ? (
+              <div
+                style={{
+                  padding: '10px 22px',
+                  borderRadius: 999,
+                  backgroundColor: LIME,
+                  color: INK,
+                  fontSize: 24,
+                  fontWeight: 600,
+                  marginRight: 20,
+                }}
+              >
+                {inspection}
+              </div>
+            ) : null}
+            <div style={{ fontSize: 24, color: 'rgba(255,255,255,0.6)' }}>
               Quote, proforma and insured shipping
             </div>
           </div>

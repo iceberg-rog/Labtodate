@@ -405,6 +405,10 @@ model User {
   /// every time. Free-form JSON: { holder, iban?, swift?, bankName?, country?, notes? }
   sellerBankDetails Json?
 
+  /// Language of this customer's documents and e-mails ('en' | 'nl'); null =
+  /// the default from Admin → Documents.
+  docLanguage String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -748,6 +752,12 @@ model SourcingRequest {
   lastReplyAt      DateTime?
   lastReplyByStaff Boolean  @default(false)
 
+  /// Structured offer from the quote composer (Admin → quote): extra lines,
+  /// shipping, the buyer's billing block, the VAT decision, language, validity
+  /// and payment terms. Null on quotes issued before editable documents: those
+  /// are read as one line at quotedUnitCents × quotedQuantity, no shipping.
+  quoteDetails Json?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -815,6 +825,13 @@ model Order {
   paymentMethodWallet  String?  // apple_pay, google_pay, link, null
   buyerIp              String?  // captured at checkout start
   buyerCountry         String?  // ISO 2-letter, geo-derived or from Stripe
+
+  /// VAT decision the order's taxCents was computed with (lib/tax) and the
+  /// rate in basis points. Null on orders created before editable documents.
+  vatTreatment String?
+  vatRateBp    Int?
+  /// Language of this order's documents ('en' | 'nl').
+  docLanguage  String?
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -1146,4 +1163,77 @@ model BlockedSupplier {
   blockedAt DateTime @default(now())
 
   @@index([blockedAt])
+}
+
+// ─── Editable documents, e-mails and site content (3b_documents) ─────────
+
+/// One editable piece of business content: a document template
+/// ("doc:QUOTE:en"), an e-mail ("email:quote_sent:nl"), a site text group
+/// ("text:marketplace"), a page ("page:terms") or a settings group
+/// ("settings:vat"). `data` is validated JSON — never code. Every save writes
+/// a ContentVersion, so any earlier state can be restored.
+model ContentEntry {
+  key         String           @id
+  data        Json
+  version     Int              @default(1)
+  updatedAt   DateTime         @updatedAt
+  updatedById String?
+  versions    ContentVersion[]
+}
+
+model ContentVersion {
+  id             String       @id @default(cuid())
+  entryKey       String
+  entry          ContentEntry @relation(fields: [entryKey], references: [key], onDelete: Cascade)
+  version        Int
+  data           Json
+  /// "saved" | "restored v3" | "reset to default" …
+  note           String?
+  createdAt      DateTime     @default(now())
+  createdById    String?
+  createdByEmail String?
+
+  @@unique([entryKey, version])
+  @@index([entryKey, createdAt])
+}
+
+/// Gap-free counters for document numbers, one row per (series, period).
+/// A number is taken only inside the transaction that stores the issued
+/// document, so a rollback gives the number back.
+model DocNumberSeries {
+  series    String
+  period    String
+  nextValue Int
+  updatedAt DateTime @updatedAt
+
+  @@id([series, period])
+}
+
+/// A document as it was sent: the frozen data it was rendered from and the
+/// PDF bytes. Never updated after issue except supersededAt (a re-issue) and
+/// voidedAt. Kept for the legal retention period.
+model IssuedDocument {
+  id                String    @id @default(cuid())
+  /// QUOTE | INVOICE | RECEIPT
+  kind              String
+  number            String
+  revision          Int       @default(1)
+  sourcingRequestId String?
+  orderId           String?
+  lang              String
+  snapshot          Json
+  pdf               Bytes?
+  pdfSha256         String?
+  totalCents        Int
+  currency          String
+  vatTreatment      String?
+  issuedAt          DateTime  @default(now())
+  issuedById        String?
+  supersededAt      DateTime?
+  voidedAt          DateTime?
+
+  @@unique([kind, number, revision])
+  @@index([sourcingRequestId])
+  @@index([orderId])
+  @@index([kind, issuedAt])
 }

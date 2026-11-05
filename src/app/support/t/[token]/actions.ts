@@ -5,8 +5,9 @@ import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins } from '@/lib/observability';
-import { sendEmail } from '@/lib/email';
-import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
+import { sendTemplatedEmail } from '@/lib/email-templates/send';
+import { siteLink } from '@/lib/email-templates/links';
+import { intakeEmail } from '@/lib/intake';
 
 function parseAttachments(v: FormDataEntryValue | null): string[] {
   if (typeof v !== 'string' || !v) return [];
@@ -68,12 +69,20 @@ export async function guestReplyByToken(formData: FormData): Promise<void> {
     },
   });
 
-  const ops =
-    process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
-  await sendEmail({
+  // Staff copy: only a configured inbox (skipped and logged otherwise).
+  const ops = await intakeEmail('support', 'staff_ticket_guest_reply');
+  if (ops) await sendTemplatedEmail({
+    key: 'staff_ticket_guest_reply',
     to: ops,
-    subject: `[${t.ref}] Guest reply: ${headerText(t.subject, 160)}`,
-    html: `<p>${escapeHtml(t.name)} (${escapeHtml(t.email)}) replied to ticket ${t.ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
+    lang: 'en',
+    vars: {
+      'ticket.number': t.ref,
+      'ticket.subject': t.subject,
+      'reply.author': t.name,
+      'reply.author_email': t.email,
+      'reply.body': body,
+      'link.admin': siteLink(`/admin/tickets/${t.id}`),
+    },
   });
   await notifyAdmins(
     `Guest replied · ${t.ref}`,

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { checkoutShippingCents, checkoutVat } from '@/lib/documents/checkout-vat';
 import { redirect } from 'next/navigation';
 import { ChevronLeft, ShoppingBag, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -61,9 +62,11 @@ export default async function CartCheckoutPage(
 
   const currency = valid[0].product.currency || 'EUR';
   const subtotal = valid.reduce((s, i) => s + (i.product.priceCents ?? 0) * i.quantity, 0);
-  const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-  const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-  const tax = Math.round((subtotal * taxPct) / 100);
+  const shipping = await checkoutShippingCents();
+  // VAT from Admin → Documents → VAT (default treatment), on goods + shipping.
+  const checkoutVatInfo = await checkoutVat(subtotal, shipping);
+  const taxPct = checkoutVatInfo.pct;
+  const tax = checkoutVatInfo.taxCents;
   const total = subtotal + shipping + tax;
 
   // Prefill from the buyer's most recent order that has an address.
@@ -72,7 +75,7 @@ export default async function CartCheckoutPage(
     orderBy: { createdAt: 'desc' },
     select: { shippingAddress: true },
   });
-  const seed = (last?.shippingAddress as { name?: string; phone?: string; address?: Record<string, string> } | null) ?? null;
+  const seed = (last?.shippingAddress as { name?: string; phone?: string; company?: string | null; vat?: string | null; address?: Record<string, string> } | null) ?? null;
   const seedAddr = seed?.address ?? {};
 
   const missing = (searchParams.missing ?? '').split(',').filter(Boolean);
@@ -126,6 +129,14 @@ export default async function CartCheckoutPage(
                 placeholder="+31 6 12345678" />
             </div>
             <Field label="Email" name="emailDisplay" defaultValue={session.user.email} disabled />
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Field label="Company (optional)" name="company" autoComplete="organization"
+                defaultValue={seed?.company ?? ''}
+                placeholder="Lab or company name" />
+              <Field label="VAT ID (optional, for business invoices)" name="vat"
+                defaultValue={seed?.vat ?? ''}
+                placeholder="NL123456789B01" />
+            </div>
           </section>
 
           <section className="rounded-2xl border border-border bg-card p-5 space-y-4">
@@ -203,7 +214,7 @@ export default async function CartCheckoutPage(
             <div className="space-y-1 text-sm border-t border-border pt-3">
               <Row label="Subtotal" value={formatPrice(subtotal, currency)} />
               {shipping > 0 && <Row label="Shipping" value={formatPrice(shipping, currency)} muted />}
-              {tax > 0 && <Row label={`Tax (${taxPct}%)`} value={formatPrice(tax, currency)} muted />}
+              {tax > 0 && <Row label={`VAT (${taxPct}%)`} value={formatPrice(tax, currency)} muted />}
               <div className="pt-2 border-t border-border" />
               <Row label="Total" value={formatPrice(total, currency)} bold />
             </div>

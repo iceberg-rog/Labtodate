@@ -1,77 +1,55 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
-import { ensureSettingsLoaded } from '@/lib/settings';
-import { renderInvoiceHtml } from '@/lib/invoice';
-import { PrintButton } from '@/components/util/PrintButton';
+import { currentOrderDoc, ensureInvoice, PAID_ORDER_STATES, snapshotOf } from '@/lib/documents/issue';
+import { DocumentViewer } from '@/components/documents/DocumentViewer';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Invoice' };
 
-// Money has been captured for these statuses; anything else is still unpaid
-// (or was never paid) and must not be presented as a final invoice.
-const PAID_STATUSES = ['PAID', 'PROCESSING', 'SHIPPED', 'DELIVERED', 'REFUNDED'];
-
+/**
+ * The buyer's invoice for an order. A paid order shows its issued (frozen)
+ * invoice and receipt; an unpaid one shows the payment request — the quote
+ * for quote orders — which is never presented as a final invoice.
+ */
 export default async function InvoicePage({ params }: { params: Promise<{ orderNumber: string }> }) {
   const { orderNumber } = await params;
   const session = await requireSession({ redirectTo: `/app/orders/${orderNumber}/invoice` });
-  await ensureSettingsLoaded();
-
   const order = await prisma.order.findUnique({
-    where: { orderNumber: orderNumber },
-    include: { items: true, buyer: { select: { name: true, email: true } } },
+    where: { orderNumber },
+    select: { id: true, buyerId: true, status: true, orderNumber: true },
   });
   if (!order || order.buyerId !== session.user.id) notFound();
 
-  const addrSrc = (order.billingAddress ?? order.shippingAddress) as Record<string, unknown> | null;
-  let buyerAddress: string | null = null;
-  let companyFromAddr: string | null = null;
-  if (addrSrc && typeof addrSrc === 'object') {
-    const ad = ((addrSrc.address as Record<string, unknown>) || addrSrc) as Record<string, unknown>;
-    const cityLine = [ad.postal_code, ad.city].filter((x) => typeof x === 'string' && (x as string).trim()).join(' ');
-    buyerAddress = [ad.line1, ad.line2, cityLine, ad.country]
-      .filter((x) => typeof x === 'string' && (x as string).trim())
-      .join('\n') || null;
-    if (typeof addrSrc.company === 'string' && addrSrc.company.trim()) companyFromAddr = addrSrc.company.trim();
-  }
-
-  const paymentTermDays = 5;
-  const dueDateISO = order.paidAt
-    ? null
-    : new Date((order.createdAt.getTime()) + paymentTermDays * 86_400_000).toISOString();
-  const deliveryDateISO = order.paidAt ? order.paidAt.toISOString() : null;
-
-  const unpaid = !PAID_STATUSES.includes(order.status);
-  const { html } = renderInvoiceHtml({
-    kind: 'INVOICE',
-    unpaid,
-    number: order.orderNumber,
-    dateISO: (order.paidAt ?? order.createdAt).toISOString(),
-    currency: order.currency,
-    buyer: { name: order.buyer.name, email: order.buyer.email, company: companyFromAddr },
-    buyerAddress,
-    paymentTermDays,
-    dueDateISO,
-    deliveryDateISO,
-    lines: order.items.map((i) => ({
-      title: i.titleSnapshot,
-      qty: i.quantity,
-      unitCents: i.priceCentsSnapshot,
-    })),
-    shippingCents: order.shippingCents,
-    taxCents: order.taxCents,
-  });
+  const paid = PAID_ORDER_STATES.includes(order.status);
+  const invoice = paid ? await ensureInvoice(order.id).catch(() => null) : null;
+  const receipt = paid ? await currentOrderDoc(order.id, 'RECEIPT') : null;
+  const base = `/api/documents/order/${encodeURIComponent(order.orderNumber)}`;
+  const title = invoice ? `${snapshotOf(invoice).texts.title} ${invoice.number}` : `Payment request ${order.orderNumber}`;
 
   return (
-    <div className="container-px py-10 max-w-3xl mx-auto">
-      <div className="flex justify-end mb-6 print:hidden">
-        <PrintButton />
+    <div className="container-px py-10 max-w-4xl mx-auto space-y-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <p className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">{invoice ? snapshotOf(invoice).texts.title : 'Not paid yet'}</p>
+          <h1 className="text-2xl font-bold font-mono mt-0.5">{invoice ? invoice.number : order.orderNumber}</h1>
+          <p className="text-xs text-muted-foreground mt-1">
+            Order <Link className="underline" href={`/app/orders/${order.orderNumber}`}>{order.orderNumber}</Link>
+            {receipt && <> · <a className="underline" href={`${base}?kind=receipt&download=1`}>Download the receipt ({receipt.number})</a></>}
+          </p>
+        </div>
       </div>
-      {/* overflow-x-auto + wrap: a long unbroken address line must stay inside
-          the card instead of widening the page on phones. */}
-      <div className="rounded-2xl border border-border bg-white p-4 sm:p-8 overflow-x-auto [overflow-wrap:anywhere]">
-        <div dangerouslySetInnerHTML={{ __html: html }} />
-      </div>
+      {!paid && (
+        <p className="rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200 p-3 text-sm">
+          This order is not paid yet. Below is the payment request; your invoice is issued as soon as the payment is verified.
+        </p>
+      )}
+      {paid && !invoice ? (
+        <p className="rounded-2xl border border-red-200 bg-red-50 text-red-900 p-3 text-sm">The invoice could not be made right now. Please refresh in a minute.</p>
+      ) : (
+        <DocumentViewer htmlUrl={`${base}?format=html`} pdfUrl={base} title={title} />
+      )}
     </div>
   );
 }

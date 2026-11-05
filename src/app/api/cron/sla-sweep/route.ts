@@ -1,8 +1,10 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { checkLowStock } from '@/lib/inventory/alerts';
 import { prisma } from '@/lib/db';
-import { isDeliverableEmail, sendEmail } from '@/lib/email';
-import { escapeHtml } from '@/lib/email-html';
+import { isDeliverableEmail } from '@/lib/email';
+import { headerText } from '@/lib/email-html';
+import { sendTemplatedEmail } from '@/lib/email-templates/send';
+import { siteLink } from '@/lib/email-templates/links';
 import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
 import { expireProformaTransition } from '@/lib/quotes/proforma-expiry';
 import { orphanSweepTtlMinutes } from '@/lib/orders/orphan-ttl';
@@ -69,12 +71,16 @@ export async function POST(req: NextRequest) {
     if (t.assignedToId) {
       await notifyUser(t.assignedToId, title, body, href);
       if (t.assignedTo?.email) {
-        await sendEmail({
+        await sendTemplatedEmail({
+          key: 'staff_ticket_sla_breached',
           to: t.assignedTo.email,
-          subject: `[SLA] ${t.ref} — overdue ${overdueMinutes}m`,
-          html: `<p><strong>${escapeHtml(t.priority)}</strong> ticket <code>${t.ref}</code> has breached its SLA.</p>
-                 <p>${escapeHtml(t.subject)}</p>
-                 <p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open in admin</a></p>`,
+          vars: {
+            'ticket.number': t.ref,
+            'ticket.subject': t.subject,
+            'sla.priority': t.priority,
+            'sla.overdue_minutes': String(overdueMinutes),
+            'link.admin': siteLink(href),
+          },
         }).catch(() => null);
       }
     } else {
@@ -119,14 +125,21 @@ export async function POST(req: NextRequest) {
     if (q.assignedToId) {
       await notifyUser(q.assignedToId, title, body, href);
       // Imported sellers have placeholder addresses; send those to the intake inbox.
-      const slaTo = isDeliverableEmail(q.assignedTo?.email) ? q.assignedTo?.email : process.env.QUOTE_INTAKE_EMAIL;
+      const toAssignee = isDeliverableEmail(q.assignedTo?.email);
+      const slaTo = toAssignee ? q.assignedTo?.email : process.env.QUOTE_INTAKE_EMAIL;
       if (slaTo) {
-        await sendEmail({
+        await sendTemplatedEmail({
+          key: 'staff_quote_sla_breached',
           to: slaTo,
-          subject: `[SLA] Quote ${ref} — overdue ${overdueMinutes}m`,
-          html: `<p><strong>${escapeHtml(q.priority)}</strong> quote <code>${ref}</code> has breached its SLA.</p>
-                 <p>${escapeHtml(subject)}</p>
-                 <p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open in admin</a></p>`,
+          // The assignee gets their own language; the intake inbox English.
+          lang: toAssignee ? undefined : 'en',
+          vars: {
+            'quote.number': ref,
+            'quote.item': subject,
+            'sla.priority': q.priority,
+            'sla.overdue_minutes': String(overdueMinutes),
+            'link.admin': siteLink(href),
+          },
         }).catch(() => null);
       }
     } else {
@@ -155,14 +168,17 @@ export async function POST(req: NextRequest) {
       archivedAt: null,
       proformaNumber: { not: null },
       validUntilAt: { lt: now },
-      // Only deals still in negotiation. Accepted/declined/closed are terminal.
-      status: 'RESPONDED',
+      // Deals still in negotiation, plus accepted offers whose order is still
+      // unpaid (the order is created on acceptance; an unpaid one lapses with
+      // the offer). expireProformaTransition never closes a paid deal.
+      status: { in: ['RESPONDED', 'ACCEPTED'] },
     },
     select: {
       id: true, proformaNumber: true, buyerEmail: true, buyerName: true,
       submittedById: true, validUntilAt: true,
       product: { select: { title: true } },
       productCategory: true,
+      description: true,
     },
     take: 100,
   });
@@ -195,13 +211,18 @@ export async function POST(req: NextRequest) {
       ).catch(() => null);
     }
     if (q.buyerEmail) {
-      await sendEmail({
+      await sendTemplatedEmail({
+        key: 'quote_expired',
         to: q.buyerEmail,
-        subject: `[${ref}] Your proforma has expired`,
-        html: `<p>Hi ${escapeHtml(q.buyerName ?? 'there')},</p>
-               <p>Your proforma <strong>${ref}</strong> for ${escapeHtml(item)} expired on ${q.validUntilAt?.toISOString().slice(0, 10)}.</p>
-               <p>If you'd still like to proceed, just reply to your quote thread and we'll re-issue with up-to-date pricing.</p>
-               <p><a href="${process.env.BETTER_AUTH_URL ?? ''}/app/quotes/${q.id}">Open your quote</a></p>`,
+        vars: {
+          'customer.name': q.buyerName,
+          'quote.number': ref,
+          // The buyer's own words when there is no listing or category (no
+          // English fallback in a Dutch e-mail).
+          'quote.item': q.product?.title || q.productCategory || headerText(q.description, 80),
+          'quote.expired_on': q.validUntilAt?.toISOString().slice(0, 10) ?? '',
+          'link.quote': siteLink(`/app/quotes/${q.id}`),
+        },
       }).catch(() => null);
     }
     await notifyAdmins(

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
+import { siteValue } from '@/lib/site/content';
 import { InstrumentIllustration, ILLUSTRATIONS, type IllustrationName } from '@/components/illustrations/instruments';
 
 export const dynamic = 'force-dynamic';
@@ -89,6 +90,8 @@ export default async function OrdersPage(props: { searchParams: Promise<{ filter
   const searchParams = await props.searchParams;
   const session = await requireSession({ redirectTo: '/app/orders' });
   const filter = searchParams.filter ?? 'all';
+  // Admin → Site content → Response times & numbers.
+  const verifyTime = await siteValue('rules.payment_verify_time');
 
   const orders = await prisma.order.findMany({
     where: { buyerId: session.user.id },
@@ -216,7 +219,7 @@ export default async function OrdersPage(props: { searchParams: Promise<{ filter
             // "we'll verify your receipt soon").
             let statusLine = `Placed ${smartDate(o.createdAt)}`;
             if (o.status === 'PENDING_PAYMENT' && o.paymentVerificationStatus === 'AWAITING_VERIFICATION') {
-              statusLine = `Receipt uploaded ${smartDate(o.paymentSubmittedAt)} · we'll verify within 1 business day`;
+              statusLine = `Receipt uploaded ${smartDate(o.paymentSubmittedAt)} · we'll verify within ${verifyTime}`;
             } else if (o.status === 'PENDING_PAYMENT') {
               statusLine = `Placed ${smartDate(o.createdAt)} · waiting for your bank-transfer receipt`;
             } else if (o.status === 'PAID') {

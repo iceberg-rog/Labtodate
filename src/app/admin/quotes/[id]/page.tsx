@@ -11,6 +11,9 @@ import { adminDetailTitle } from '@/app/admin/admin-title';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { EmailText } from '@/components/util/EmailText';
 import { QuoteComposer } from '@/components/admin/QuoteComposer';
+import type { ProformaDefaults } from '@/components/admin/ProformaComposer';
+import { addressLinesFrom, parseQuoteDetails } from '@/lib/documents/build';
+import { getGeneral, getOptions, getVatSettings } from '@/lib/documents/config';
 import { QuoteHeaderControls } from '@/components/admin/QuoteHeaderControls';
 import { QuoteReissueMagicLink } from '@/components/admin/QuoteReissueMagicLink';
 import { computeDealState, toneClasses } from '@/lib/quotes/deal-state';
@@ -23,6 +26,8 @@ import { buildBuyerIntel } from '@/lib/quotes/buyer-intel';
 import { buildActivityTimeline } from '@/lib/quotes/activity-timeline';
 import { MessageAttachments } from '@/components/util/MessageAttachments';
 import { formatPrice } from '@/lib/utils';
+
+const NEWLINE = String.fromCharCode(10);
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +82,41 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
     where: { sourcingRequestId: sr.id },
     select: { id: true, orderNumber: true, status: true, totalCents: true, currency: true, paidAt: true },
   });
+
+  // Quote composer pre-fill: the previous offer, else the buyer's billing
+  // details from their latest order, plus the document defaults.
+  const qd = parseQuoteDetails(sr.quoteDetails);
+  const [vatCfg, quoteOpts, docGeneral, buyerRow, lastBilled] = await Promise.all([
+    getVatSettings(),
+    getOptions('QUOTE'),
+    getGeneral(),
+    sr.submittedById ? prisma.user.findUnique({ where: { id: sr.submittedById }, select: { docLanguage: true } }) : Promise.resolve(null),
+    sr.submittedById
+      ? prisma.order.findMany({ where: { buyerId: sr.submittedById }, orderBy: { createdAt: 'desc' }, take: 10, select: { billingAddress: true } }).then((rows) => rows.find((r) => r.billingAddress) ?? null).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+  const prevBilling = addressLinesFrom(lastBilled?.billingAddress);
+  const proformaDefaults: ProformaDefaults = {
+    itemTitle: qd?.lines[0]?.title ?? sr.product?.title ?? sr.productCategory ?? 'Requested equipment',
+    unitCents: qd?.lines[0]?.unitCents ?? sr.quotedUnitCents ?? sr.quotedPriceCents ?? null,
+    qty: qd?.lines[0]?.qty ?? sr.quotedQuantity ?? 1,
+    mainDetail: qd?.lines[0]?.detail ?? '',
+    extraLines: qd?.lines.slice(1) ?? [],
+    shippingCents: qd?.shippingCents ?? 0,
+    billing: {
+      name: qd?.billing.name ?? sr.buyerName,
+      company: qd?.billing.company ?? sr.companyName ?? prevBilling.company ?? '',
+      address: (qd?.billing.addressLines ?? prevBilling.lines.filter((l) => l !== prevBilling.country)).join(NEWLINE),
+      country: qd?.billing.country ?? prevBilling.country ?? '',
+      vatId: qd?.billing.vatId ?? prevBilling.vat ?? '',
+    },
+    vatTreatment: qd?.vat.overridden ? qd.vat.treatment : 'AUTO',
+    validDays: qd?.validDays ?? quoteOpts.days,
+    lang: qd?.lang ?? (buyerRow?.docLanguage === 'nl' || buyerRow?.docLanguage === 'en' ? buyerRow.docLanguage : docGeneral.defaultLang),
+    note: sr.quotedNote ?? '',
+    allowOverride: vatCfg.allowOverride,
+    standardRatePct: vatCfg.standardRatePct,
+  };
 
   const [intel, timeline, admins] = await Promise.all([
     buildBuyerIntel(sr.buyerEmail, sr.submittedBy?.id ?? null),
@@ -299,6 +339,7 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               buyerEmail={sr.buyerEmail}
               canSendProforma={!proformaLockedReason}
               proformaLockedReason={proformaLockedReason}
+              proformaDefaults={proformaDefaults}
             />
           )}
         </div>
@@ -336,7 +377,13 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               </div>
             ) : sr.quotedPriceCents ? (
               <p className="text-[11px]">
-                Quote sent: <strong>{fmtMoney(sr.quotedPriceCents, sr.quotedCurrency ?? 'EUR')}</strong>
+                {sr.proformaNumber ? <span className="font-mono">{sr.proformaNumber}</span> : 'Quote'} sent:{' '}
+                <strong>{fmtMoney(sr.quotedPriceCents, sr.quotedCurrency ?? 'EUR')}</strong>
+                {sr.status === 'RESPONDED' && (
+                  <span className="block text-muted-foreground mt-0.5">
+                    Waiting for the buyer to accept. The order is created when they do.
+                  </span>
+                )}
               </p>
             ) : (
               <p className="text-[11px] text-muted-foreground italic">No order or proforma yet.</p>
