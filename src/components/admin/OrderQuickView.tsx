@@ -308,6 +308,7 @@ export function OrderQuickView() {
                     type="button"
                     disabled={pending}
                     onClick={() => {
+                      if (!window.confirm('Mark this order as PAID? Check the receipt against your bank account first: this emails the invoice to the buyer and cannot be undone here.')) return;
                       setActionMsg(null);
                       start(async () => {
                         const fd = new FormData(); fd.set('orderId', data.id);
@@ -472,6 +473,9 @@ export function OrderQuickView() {
                       {bill.name && <p className="font-semibold">{bill.name}</p>}
                       {bill.lines.map((l, i) => <p key={i} className="text-muted-foreground text-xs">{l}</p>)}
                     </address>
+                  ) : ship ? (
+                    // Bank-transfer checkouts collect one "shipping & billing" address.
+                    <p className="text-xs text-muted-foreground italic">Same as shipping (one address was given for both).</p>
                   ) : (
                     <p className="text-xs text-muted-foreground italic">Not captured.</p>
                   )}

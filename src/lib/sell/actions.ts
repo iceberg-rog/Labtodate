@@ -175,6 +175,15 @@ export async function submitSellSubmission(input: SellInputType): Promise<SellRe
     '/admin/sell',
     'SELL_NEW',
   );
+  // Same in-app trail the buyer gets for a support ticket.
+  if (session?.user?.id) {
+    await notifyUser(
+      session.user.id,
+      'Equipment offer received',
+      `We logged your offer "${parsed.itemTitle}". Our acquisitions team replies with a valuation; follow it under My equipment offers.`,
+      `/app/sell-submissions/${created.id}`,
+    );
+  }
 
   revalidatePath('/admin/sell');
   return { ok: true, id: created.id };

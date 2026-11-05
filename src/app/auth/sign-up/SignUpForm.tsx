@@ -172,9 +172,23 @@ export default function SignUpPage({ texts }: { texts: SignUpTexts }) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+              aria-describedby="password-hint"
               className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
+          {/* The button stays disabled until the password is long enough — say
+              why, live, instead of a silently greyed-out button. */}
+          <p
+            id="password-hint"
+            aria-live="polite"
+            className={`text-xs mt-1.5 ${password.length >= MIN_PASSWORD_LENGTH ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground'}`}
+          >
+            {password.length === 0
+              ? `Use at least ${MIN_PASSWORD_LENGTH} characters.`
+              : password.length < MIN_PASSWORD_LENGTH
+                ? `${MIN_PASSWORD_LENGTH - password.length} more character${MIN_PASSWORD_LENGTH - password.length === 1 ? '' : 's'} needed.`
+                : 'Password length OK ✓'}
+          </p>
         </div>
 
         {error && (

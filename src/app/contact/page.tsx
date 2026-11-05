@@ -52,6 +52,9 @@ export default async function ContactPage() {
                 <p className="text-muted-foreground [&_a]:text-primary" dangerouslySetInnerHTML={{ __html: findText }} />
               </div>
             )}
+            {/* Only once there is an address to show — a bare company name under
+                "Registered office" reads like missing information. */}
+            {c.address ? (
             <div>
               <p className="font-bold">{tx['page_contact.office_label']}</p>
               <p className="text-muted-foreground">
@@ -61,6 +64,7 @@ export default async function ContactPage() {
                 {c.vat ? <><br />VAT / Reg: {c.vat}</> : null}
               </p>
             </div>
+            ) : null}
           </div>
         </div>
 

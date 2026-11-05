@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db';
-import { logError } from '@/lib/observability';
+import { logError, notifyAdmins } from '@/lib/observability';
 
 /**
  * BUG-045 — release stock that was atomically reserved for a checkout that did
@@ -70,14 +70,34 @@ export async function consumeStockForPaidQuoteOrder(orderId: string, where: stri
         data: { quantity: { decrement: item.quantity } },
       });
       if (dec.count !== 1) {
-        // The listing was edited, sold through another route or deleted between
-        // the proforma and the payment. The sale still stands; flag the drift.
+        // The listing holds fewer units than were sold (edited, sold through
+        // another route, or quoted above stock) or is gone. The sale still
+        // stands. Previously the listing then stayed "in stock" and the same
+        // one-off part could be sold again: take what is left (down to 0) so it
+        // can't, and tell the team by product name.
+        const product = await prisma.product.findUnique({
+          where: { id: item.productId },
+          select: { title: true, quantity: true },
+        });
+        if (product && product.quantity > 0) {
+          await prisma.product.updateMany({
+            where: { id: item.productId, quantity: { lt: item.quantity } },
+            data: { quantity: 0 },
+          });
+        }
+        const title = product?.title ?? `product ${item.productId} (deleted)`;
         await logError(
           `${where}.consumeStockForPaidQuoteOrder`,
           new Error(
-            `order ${order.orderNumber}: could not take ${item.quantity} off product ${item.productId} (stock too low or product gone)`,
+            `order ${order.orderNumber}: sold ${item.quantity} × "${title}" but the listing had ${product ? Math.max(0, product.quantity) : 0} in stock — listing set to 0 (out of stock)`,
           ),
         );
+        await notifyAdmins(
+          `Stock check needed — ${title}`,
+          `Order ${order.orderNumber} was paid for ${item.quantity} unit(s), but the listing only had ${product ? Math.max(0, product.quantity) : 0}. The listing is now out of stock; correct the stock if you have more units.`,
+          '/admin/products',
+          'SYSTEM',
+        ).catch(() => {});
       }
     }
   } catch (e) {

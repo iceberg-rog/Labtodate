@@ -155,6 +155,8 @@ export function cleanGeneral(input: Record<string, unknown>): GeneralDocSettings
   if (!/^#[0-9a-fA-F]{6}$/.test(accent)) problems.push('Accent colour: use a hex colour like #0E4F40.');
   const lang = input.defaultLang === 'nl' ? 'nl' : input.defaultLang === 'en' ? 'en' : null;
   if (!lang) problems.push('Default language: English or Dutch.');
+  const ship = Number(String(input.cartShippingEur ?? '0').replace(',', '.'));
+  if (!Number.isFinite(ship) || ship < 0 || ship > 100_000) problems.push('Cart shipping: an amount in euro from 0 to 100,000.');
   if (problems.length) throw new ConfigError(problems);
   return {
     defaultLang: lang as Lang,
@@ -163,6 +165,7 @@ export function cleanGeneral(input: Record<string, unknown>): GeneralDocSettings
     receiptEnabled: bool(input.receiptEnabled),
     attachInvoice: bool(input.attachInvoice),
     billingCopy: bool(input.billingCopy),
+    cartShippingCents: Math.round(ship * 100),
   };
 }
 

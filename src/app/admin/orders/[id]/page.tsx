@@ -675,7 +675,7 @@ export default async function AdminOrderDetailPage(props: { params: Promise<{ id
 
                 <div className="grid sm:grid-cols-2 gap-3 pt-3 border-t border-amber-200 dark:border-amber-800">
                   {/* Verify */}
-                  <OrderActionForm action={verifyPayment} className="space-y-2" announce>
+                  <OrderActionForm action={verifyPayment} className="space-y-2" announce confirmText="Mark this order as PAID? Check the receipt against your bank account first: this emails the invoice to the buyer and cannot be undone here.">
                     <input type="hidden" name="orderId" value={order.id} />
                     <Button type="submit" size="sm" className="w-full rounded-full bg-emerald-600 hover:bg-emerald-700 text-white">
                       <ShieldCheck className="h-3.5 w-3.5" /> Verify payment

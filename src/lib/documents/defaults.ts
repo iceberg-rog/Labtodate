@@ -276,4 +276,5 @@ export const DEFAULT_GENERAL: GeneralDocSettings = {
   receiptEnabled: true,
   attachInvoice: true,
   billingCopy: true,
+  cartShippingCents: Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0),
 };

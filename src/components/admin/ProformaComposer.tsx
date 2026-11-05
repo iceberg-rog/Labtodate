@@ -101,7 +101,7 @@ export function ProformaComposer({ quoteId, buyerEmail, d, onDone }: { quoteId: 
     return null;
   }
 
-  function run(mode: 'preview' | 'send', confirmIncomplete = false) {
+  function run(mode: 'preview' | 'send', confirmIncomplete = false, confirmOverStock = false) {
     setErr(null);
     setNotice(null);
     const bad = firstProblem();
@@ -117,10 +117,16 @@ export function ProformaComposer({ quoteId, buyerEmail, d, onDone }: { quoteId: 
           compose: payload,
           previewOnly: mode === 'preview',
           confirmIncomplete,
+          confirmOverStock,
         });
         if (r?.error) { setErr(r.error); return; }
         if (r?.confirm) {
-          if (confirm(r.confirm)) run('send', true);
+          if (confirm(r.confirm)) run('send', true, confirmOverStock);
+          return;
+        }
+        // More units than the listing holds: ask, then resend with the confirm.
+        if (r?.needsConfirm) {
+          if (window.confirm(r.needsConfirm)) run('send', confirmIncomplete, true);
           return;
         }
         if (mode === 'preview') { setPreview(r.previewHtml ?? null); return; }

@@ -166,11 +166,13 @@ export default async function OrderDetailPage({
           Shipping address saved ✓ — we&apos;ll use it to dispatch your order.
         </div>
       )}
-      {(sp.addr === 'missing' || sp.addr === 'closed') && (
+      {(sp.addr === 'missing' || sp.addr === 'closed' || sp.addr === 'restricted') && (
         <div className="rounded-2xl border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 p-4 text-sm text-red-900 dark:text-red-300">
           {sp.addr === 'missing'
             ? 'Please fill in recipient name, phone, address line 1, city, postal code and a 2-letter country code.'
-            : 'This order can no longer be re-addressed here — contact support if the address needs to change.'}
+            : sp.addr === 'restricted'
+              ? 'We cannot ship to this country through the website because of EU export restrictions. Please contact support.'
+              : 'This order can no longer be re-addressed here — contact support if the address needs to change.'}
         </div>
       )}
 

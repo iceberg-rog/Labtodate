@@ -212,7 +212,7 @@ export function AnnouncementComposer({
               </div>
               <article className="border border-border rounded-xl bg-background overflow-hidden">
                 <div className="border-b border-border p-3">
-                  <p className="text-[10px] text-muted-foreground">From: <strong>Labtodate</strong> &lt;notifications@lab2date&gt;</p>
+                  <p className="text-[10px] text-muted-foreground">From: <strong>Labtodate</strong> &lt;notifications@labtodate.com&gt;</p>
                   <p className="text-[10px] text-muted-foreground">Subject: <strong>{title || '(no subject)'}</strong></p>
                 </div>
                 <div className="p-3 text-xs">

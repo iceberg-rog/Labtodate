@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { checkoutVat } from '@/lib/documents/checkout-vat';
+import { checkoutShippingCents, checkoutVat } from '@/lib/documents/checkout-vat';
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { prisma } from '@/lib/db';
@@ -119,6 +119,9 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
     postal: get('postal').slice(0, 24),
     state: get('state').slice(0, 80),
     country: country.kind === 'ok' ? country.code : '',
+    // B2B: printed on the invoice when given (optional for private buyers).
+    company: get('company').slice(0, 120),
+    vat: get('vat').replace(/\s+/g, '').toUpperCase().slice(0, 40),
   };
   const missing: string[] = [];
   if (!addr.name) missing.push('name');
@@ -162,7 +165,7 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
   }
 
   const subtotal = items.reduce((s, i) => s + (i.product.priceCents ?? 0) * i.quantity, 0);
-  const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
+  const shipping = await checkoutShippingCents();
   // VAT from Admin → Documents → VAT (default treatment), on goods + shipping.
   const checkoutVatInfo = await checkoutVat(subtotal, shipping);
   const taxPct = checkoutVatInfo.pct;
@@ -172,6 +175,8 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
     name: addr.name,
     phone: addr.phone,
     email: addr.email,
+    company: addr.company || null,
+    vat: addr.vat || null,
     address: {
       line1: addr.line1,
       line2: addr.line2 || null,

@@ -283,7 +283,7 @@ export default async function DocumentsPage(props: { searchParams?: Promise<Reco
         action="general"
         title="General"
         historyKey="doc:general"
-        initial={{ ...g }}
+        initial={{ ...g, cartShippingEur: (g.cartShippingCents / 100).toFixed(2) }}
         sections={[
           {
             fields: [
@@ -293,6 +293,7 @@ export default async function DocumentsPage(props: { searchParams?: Promise<Reco
               { type: 'checkbox', name: 'receiptEnabled', label: 'Issue a receipt when a payment is verified', hint: 'Attached to the “Payment received” e-mail next to the invoice.' },
               { type: 'checkbox', name: 'attachInvoice', label: 'Attach the invoice PDF to the “Payment received” e-mail' },
               { type: 'checkbox', name: 'billingCopy', label: 'Send a copy of every issued document to the billing e-mail', hint: 'Company & bank → Billing e-mail.' },
+              { type: 'number', name: 'cartShippingEur', label: 'Shipping on cart orders (€, excl. VAT)', hint: 'Added to orders placed from the cart. Quotes set their own shipping line.' },
             ],
           },
         ]}

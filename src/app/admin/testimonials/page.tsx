@@ -158,7 +158,7 @@ export default async function AdminTestimonialsPage() {
           </p>
           {(published.length > 0 ? published : [{
             id: 'sample',
-            quote: 'Lab2date saved us 6 weeks of vendor RFP — they matched our shortlist and shipped a refurb HPLC under budget.',
+            quote: 'Labtodate saved us 6 weeks of vendor RFP — they matched our shortlist and shipped a refurb HPLC under budget.',
             author: 'Sample Customer',
             role: 'Lab Director',
             company: 'Acme Biotech',

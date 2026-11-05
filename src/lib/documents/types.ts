@@ -106,6 +106,8 @@ export interface GeneralDocSettings {
   attachInvoice: boolean;
   /** Send a copy of every issued document to the billing address. */
   billingCopy: boolean;
+  /** Shipping charged on cart / buy-now orders, in cents (excl. VAT). */
+  cartShippingCents: number;
 }
 
 export interface DocLine {

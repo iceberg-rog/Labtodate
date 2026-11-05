@@ -62,7 +62,9 @@ export function ProductGallery({
         <div className="absolute top-5 left-5 flex gap-2">
           <Badge variant="secondary">{conditionLabel}</Badge>
           {mode === 'BUY_NOW' && <Badge variant="success">Buy now</Badge>}
-          {mode === 'QUOTE_ONLY' && <Badge variant="accent">Quote only</Badge>}
+          {/* Solid, readable on white product photos (the translucent accent
+              badge was light green on white). */}
+          {mode === 'QUOTE_ONLY' && <Badge variant="secondary" className="bg-foreground text-background border-transparent">Quote only</Badge>}
         </div>
         <div className="absolute top-5 right-5 h-9 w-9 rounded-full bg-card/90 backdrop-blur flex items-center justify-center text-foreground opacity-0 group-hover:opacity-100 transition-opacity">
           <ZoomIn className="h-4 w-4" />

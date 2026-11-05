@@ -43,6 +43,8 @@ export default function SignInPage({ texts }: { texts: SignInTexts }) {
   });
   const [codeError, setCodeError] = useState<string | null>(null);
   const [magicSent, setMagicSent] = useState(false);
+  // Set by the reset-password page after a successful change.
+  const passwordChanged = params.get('reset') === '1';
 
   async function handlePassword(e: React.FormEvent) {
     e.preventDefault();
@@ -169,6 +171,11 @@ export default function SignInPage({ texts }: { texts: SignInTexts }) {
           </div>
         </div>
 
+        {passwordChanged && !error && (
+          <p role="status" className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 dark:text-emerald-300 dark:bg-emerald-950/40 dark:border-emerald-800 rounded-md px-3 py-2">
+            Your password was changed. Sign in with your new password.
+          </p>
+        )}
         {error && (
           <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 dark:text-red-400 dark:bg-red-950/40 dark:border-red-800 rounded-md px-3 py-2">{error}</p>
         )}
@@ -190,7 +197,9 @@ export default function SignInPage({ texts }: { texts: SignInTexts }) {
           type="button"
           variant="outline"
           onClick={handleMagicLink}
-          disabled={!email || loading !== null}
+          // Enabled with an empty email so a click says "Enter your email
+          // first" instead of silently doing nothing.
+          disabled={loading !== null}
           className="w-full"
         >
           {loading === 'magic' ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Mail className="h-4 w-4" /> Email me a magic link</>}
