@@ -44,7 +44,8 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
-RUN groupadd -r nodejs && useradd -r -g nodejs nextjs
+# A real home folder: Chromium (PDF documents) needs a writable HOME.
+RUN groupadd -r nodejs && useradd -r -g nodejs -m -d /home/nextjs nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static

@@ -41,14 +41,31 @@ export function chromiumPath(): string {
 
 async function launch(): Promise<Browser> {
   const { default: puppeteer } = await import('puppeteer-core');
+  const { tmpdir } = await import('node:os');
+  const { mkdirSync } = await import('node:fs');
+  const { join } = await import('node:path');
   const executablePath = chromiumPath();
+  // Chromium needs a writable HOME and profile folder. In the container the
+  // app runs as a system user whose home does not exist, and Chromium then
+  // dies at start ("Failed to create headless user data directory",
+  // "chrome_crashpad_handler: --database is required"). Point both at /tmp.
+  const home = join(tmpdir(), `l2d-chromium-${process.pid}`);
+  mkdirSync(join(home, 'profile'), { recursive: true });
   const browser = await puppeteer.launch({
     executablePath,
     // The Chrome-for-Testing "headless shell" binary only runs in shell mode;
     // the full Chromium (Docker) uses the new headless mode.
     headless: /headless[-_]shell/i.test(executablePath) ? 'shell' : true,
     timeout: LAUNCH_TIMEOUT_MS,
+    userDataDir: join(home, 'profile'),
+    env: {
+      ...process.env,
+      HOME: home,
+      XDG_CONFIG_HOME: join(home, 'config'),
+      XDG_CACHE_HOME: join(home, 'cache'),
+    },
     args: [
+      '--disable-crash-reporter',
       '--no-sandbox', // runs as an unprivileged user in a container without user namespaces
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage', // Docker's 64 MB /dev/shm is too small for Chromium

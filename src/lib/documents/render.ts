@@ -32,7 +32,14 @@ function css(accent: string): string {
   .company table { margin-left: auto; border-collapse: collapse; }
   .company td { padding: 0 0 0 3mm; vertical-align: top; }
   .company td.k { color: #6b7280; text-align: right; }
-  .titlebar { display: flex; align-items: center; gap: 4mm; margin: 7mm 0 5mm; border-bottom: 2px solid ${accent}; padding-bottom: 2.5mm; }
+  .contact { border-collapse: collapse; margin-top: 2.5mm; font-size: 8.5pt; line-height: 1.5; }
+  .contact td { padding: 0 3mm 0 0; vertical-align: top; }
+  .contact td.k { color: #6b7280; }
+  .box table.grid { width: 100%; }
+  .box table.grid td.k { width: 15%; white-space: nowrap; }
+  .box table.grid td { width: 35%; }
+  .box table.grid td.mono { white-space: nowrap; }
+  .titlebar { display: flex; align-items: center; gap: 4mm; margin: 5mm 0 4mm; border-bottom: 2px solid ${accent}; padding-bottom: 2.5mm; }
   h1 { font-size: 18pt; margin: 0; color: ${accent}; letter-spacing: -0.01em; }
   .stamp { font-size: 8.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 1mm 2.5mm; border-radius: 1.5mm; border: 1px solid; }
   .stamp.paid { color: #065f46; border-color: #6ee7b7; background: #ecfdf5; }
@@ -70,18 +77,26 @@ function css(accent: string): string {
   .box.paid td.k { color: #047857; }
   .mono { font-family: Consolas, 'DejaVu Sans Mono', Menlo, monospace; }
   .note { margin-top: 4mm; background: #f9fafb; border-left: 3px solid #94a3b8; padding: 2.5mm 4mm; font-size: 9pt; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .sign { display: flex; gap: 10mm; margin-top: 6mm; page-break-inside: avoid; font-size: 9.5pt; }
+  .sign { display: flex; gap: 10mm; margin-top: 4mm; page-break-inside: avoid; font-size: 9.5pt; }
   .sign > div:first-child { flex: 0 0 55mm; }
   .sign > div:last-child { flex: 1; }
   .sign .fields { display: flex; gap: 5mm; }
   .sign .fields > div { flex: 1; }
   .sign .fields > div.wide { flex: 1.6; }
-  .sign .line { border-bottom: 1px solid #111827; height: 10mm; }
+  .sign .line { border-bottom: 1px solid #111827; height: 8mm; }
   .sign .lbl { color: #6b7280; font-size: 8pt; margin-top: 1mm; }
-  .foot { margin-top: 6mm; padding-top: 2.5mm; border-top: 1px solid #e5e7eb; font-size: 7.5pt; color: #6b7280; }
+  .foot { margin-top: 4mm; padding-top: 2.5mm; border-top: 1px solid #e5e7eb; font-size: 7.5pt; color: #6b7280; }
   .foot p { margin: 0 0 1mm; }
   @media screen { body { padding: 10mm 0; } }
 `;
+}
+
+/** Two label/value pairs per table row (the rows come as <tr><td>k</td><td>v</td></tr>). */
+function pairRows(rows: string[]): string {
+  const cells = rows.map((r) => (r.startsWith('<tr>') && r.endsWith('</tr>') ? r.slice(4, -5) : r));
+  const out: string[] = [];
+  for (let i = 0; i < cells.length; i += 2) out.push(`<tr>${cells[i]}${cells[i + 1] ?? '<td></td><td></td>'}</tr>`);
+  return out.join('');
 }
 
 export function renderDocumentHtml(snap: DocSnapshot): string {
@@ -111,17 +126,22 @@ export function renderDocumentHtml(snap: DocSnapshot): string {
   const logo = O.showLogo && c.logo
     ? `<img src="${esc(c.logo)}" alt="${esc(c.name)}">`
     : `<div class="name" dir="auto">${esc(c.name)}</div>`;
-  const companyRows: string[] = [];
-  const crow = (k: string, v: string, mono = false) => {
-    if (v && v.trim()) companyRows.push(`<tr><td class="k">${esc(k)}</td><td${mono ? ' class="mono"' : ''} dir="auto">${esc(v)}</td></tr>`);
+  // Contact lines sit under the logo; registration numbers (and the bank,
+  // unless the payment box below already shows it) under the address.
+  const row = (list: string[], k: string, v: string, mono = false) => {
+    if (v && v.trim()) list.push(`<tr><td class="k">${esc(k)}</td><td${mono ? ' class="mono"' : ''} dir="auto">${esc(v)}</td></tr>`);
   };
-  crow(B.companyPhone, c.phone);
-  crow(B.companyEmail, c.email);
-  crow(B.companyWeb, c.web);
-  crow(B.companyKvk, c.kvk);
-  crow(B.companyVat, c.vat, true);
-  if (c.iban) crow(B.iban, c.iban, true);
-  if (c.iban && c.bic) crow(B.bic, c.bic, true);
+  const contactRows: string[] = [];
+  row(contactRows, B.companyPhone, c.phone);
+  row(contactRows, B.companyEmail, c.email);
+  row(contactRows, B.companyWeb, c.web);
+  const companyRows: string[] = [];
+  row(companyRows, B.companyKvk, c.kvk);
+  row(companyRows, B.companyVat, c.vat, true);
+  const paymentBoxShowsBank = (snap.kind === 'QUOTE' || (snap.kind === 'INVOICE' && !snap.paid)) && O.showBankDetails;
+  if (c.iban && !paymentBoxShowsBank) row(companyRows, B.iban, c.iban, true);
+  if (c.iban && c.bic && !paymentBoxShowsBank) row(companyRows, B.bic, c.bic, true);
+  const contactBlock = contactRows.length ? `<table class="contact">${contactRows.join('')}</table>` : '';
   const companyBlock = `
     <div class="company">
       <div class="cname" dir="auto">${esc(c.name)}</div>
@@ -206,7 +226,7 @@ export function renderDocumentHtml(snap: DocSnapshot): string {
       paymentBox = `
         <div class="box">
           <div class="bh">${esc(B.paymentDetails)}</div>
-          <table>${rows.join('')}</table>
+          <table class="grid">${pairRows(rows)}</table>
           ${c.iban ? '' : `<div style="margin-top:1.5mm;color:#92400e">${esc(B.noBankDetails)}</div>`}
         </div>`;
     }
@@ -252,7 +272,7 @@ export function renderDocumentHtml(snap: DocSnapshot): string {
 </head>
 <body>
 <div class="doc">
-  <div class="head"><div class="logo">${logo}</div>${companyBlock}</div>
+  <div class="head"><div class="logo">${logo}${contactBlock}</div>${companyBlock}</div>
   <div class="titlebar"><h1 dir="auto">${esc(title)}</h1>${stamp}${snap.preview ? '<span class="stamp preview">Preview</span>' : ''}</div>
   <div class="parties">${customerBlock}${metaBlock}</div>
   <div class="text">${introBlock}</div>
