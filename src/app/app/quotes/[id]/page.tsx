@@ -198,7 +198,7 @@ export default async function BuyerQuoteDetailPage(
             <p className="text-xs text-muted-foreground mt-1">
               {breakdown}
               {sr.validUntilAt && !quoteVoid && (
-                <> · {expired ? 'expired' : 'valid until'} {sr.validUntilAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</>
+                <> · {expired ? 'expired' : 'valid until'} {sr.validUntilAt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })}</>
               )}
               {' · '}
               <a href={`/app/quotes/${sr.id}/proforma`} className="font-semibold text-primary hover:underline">
