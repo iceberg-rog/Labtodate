@@ -2,7 +2,8 @@ import { Suspense } from 'react';
 import Link from 'next/link';
 import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
-import { listProducts, getCategories, getTopBrands } from '@/lib/marketplace/queries';
+import { listProducts, getCategories, getTopBrands, LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
+import { marketplaceFacets } from '@/lib/marketplace/facets';
 import { getMarketing } from '@/lib/marketing';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import { Filters } from '@/components/marketplace/Filters';
@@ -72,21 +73,30 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   const page = sp.page;
   const mk = await getMarketing();
 
-  const [result, categories, brands] = await Promise.all([
-    listProducts({
-      q: sp.q,
-      category: sp.category,
-      brand: sp.brand,
-      condition: sp.condition,
-      mode: sp.mode,
-      sort: sp.sort,
-      minPriceCents: sp.minEuro !== undefined ? sp.minEuro * 100 : undefined,
-      maxPriceCents: sp.maxEuro !== undefined ? sp.maxEuro * 100 : undefined,
-      page,
-    }),
+  const filters = {
+    q: sp.q,
+    category: sp.category,
+    brand: sp.brand,
+    condition: sp.condition,
+    mode: sp.mode,
+    sort: sp.sort,
+    minPriceCents: sp.minEuro !== undefined ? sp.minEuro * 100 : undefined,
+    maxPriceCents: sp.maxEuro !== undefined ? sp.maxEuro * 100 : undefined,
+  };
+  const [result, categories, brands, facets] = await Promise.all([
+    listProducts({ ...filters, page }),
     getCategories(),
     getTopBrands(12),
+    marketplaceFacets(filters, LIVE_PRODUCT_WHERE),
   ]);
+  // Counts follow the other active filters; an option that would return
+  // nothing is hidden (unless it is the one currently selected).
+  const facetCategories = categories
+    .map((c) => ({ slug: c.slug, name: c.name, count: facets.categoryCounts.get(c.slug) ?? 0 }))
+    .filter((c) => c.count > 0 || c.slug === sp.category);
+  const facetBrands = brands
+    .map((b) => ({ slug: b.slug, name: b.name, count: facets.brandCounts.get(b.slug) ?? 0 }))
+    .filter((b) => b.count > 0 || b.slug === sp.brand);
 
   // Filters that carry over to pagination and the inline search box.
   const KEPT = ['q', 'category', 'brand', 'condition', 'mode', 'sort', 'minPrice', 'maxPrice'] as const;
@@ -149,8 +159,9 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
          *  SSR/CSR hydration text mismatch (#418). */}
         <Suspense fallback={<div className="lg:sticky lg:top-24 h-10 rounded-lg bg-foreground/5 animate-pulse" />}>
           <Filters
-            categories={categories.filter((c) => c._count.products > 0).map((c) => ({ slug: c.slug, name: c.name, count: c._count.products }))}
-            brands={brands.map((b) => ({ slug: b.slug, name: b.name, count: b._count.products }))}
+            categories={facetCategories}
+            brands={facetBrands}
+            hasPricedListings={facets.hasPricedListings}
           />
         </Suspense>
 
@@ -169,6 +180,13 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
             <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
               <p className="text-lg font-semibold">No instruments match these filters.</p>
               <p className="text-sm text-muted-foreground mt-2">Try removing a filter or broadening your search.</p>
+              <p className="text-sm mt-4">
+                Can&rsquo;t find it?{' '}
+                <Link href="/let-us-find-it" className="font-semibold text-primary hover:underline">
+                  Tell us what you need and we&rsquo;ll source it
+                </Link>
+                .
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">

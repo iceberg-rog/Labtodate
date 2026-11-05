@@ -65,7 +65,16 @@ export default async function CheckoutSuccessPage(
                 <p className="text-sm font-semibold">{it.titleSnapshot}</p>
                 {it.brandSnapshot && <p className="text-xs text-muted-foreground">{it.brandSnapshot}</p>}
               </div>
-              <p className="text-sm font-bold tabular-nums">{formatPrice(it.priceCentsSnapshot, order.currency)}</p>
+              {/* The line total, with the quantity when more than one (it read
+                  "€95" for 2 units while the order total said €190). */}
+              <p className="text-sm font-bold tabular-nums text-right">
+                {formatPrice(it.priceCentsSnapshot * it.quantity, order.currency)}
+                {it.quantity > 1 && (
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    {it.quantity} × {formatPrice(it.priceCentsSnapshot, order.currency)}
+                  </span>
+                )}
+              </p>
             </div>
           ))}
         </div>

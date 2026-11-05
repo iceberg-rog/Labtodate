@@ -68,13 +68,19 @@ export function QuoteComposer({
           const q = Math.round(parseFloat(qty));
           if (!Number.isFinite(q) || q < 1) { setErr('Enter a quantity of 1 or more.'); return; }
           if (cents * q > MAX_PROFORMA_EUR * 100) { setErr('Max proforma amount is €1,000,000.'); return; }
-          const r = await sendProforma({
+          const payload = {
             sourcingRequestId: quoteId,
             priceCents: cents,
             quantity: q,
             currency: 'EUR',
             note: pnote.trim() || null,
-          });
+          };
+          let r = await sendProforma(payload);
+          // More units than the listing holds: ask, then resend with the confirm.
+          if (r?.needsConfirm) {
+            if (!window.confirm(r.needsConfirm)) return;
+            r = await sendProforma({ ...payload, confirmOverStock: true });
+          }
           if (r?.error) { setErr(r.error); return; }
           setPrice(''); setQty('1'); setPnote('');
         } else {

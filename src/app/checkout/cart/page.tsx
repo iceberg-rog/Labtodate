@@ -72,7 +72,7 @@ export default async function CartCheckoutPage(
     orderBy: { createdAt: 'desc' },
     select: { shippingAddress: true },
   });
-  const seed = (last?.shippingAddress as { name?: string; phone?: string; address?: Record<string, string> } | null) ?? null;
+  const seed = (last?.shippingAddress as { name?: string; phone?: string; company?: string | null; vat?: string | null; address?: Record<string, string> } | null) ?? null;
   const seedAddr = seed?.address ?? {};
 
   const missing = (searchParams.missing ?? '').split(',').filter(Boolean);
@@ -126,6 +126,14 @@ export default async function CartCheckoutPage(
                 placeholder="+31 6 12345678" />
             </div>
             <Field label="Email" name="emailDisplay" defaultValue={session.user.email} disabled />
+            <div className="grid sm:grid-cols-2 gap-4">
+              <Field label="Company (optional)" name="company" autoComplete="organization"
+                defaultValue={seed?.company ?? ''}
+                placeholder="Lab or company name" />
+              <Field label="VAT ID (optional, for business invoices)" name="vat"
+                defaultValue={seed?.vat ?? ''}
+                placeholder="NL123456789B01" />
+            </div>
           </section>
 
           <section className="rounded-2xl border border-border bg-card p-5 space-y-4">

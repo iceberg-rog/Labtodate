@@ -30,20 +30,27 @@ export async function expireProformaTransition(
 ): Promise<ProformaExpiryOutcome> {
   try {
     await db.$transaction(async (tx) => {
+      const current = await tx.sourcingRequest.findUnique({
+        where: { id: sourcingRequestId },
+        select: { status: true },
+      });
       // Cancel the linked pending order that has NO proof (at most one row).
-      await tx.order.updateMany({
+      const canceled = await tx.order.updateMany({
         where: { sourcingRequestId, status: 'PENDING_PAYMENT', paymentSubmittedAt: null },
         data: { status: 'CANCELED' },
       });
+      // An ACCEPTED offer only expires through its unpaid order. If that order
+      // is paid (or gone) the deal is won — never close it here.
+      if (current?.status === 'ACCEPTED' && canceled.count !== 1) throw new LostRaceError();
       // If a linked order is STILL pending WITH proof, the buyer acted — abort so
       // neither the quote nor the order expires and no side effects fire.
       const proofPending = await tx.order.count({
         where: { sourcingRequestId, status: 'PENDING_PAYMENT', paymentSubmittedAt: { not: null } },
       });
       if (proofPending > 0) throw new ProofInFlightError();
-      // Close the quote (guarded) — only the sweep that flips RESPONDED→CLOSED wins.
+      // Close the quote (guarded) — only the sweep that flips it to CLOSED wins.
       const claim = await tx.sourcingRequest.updateMany({
-        where: { id: sourcingRequestId, status: 'RESPONDED' },
+        where: { id: sourcingRequestId, status: { in: ['RESPONDED', 'ACCEPTED'] } },
         data: { status: 'CLOSED' },
       });
       if (claim.count !== 1) throw new LostRaceError();

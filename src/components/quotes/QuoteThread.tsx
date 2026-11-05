@@ -106,12 +106,17 @@ export function QuoteThread(p: Props) {
     }
     startTransition(async () => {
       try {
-        const r = await sendProforma({
+        const payload = {
           sourcingRequestId: p.sourcingRequestId,
           priceCents: cents,
           currency: 'EUR',
           note: qnote.trim() || null,
-        });
+        };
+        let r = await sendProforma(payload);
+        if (r?.needsConfirm) {
+          if (!window.confirm(r.needsConfirm)) return;
+          r = await sendProforma({ ...payload, confirmOverStock: true });
+        }
         if (r?.error) {
           setError(r.error);
           return;
@@ -307,23 +312,25 @@ export function QuoteThread(p: Props) {
                 awaiting a formal proforma. */}
             {p.viewerRole === 'BUYER' && p.status === 'RESPONDED' && (
               p.hasProforma ? (
-                <div className="flex gap-2 items-center">
-                  {p.orderPaymentHref ? (
+                p.orderPaymentHref ? (
+                  <div className="flex gap-2 items-center">
                     <a
                       href={p.orderPaymentHref}
                       className="inline-flex items-center gap-1 rounded-full bg-primary text-primary-foreground px-4 py-2 text-sm font-semibold hover:bg-primary/90 shadow-sm"
                     >
                       <Check className="h-4 w-4" /> Complete your purchase
                     </a>
-                  ) : (
-                    <Button type="button" onClick={() => decide('ACCEPTED')} disabled={pending} className="rounded-full font-semibold shadow-sm">
-                      {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Accept proforma &amp; pay
+                    <Button type="button" variant="outline" onClick={() => decide('DECLINED')} className="rounded-full font-semibold" disabled={pending}>
+                      <X className="h-4 w-4" /> Decline
                     </Button>
-                  )}
-                  <Button type="button" variant="outline" onClick={() => decide('DECLINED')} className="rounded-full font-semibold" disabled={pending}>
-                    <X className="h-4 w-4" /> Decline
-                  </Button>
-                </div>
+                  </div>
+                ) : (
+                  // The offer card at the top of the page carries Accept / Decline
+                  // (with confirmation) — one place to decide, not two.
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-accent/10 border border-accent/30 px-3 py-1.5 text-[11px] font-semibold">
+                    <Check className="h-3 w-3" /> Accept or decline the offer at the top of this page
+                  </span>
+                )
               ) : (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-900 px-3 py-1.5 text-[11px] font-semibold dark:bg-amber-950/40 dark:border-amber-800 dark:text-amber-300">
                   <Clock className="h-3 w-3" />

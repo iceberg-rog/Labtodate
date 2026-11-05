@@ -336,7 +336,13 @@ export default async function AdminQuoteDetailPage(props: { params: Promise<{ id
               </div>
             ) : sr.quotedPriceCents ? (
               <p className="text-[11px]">
-                Quote sent: <strong>{fmtMoney(sr.quotedPriceCents, sr.quotedCurrency ?? 'EUR')}</strong>
+                {sr.proformaNumber ? <span className="font-mono">{sr.proformaNumber}</span> : 'Quote'} sent:{' '}
+                <strong>{fmtMoney(sr.quotedPriceCents, sr.quotedCurrency ?? 'EUR')}</strong>
+                {sr.status === 'RESPONDED' && (
+                  <span className="block text-muted-foreground mt-0.5">
+                    Waiting for the buyer to accept. The order is created when they do.
+                  </span>
+                )}
               </p>
             ) : (
               <p className="text-[11px] text-muted-foreground italic">No order or proforma yet.</p>

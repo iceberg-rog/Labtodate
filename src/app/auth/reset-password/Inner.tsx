@@ -47,7 +47,8 @@ export default function ResetPasswordInner() {
         return;
       }
       setDone(true);
-      setTimeout(() => router.push('/auth/sign-in'), 1500);
+      // ?reset=1 makes the sign-in page confirm the change.
+      setTimeout(() => router.push('/auth/sign-in?reset=1'), 1500);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not reset password.');
     } finally {

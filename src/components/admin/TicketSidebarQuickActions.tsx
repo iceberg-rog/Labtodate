@@ -35,6 +35,7 @@ export function TicketSidebarQuickActions({
           type="button"
           disabled={pending}
           onClick={() => {
+            if (!window.confirm('Mark this order as PAID? Check the receipt against your bank account first: this emails the invoice to the buyer and cannot be undone here.')) return;
             setMsg(null);
             start(async () => {
               const fd = new FormData();

@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { Prisma } from '@prisma/client';
+import { CHECKOUT_COUNTRIES, OTHER_COUNTRY } from '@/lib/orders/countries';
 import { formatPrice } from '@/lib/utils';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { renderInvoiceHtml } from '@/lib/invoice';
@@ -25,6 +27,7 @@ const ERR_MSG: Record<string, string> = {
   closed: 'This order is no longer accepting payment proof.',
   canceled: 'This order was canceled, so no payment is due. Please do not send a transfer for it.',
   expired: 'This proforma has expired, so it can no longer be paid. Ask us to re-issue it on the quote thread.',
+  restricted: 'We cannot ship to this country through the website because of EU export restrictions. Please contact support so we can check what is possible.',
 };
 
 // Payment received — the order is past the "pay us" step.
@@ -115,13 +118,23 @@ export default async function PaymentWorkspacePage({
         ? 'The quote request was closed without a deal, so this order was canceled.'
         : 'This order was canceled.';
 
-  const ship = order.shippingAddress as
-    | { name?: string; phone?: string; company?: string; vat?: string; address?: Record<string, string> }
-    | null;
+  type ShipJson = { name?: string; phone?: string; company?: string; vat?: string; address?: Record<string, string> } | null;
+  // A quote order starts without an address: prefill from the buyer's most
+  // recent order that has one (they usually ship to the same lab), and take the
+  // company they gave on the quote request.
+  const ship = (order.shippingAddress as ShipJson) ??
+    ((
+      await prisma.order.findFirst({
+        where: { buyerId: session.user.id, id: { not: order.id }, NOT: { shippingAddress: { equals: Prisma.DbNull } } },
+        orderBy: { createdAt: 'desc' },
+        select: { shippingAddress: true },
+      })
+    )?.shippingAddress as ShipJson) ??
+    null;
   const seed = {
     name: ship?.name ?? session.user.name ?? '',
     phone: ship?.phone ?? '',
-    company: ship?.company ?? '',
+    company: ship?.company || sourcing?.companyName || '',
     vat: ship?.vat ?? '',
     line1: String(ship?.address?.line1 ?? ''),
     line2: String(ship?.address?.line2 ?? ''),
@@ -528,8 +541,15 @@ export default async function PaymentWorkspacePage({
             <div className="grid sm:grid-cols-[1fr_1fr_120px] gap-3">
               <Field label="City" name="addr_city" defaultValue={seed.city} required />
               <Field label="Postal code" name="addr_postal" defaultValue={seed.postal} required />
-              <Field label="Country (2-letter)" name="addr_country" defaultValue={seed.country} maxLength={2} placeholder="NL" required />
+              <Field label="Country code" name="addr_country" defaultValue={seed.country} maxLength={2} placeholder="NL" required list="addr-country-list" />
             </div>
+            {/* Suggestions while typing (code + name); any other 2-letter ISO code
+                still works for countries outside the checkout list. */}
+            <datalist id="addr-country-list">
+              {CHECKOUT_COUNTRIES.filter((c) => c.code !== OTHER_COUNTRY).map((c) => (
+                <option key={c.code} value={c.code}>{c.name}</option>
+              ))}
+            </datalist>
           </section>
 
           <div className="flex items-center gap-3 flex-wrap">
@@ -573,6 +593,7 @@ function Field({
   placeholder,
   maxLength,
   required,
+  list,
 }: {
   label: string;
   name: string;
@@ -580,6 +601,7 @@ function Field({
   placeholder?: string;
   maxLength?: number;
   required?: boolean;
+  list?: string;
 }) {
   return (
     <label className="block">
@@ -593,6 +615,8 @@ function Field({
         placeholder={placeholder}
         maxLength={maxLength}
         required={required}
+        list={list}
+        aria-label={label}
         className="w-full h-10 px-3 rounded-lg border border-input bg-background text-sm"
       />
     </label>

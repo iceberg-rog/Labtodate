@@ -25,6 +25,17 @@ export async function toggleWishlist(productSlug: string) {
   revalidatePath('/app/wishlist');
 }
 
+/** Remove one saved item (idempotent: a double click never re-adds it). */
+export async function removeFromWishlist(productSlug: string): Promise<void> {
+  const session = await requireSession({ redirectTo: '/app/wishlist' });
+  const product = await prisma.product.findUnique({ where: { slug: productSlug }, select: { id: true } });
+  if (product) {
+    await prisma.wishlistItem.deleteMany({ where: { userId: session.user.id, productId: product.id } });
+  }
+  revalidatePath(`/marketplace/${productSlug}`);
+  revalidatePath('/app/wishlist');
+}
+
 export async function isWishlisted(userId: string | null, productId: string): Promise<boolean> {
   if (!userId) return false;
   const found = await prisma.wishlistItem.findUnique({

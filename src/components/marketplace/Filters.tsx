@@ -13,9 +13,13 @@ interface FacetItem {
 export function Filters({
   categories,
   brands,
+  hasPricedListings = true,
 }: {
   categories: FacetItem[];
   brands: FacetItem[];
+  /** False when no live listing has a visible price: the "Buy now" and price
+   *  filters could only ever return nothing, so they are not offered. */
+  hasPricedListings?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -146,6 +150,7 @@ export function Filters({
         ))}
       </FilterGroup>
 
+      {(hasPricedListings || activeMode) && (
       <FilterGroup title="Buying mode">
         {/* "Buy now" = every listing with a Buy now button (BUY_NOW or HYBRID
             with a visible price); "Quote only" = everything else. A separate
@@ -164,7 +169,9 @@ export function Filters({
           />
         ))}
       </FilterGroup>
+      )}
 
+      {(hasPricedListings || params.get('minPrice') || params.get('maxPrice')) && (
       <FilterGroup title="Price (€)">
         <form
           onSubmit={(e) => {
@@ -210,6 +217,7 @@ export function Filters({
           </button>
         </form>
       </FilterGroup>
+      )}
       </div>
     </aside>
   );
@@ -239,6 +247,8 @@ function FilterToggle({
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
+      aria-label={count !== undefined ? `${label}, ${count} ${count === 1 ? 'listing' : 'listings'}` : label}
       className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
         active
           ? 'bg-primary text-primary-foreground font-semibold'

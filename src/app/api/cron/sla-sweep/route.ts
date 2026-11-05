@@ -154,8 +154,10 @@ export async function POST(req: NextRequest) {
       archivedAt: null,
       proformaNumber: { not: null },
       validUntilAt: { lt: now },
-      // Only deals still in negotiation. Accepted/declined/closed are terminal.
-      status: 'RESPONDED',
+      // Deals still in negotiation, plus accepted offers whose order is still
+      // unpaid (the order is created on acceptance; an unpaid one lapses with
+      // the offer). expireProformaTransition never closes a paid deal.
+      status: { in: ['RESPONDED', 'ACCEPTED'] },
     },
     select: {
       id: true, proformaNumber: true, buyerEmail: true, buyerName: true,

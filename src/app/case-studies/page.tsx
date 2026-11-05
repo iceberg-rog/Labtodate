@@ -25,6 +25,14 @@ export default async function CaseStudiesPage() {
         </p>
       </header>
 
+      {cases.length === 0 && (
+        <div className="rounded-2xl border-2 border-dashed border-border bg-card p-12 text-center">
+          <p className="text-lg font-semibold">No case studies published yet</p>
+          <p className="text-sm text-muted-foreground mt-2">
+            Check back soon, or <Link href="/contact" className="font-semibold text-primary hover:underline">ask us</Link> for references in your field.
+          </p>
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {cases.map((c) => (
           <Link key={c.slug} href={`/case-studies/${c.slug}`} className="group rounded-2xl border border-border bg-card overflow-hidden hover:border-primary/40 hover:shadow-xl transition-all">

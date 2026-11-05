@@ -103,9 +103,17 @@ export default async function ProductDetailPage(props: PageProps) {
           ? 'Checkout was not completed. No payment was taken.'
           : null;
   const similar = await getSimilarProducts(product.categoryId, product.slug, 4);
-  const companyListings = product.companyId
-    ? await prisma.product.count({ where: { companyId: product.companyId, status: 'PUBLISHED' } })
-    : 0;
+  // Listings of the same seller. A product without a shop is Labtodate's own
+  // inventory, so count the other own-inventory listings (it said "0" before).
+  const companyListings = await prisma.product.count({
+    where: { companyId: product.companyId ?? null, status: 'PUBLISHED' },
+  });
+  const sellerName = product.company?.name ?? (process.env.SITE_NAME || 'Labtodate');
+  const sellerWords = sellerName.trim().split(/\s+/).filter(Boolean);
+  const sellerInitials = (
+    sellerWords.length > 1 ? `${sellerWords[0][0]}${sellerWords[1][0]}` : sellerName.slice(0, 2)
+  ).toUpperCase();
+  const sellerLocation = product.company?.country ?? (process.env.COMPANY_COUNTRY || 'EU');
   // Aggregate for count+average (accurate over ALL reviews), but only render
   // the latest 24 — an unbounded findMany on a public page is a DoS lever.
   const [reviewAgg, reviews] = await Promise.all([
@@ -366,7 +374,7 @@ export default async function ProductDetailPage(props: PageProps) {
               <DetailRow label="Brand" value={product.brand?.name ?? '—'} />
               <DetailRow label="Category" value={product.category.name} />
               <DetailRow label="Supplier" value="Labtodate Verified Supplier" />
-              <DetailRow label="Location" value={product.company?.country ?? 'EU'} />
+              <DetailRow label="Location" value={sellerLocation} />
               {product.yearMade && <DetailRow label="Year" value={String(product.yearMade)} />}
               <DetailRow label="Warranty" value={mk.warranty} />
               {specs &&
@@ -479,8 +487,8 @@ export default async function ProductDetailPage(props: PageProps) {
               Sold by
             </p>
             <div className="flex items-center gap-3">
-              <div className="h-12 w-12 rounded-xl bg-primary text-primary-foreground flex items-center justify-center font-bold text-sm" style={{ letterSpacing: '-0.04em' }}>
-                L2
+              <div className="h-12 w-12 rounded-xl bg-primary text-primary-foreground flex items-center justify-center font-bold text-sm" style={{ letterSpacing: '-0.04em' }} aria-hidden>
+                {sellerInitials}
               </div>
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-foreground truncate">
@@ -497,7 +505,7 @@ export default async function ProductDetailPage(props: PageProps) {
                 <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">live listings</div>
               </div>
               <div>
-                <div className="text-base font-bold">{product.company?.country ?? '—'}</div>
+                <div className="text-base font-bold">{sellerLocation}</div>
                 <div className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider">location</div>
               </div>
             </div>

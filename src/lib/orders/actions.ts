@@ -175,6 +175,9 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
     postal: get('postal').slice(0, 24),
     state: get('state').slice(0, 80),
     country: country.kind === 'ok' ? country.code : '',
+    // B2B: printed on the invoice when given (optional for private buyers).
+    company: get('company').slice(0, 120),
+    vat: get('vat').replace(/\s+/g, '').toUpperCase().slice(0, 40),
   };
 
   const missing: string[] = [];
@@ -218,6 +221,8 @@ export async function startCheckoutWithAddress(productSlug: string, formData: Fo
     name: addr.name,
     phone: addr.phone,
     email: addr.email,
+    company: addr.company || null,
+    vat: addr.vat || null,
     address: {
       line1: addr.line1,
       line2: addr.line2 || null,

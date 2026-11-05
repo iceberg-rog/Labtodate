@@ -26,12 +26,26 @@ export const CHECKOUT_COUNTRIES: { code: string; name: string }[] = [
   { code: 'CA', name: 'Canada' },
   { code: 'AU', name: 'Australia' },
   { code: 'AE', name: 'United Arab Emirates' },
-  { code: 'IR', name: 'Iran' },
   { code: 'TR', name: 'Türkiye' },
   { code: OTHER_COUNTRY, name: 'Other — request a shipping quote' },
 ];
 
-const SHIPPABLE = new Set(CHECKOUT_COUNTRIES.map((c) => c.code).filter((c) => c !== OTHER_COUNTRY));
+/**
+ * Destinations under EU sanctions / export restrictions for laboratory and
+ * analytical equipment (dual-use and industrial goods). Never offered at
+ * checkout and refused wherever a country is typed in (quote orders), so an
+ * order to them can only happen after a manual compliance check.
+ * IR Iran · KP North Korea · SY Syria · RU Russia · BY Belarus.
+ */
+export const EXPORT_RESTRICTED = new Set(['IR', 'KP', 'SY', 'RU', 'BY']);
+
+export function isExportRestricted(code: string): boolean {
+  return EXPORT_RESTRICTED.has(code.trim().toUpperCase());
+}
+
+const SHIPPABLE = new Set(
+  CHECKOUT_COUNTRIES.map((c) => c.code).filter((c) => c !== OTHER_COUNTRY && !EXPORT_RESTRICTED.has(c)),
+);
 
 /**
  * Classify the raw `country` form value. The "Other" option must be detected on

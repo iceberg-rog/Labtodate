@@ -33,15 +33,19 @@ export default async function ContactPage() {
               <p className="font-bold">Need a specific item?</p>
               <p className="text-muted-foreground"><a href="/let-us-find-it" className="text-primary">Let us find it</a>.</p>
             </div>
-            <div>
-              <p className="font-bold">Registered office</p>
-              <p className="text-muted-foreground">
-                {c.legal}
-                {c.address ? <>, {c.address}</> : null}
-                {c.country ? <>, {c.country}</> : null}
-                {c.vat ? <><br />VAT / Reg: {c.vat}</> : null}
-              </p>
-            </div>
+            {/* Only once there is an address to show — a bare company name under
+                "Registered office" reads like missing information. */}
+            {c.address ? (
+              <div>
+                <p className="font-bold">Registered office</p>
+                <p className="text-muted-foreground">
+                  {c.legal}
+                  {c.address ? <>, {c.address}</> : null}
+                  {c.country ? <>, {c.country}</> : null}
+                  {c.vat ? <><br />VAT / Reg: {c.vat}</> : null}
+                </p>
+              </div>
+            ) : null}
           </div>
         </div>
 

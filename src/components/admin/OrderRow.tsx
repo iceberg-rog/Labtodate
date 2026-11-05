@@ -522,6 +522,7 @@ export function OrderRow(p: OrderRowProps) {
             disabled={pending}
             onClick={(e) => {
               e.stopPropagation();
+              if (!window.confirm('Mark this order as PAID? Check the receipt against your bank account first: this emails the invoice to the buyer and cannot be undone here.')) return;
               runAction(verifyPayment);
             }}
             className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md bg-emerald-700 text-white text-xs font-bold hover:bg-emerald-800 disabled:opacity-50"
