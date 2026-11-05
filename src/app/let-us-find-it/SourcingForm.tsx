@@ -6,14 +6,26 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { submitAndRedirect } from '@/lib/quotes/actions';
 
+/** Admin-editable texts (Site content → Forms & sign-up), passed in by the page. */
+export interface SourcingFormTexts {
+  footer: string;
+  name: string;
+  company: string;
+  category: string;
+  budget: string;
+  timeframe: string;
+}
+
 export function SourcingForm({
   anchor,
   facility = null,
   buyer,
+  texts,
 }: {
   anchor: { slug: string; title: string; brand: string | null } | null;
   facility?: { slug: string; name: string; location: string } | null;
   buyer: { name: string; email: string };
+  texts: SourcingFormTexts;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -83,20 +95,20 @@ export function SourcingForm({
       <div className="grid sm:grid-cols-2 gap-4">
         {/* Name and email come from the signed-in account; the server ignores
             these values. An account without a name may type one. */}
-        <Field label="Full name" name="buyerName" placeholder="Dr. Jane Doe" required maxLength={120}
+        <Field label="Full name" name="buyerName" placeholder={texts.name} required maxLength={120}
           defaultValue={buyer.name} readOnly={!!buyer.name.trim()} />
         <Field label="Account email" name="buyerEmail" type="email" required defaultValue={buyer.email} readOnly />
       </div>
 
-      <Field label="Company / Institution" name="companyName" placeholder="Pivot Park" maxLength={180} />
+      <Field label="Company / Institution" name="companyName" placeholder={texts.company} maxLength={180} />
 
       {!anchor && !facility && (
-        <Field label="Equipment category / type" name="productCategory" placeholder="e.g. confocal microscope" maxLength={120} />
+        <Field label="Equipment category / type" name="productCategory" placeholder={texts.category} maxLength={120} />
       )}
 
       <div className="grid sm:grid-cols-2 gap-4">
-        <Field label="Budget" name="budget" placeholder="€20k – €30k" maxLength={120} />
-        <Field label="Timeframe" name="timeframe" placeholder={facility ? 'Dates or duration you need' : 'Within 4 weeks'} maxLength={120} />
+        <Field label="Budget" name="budget" placeholder={texts.budget} maxLength={120} />
+        <Field label="Timeframe" name="timeframe" placeholder={facility ? 'Dates or duration you need' : texts.timeframe} maxLength={120} />
       </div>
 
       <Field label={facility ? 'What do you need the lab for?' : 'What are you looking for?'} required textarea minLength={20} maxLength={4000}
@@ -114,9 +126,7 @@ export function SourcingForm({
       <Button type="submit" size="lg" disabled={pending} className="rounded-2xl font-semibold w-full">
         {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Submit request <ArrowRight className="h-4 w-4" /></>}
       </Button>
-      <p className="text-xs text-muted-foreground text-center">
-        Free for buyers · No commission until you accept a quote
-      </p>
+      {texts.footer && <p className="text-xs text-muted-foreground text-center">{texts.footer}</p>}
     </form>
   );
 }

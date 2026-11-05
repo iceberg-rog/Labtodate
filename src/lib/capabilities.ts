@@ -59,6 +59,8 @@ export const CAPABILITIES = [
   'analytics:view',
   'audit:view',
   'errors:view',
+  // Documents: quote/invoice/receipt templates, e-mails, numbering, VAT, company block
+  'documents:edit',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

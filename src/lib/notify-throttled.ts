@@ -1,5 +1,6 @@
 import { prisma } from './db';
-import { sendEmail } from './email';
+import type { Vars } from './cms/text';
+import { sendTemplatedEmail } from './email-templates/send';
 import { notifyUser } from './observability';
 
 /**
@@ -19,6 +20,11 @@ import { notifyUser } from './observability';
  * `<submissionId>` or `<orderId>`) so that the throttle only suppresses
  * follow-up emails about the SAME thing — emails about a different deal
  * still fire even if both land in the same hour.
+ *
+ * The email is a templated one (Admin → Documents → E-mails): `emailKey`
+ * names it and `emailVars` fills its fields. Its default subject carries the
+ * dedupeKey; an admin who removes that field from the subject also removes
+ * the throttle for that email.
  */
 export async function notifyAndMaybeEmail(opts: {
   userId: string | null;
@@ -26,9 +32,8 @@ export async function notifyAndMaybeEmail(opts: {
   notifTitle: string;
   notifBody: string;
   notifHref: string;
-  emailSubject: string;
-  emailHtml: string;
-  emailText?: string;
+  emailKey: string;
+  emailVars: Vars;
   /** Stable identifier of the underlying thread (used in the throttle scan). */
   dedupeKey: string;
 }): Promise<{ inAppCreated: boolean; emailSent: boolean; throttled: boolean }> {
@@ -67,13 +72,9 @@ export async function notifyAndMaybeEmail(opts: {
   }
 
   try {
-    await sendEmail({
-      to: opts.toEmail,
-      subject: opts.emailSubject,
-      html: opts.emailHtml,
-      text: opts.emailText,
-    });
-    return { inAppCreated, emailSent: true, throttled: false };
+    // false = the admin switched this email off.
+    const sent = await sendTemplatedEmail({ key: opts.emailKey, to: opts.toEmail, vars: opts.emailVars });
+    return { inAppCreated, emailSent: sent, throttled: false };
   } catch {
     return { inAppCreated, emailSent: false, throttled: false };
   }

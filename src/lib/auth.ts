@@ -5,8 +5,7 @@ import { nextCookies } from 'better-auth/next-js';
 import { createAuthMiddleware, APIError } from 'better-auth/api';
 import { hashPassword } from 'better-auth/crypto';
 import { prisma } from './db';
-import { sendEmail } from './email';
-import { escapeHtml } from './email-html';
+import { sendTemplatedEmail } from './email-templates/send';
 import { cleanName, MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, NAME_RULE } from './auth-rules';
 import { isOwnMediaUrl } from './products/image-urls';
 import { safeRedirect, signInErrorURL } from './safe-redirect';
@@ -25,6 +24,12 @@ if (process.env.NODE_ENV === 'production' && process.env.NEXT_PHASE !== 'phase-p
 }
 
 const SITE_URL = (process.env.BETTER_AUTH_URL || '').replace(/\/+$/, '');
+
+// Link / code lifetimes. The e-mails show them through their fields.
+const RESET_LINK_MINUTES = 60;
+const VERIFY_LINK_MINUTES = 60;
+const MAGIC_LINK_MINUTES = 10;
+const EMAIL_CODE_MINUTES = 10;
 
 // Routes that carry the account's `email` in the body and lead to a session
 // or a sign-in email — blocked up front for suspended accounts.
@@ -124,11 +129,13 @@ async function hasPassword(userId: string): Promise<boolean> {
   return count > 0;
 }
 
-// Added to the magic-link / verification-link email of an unverified account
-// that has a password: following the link verifies the address, and
+// The magic-link / verification-link email of an unverified account that has
+// a password uses its "…_removes_password" version (Admin → Documents →
+// E-mails), which explains that following the link verifies the address and
 // claimUnverifiedAccount then removes that password.
-const PASSWORD_REMOVAL_NOTE =
-  'This address hasn’t been confirmed yet, so opening the link confirms it and, for your security, removes the password set on the account before then. After signing in, set a new one with “Forgot password” on the sign-in page.';
+async function removesPassword(user: { id: string; emailVerified: boolean }): Promise<boolean> {
+  return !user.emailVerified && (await hasPassword(user.id));
+}
 
 /** encodeURIComponent that also escapes !'()*~, which better-auth refuses in a relative callbackURL. */
 function encodeStrict(value: string): string {
@@ -173,46 +180,26 @@ export const auth = betterAuth({
       if (!user.emailVerified) {
         await prisma.user.update({ where: { id: user.id }, data: { emailVerified: true } });
       }
-      await sendEmail({
+      await sendTemplatedEmail({
+        key: 'password_changed',
         to: user.email,
-        subject: 'Your Labtodate password was changed',
-        html: `
-          <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-            <h2 style="color:#0E4F40;">Your password was changed</h2>
-            <p>The password on your Labtodate account was just reset, and every device that was signed in has been signed out.</p>
-            <p style="color:#6b7280;font-size:13px;">If this wasn't you, reset your password again right away at <a href="${SITE_URL}/auth/forgot-password">${SITE_URL}/auth/forgot-password</a> and contact support.</p>
-          </div>
-        `,
-        text: `The password on your Labtodate account was just reset and all devices were signed out. If this wasn't you, reset it again at ${SITE_URL}/auth/forgot-password and contact support.`,
+        vars: { 'customer.name': user.name, 'link.forgot_password': `${SITE_URL}/auth/forgot-password` },
       }).catch((e) => console.error('[auth] password-changed notice failed:', e));
     },
     sendResetPassword: async ({ user, url }) => {
-      await sendEmail({
+      await sendTemplatedEmail({
+        key: 'password_reset',
         to: user.email,
-        subject: 'Reset your Labtodate password',
-        html: `
-          <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-            <h2 style="color:#0E4F40;">Reset your password</h2>
-            <p>Hi ${escapeHtml(user.name || 'there')},</p>
-            <p>We received a request to reset the password on your Labtodate account. Click the button below — the link expires in 1 hour.</p>
-            <p style="margin:24px 0;">
-              <a href="${escapeHtml(url)}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-                Reset password
-              </a>
-            </p>
-            <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email — your password won't change.</p>
-          </div>
-        `,
-        text: `Reset your Labtodate password: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.`,
+        vars: { 'customer.name': user.name, 'link.reset': url, 'link.valid_minutes': String(RESET_LINK_MINUTES) },
       });
     },
-    resetPasswordTokenExpiresIn: 60 * 60, // 1 hour
+    resetPasswordTokenExpiresIn: RESET_LINK_MINUTES * 60,
   },
 
   emailVerification: {
     sendOnSignUp: false,
     autoSignInAfterVerification: true,
-    expiresIn: 60 * 60, // 1 hour
+    expiresIn: VERIFY_LINK_MINUTES * 60,
     // Runs once the code / link has checked out, before the account is
     // marked verified and the verifier's session is created.
     beforeEmailVerification: async (user, request) => {
@@ -220,25 +207,10 @@ export const auth = betterAuth({
       await claimUnverifiedAccount(user.id, request ? chosenAtVerification.get(request) : undefined);
     },
     sendVerificationEmail: async ({ user, url }) => {
-      const note = !user.emailVerified && (await hasPassword(user.id)) ? PASSWORD_REMOVAL_NOTE : null;
-      await sendEmail({
+      await sendTemplatedEmail({
+        key: (await removesPassword(user)) ? 'verify_email_removes_password' : 'verify_email',
         to: user.email,
-        subject: 'Verify your Labtodate email',
-        html: `
-          <div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto;">
-            <h2 style="color:#0E4F40;">Confirm your email</h2>
-            <p>Hi ${escapeHtml(user.name || 'there')},</p>
-            <p>Click the button below to confirm that this email belongs to you. The link expires in 1 hour.</p>
-            <p style="margin:24px 0;">
-              <a href="${escapeHtml(url)}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-                Verify my email
-              </a>
-            </p>
-            ${note ? `<p style="color:#374151;">${note}</p>` : ''}
-            <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore this email.</p>
-          </div>
-        `,
-        text: `Verify your Labtodate email: ${url}\n\nThis link expires in 1 hour. If you didn't request this, ignore the email.${note ? `\n\n${note}` : ''}`,
+        vars: { 'customer.name': user.name, 'link.verify': url, 'link.valid_minutes': String(VERIFY_LINK_MINUTES) },
       });
     },
   },
@@ -443,47 +415,24 @@ export const auth = betterAuth({
       // Sign-in links are for existing accounts only; new visitors go through
       // sign-up (name + Terms). Unknown addresses get a "no account" email.
       disableSignUp: true,
-      expiresIn: 60 * 10, // 10 minutes
+      expiresIn: MAGIC_LINK_MINUTES * 60,
       sendMagicLink: async ({ email, url }) => {
         const exists = await prisma.user.findUnique({
           where: { email: email.toLowerCase() },
-          select: { id: true, emailVerified: true },
+          select: { id: true, name: true, emailVerified: true },
         });
         if (!exists) {
-          await sendEmail({
+          await sendTemplatedEmail({
+            key: 'sign_in_no_account',
             to: email,
-            subject: 'Sign-in request for Labtodate',
-            html: `
-              <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-                <h2 style="color: #047857;">No Labtodate account yet</h2>
-                <p>Someone asked for a sign-in link for this address, but there's no Labtodate account for it.</p>
-                <p>To get started, <a href="${SITE_URL}/auth/sign-up">create an account</a>.</p>
-                <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore the email.</p>
-              </div>
-            `,
-            text: `There's no Labtodate account for this address. Create one at ${SITE_URL}/auth/sign-up\n\nIf you didn't request this, ignore the email.`,
+            vars: { 'link.sign_up': `${SITE_URL}/auth/sign-up` },
           });
           return;
         }
-        const note = !exists.emailVerified && (await hasPassword(exists.id)) ? PASSWORD_REMOVAL_NOTE : null;
-        await sendEmail({
+        await sendTemplatedEmail({
+          key: (await removesPassword(exists)) ? 'sign_in_link_removes_password' : 'sign_in_link',
           to: email,
-          subject: 'Your Labtodate sign-in link',
-          html: `
-            <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-              <h2 style="color: #047857;">Sign in to Labtodate</h2>
-              <p>Click the link below to sign in. It expires in 10 minutes.</p>
-              <p style="margin: 24px 0;">
-                <a href="${escapeHtml(url)}"
-                   style="background:#047857;color:white;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:600;">
-                  Sign in to Labtodate
-                </a>
-              </p>
-              ${note ? `<p style="color:#374151;">${note}</p>` : ''}
-              <p style="color:#6b7280;font-size:13px;">If you didn't request this, you can safely ignore the email.</p>
-            </div>
-          `,
-          text: `Sign in to Labtodate: ${url}\n\nThis link expires in 10 minutes.${note ? `\n\n${note}` : ''}`,
+          vars: { 'customer.name': exists.name, 'link.sign_in': url, 'link.valid_minutes': String(MAGIC_LINK_MINUTES) },
         });
       },
     }),
@@ -491,7 +440,7 @@ export const auth = betterAuth({
     // accounts that haven't verified their address yet.
     emailOTP({
       otpLength: 5,
-      expiresIn: 60 * 10, // 10 minutes
+      expiresIn: EMAIL_CODE_MINUTES * 60,
       allowedAttempts: 5,
       disableSignUp: true,
       // Only a hash of the code is kept: a database / log leak gives no code.
@@ -507,34 +456,18 @@ export const auth = betterAuth({
             // answers as if it were new, so it can't be used to probe which
             // addresses are registered). A code would only sign the person in
             // and silently drop the password they just typed — explain instead.
-            await sendEmail({
+            await sendTemplatedEmail({
+              key: 'sign_up_existing_account',
               to: email,
-              subject: 'You already have a Labtodate account',
-              html: `
-                <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
-                  <h2 style="color:#0E4F40;margin:0 0 8px;">You already have an account</h2>
-                  <p style="color:#374151;">Someone (hopefully you) tried to create a Labtodate account with this address, but it already has one.</p>
-                  <p style="color:#374151;"><a href="${SITE_URL}/auth/sign-in">Sign in</a>, or <a href="${SITE_URL}/auth/forgot-password">reset your password</a> if you don't remember it.</p>
-                  <p style="color:#6b7280;font-size:13px;">If this wasn't you, you can safely ignore this email — nothing has changed.</p>
-                </div>
-              `,
-              text: `This address already has a Labtodate account. Sign in at ${SITE_URL}/auth/sign-in or reset your password at ${SITE_URL}/auth/forgot-password.\n\nIf this wasn't you, ignore this email — nothing has changed.`,
+              vars: { 'link.sign_in': `${SITE_URL}/auth/sign-in`, 'link.forgot_password': `${SITE_URL}/auth/forgot-password` },
             });
             return;
           }
         }
-        await sendEmail({
+        await sendTemplatedEmail({
+          key: 'verification_code',
           to: email,
-          subject: `${otp} is your Labtodate verification code`,
-          html: `
-            <div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;">
-              <h2 style="color:#0E4F40;margin:0 0 8px;">Confirm your email</h2>
-              <p style="color:#374151;">Enter this code to finish creating your Labtodate account:</p>
-              <p style="font-size:34px;font-weight:800;letter-spacing:8px;color:#0E4F40;background:#f3f4f6;border-radius:12px;padding:16px;text-align:center;margin:20px 0;">${otp}</p>
-              <p style="color:#6b7280;font-size:13px;">This code expires in 10 minutes. If you didn't sign up, you can safely ignore this email.</p>
-            </div>
-          `,
-          text: `Your Labtodate verification code is ${otp}. It expires in 10 minutes.`,
+          vars: { code: otp, 'code.valid_minutes': String(EMAIL_CODE_MINUTES) },
         });
       },
     }),

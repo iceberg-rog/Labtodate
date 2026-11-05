@@ -7,6 +7,7 @@ import { CookieConsent } from '@/components/site/CookieConsent';
 import { PublicChrome } from '@/components/site/PublicChrome';
 import { ThemeScript } from '@/components/site/ThemeScript';
 import { getMarketing } from '@/lib/marketing';
+import { hiddenNavHrefs, siteInline, siteText } from '@/lib/site/content';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { isBuildPhase } from '@/lib/build-phase';
 
@@ -90,7 +91,15 @@ export const viewport: Viewport = {
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   // getMarketing() loads Settings (the admin's values) for the chrome below.
-  const mk = await getMarketing();
+  // The menu hides empty / switched-off sections, and the cookie banner text
+  // comes from Admin → Site content (Header and CookieConsent are client
+  // components, so they get the values as props).
+  const [mk, hiddenHrefs, cookieHtml, cookieButton] = await Promise.all([
+    getMarketing(),
+    hiddenNavHrefs(),
+    siteInline('footer.cookie_text'),
+    siteText('footer.cookie_button'),
+  ]);
   return (
     <html lang="en" className={`${inter.variable} ${mono.variable}`} suppressHydrationWarning>
       <head>
@@ -98,13 +107,13 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body className="min-h-screen bg-background font-sans antialiased flex flex-col">
         <PublicChrome
-          header={<Header searchPlaceholder={`Search ${mk.listings} instruments…`} />}
+          header={<Header searchPlaceholder={`Search ${mk.listings} instruments…`} hiddenHrefs={hiddenHrefs} />}
           footer={<Footer />}
           /* Support runs on tickets, not live chat: the floating assistant is
              deliberately not mounted. The widget, its /api/assistant route and
              the admin Messages screen are all still here — re-add <Assistant />
              to this overlay to bring it back. */
-          overlays={<CookieConsent />}
+          overlays={<CookieConsent html={cookieHtml} button={cookieButton || 'Got it'} />}
         >
           {children}
         </PublicChrome>

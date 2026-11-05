@@ -1,11 +1,14 @@
 import Link from 'next/link';
 import { CheckCircle2, ArrowRight, Mail, Search, Handshake } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { siteInline } from '@/lib/site/content';
 
 export const metadata = { title: 'Submission received' };
 
 export default async function SellThanksPage({ searchParams }: { searchParams: Promise<{ id?: string }> }) {
   const sp = await searchParams;
+  // Admin → Site content → Forms & sign-up; the reply time is a rule.
+  const intro = await siteInline('forms.sell_thanks');
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
       <div className="mx-auto h-16 w-16 rounded-full bg-accent/15 flex items-center justify-center mb-6">
@@ -14,10 +17,8 @@ export default async function SellThanksPage({ searchParams }: { searchParams: P
       <h1 className="text-4xl font-bold tracking-tight" style={{ letterSpacing: '-0.035em' }}>
         Submission received.
       </h1>
-      <p className="mt-4 text-muted-foreground text-lg">
-        We&apos;ve emailed you a confirmation. Our acquisitions team will review your equipment and
-        reply with a free valuation within <strong className="text-foreground">2 business days</strong>.
-      </p>
+      {/* siteInline() output is escaped by construction (admin text, no HTML). */}
+      {intro && <p className="mt-4 text-muted-foreground text-lg [&_strong]:text-foreground" dangerouslySetInnerHTML={{ __html: intro }} />}
       {sp.id && (
         <p className="mt-3 text-xs text-muted-foreground font-mono">
           Ref: SS-{sp.id.slice(-6).toUpperCase()}

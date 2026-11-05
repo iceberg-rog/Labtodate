@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { AutoRefresh } from '@/components/util/AutoRefresh';
 import { QuoteThread } from '@/components/quotes/QuoteThread';
 import { computeDealState } from '@/lib/quotes/deal-state';
+import { siteValue } from '@/lib/site/content';
 
 export const dynamic = 'force-dynamic';
 
@@ -79,6 +80,8 @@ export default async function BuyerQuoteDetailPage(
   }
 
   const inHistoryMode = orderTakesOver && searchParams.history === '1';
+  // Admin → Site content → Response times & numbers.
+  const verifyTime = await siteValue('rules.payment_verify_time');
 
   return (
     <>
@@ -127,7 +130,7 @@ export default async function BuyerQuoteDetailPage(
           : isDead ? `Order ${linkedOrder.orderNumber} · ${s.toLowerCase()}`
           : `Accepted — order ${linkedOrder.orderNumber}`;
       const sub =
-        isPending ? 'Provide delivery details, upload your transfer receipt, and we\'ll verify within 1 business day.'
+        isPending ? `Provide delivery details, upload your transfer receipt, and we'll verify within ${verifyTime}.`
           : isPaid ? 'No action needed — you\'ll get an email when the shipment is on its way.'
           : isShipping ? 'Track your shipment + invoice from the order page.'
           : isDelivered ? 'Need help? Request a return from the order page.'

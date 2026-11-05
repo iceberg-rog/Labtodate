@@ -6,12 +6,22 @@ import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getServerSession, requireSession, requireCapability } from '@/lib/auth-server';
-import { isDeliverableEmail, sendEmail } from '@/lib/email';
-import { escapeHtml, escapeHtmlLines, headerText } from '@/lib/email-html';
+import { isDeliverableEmail } from '@/lib/email';
+import { headerText } from '@/lib/email-html';
+import { siteLink } from '@/lib/email-templates/links';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { renderInvoiceHtml } from '@/lib/invoice';
+import type { Prisma } from '@prisma/client';
+import { composeQuote, type ComposeInputT } from '@/lib/documents/quote-compose';
+import { addDays, buildSnapshot, endOfDayUtc } from '@/lib/documents/build';
+import { renderDocumentHtml } from '@/lib/documents/render';
+import { getGeneral } from '@/lib/documents/config';
+import { companySnapshot, readiness } from '@/lib/documents/company';
+import { fmtDate, fmtMoney } from '@/lib/documents/vars';
+import { documentFileName, issueQuote, snapshotOf, withCountryName } from '@/lib/documents/issue';
+import { sendTemplatedEmail, sendTemplatedEmailSafe } from '@/lib/email-templates/send';
 import { rateLimit } from '@/lib/ratelimit';
-import { notifyAdmins, notifyUser, audit } from '@/lib/observability';
+import { intakeEmail } from '@/lib/intake';
+import { notifyAdmins, notifyUser, audit, logError } from '@/lib/observability';
 import { createOrderWithUniqueNumber, sendOrderReceived } from '@/lib/orders/internal';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -42,13 +52,6 @@ const QUOTE_REF = (id: string) => `RFQ-${id.slice(-6).toUpperCase()}`;
 
 function quoteRefOrProforma(sr: { id: string; proformaNumber: string | null }): string {
   return sr.proformaNumber ?? QUOTE_REF(sr.id);
-}
-
-/** Turnaround promise for buyer copy. Comes from the admin QUOTE_TURNAROUND
- *  setting (the same value /let-us-find-it shows); no setting, no time promise. */
-function quoteTurnaroundPhrase(): string {
-  const t = process.env.QUOTE_TURNAROUND?.trim();
-  return t ? `reply within ${t}` : 'reply as soon as we have something solid';
 }
 
 /** Readable result for quote actions. Production builds hide thrown messages
@@ -166,31 +169,29 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   // Confirmation to buyer — REGISTERED gets dashboard CTA, GUEST gets magic-link.
   // The request is already saved: a failed confirmation is logged, not thrown,
   // or the buyer is told "not sent" and resubmits duplicates.
-  const buyerCta = accessToken
-    ? `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${accessToken}`
-    : `${process.env.BETTER_AUTH_URL ?? ''}/app/quotes`;
-  await sendEmail({
-    to: parsed.buyerEmail,
-    subject: created.product
-      ? `Quote request received: ${headerText(created.product.title, 120)}`
-      : 'Labtodate sourcing request received',
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:540px;">
-        <h2 style="color:#0E4F40;">We&rsquo;ve got your request</h2>
-        <p>Hi ${escapeHtml(parsed.buyerName)}, our team and the supplier will review your request and ${escapeHtml(quoteTurnaroundPhrase())}.</p>
-        ${created.product ? `<p><strong>Product:</strong> ${escapeHtml(created.product.title)}</p>` : ''}
-        <p><strong>What you wrote:</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
-        <p style="margin:18px 0;">
-          <a href="${buyerCta}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-            ${accessToken ? 'View / reply to your quote' : 'Open in dashboard'}
-          </a>
-        </p>
-        ${accessToken ? `<p style="color:#888;font-size:11px;">This is a private link tied to your request — keep it to yourself. Valid for 14 days.</p>` : ''}
-        <p style="color:#888;font-size:12px;">Reference: ${QUOTE_REF(created.id)}</p>
-      </div>
-    `,
-  }).catch((e) => console.error('[quotes] buyer confirmation failed', QUOTE_REF(created.id), e));
+  // What was asked for: the listing, the lab / typed category, or else the
+  // start of the buyer's own words (never an English placeholder).
+  const requestItem = headerText(created.product?.title || parsed.productCategory || parsed.description, 120);
+  const receivedVars = {
+    'customer.name': parsed.buyerName,
+    'quote.number': QUOTE_REF(created.id),
+    'quote.item': requestItem,
+    'quote.description': parsed.description,
+    'quote.turnaround': process.env.QUOTE_TURNAROUND?.trim() ?? '',
+  };
+  await sendTemplatedEmail(
+    accessToken
+      ? {
+          key: 'quote_request_received_guest',
+          to: parsed.buyerEmail,
+          vars: {
+            ...receivedVars,
+            'link.quote': siteLink(`/quotes/t/${accessToken}`),
+            'link.valid_days': String(Math.round(QUOTE_MAGIC_LINK_TTL_MS / 86_400_000)),
+          },
+        }
+      : { key: 'quote_request_received', to: parsed.buyerEmail, vars: { ...receivedVars, 'link.quote': siteLink('/app/quotes') } },
+  ).catch((e) => console.error('[quotes] buyer confirmation failed', QUOTE_REF(created.id), e));
 
   // Notify assignee (seller or platform inbox). Imported sellers carry
   // placeholder addresses, so those go to the intake inbox. The request is
@@ -201,32 +202,41 @@ export async function submitSourcingRequest(input: SourcingInputType) {
   // copies link to the admin workspace, which labels internal notes.
   const sellerEmail = created.assignedTo?.email;
   const toSeller = created.assignedTo?.role === 'SELLER' && isDeliverableEmail(sellerEmail);
+  // The intake inbox is only ever a configured address (skipped and logged otherwise).
   const assigneeEmail = isDeliverableEmail(sellerEmail)
     ? sellerEmail
-    : process.env.QUOTE_INTAKE_EMAIL ?? 'sourcing@lab2date.com';
-  const assigneeLink = toSeller
-    ? `${process.env.BETTER_AUTH_URL ?? ''}/app/seller/inbox/${created.id}`
-    : `${process.env.BETTER_AUTH_URL ?? ''}/admin/quotes/${created.id}`;
-  await sendEmail({
-    to: assigneeEmail,
-    subject: created.product
-      ? `New quote request: ${headerText(created.product.title, 120)}`
-      : facilityLabel ? `New access request — ${headerText(facilityLabel, 120)}`
-      : toSeller ? 'New sourcing request' : `New sourcing request from ${headerText(parsed.buyerName)}`,
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:540px;">
-        <h2 style="color:#0E4F40;">${created.product ? 'Quote request' : 'Sourcing request'}</h2>
-        ${toSeller ? '' : `<p>From <strong>${escapeHtml(parsed.buyerName)}</strong> &lt;${escapeHtml(parsed.buyerEmail)}&gt;${parsed.companyName ? ` · ${escapeHtml(parsed.companyName)}` : ''}</p>`}
-        ${created.product ? `<p><strong>Product:</strong> ${escapeHtml(created.product.title)}</p>` : ''}
-        ${facilityLabel ? `<p><strong>Facility:</strong> ${escapeHtml(facilityLabel)}</p>` : ''}
-        ${parsed.budget ? `<p><strong>Budget:</strong> ${escapeHtml(parsed.budget)}</p>` : ''}
-        ${parsed.timeframe ? `<p><strong>Timeframe:</strong> ${escapeHtml(parsed.timeframe)}</p>` : ''}
-        <p><strong>Description:</strong></p>
-        <blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(parsed.description)}</blockquote>
-        <p>Reply via Labtodate dashboard: <a href="${assigneeLink}">${toSeller ? 'Open in seller inbox' : 'Open in admin'}</a></p>
-      </div>
-    `,
-  }).catch((e) => console.error('[quotes] assignee notification failed', QUOTE_REF(created.id), e));
+    : await intakeEmail('quote', 'staff_quote_request_new');
+  const requestDetails = {
+    'quote.number': QUOTE_REF(created.id),
+    'quote.item': requestItem,
+    'quote.budget': parsed.budget || '—',
+    'quote.timeframe': parsed.timeframe || '—',
+    'quote.description': parsed.description,
+  };
+  if (assigneeEmail) await sendTemplatedEmail(
+    toSeller
+      ? {
+          // No buyer identity in the seller's copy (no fields for it either).
+          key: 'quote_request_new_seller',
+          to: assigneeEmail,
+          vars: { ...requestDetails, 'link.quote': siteLink(`/app/seller/inbox/${created.id}`) },
+        }
+      : {
+          key: 'staff_quote_request_new',
+          to: assigneeEmail,
+          // An admin assignee gets their own language; the intake inbox English.
+          lang: isDeliverableEmail(sellerEmail) ? undefined : 'en',
+          vars: {
+            ...requestDetails,
+            'buyer.name': parsed.buyerName,
+            'buyer.email': parsed.buyerEmail,
+            'buyer.company': parsed.companyName || '—',
+            'quote.product': created.product?.title ?? '—',
+            'quote.facility': facilityLabel ?? '—',
+            'link.admin': siteLink(`/admin/quotes/${created.id}`),
+          },
+        },
+  ).catch((e) => console.error('[quotes] assignee notification failed', QUOTE_REF(created.id), e));
 
   await notifyAdmins(
     'New quote request',
@@ -333,13 +343,13 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
   // Email + in-app notify — never on internal notes.
   if (!isInternalNote) {
     if (fromStaff) {
-      const buyerLink = sr.accessToken
-        ? `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${sr.accessToken}`
-        : `${process.env.BETTER_AUTH_URL ?? ''}/app/quotes/${sr.id}`;
-      await sendEmail({
+      await sendTemplatedEmailSafe({
+        key: 'quote_reply',
         to: sr.buyerEmail,
-        subject: 'New reply on your Labtodate quote',
-        html: `<p>The supplier replied to your quote request.</p><p><a href="${buyerLink}">Open the thread</a></p>`,
+        vars: {
+          'quote.number': quoteRefOrProforma(sr),
+          'link.quote': sr.accessToken ? siteLink(`/quotes/t/${sr.accessToken}`) : siteLink(`/app/quotes/${sr.id}`),
+        },
       });
       if (sr.submittedById) {
         await notifyUser(
@@ -364,11 +374,18 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
       // placeholder addresses). Best-effort — the reply is already saved.
       const assigneeEmail = sr.assignedTo?.email;
       const toSeller = sr.assignedTo?.role === 'SELLER' && isDeliverableEmail(assigneeEmail);
-      const base = process.env.BETTER_AUTH_URL ?? '';
-      await sendEmail({
-        to: isDeliverableEmail(assigneeEmail) ? assigneeEmail : process.env.QUOTE_INTAKE_EMAIL ?? 'sourcing@lab2date.com',
-        subject: `[${quoteRefOrProforma(sr)}] The buyer replied on a quote`,
-        html: `<p>The buyer replied on quote <strong>${quoteRefOrProforma(sr)}</strong>.</p><p><a href="${toSeller ? `${base}/app/seller/inbox/${sr.id}` : `${base}/admin/quotes/${sr.id}`}">Open the thread</a> to read it and respond.</p>`,
+      const toAssignee = isDeliverableEmail(assigneeEmail);
+      // The intake inbox is only ever a configured address (skipped and logged otherwise).
+      const replyTo = toAssignee ? assigneeEmail : await intakeEmail('quote', 'quote_buyer_replied');
+      if (replyTo) await sendTemplatedEmailSafe({
+        key: 'quote_buyer_replied',
+        to: replyTo,
+        // The assignee gets their own language; the intake inbox English.
+        lang: toAssignee ? undefined : 'en',
+        vars: {
+          'quote.number': quoteRefOrProforma(sr),
+          'link.quote': toSeller ? siteLink(`/app/seller/inbox/${sr.id}`) : siteLink(`/admin/quotes/${sr.id}`),
+        },
       }).catch((e) => console.error('[quotes] buyer-reply notification failed', quoteRefOrProforma(sr), e));
     }
   }
@@ -388,17 +405,32 @@ export async function replyToQuote(input: z.infer<typeof ReplyInput>): Promise<Q
 
 const ProformaInput = z.object({
   sourcingRequestId: z.string().min(1),
-  // Per UNIT. With the default quantity of 1 this is also the total, so a
-  // caller that does not send a quantity behaves exactly as before.
+  // Per UNIT of the main line. With the default quantity of 1 this is also
+  // the line total, so a caller that does not send a quantity behaves as before.
   priceCents: z.number().int().positive().max(1_000_000_00),
   quantity: z.number().int().positive().max(9_999).default(1),
   currency: z.string().min(3).max(3).default('EUR'),
   note: z.string().max(2000).optional().nullable(),
+  /** Composer fields (extra lines, shipping, billing, VAT, validity, language). */
+  compose: z.unknown().optional(),
+  /** The admin confirmed sending although company details are missing. */
+  confirmIncomplete: z.boolean().optional(),
+  /** Build everything and return the PDF preview instead of sending. */
+  previewOnly: z.boolean().optional(),
 });
+
+export type ProformaResult = QuoteActionResult & {
+  /** Company details missing: ask, then resend with confirmIncomplete. */
+  confirm?: string;
+  /** previewOnly: the rendered document (HTML) and the computed totals. */
+  previewHtml?: string;
+  totals?: { subtotalCents: number; shippingCents: number; vatCents: number; totalCents: number };
+  vatReason?: string;
+};
 
 // z.input, not z.infer: quantity and currency have zod defaults, so a caller
 // that omits them is valid — the parse fills them in.
-export async function sendProforma(input: z.input<typeof ProformaInput>): Promise<QuoteActionResult> {
+export async function sendProforma(input: z.input<typeof ProformaInput>): Promise<ProformaResult> {
   const result = ProformaInput.safeParse(input);
   if (!result.success) {
     const issue = result.error.issues[0];
@@ -410,21 +442,12 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
     return { error: 'This proforma could not be sent. Check the price and try again.' };
   }
   const parsed = result.data;
-  // One offer, three numbers: what a unit costs, how many, and the total the
-  // buyer owes. Everything downstream that says "the quoted amount" means the
-  // total; only the document line and the order line are per unit.
-  const quotedUnitCents = parsed.priceCents;
-  const quotedQuantity = parsed.quantity;
-  const quotedTotalCents = quotedUnitCents * quotedQuantity;
-  if (quotedTotalCents > 1_000_000_00) {
-    return { error: 'That comes to more than EUR 1,000,000 — lower the quantity or the unit price.' };
-  }
   await ensureSettingsLoaded();
   const session = await requireSession({ redirectTo: '/app' });
 
   const sr = await prisma.sourcingRequest.findUnique({
     where: { id: parsed.sourcingRequestId },
-    include: { product: { select: { title: true } } },
+    include: { product: { select: { title: true } }, submittedBy: { select: { docLanguage: true } } },
   });
   if (!sr) return { error: 'This quote no longer exists.' };
 
@@ -441,41 +464,174 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
 
   const itemTitle = sr.product?.title ?? sr.productCategory ?? 'Requested equipment';
 
+  // ─── The offer: lines, shipping, billing block, VAT, language, validity ──
+  const composed = await composeQuote({
+    mainLine: { title: itemTitle, qty: parsed.quantity, unitCents: parsed.priceCents },
+    input: (parsed.compose ?? {}) as ComposeInputT,
+    previous: sr.quoteDetails,
+    buyerLang: sr.submittedBy?.docLanguage,
+    actorEmail: session.user.email,
+  });
+  if ('error' in composed) return { error: composed.error };
+  const { details, totals } = composed;
+  // quotedPriceCents stays "the quoted amount" every list shows: the goods
+  // excl. VAT and shipping (= order.subtotalCents). The document and the
+  // order carry shipping and VAT on top.
+  const quotedUnitCents = parsed.priceCents;
+  const quotedQuantity = parsed.quantity;
+  const quotedTotalCents = totals.subtotalCents;
+
+  const now = new Date();
+  // Every (re-)issue starts the validity again from the composer's days.
+  const validUntil = parsed.compose || !sr.validUntilAt ? endOfDayUtc(addDays(now, details.validDays)) : sr.validUntilAt;
+
+  if (parsed.previewOnly) {
+    const snap = await buildSnapshot({
+      kind: 'QUOTE',
+      lang: details.lang,
+      number: sr.proformaNumber ?? 'PRO-…',
+      issuedAt: now,
+      currency: parsed.currency,
+      customer: {
+        name: details.billing.name || sr.buyerName,
+        company: details.billing.company ?? sr.companyName,
+        email: sr.buyerEmail,
+        addressLines: withCountryName([...details.billing.addressLines, ...(details.billing.country ? [details.billing.country] : [])], details.lang),
+        country: details.billing.country,
+        vatId: details.billing.vatId,
+      },
+      lines: details.lines,
+      shippingCents: details.shippingCents,
+      vat: { treatment: details.vat.treatment, rateBp: details.vat.rateBp, reason: details.vat.reason },
+      note: parsed.note ?? null,
+      validUntil,
+      preview: true,
+    });
+    return { previewHtml: renderDocumentHtml(snap), totals, vatReason: details.vat.reason };
+  }
+
+  // Company block must be complete before a document leaves the house.
+  const general = await getGeneral();
+  const missing = readiness(await companySnapshot({ withLogo: false })).filter((m) => m.required);
+  if (missing.length) {
+    const list = missing.map((m) => m.label).join(', ');
+    if (general.readiness === 'BLOCK') {
+      return { error: `Fill in ${list} in Admin → Documents → Company & bank before sending quotes.` };
+    }
+    if (!parsed.confirmIncomplete) {
+      return { confirm: `The company block is missing: ${list}. The buyer will see a document without it. Send anyway?` };
+    }
+  }
+
   // ─── Financial freeze guard (BUG-023 / invariant F12-adjacent) ─────────
   // If this quote already materialised an order and that order has LEFT
   // PENDING_PAYMENT (paid, shipped, refunded, …), its money fields are
-  // frozen. Re-sending the proforma at the SAME price/currency is fine
-  // (document/email resend); a price or currency CHANGE must go through
-  // refund/cancel + a fresh quote. Checked BEFORE any write so a rejection
-  // leaves no partial state.
+  // frozen. Re-sending the proforma at the SAME amounts is fine
+  // (document/email resend); an amount or currency CHANGE must go through
+  // refund/cancel + a fresh quote. Checked BEFORE any write.
   const linkedOrder = sr.submittedById
     ? await prisma.order.findUnique({
         where: { sourcingRequestId: sr.id },
-        select: { id: true, orderNumber: true, status: true, subtotalCents: true, currency: true },
+        select: { id: true, orderNumber: true, status: true, subtotalCents: true, totalCents: true, currency: true },
       })
     : null;
   if (
     linkedOrder &&
     linkedOrder.status !== 'PENDING_PAYMENT' &&
-    (linkedOrder.subtotalCents !== quotedTotalCents || linkedOrder.currency !== parsed.currency)
+    (linkedOrder.subtotalCents !== totals.subtotalCents || linkedOrder.totalCents !== totals.totalCents || linkedOrder.currency !== parsed.currency)
   ) {
     return {
       error: `Order ${linkedOrder.orderNumber} is ${linkedOrder.status} — its amounts can no longer be changed by re-issuing a proforma. Refund/cancel the order first, or open a new quote.`,
     };
   }
 
-  // Re-issuing a proforma keeps the same number for AR continuity; only the
-  // first call generates one. The number is short, year-prefixed, derived from
-  // the request id so it's stable across reloads and easy to grep in mail.
-  const number = sr.proformaNumber || `PRO-${new Date().getFullYear()}-${sr.id.slice(-6).toUpperCase()}`;
-  // Quote validity from admin Settings (PROFORMA_VALID_DAYS), 14d default. Past
-  // validity, the cron sweep moves the deal to CLOSED and blocks buyer payment.
-  const validDays = (() => {
-    const raw = parseInt(process.env.PROFORMA_VALID_DAYS ?? '', 10);
-    return Number.isFinite(raw) && raw >= 1 && raw <= 365 ? raw : 14;
-  })();
-  const now = new Date();
-  const validUntil = sr.validUntilAt ?? new Date(now.getTime() + validDays * 86400e3);
+  const fmt = (cents: number) => fmtMoney(cents, parsed.currency, details.lang);
+
+  // ─── Order creation (procurement workspace) ───────────────────────────
+  // Proforma issuance IS the order trigger: the buyer gets a purchase
+  // workspace at /app/orders/<num>/payment as soon as a formal price exists.
+  // The order carries every line, the shipping and the VAT of the document.
+  const orderItems = details.lines.map((l, i) => ({
+    productId: i === 0 ? sr.productId ?? null : null,
+    titleSnapshot: l.title,
+    brandSnapshot: null,
+    priceCentsSnapshot: l.unitCents,
+    quantity: Math.max(1, Math.round(l.qty)),
+  }));
+  const orderMoney = {
+    subtotalCents: totals.subtotalCents,
+    shippingCents: totals.shippingCents,
+    taxCents: totals.vatCents,
+    totalCents: totals.totalCents,
+    currency: parsed.currency,
+    vatTreatment: details.vat.treatment,
+    vatRateBp: details.vat.rateBp,
+    docLanguage: details.lang,
+    billingAddress: {
+      name: details.billing.name || sr.buyerName,
+      company: details.billing.company || sr.companyName || null,
+      vat: details.billing.vatId || null,
+      address: {
+        line1: details.billing.addressLines[0] ?? '',
+        line2: details.billing.addressLines.slice(1).join(', '),
+        country: details.billing.country ?? '',
+      },
+    },
+  };
+  let createdOrder: { id: string; orderNumber: string } | null = null;
+  if (sr.submittedById) {
+    if (linkedOrder) {
+      // Totals may only be rewritten while the order is still PENDING_PAYMENT
+      // (atomic status precondition; a concurrent payment wins and freezes
+      // the amounts — BUG-023).
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.order.updateMany({
+          where: { id: linkedOrder.id, status: 'PENDING_PAYMENT' },
+          data: (({ billingAddress: _b, ...rest }) => rest)(orderMoney),
+        });
+        if (updated.count === 1) {
+          // Keep the lines in sync so totalCents === sum(items) + shipping + VAT.
+          await tx.orderItem.deleteMany({ where: { orderId: linkedOrder.id } });
+          await tx.orderItem.createMany({ data: orderItems.map((it) => ({ ...it, orderId: linkedOrder.id })) });
+        }
+      });
+      createdOrder = { id: linkedOrder.id, orderNumber: linkedOrder.orderNumber };
+    } else {
+      const order = await createOrderWithUniqueNumber({
+        buyerId: sr.submittedById,
+        status: 'PENDING_PAYMENT',
+        ...orderMoney,
+        paidAt: null,
+        sourcingRequestId: sr.id,
+        items: { create: orderItems },
+      });
+      createdOrder = { id: order.id, orderNumber: order.orderNumber };
+    }
+  }
+
+  // ─── Issue the document (number, frozen snapshot, PDF) ────────────────
+  let doc;
+  try {
+    doc = await issueQuote({
+      sr: {
+        id: sr.id,
+        buyerName: sr.buyerName,
+        buyerEmail: sr.buyerEmail,
+        companyName: sr.companyName,
+        proformaNumber: sr.proformaNumber,
+        quotedCurrency: parsed.currency,
+        quotedNote: parsed.note ?? null,
+      },
+      details,
+      validUntil,
+      issuedAt: now,
+      actorId: session.user.id,
+      orderNumber: createdOrder?.orderNumber ?? null,
+    });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'The quote document could not be issued.' };
+  }
+  const number = doc.number;
 
   // Snapshot payment instructions at issuance time so an admin can change
   // settings later without altering historical quotes/proformas.
@@ -483,30 +639,9 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
     name: process.env.BANK_NAME || '',
     iban: process.env.BANK_IBAN || '',
     swift: process.env.BANK_SWIFT || '',
-    refHint: process.env.BANK_REFERENCE_HINT || 'Use the proforma number as transfer reference',
+    refHint: process.env.BANK_REFERENCE_HINT || 'Use the quote number as the transfer reference',
     company: process.env.COMPANY_LEGAL_NAME || process.env.SITE_NAME || 'Labtodate',
   };
-  // BUG-031: the buyer must be instructed to transfer the SAME total the order
-  // records (subtotalCents + shippingCents + taxCents), never the bare subtotal.
-  // Computed here with the identical formula the order materialization below
-  // uses, so the proforma "Amount due" can never diverge from order.totalCents.
-  // With DEFAULT_SHIPPING_CENTS / DEFAULT_TAX_PERCENT both 0 (current posture)
-  // the total equals the subtotal and the single "Amount" line is unchanged.
-  const proformaSubtotalCents = quotedTotalCents;
-  const proformaShippingCents = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-  const proformaTaxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-  const proformaTaxCents = Math.round((proformaSubtotalCents * proformaTaxPct) / 100);
-  const proformaTotalCents = proformaSubtotalCents + proformaShippingCents + proformaTaxCents;
-  const fmtProformaMoney = (cents: number) => `${(cents / 100).toLocaleString()} ${parsed.currency}`;
-  const amountLines =
-    proformaTotalCents === proformaSubtotalCents
-      ? [`Amount: ${fmtProformaMoney(proformaTotalCents)}`]
-      : [
-          `Subtotal: ${fmtProformaMoney(proformaSubtotalCents)}`,
-          proformaShippingCents > 0 ? `Shipping: ${fmtProformaMoney(proformaShippingCents)}` : '',
-          proformaTaxCents > 0 ? `Tax: ${fmtProformaMoney(proformaTaxCents)}` : '',
-          `Amount due: ${fmtProformaMoney(proformaTotalCents)}`,
-        ].filter(Boolean);
   const paymentInstructionsSnapshot = bank.iban
     ? [
         `Beneficiary: ${bank.company}`,
@@ -514,7 +649,7 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
         `IBAN: ${bank.iban}`,
         bank.swift ? `SWIFT/BIC: ${bank.swift}` : '',
         `Reference: ${number}`,
-        ...amountLines,
+        `Amount due: ${fmt(totals.totalCents)}`,
         `Hint: ${bank.refHint}`,
       ].filter(Boolean).join('\n')
     : `Bank details will be sent by email. Quote your proforma number "${number}" in any transfer.`;
@@ -533,6 +668,7 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
       proformaIssuedAt: sr.proformaIssuedAt ?? now,
       validUntilAt: validUntil,
       paymentInstructionsSnapshot,
+      quoteDetails: details as unknown as Prisma.InputJsonValue,
     },
   });
 
@@ -541,134 +677,66 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
       sourcingRequestId: sr.id,
       authorId: session.user.id,
       fromStaff: true,
-      body: `Quoted price: ${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} for "${itemTitle}". Proforma ${number} sent to the buyer (valid until ${validUntil.toISOString().slice(0, 10)}).${parsed.note ? `\n\nNote: ${parsed.note}` : ''}`,
+      body: `Quote ${number}${doc.revision > 1 ? ` (revision ${doc.revision})` : ''} sent: ${fmt(totals.totalCents)} incl. VAT for "${itemTitle}"${details.lines.length > 1 ? ` and ${details.lines.length - 1} more line(s)` : ''}, valid until ${validUntil.toISOString().slice(0, 10)}.${parsed.note ? `\n\nNote: ${parsed.note}` : ''}`,
     },
   });
 
-  // ─── Order creation (procurement workspace) ───────────────────────────
-  // Proforma issuance IS the order trigger now. Previously order was created
-  // only when buyer hit Accept — that left a stuck "ACCEPTED · no order"
-  // state when admin replied with a text-only price. By materialising the
-  // Order at proforma-send time, we guarantee the buyer always has a
-  // purchase workspace at /app/orders/<num>/payment as soon as a formal
-  // price exists.
-  let createdOrder: { id: string; orderNumber: string } | null = null;
-  if (sr.submittedById) {
-    const existing = linkedOrder;
-    if (existing) {
-      // Already converted — keep the existing order. Totals may only be
-      // rewritten while the order is still PENDING_PAYMENT (atomic status
-      // precondition; a concurrent payment wins and freezes the amounts —
-      // BUG-023). The same-price-resend case for paid orders was already
-      // allowed through by the freeze guard above and changes nothing here.
-      const subtotal = quotedTotalCents;
-      const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-      const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-      const tax = Math.round((subtotal * taxPct) / 100);
-      const updated = await prisma.order.updateMany({
-        where: { id: existing.id, status: 'PENDING_PAYMENT' },
-        data: {
-          subtotalCents: subtotal,
-          shippingCents: shipping,
-          taxCents: tax,
-          totalCents: subtotal + shipping + tax,
-          currency: parsed.currency,
-        },
-      });
-      if (updated.count === 1) {
-        // Keep the single quote line in sync with the re-issued price so
-        // totalCents === sum(items) holds (invariant F1). Pre-payment, the
-        // proforma IS the offer — the snapshot freezes at payment, not at
-        // first issuance.
-        await prisma.orderItem.updateMany({
-          where: { orderId: existing.id },
-          data: { priceCentsSnapshot: quotedUnitCents, quantity: quotedQuantity },
-        });
-      }
-      createdOrder = { id: existing.id, orderNumber: existing.orderNumber };
-    } else {
-      const subtotal = quotedTotalCents;
-      const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-      const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-      const tax = Math.round((subtotal * taxPct) / 100);
-      const order = await createOrderWithUniqueNumber({
-        buyerId: sr.submittedById,
-        status: 'PENDING_PAYMENT',
-        subtotalCents: subtotal,
-        shippingCents: shipping,
-        taxCents: tax,
-        totalCents: subtotal + shipping + tax,
-        currency: parsed.currency,
-        paidAt: null,
-        sourcingRequestId: sr.id,
-        items: {
-          create: {
-            productId: sr.productId ?? null,
-            titleSnapshot: itemTitle,
-            brandSnapshot: null,
-            priceCentsSnapshot: quotedUnitCents,
-            quantity: quotedQuantity,
-          },
-        },
-      });
-      createdOrder = { id: order.id, orderNumber: order.orderNumber };
-    }
-  }
-
-  const { subject, html } = renderInvoiceHtml({
-    kind: 'PROFORMA',
-    number,
-    dateISO: now.toISOString(),
-    currency: parsed.currency,
-    buyer: { name: sr.buyerName, email: sr.buyerEmail, company: sr.companyName },
-    lines: [{ title: itemTitle, qty: quotedQuantity, unitCents: quotedUnitCents }],
-    status: `Valid until ${validUntil.toISOString().slice(0, 10)}`,
-    note: parsed.note ?? null,
-  });
-  // Buyer-facing payment + workspace CTA email. The CTA now points at the
-  // ORDER workspace (/app/orders/<num>/payment) instead of the RFQ thread —
-  // that's where the buyer completes billing/shipping/upload-receipt.
+  // ─── E-mail with the PDF attached (+ billing copy) ────────────────────
   const dashboardLink = createdOrder
     ? `${process.env.BETTER_AUTH_URL ?? ''}/app/orders/${createdOrder.orderNumber}/payment`
     : `${process.env.BETTER_AUTH_URL ?? ''}/app/quotes/${sr.id}`;
-  const approvalHtml = `
-    <div style="font-family:system-ui,sans-serif;max-width:600px;margin:0 auto;">
-      <h2 style="color:#0E4F40;">Your proforma is ready — ${number}</h2>
-      <p>Hi ${escapeHtml(sr.buyerName)},</p>
-      <p>Your quote for <strong>${escapeHtml(itemTitle)}</strong> is ready: <strong>${(quotedTotalCents / 100).toLocaleString()} ${escapeHtml(parsed.currency)}</strong>.</p>
-      ${createdOrder ? `
-      <p>We've opened a <strong>purchase workspace</strong> for you to complete the order. Inside, you'll fill in billing &amp; shipping details and upload your payment proof.</p>
-      <p style="margin:18px 0;">
-        <a href="${dashboardLink}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-          Complete your purchase
-        </a>
-      </p>` : `
-      <p style="margin:18px 0;">
-        <a href="${dashboardLink}" style="background:#0E4F40;color:#fff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-          Open quote in dashboard
-        </a>
-      </p>`}
-      <p style="color:#374151;font-size:13px;margin-top:24px;"><strong>Valid until ${validUntil.toISOString().slice(0, 10)}</strong>. After this date the price may need to be re-confirmed.</p>
-      <h3 style="color:#0E4F40;margin-top:24px;">Payment instructions</h3>
-      <pre style="background:#f3f4f6;padding:12px;border-radius:8px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;">${escapeHtml(paymentInstructionsSnapshot)}</pre>
-      <p style="color:#6b7280;font-size:12px;">A formal proforma is attached below. Reply to this email if you need a PO or a different format.</p>
-      <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0;">
-      ${html}
-    </div>
-  `;
-  await sendEmail({ to: sr.buyerEmail, subject: `Proforma ${number} — ${headerText(itemTitle, 120)}`, html: approvalHtml });
-  const billing = process.env.COMPANY_EMAIL;
-  if (billing) await sendEmail({ to: billing, subject: `[copy] Proforma ${number}`, html: approvalHtml });
+  const snap = snapshotOf(doc);
+  const attachments = doc.pdf
+    ? [{ filename: documentFileName(snap), content: Buffer.from(doc.pdf), contentType: 'application/pdf' }]
+    : [];
+  let mailNotice: string | undefined;
+  try {
+    await sendTemplatedEmail({
+      key: 'quote_sent',
+      to: sr.buyerEmail,
+      lang: details.lang,
+      vars: {
+        'customer.name': details.billing.name || sr.buyerName,
+        'quote.number': number,
+        'quote.item': headerText(itemTitle, 120),
+        'quote.total': fmt(totals.totalCents),
+        'quote.valid_until': fmtDate(validUntil, details.lang, 'UTC'),
+        'order.number': createdOrder?.orderNumber ?? '',
+        'payment.instructions': paymentInstructionsSnapshot,
+        'link.order': dashboardLink,
+      },
+      attachments,
+    });
+    if (!attachments.length) mailNotice = 'Sent, but the PDF could not be made: the e-mail links to the quote instead. Check Admin → Errors.';
+  } catch (e) {
+    await logError('quote.proforma.email', e);
+    mailNotice = `The quote was issued, but the e-mail to ${sr.buyerEmail} failed: ${e instanceof Error ? e.message.slice(0, 160) : 'unknown error'}. Use “Resend” once mail works.`;
+  }
+  const billing = (process.env.COMPANY_EMAIL || '').trim();
+  if (billing && general.billingCopy && attachments.length) {
+    await sendTemplatedEmail({
+      key: 'document_copy',
+      to: billing,
+      lang: 'en',
+      vars: {
+        'document.title': snap.texts.title,
+        'document.number': number,
+        'document.customer': snap.customer.company || snap.customer.name,
+        'document.total': fmt(totals.totalCents),
+      },
+      attachments,
+    }).catch((e) => logError('quote.proforma.billing_copy', e));
+  }
 
   await notifyUser(
     sr.submittedById,
-    `Proforma ready — ${number}`,
-    `${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} for "${itemTitle}". Complete your purchase to confirm.`,
+    `Quote ready — ${number}`,
+    `${fmt(totals.totalCents)} for "${itemTitle}". Complete your purchase to confirm.`,
     createdOrder ? `/app/orders/${createdOrder.orderNumber}/payment` : `/app/quotes/${sr.id}`,
   );
   await notifyAdmins(
-    `Proforma sent — ${number}`,
-    `${itemTitle} · ${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} · expires ${validUntil.toISOString().slice(0, 10)}`,
+    `Quote sent — ${number}`,
+    `${itemTitle} · ${fmt(totals.totalCents)} · expires ${validUntil.toISOString().slice(0, 10)}`,
     `/admin/quotes`,
     'QUOTE_APPROVED',
   );
@@ -679,7 +747,7 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
         actorEmail: session.user.email,
         action: 'quote.proforma.send',
         target: number,
-        meta: `${itemTitle} · ${(quotedTotalCents / 100).toLocaleString()} ${parsed.currency} · validUntil=${validUntil.toISOString().slice(0, 10)}`,
+        meta: `${itemTitle} · ${fmt(totals.totalCents)} · vat=${details.vat.treatment}${details.vat.overridden ? ' (override)' : ''} · rev=${doc.revision} · validUntil=${validUntil.toISOString().slice(0, 10)}`,
       },
     });
   } catch {/* AuditLog model schema mismatch — non-fatal */}
@@ -688,7 +756,7 @@ export async function sendProforma(input: z.input<typeof ProformaInput>): Promis
   revalidatePath(`/app/quotes/${sr.id}/proforma`);
   revalidatePath(`/app/seller/inbox/${sr.id}`);
   revalidatePath(`/admin/quotes`);
-  return {};
+  return mailNotice ? { notice: mailNotice } : {};
 }
 
 class ProofInFlightError extends Error {}
@@ -835,7 +903,6 @@ export async function setQuoteStatus(
   let buyerNotified = false;
   if (status === 'CLOSED' && ((changed && statusChanged) || canceledOrder)) {
     const ref = quoteRefOrProforma(sr);
-    const itemTitle = sr.product?.title ?? sr.productCategory ?? null;
     const orderLine = canceledOrder
       ? ` Order ${canceledOrder} was canceled, so no payment is due.`
       : '';
@@ -846,25 +913,19 @@ export async function setQuoteStatus(
       `/app/quotes/${id}`,
     );
     buyerNotified = !!sr.submittedById;
-    const base = process.env.BETTER_AUTH_URL ?? '';
-    const buyerLink = sr.accessToken ? `${base}/quotes/t/${sr.accessToken}` : `${base}/app/quotes/${id}`;
-    await sendEmail({
+    await sendTemplatedEmail({
+      // The "order canceled" version tells the buyer not to pay.
+      key: canceledOrder ? 'quote_closed_order_canceled' : 'quote_closed',
       to: sr.buyerEmail,
-      subject: `[${ref}] Your quote request was closed`,
-      html: `
-        <div style="font-family:system-ui,sans-serif;max-width:540px;">
-          <h2 style="color:#0E4F40;">Your quote request was closed</h2>
-          <p>Hi ${escapeHtml(sr.buyerName)},</p>
-          <p>Your request <strong>${ref}</strong>${itemTitle ? ` for <strong>${escapeHtml(itemTitle)}</strong>` : ''} was closed without a deal.</p>
-          ${canceledOrder ? `<p>Order <strong>${canceledOrder}</strong> was canceled, so <strong>no payment is due</strong>. Please don&rsquo;t send a transfer for it. If you already paid, contact our support team and we&rsquo;ll sort it out.</p>` : ''}
-          <p>If you still need the item, you can open a new request on Labtodate at any time.</p>
-          <p style="margin:18px 0;">
-            <a href="${buyerLink}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">View the quote</a>
-          </p>
-        </div>
-      `,
+      vars: {
+        'customer.name': sr.buyerName,
+        'quote.number': ref,
+        'quote.item': headerText(sr.product?.title || sr.productCategory || sr.description, 120),
+        'order.number': canceledOrder ?? '',
+        'link.quote': sr.accessToken ? siteLink(`/quotes/t/${sr.accessToken}`) : siteLink(`/app/quotes/${id}`),
+      },
     })
-      .then(() => { buyerNotified = true; })
+      .then((sent) => { if (sent) buyerNotified = true; })
       .catch((e) => console.error('[quotes] close notification failed', ref, e));
     if (!isAdmin) {
       // The seller closed it: ops must know a deal (and maybe an order) ended.
@@ -1060,10 +1121,10 @@ export async function transferQuote(formData: FormData): Promise<{ ok: boolean; 
   const href = target.role === 'SELLER' ? `/app/seller/inbox/${id}` : `/admin/quotes/${id}`;
   await notifyUser(toUserId, `Quote ${quoteRefOrProforma(sr)} transferred to you`, `${session.user.email} transferred a quote to you.`, href);
   if (isDeliverableEmail(target.email)) {
-    await sendEmail({
+    await sendTemplatedEmail({
+      key: 'quote_transferred',
       to: target.email,
-      subject: `[${quoteRefOrProforma(sr)}] A quote was transferred to you`,
-      html: `<p>Quote <strong>${quoteRefOrProforma(sr)}</strong> was transferred to you on Labtodate.</p><p><a href="${process.env.BETTER_AUTH_URL ?? ''}${href}">Open the quote</a> to reply to the buyer.</p>`,
+      vars: { 'quote.number': quoteRefOrProforma(sr), 'link.quote': siteLink(href) },
     }).catch((e) => console.error('[quotes] transfer notification failed', quoteRefOrProforma(sr), e));
   }
   await audit('quote.transfer', quoteRefOrProforma(sr), `from=${session.user.email} to=${target.email}`);
@@ -1214,23 +1275,15 @@ export async function reissueQuoteMagicLink(
     },
   });
 
-  const site = process.env.SITE_NAME || 'Labtodate';
-  const href = `${process.env.BETTER_AUTH_URL ?? ''}/quotes/t/${newToken}`;
-  await sendEmail({
+  await sendTemplatedEmail({
+    key: 'quote_link_reissued',
     to: sr.buyerEmail,
-    subject: `[${quoteRefOrProforma(sr)}] New link to view your quote`,
-    html: `
-      <div style="font-family:system-ui,sans-serif;max-width:560px;">
-        <h2 style="color:#0E4F40;">Here&rsquo;s a fresh link, ${escapeHtml(sr.buyerName)}</h2>
-        <p>Your support team rotated the access link on quote <strong>${quoteRefOrProforma(sr)}</strong>. Any previous link no longer works.</p>
-        <p style="margin:18px 0;">
-          <a href="${href}" style="background:#0E4F40;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;display:inline-block;">
-            View quote
-          </a>
-        </p>
-        <p style="color:#888;font-size:11px;">This link is valid for 14 days. Keep it private.</p>
-        <p style="color:#888;font-size:12px;">${escapeHtml(site)}</p>
-      </div>`,
+    vars: {
+      'customer.name': sr.buyerName,
+      'quote.number': quoteRefOrProforma(sr),
+      'link.quote': siteLink(`/quotes/t/${newToken}`),
+      'link.valid_days': String(Math.round(QUOTE_MAGIC_LINK_TTL_MS / 86_400_000)),
+    },
   });
   await audit('quote.magiclink.reissue', quoteRefOrProforma(sr), `by ${session.user.email}`);
   revalidatePath(`/admin/quotes/${id}`);

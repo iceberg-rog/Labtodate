@@ -5,7 +5,8 @@ import { Loader2, ArrowRight, User, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { submitSellAndRedirect, type SellInputType } from '@/lib/sell/actions';
 
-export function SellForm() {
+/** `footer`: the line under the submit button (Admin → Site content → Forms & sign-up). */
+export function SellForm({ footer }: { footer: string }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [sellerType, setSellerType] = useState<'INDIVIDUAL' | 'COMPANY'>('COMPANY');
@@ -242,9 +243,7 @@ export function SellForm() {
             </>
           )}
         </Button>
-        <p className="text-xs text-muted-foreground text-center mt-3">
-          Free valuation · No obligation · We reply within 2 business days
-        </p>
+        {footer && <p className="text-xs text-muted-foreground text-center mt-3">{footer}</p>}
       </div>
     </form>
   );

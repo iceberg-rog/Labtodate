@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { checkoutVat } from '@/lib/documents/checkout-vat';
 import { redirect } from 'next/navigation';
 import { headers } from 'next/headers';
 import { prisma } from '@/lib/db';
@@ -162,8 +163,10 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
 
   const subtotal = items.reduce((s, i) => s + (i.product.priceCents ?? 0) * i.quantity, 0);
   const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-  const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-  const tax = Math.round((subtotal * taxPct) / 100);
+  // VAT from Admin → Documents → VAT (default treatment), on goods + shipping.
+  const checkoutVatInfo = await checkoutVat(subtotal, shipping);
+  const taxPct = checkoutVatInfo.pct;
+  const tax = checkoutVatInfo.taxCents;
 
   const shippingAddressPayload = {
     name: addr.name,
@@ -199,6 +202,8 @@ export async function startCartCheckoutWithAddress(formData: FormData) {
       subtotalCents: subtotal,
       shippingCents: shipping,
       taxCents: tax,
+      vatTreatment: checkoutVatInfo.treatment,
+      vatRateBp: checkoutVatInfo.rateBp,
       totalCents: subtotal + shipping + tax,
       currency,
       paidAt: null,

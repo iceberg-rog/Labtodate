@@ -5,8 +5,9 @@ import { redirect } from 'next/navigation';
 import { prisma } from '@/lib/db';
 import { ensureSettingsLoaded } from '@/lib/settings';
 import { audit, notifyAdmins } from '@/lib/observability';
-import { sendEmail } from '@/lib/email';
-import { escapeHtml, escapeHtmlLines } from '@/lib/email-html';
+import { sendTemplatedEmail } from '@/lib/email-templates/send';
+import { siteLink } from '@/lib/email-templates/links';
+import { intakeEmail } from '@/lib/intake';
 
 function parseAttachments(v: FormDataEntryValue | null): string[] {
   if (typeof v !== 'string' || !v) return [];
@@ -72,11 +73,19 @@ export async function guestReplyByQuoteToken(formData: FormData): Promise<void> 
     },
   });
 
-  const ops = process.env.SUPPORT_INTAKE_EMAIL || process.env.SUPPORT_EMAIL || process.env.COMPANY_EMAIL || 'support@lab2date.com';
-  await sendEmail({
+  // Staff copy: only a configured inbox (skipped and logged otherwise).
+  const ops = await intakeEmail('support', 'staff_quote_guest_reply');
+  if (ops) await sendTemplatedEmail({
+    key: 'staff_quote_guest_reply',
     to: ops,
-    subject: `[${ref}] Guest reply on a quote`,
-    html: `<p>${escapeHtml(sr.buyerName)} (${escapeHtml(sr.buyerEmail)}) replied to quote ${ref}:</p><blockquote style="border-left:3px solid #A3E635;padding-left:12px;color:#555;">${escapeHtmlLines(body)}</blockquote>`,
+    lang: 'en',
+    vars: {
+      'quote.number': ref,
+      'reply.author': sr.buyerName,
+      'reply.author_email': sr.buyerEmail,
+      'reply.body': body,
+      'link.admin': siteLink(`/admin/quotes/${sr.id}`),
+    },
   });
   await notifyAdmins(
     `Guest replied on quote · ${ref}`,

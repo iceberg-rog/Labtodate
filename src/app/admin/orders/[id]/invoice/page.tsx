@@ -1,310 +1,96 @@
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { ChevronLeft, FileText } from 'lucide-react';
 import { requireCapability } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { adminDetailTitle } from '@/app/admin/admin-title';
-import { ensureSettingsLoaded } from '@/lib/settings';
 import { formatPrice } from '@/lib/utils';
-import { getCompany } from '@/lib/invoice';
-import { humaniseBuyer, STATUS_LABEL } from '@/lib/orders/display';
-import { InvoiceActions } from '@/components/admin/InvoiceActions';
+import { ensureLegacyQuoteDoc, PAID_ORDER_STATES, snapshotOf } from '@/lib/documents/issue';
+import { DocumentViewer } from '@/components/documents/DocumentViewer';
+import { ResendDocumentsButton } from '@/components/admin/documents/ResendDocumentsButton';
 
 export const dynamic = 'force-dynamic';
 
 export function generateMetadata(props: { params: Promise<{ id: string }> }) {
-  return adminDetailTitle('orders:view', 'Invoice', async () => {
+  return adminDetailTitle('orders:view', 'Documents', async () => {
     const { id } = await props.params;
     const o = await prisma.order.findUnique({ where: { id }, select: { orderNumber: true } });
-    return o && `Invoice ${o.orderNumber}`;
+    return o && `Documents ${o.orderNumber}`;
   });
 }
 
-/** Absolute date for a legal document — never "Today 12:58". */
-function invoiceDate(d: Date): string {
-  return d.toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-    timeZone: 'Europe/Amsterdam',
-  });
-}
+const KIND_LABEL: Record<string, string> = { QUOTE: 'Quote', INVOICE: 'Invoice', RECEIPT: 'Receipt' };
 
-function fmtAddrLines(a: unknown): { name?: string; lines: string[] } | null {
-  if (!a || typeof a !== 'object') return null;
-  const o = a as Record<string, unknown>;
-  const ad = (o.address as Record<string, unknown>) || o;
-  const lines = [
-    typeof ad.line1 === 'string' ? ad.line1 : null,
-    typeof ad.line2 === 'string' ? ad.line2 : null,
-    [
-      typeof ad.postal_code === 'string' ? ad.postal_code : null,
-      typeof ad.city === 'string' ? ad.city : null,
-      typeof ad.state === 'string' ? ad.state : null,
-    ].filter(Boolean).join(' '),
-    typeof ad.country === 'string' ? ad.country : null,
-    typeof o.phone === 'string' ? `Tel: ${o.phone}` : null,
-    typeof o.email === 'string' ? `Email: ${o.email}` : null,
-  ].filter((x): x is string => !!x && x.trim().length > 0);
-  return { name: typeof o.name === 'string' ? o.name : undefined, lines };
-}
-
-export default async function InvoicePage(props: { params: Promise<{ id: string }> }) {
-  const params = await props.params;
+/**
+ * Every document issued for an order (quote revisions, invoice, receipt),
+ * exactly as the buyer received them, with PDF download and print. Replaces
+ * the old hand-built admin invoice page.
+ */
+export default async function OrderDocumentsPage(props: { params: Promise<{ id: string }>; searchParams?: Promise<{ doc?: string }> }) {
+  const { id } = await props.params;
+  const sp = (await props.searchParams) ?? {};
   await requireCapability('orders:view');
-  await ensureSettingsLoaded();
-
   const order = await prisma.order.findUnique({
-    where: { id: params.id },
-    include: {
-      buyer: { select: { name: true, email: true } },
-      items: true,
-    },
+    where: { id },
+    select: { id: true, orderNumber: true, status: true, sourcingRequestId: true },
   });
   if (!order) notFound();
-
-  const buyer = humaniseBuyer(order.buyer);
-  const ship = fmtAddrLines(order.shippingAddress);
-  const bill = fmtAddrLines(order.billingAddress) ?? ship;
-
-  // Same company source as the buyer / emailed invoice (src/lib/invoice.ts),
-  // so both show the same legal details (incl. KvK + website).
-  const c = getCompany();
-  const company = {
-    legal: c.name,
-    address: c.addrLines.join('\n'),
-    country: c.country,
-    phone: c.phone,
-    email: c.email,
-    web: c.web,
-    vat: c.vat,
-    kvk: c.kvk,
-    logo: c.logoPath,
-  };
-
-  const itemsSubtotal = order.items.reduce((s, i) => s + i.priceCentsSnapshot * i.quantity, 0);
+  if (order.sourcingRequestId) await ensureLegacyQuoteDoc(order.sourcingRequestId).catch(() => null);
+  const docs = await prisma.issuedDocument.findMany({
+    where: { OR: [{ orderId: order.id }, ...(order.sourcingRequestId ? [{ sourcingRequestId: order.sourcingRequestId }] : [])] },
+    orderBy: [{ issuedAt: 'desc' }, { revision: 'desc' }],
+    select: { id: true, kind: true, number: true, revision: true, issuedAt: true, totalCents: true, currency: true, supersededAt: true, voidedAt: true, lang: true, snapshot: true },
+  });
+  const selected = docs.find((d) => d.id === sp.doc) ?? docs.find((d) => d.kind === 'INVOICE') ?? docs[0];
+  const paid = PAID_ORDER_STATES.includes(order.status);
 
   return (
-    <>
-      {/* eslint-disable-next-line @next/next/no-head-element */}
-      <style dangerouslySetInnerHTML={{ __html: `
-        @page { size: A4; margin: 18mm; }
-        @media print {
-          .no-print { display: none !important; }
-          body { background: white !important; }
-          /* Print only the invoice sheet — never the admin sidebar / top bar
-             (which carry the operator's email) around it. */
-          aside, header { display: none !important; }
-          body * { visibility: hidden !important; }
-          .invoice-sheet, .invoice-sheet * { visibility: visible !important; }
-          .invoice-sheet .no-print, .invoice-sheet .no-print * { visibility: hidden !important; }
-          .invoice-sheet {
-            position: absolute !important; left: 0; top: 0;
-            margin: 0 !important; box-shadow: none !important;
-            width: 100% !important; min-height: 0 !important; padding: 0 !important;
-          }
-        }
-        body { background: #f4f4f0; }
-        .invoice-sheet {
-          background: white;
-          color: #111;
-          width: 210mm;
-          min-height: 297mm;
-          margin: 24px auto;
-          padding: 18mm;
-          box-shadow: 0 8px 40px rgba(0,0,0,0.08);
-          font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-          font-size: 12px;
-          line-height: 1.5;
-        }
-        .invoice-sheet h1, .invoice-sheet h2, .invoice-sheet h3 { color: #0E4F40; }
-        .invoice-sheet table { width: 100%; border-collapse: collapse; }
-        .invoice-sheet th, .invoice-sheet td { padding: 8px 6px; }
-        .invoice-sheet thead th { font-size: 9px; text-transform: uppercase; letter-spacing: 0.14em; color: #666; border-bottom: 1px solid #ddd; text-align: left; }
-        .invoice-sheet tbody td { border-bottom: 1px solid #eee; vertical-align: top; }
-        .invoice-sheet tfoot td { padding-top: 12px; font-weight: bold; }
-        .stamp {
-          display: inline-block;
-          padding: 4px 12px;
-          border: 2px solid currentColor;
-          border-radius: 8px;
-          font-weight: 800;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-          transform: rotate(-6deg);
-        }
-      ` }} />
-      <div className="no-print sticky top-0 z-50 bg-foreground/[0.04] border-b border-border px-4 py-2.5">
-        <InvoiceActions backHref={`/admin/orders/${order.id}`} />
+    <div className="container-px py-8 max-w-6xl mx-auto space-y-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <Link href={`/admin/orders/${order.id}`} className="inline-flex items-center gap-1.5 h-9 px-3 rounded-full border border-border bg-card text-xs font-semibold hover:bg-foreground/5">
+          <ChevronLeft className="h-3.5 w-3.5" /> Back to order {order.orderNumber}
+        </Link>
+        <div className="flex items-center gap-3">
+          {paid && <ResendDocumentsButton orderId={order.id} />}
+          <Link href="/admin/documents?tab=templates" className="text-xs font-semibold text-primary hover:underline">Edit templates →</Link>
+        </div>
       </div>
-      {/* <article>, not <main>: the admin layout already renders the page's <main>. */}
-      <article className="invoice-sheet">
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 32 }}>
-          <div>
-            {company.logo ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              (<img src={company.logo} alt={company.legal} style={{ maxHeight: 48, marginBottom: 12 }} />)
-            ) : (
-              <p style={{ fontSize: 22, fontWeight: 800, color: '#0E4F40', letterSpacing: '-0.02em' }}>{company.legal}</p>
-            )}
-            <p style={{ color: '#444', whiteSpace: 'pre-wrap' }}>{company.address}</p>
-            {company.country && <p style={{ color: '#444' }}>{company.country}</p>}
-            {company.phone && <p style={{ color: '#444' }}>Tel: {company.phone}</p>}
-            {company.email && <p style={{ color: '#444' }}>Email: {company.email}</p>}
-            {company.web && <p style={{ color: '#444' }}>Web: {company.web}</p>}
-            {company.vat && <p style={{ color: '#444' }}>VAT: {company.vat}</p>}
-            {company.kvk && <p style={{ color: '#444' }}>KvK: {company.kvk}</p>}
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <h1 style={{ fontSize: 28, margin: 0, letterSpacing: '-0.02em' }}>INVOICE</h1>
-            <p style={{ margin: '4px 0 12px', fontSize: 13, fontWeight: 700 }}>
-              <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{order.orderNumber}</span>
-            </p>
-            <p style={{ color: '#666', fontSize: 11 }}>Issued {invoiceDate(order.createdAt)}</p>
-            {order.paidAt && <p style={{ color: '#666', fontSize: 11 }}>Paid {invoiceDate(order.paidAt)}</p>}
-            <p style={{ marginTop: 10 }}>
-              <span
-                className="stamp"
-                style={{
-                  color:
-                    order.status === 'PAID' || order.status === 'DELIVERED'
-                      ? '#0E4F40'
-                      : order.status === 'REFUNDED'
-                        ? '#b91c1c'
-                        : '#a16207',
-                }}
-              >
-                {STATUS_LABEL[order.status] ?? order.status}
-              </span>
-            </p>
-          </div>
-        </div>
-
-        {/* Bill-to / Ship-to */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, marginBottom: 32 }}>
-          <div>
-            <p style={{ fontSize: 9, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: 6 }}>Bill to</p>
-            <p style={{ fontWeight: 700 }}>{buyer.primary}</p>
-            {!buyer.anonymised && buyer.secondary && <p style={{ color: '#555' }}>{buyer.secondary}</p>}
-            {bill && (
-              <>
-                {bill.name && bill.name !== buyer.primary && <p>{bill.name}</p>}
-                {bill.lines.map((l, i) => <p key={i} style={{ color: '#555' }}>{l}</p>)}
-              </>
-            )}
-          </div>
-          <div>
-            <p style={{ fontSize: 9, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: 6 }}>Ship to</p>
-            {ship ? (
-              <>
-                {ship.name && <p style={{ fontWeight: 700 }}>{ship.name}</p>}
-                {ship.lines.map((l, i) => <p key={i} style={{ color: '#555' }}>{l}</p>)}
-              </>
-            ) : (
-              <p style={{ color: '#888', fontStyle: 'italic' }}>No shipping address.</p>
-            )}
-            {order.trackingCarrier && (
-              <p style={{ color: '#555', marginTop: 6 }}>
-                Carrier: <strong>{order.trackingCarrier}</strong>
-                {order.trackingNumber && <> · Tracking: <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{order.trackingNumber}</span></>}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* Items */}
-        <table>
-          <thead>
-            <tr>
-              <th>Description</th>
-              <th style={{ width: 60, textAlign: 'right' }}>Qty</th>
-              <th style={{ width: 100, textAlign: 'right' }}>Unit price</th>
-              <th style={{ width: 110, textAlign: 'right' }}>Line total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {order.items.map((it) => (
-              <tr key={it.id}>
-                <td>
-                  <strong>{it.titleSnapshot}</strong>
-                  {it.brandSnapshot && <div style={{ color: '#777', fontSize: 11 }}>{it.brandSnapshot}</div>}
-                </td>
-                <td style={{ textAlign: 'right' }} className="tabular-nums">{it.quantity}</td>
-                <td style={{ textAlign: 'right' }} className="tabular-nums">{formatPrice(it.priceCentsSnapshot, order.currency)}</td>
-                <td style={{ textAlign: 'right' }} className="tabular-nums">{formatPrice(it.priceCentsSnapshot * it.quantity, order.currency)}</td>
-              </tr>
+      <div className="grid gap-5 lg:grid-cols-[18rem_minmax(0,1fr)]">
+        <aside className="rounded-2xl border border-border bg-card p-3 self-start">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground px-2 mb-2">Issued documents</h2>
+          {docs.length === 0 && (
+            <p className="text-sm text-muted-foreground px-2">Nothing issued yet.{paid ? '' : ' The invoice is issued when the payment is verified.'}</p>
+          )}
+          <ul className="space-y-1">
+            {docs.map((d) => (
+              <li key={d.id}>
+                <Link href={`?doc=${d.id}`} className={`block rounded-lg px-2 py-2 text-sm ${selected?.id === d.id ? 'bg-primary/10 text-primary' : 'hover:bg-foreground/[0.04]'}`}>
+                  <span className="font-semibold inline-flex items-center gap-1.5">
+                    <FileText className="h-3.5 w-3.5" /> {KIND_LABEL[d.kind] ?? d.kind} {d.number}{d.revision > 1 ? ` rev ${d.revision}` : ''}
+                  </span>
+                  <span className="block text-[11px] text-muted-foreground">
+                    {d.issuedAt.toISOString().slice(0, 10)} · {formatPrice(d.totalCents, d.currency)} · {d.lang.toUpperCase()}
+                    {d.supersededAt ? ' · replaced' : ''}
+                    {d.voidedAt ? ' · void' : ''}
+                  </span>
+                </Link>
+              </li>
             ))}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={3} style={{ textAlign: 'right', color: '#666', fontWeight: 400 }}>Items subtotal</td>
-              <td style={{ textAlign: 'right' }} className="tabular-nums">{formatPrice(itemsSubtotal, order.currency)}</td>
-            </tr>
-            {order.shippingCents > 0 && (
-              <tr>
-                <td colSpan={3} style={{ textAlign: 'right', color: '#666', fontWeight: 400 }}>Shipping</td>
-                <td style={{ textAlign: 'right' }} className="tabular-nums">{formatPrice(order.shippingCents, order.currency)}</td>
-              </tr>
-            )}
-            {order.taxCents > 0 && (
-              <tr>
-                <td colSpan={3} style={{ textAlign: 'right', color: '#666', fontWeight: 400 }}>Tax</td>
-                <td style={{ textAlign: 'right' }} className="tabular-nums">{formatPrice(order.taxCents, order.currency)}</td>
-              </tr>
-            )}
-            <tr>
-              <td colSpan={3} style={{ textAlign: 'right', fontSize: 15 }}>TOTAL</td>
-              <td style={{ textAlign: 'right', fontSize: 15 }} className="tabular-nums">{formatPrice(order.totalCents, order.currency)}</td>
-            </tr>
-          </tfoot>
-        </table>
-
-        {/* Payment info */}
-        <div style={{ marginTop: 32, padding: 14, background: '#f5f5f0', borderRadius: 8, fontSize: 11, color: '#444' }}>
-          <p style={{ fontWeight: 700, marginBottom: 4 }}>Payment</p>
-          <p>
-            Method:{' '}
-            {/* BUG-014 fix: manual bank-transfer orders populate
-                paymentMethodManual, not the Stripe paymentMethodBrand.
-                Prefer the Stripe card brand when present, otherwise fall
-                back to the manual method (e.g. BANK TRANSFER) so verified
-                manual-paid orders no longer render "not yet captured"/"—". */}
-            {order.paymentMethodBrand ? (
-              <strong>
-                {order.paymentMethodBrand.toUpperCase().replace(/_/g, ' ')}
-                {order.paymentMethodLast4 ? ` •••• ${order.paymentMethodLast4}` : ''}
-                {order.paymentMethodWallet ? ` · ${order.paymentMethodWallet.replace(/_/g, ' ')}` : ''}
-              </strong>
-            ) : order.paymentMethodManual ? (
-              <strong>{order.paymentMethodManual.toUpperCase().replace(/_/g, ' ')}</strong>
-            ) : (
-              <em style={{ color: '#888' }}>not yet captured</em>
-            )}
-            {order.paidAt && <> · Paid on <strong>{invoiceDate(order.paidAt)}</strong></>}
-          </p>
-          {order.stripePaymentIntentId && (
-            <p style={{ marginTop: 4 }}>
-              Reference: <span style={{ fontFamily: 'ui-monospace, Menlo, monospace' }}>{order.stripePaymentIntentId}</span>
-            </p>
+          </ul>
+        </aside>
+        <div className="min-w-0">
+          {selected ? (
+            <DocumentViewer
+              key={selected.id}
+              htmlUrl={`/api/documents/${selected.id}?format=html`}
+              pdfUrl={`/api/documents/${selected.id}`}
+              title={`${snapshotOf(selected).texts.title} ${selected.number}`}
+            />
+          ) : (
+            <p className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">No document to show yet.</p>
           )}
         </div>
-
-        {order.adminNotes && (
-          <div className="no-print" style={{ marginTop: 16, padding: 14, background: '#fffae8', border: '1px solid #f0e0a0', borderRadius: 8, fontSize: 11, color: '#5a4400' }}>
-            <p style={{ fontWeight: 700, marginBottom: 4 }}>Internal note (not printed)</p>
-            <p style={{ whiteSpace: 'pre-wrap' }}>{order.adminNotes}</p>
-          </div>
-        )}
-
-        {/* Footer */}
-        <p style={{ marginTop: 40, fontSize: 10, color: '#888', textAlign: 'center' }}>
-          Thank you for your business. {company.legal}
-          {company.vat && ` · VAT ${company.vat}`}
-          {company.kvk && ` · KvK ${company.kvk}`}
-        </p>
-      </article>
-    </>
+      </div>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { checkoutVat } from '@/lib/documents/checkout-vat';
 import { redirect } from 'next/navigation';
 import { ChevronLeft, ShoppingBag, Building2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -62,8 +63,10 @@ export default async function CartCheckoutPage(
   const currency = valid[0].product.currency || 'EUR';
   const subtotal = valid.reduce((s, i) => s + (i.product.priceCents ?? 0) * i.quantity, 0);
   const shipping = Math.max(0, parseInt(process.env.DEFAULT_SHIPPING_CENTS || '0', 10) || 0);
-  const taxPct = Math.max(0, parseFloat(process.env.DEFAULT_TAX_PERCENT || '0') || 0);
-  const tax = Math.round((subtotal * taxPct) / 100);
+  // VAT from Admin → Documents → VAT (default treatment), on goods + shipping.
+  const checkoutVatInfo = await checkoutVat(subtotal, shipping);
+  const taxPct = checkoutVatInfo.pct;
+  const tax = checkoutVatInfo.taxCents;
   const total = subtotal + shipping + tax;
 
   // Prefill from the buyer's most recent order that has an address.
@@ -203,7 +206,7 @@ export default async function CartCheckoutPage(
             <div className="space-y-1 text-sm border-t border-border pt-3">
               <Row label="Subtotal" value={formatPrice(subtotal, currency)} />
               {shipping > 0 && <Row label="Shipping" value={formatPrice(shipping, currency)} muted />}
-              {tax > 0 && <Row label={`Tax (${taxPct}%)`} value={formatPrice(tax, currency)} muted />}
+              {tax > 0 && <Row label={`VAT (${taxPct}%)`} value={formatPrice(tax, currency)} muted />}
               <div className="pt-2 border-t border-border" />
               <Row label="Total" value={formatPrice(total, currency)} bold />
             </div>

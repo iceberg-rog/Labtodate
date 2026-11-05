@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
-import Link from 'next/link';
 
 const KEY = 'l2d_cookie_ack';
 
@@ -12,7 +11,11 @@ const KEY = 'l2d_cookie_ack';
 // (/, /marketplace, /blog, etc.) still see it.
 const HIDE_ON = ['/auth', '/checkout', '/admin', '/app'];
 
-export function CookieConsent() {
+/**
+ * `html`: the banner text (Admin → Site content → Footer & cookie banner),
+ * rendered by siteInline() on the server — escaped by construction.
+ */
+export function CookieConsent({ html, button }: { html: string; button: string }) {
   const pathname = usePathname();
   const [show, setShow] = useState(false);
   const hidden = HIDE_ON.some((p) => pathname?.startsWith(p));
@@ -31,13 +34,10 @@ export function CookieConsent() {
     // otherwise the notice blocked "Open assistant" until dismissed.
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-[90] p-3 pr-24 sm:p-4 sm:pr-24 lg:pr-4">
       <div className="pointer-events-auto mx-auto max-w-3xl rounded-2xl border border-border bg-card shadow-lg p-4 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-        <p className="text-sm text-muted-foreground flex-1">
-          We use only essential cookies to keep you signed in and secure — no tracking or ads.{' '}
-          <Link href="/legal/cookies" className="text-primary underline underline-offset-2">
-            Cookie policy
-          </Link>
-          .
-        </p>
+        <p
+          className="text-sm text-muted-foreground flex-1 [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2"
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
         <button
           type="button"
           onClick={() => {
@@ -50,7 +50,7 @@ export function CookieConsent() {
           }}
           className="shrink-0 rounded-full bg-primary text-primary-foreground px-5 py-2 text-sm font-semibold hover:bg-primary/90"
         >
-          Got it
+          {button}
         </button>
       </div>
     </div>

@@ -10,7 +10,9 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { formatPrice } from '@/lib/utils';
 import { ensureSettingsLoaded } from '@/lib/settings';
-import { renderInvoiceHtml } from '@/lib/invoice';
+import { siteValue } from '@/lib/site/content';
+import { ensureLegacyQuoteDoc, snapshotOf } from '@/lib/documents/issue';
+import { DocumentViewer } from '@/components/documents/DocumentViewer';
 import { buyerSubmitPaymentProof } from './actions';
 import { ProofFileInput } from './ProofFileInput';
 
@@ -41,6 +43,8 @@ export default async function PaymentWorkspacePage({
   const sp = await searchParams;
   const session = await requireSession({ redirectTo: `/app/orders/${orderNumber}/payment` });
   await ensureSettingsLoaded();
+  // "We verify within …" — Admin → Site content → Response times & numbers.
+  const verifyTime = await siteValue('rules.payment_verify_time');
 
   const order = await prisma.order.findUnique({
     where: { orderNumber: orderNumber },
@@ -61,26 +65,9 @@ export default async function PaymentWorkspacePage({
       })
     : null;
 
-  let proformaHtml: string | null = null;
-  if (sourcing && sourcing.quotedPriceCents != null) {
-    const proformaNumber = sourcing.proformaNumber
-      ?? `PRO-${new Date(sourcing.quotedAt ?? sourcing.createdAt).getFullYear()}-${sourcing.id.slice(-6).toUpperCase()}`;
-    const issuedAt = sourcing.proformaIssuedAt ?? sourcing.quotedAt ?? sourcing.createdAt;
-    const rendered = renderInvoiceHtml({
-      kind: 'PROFORMA',
-      number: proformaNumber,
-      dateISO: issuedAt.toISOString(),
-      currency: sourcing.quotedCurrency || 'EUR',
-      buyer: { name: sourcing.buyerName, email: sourcing.buyerEmail, company: sourcing.companyName },
-      lines: [{
-        title: sourcing.product?.title ?? sourcing.productCategory ?? 'Requested equipment',
-        qty: sourcing.quotedQuantity ?? 1,
-        unitCents: sourcing.quotedUnitCents ?? sourcing.quotedPriceCents,
-      }],
-      note: sourcing.quotedNote ?? null,
-    });
-    proformaHtml = rendered.html;
-  }
+  // The quote the buyer was sent, frozen (older quotes are frozen on first view).
+  const quoteDoc = sourcing && sourcing.quotedPriceCents != null ? await ensureLegacyQuoteDoc(sourcing.id) : null;
+  const quoteSnap = quoteDoc ? snapshotOf(quoteDoc) : null;
   const verState = order.paymentVerificationStatus; // AWAITING_VERIFICATION | VERIFIED | REJECTED | null
   // Expiry is judged by validUntil itself, not by the sla-sweep having run: the
   // receipt action refuses a lapsed proforma straight away, so the page must not
@@ -230,7 +217,7 @@ export default async function PaymentWorkspacePage({
             </li>
             <li className="flex items-start gap-2">
               <span className="shrink-0 h-5 w-5 rounded-full bg-primary text-primary-foreground inline-flex items-center justify-center text-[10px] font-bold">4</span>
-              <span>We <strong>verify</strong> within 1 business day &amp; ship.</span>
+              <span>We <strong>verify</strong> within {verifyTime} &amp; ship.</span>
             </li>
           </ol>
         </div>
@@ -270,7 +257,7 @@ export default async function PaymentWorkspacePage({
           <div className="text-sm">
             <p className="font-bold text-sky-900 dark:text-sky-300">Your receipt is being reviewed.</p>
             <p className="text-sky-800 dark:text-sky-300 mt-1">
-              We'll email you within 1 business day. You'll be able to upload a corrected receipt
+              We'll email you within {verifyTime}. You'll be able to upload a corrected receipt
               if anything needs attention.
             </p>
           </div>
@@ -328,8 +315,8 @@ export default async function PaymentWorkspacePage({
         <div className="rounded-2xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 p-3 mb-6 text-sm text-emerald-900 dark:text-emerald-300 inline-flex items-center gap-2">
           <CheckCircle2 className="h-4 w-4" />{' '}
           {sp.ok === '2'
-            ? "Payment details submitted — we'll check them within 1 business day."
-            : "Receipt uploaded — we'll verify within 1 business day."}
+            ? `Payment details submitted — we'll check them within ${verifyTime}.`
+            : `Receipt uploaded — we'll verify within ${verifyTime}.`}
         </div>
       )}
       {err && (
@@ -339,7 +326,7 @@ export default async function PaymentWorkspacePage({
       )}
 
       {/* === Proforma (compact summary; expand inline or open standalone) === */}
-      {proformaHtml && sourcing && sourcing.quotedPriceCents != null && (
+      {quoteDoc && quoteSnap && sourcing && (
         <section className="mb-6 rounded-2xl border border-border bg-card overflow-hidden">
           <div className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap">
             <div className="flex items-center gap-3 min-w-0">
@@ -348,14 +335,14 @@ export default async function PaymentWorkspacePage({
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-bold leading-tight">
-                  Your proforma
+                  Your {quoteSnap.texts.title.toLowerCase()}
                   {isVoid && <Badge variant="secondary" className="ml-2 align-middle">Void</Badge>}
                 </p>
                 <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                  <span className="font-mono">{sourcing.proformaNumber ?? `PRO-${new Date(sourcing.quotedAt ?? sourcing.createdAt).getFullYear()}-${sourcing.id.slice(-6).toUpperCase()}`}</span>
+                  <span className="font-mono">{quoteDoc.number}</span>
                   {' · '}
                   <span className={isVoid ? 'line-through' : undefined}>
-                    {formatPrice(sourcing.quotedPriceCents, sourcing.quotedCurrency || 'EUR')}
+                    {formatPrice(quoteDoc.totalCents, quoteDoc.currency)}
                   </span>
                 </p>
               </div>
@@ -376,7 +363,9 @@ export default async function PaymentWorkspacePage({
               <summary className="cursor-pointer px-4 py-2 text-xs font-semibold text-primary/90 hover:bg-foreground/[0.02]">
                 Show preview
               </summary>
-              <div className="px-4 py-4 bg-white border-t border-border" dangerouslySetInnerHTML={{ __html: proformaHtml }} />
+              <div className="px-4 py-4 border-t border-border">
+                <DocumentViewer compact htmlUrl={`/api/documents/${quoteDoc.id}?format=html`} pdfUrl={`/api/documents/${quoteDoc.id}`} title={`${quoteSnap.texts.title} ${quoteDoc.number}`} />
+              </div>
             </details>
           )}
         </section>
@@ -426,7 +415,7 @@ export default async function PaymentWorkspacePage({
           )}
           <p className="text-xs text-muted-foreground border-t border-border pt-3">
             {bank.refHint}. Once your transfer is sent, upload the bank confirmation below and we'll
-            verify within 1 business day.
+            verify within {verifyTime}.
           </p>
         </section>
       )}
@@ -538,7 +527,7 @@ export default async function PaymentWorkspacePage({
               {verState === 'REJECTED' ? 'Resubmit receipt' : 'Submit receipt for verification'}
             </Button>
             <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
-              <Clock className="h-3 w-3" /> Typical verification: 1 business day.
+              <Clock className="h-3 w-3" /> Typical verification: {verifyTime}.
             </span>
           </div>
         </form>

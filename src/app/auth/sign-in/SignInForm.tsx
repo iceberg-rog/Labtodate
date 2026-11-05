@@ -18,7 +18,14 @@ const LINK_ERRORS: Record<string, string> = {
   ACCOUNT_SUSPENDED: 'This account is suspended. Contact support if you think this is a mistake.',
 };
 
-export default function SignInPage() {
+/** Admin-editable texts (Site content → Forms & sign-up), passed in by the page. */
+export interface SignInTexts {
+  title: string;
+  intro: string;
+  emailPlaceholder: string;
+}
+
+export default function SignInPage({ texts }: { texts: SignInTexts }) {
   const router = useRouter();
   const params = useSearchParams();
   // Default to the role-aware dispatcher (/auth/continue) so admins land on
@@ -121,8 +128,8 @@ export default function SignInPage() {
   return (
     <>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Welcome back</h1>
-        <p className="text-sm text-muted-foreground mt-1">Sign in to your Labtodate account.</p>
+        <h1 className="text-2xl font-bold tracking-tight">{texts.title}</h1>
+        {texts.intro && <p className="text-sm text-muted-foreground mt-1">{texts.intro}</p>}
       </div>
 
       <form onSubmit={handlePassword} className="space-y-4 rounded-2xl border bg-card p-6 shadow-sm">
@@ -137,7 +144,7 @@ export default function SignInPage() {
               autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@company.com"
+              placeholder={texts.emailPlaceholder}
               className="w-full h-10 pl-10 pr-3 rounded-md border border-input bg-background text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>

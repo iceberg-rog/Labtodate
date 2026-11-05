@@ -1,8 +1,22 @@
 import Link from 'next/link';
 import { Compass, ArrowRight, LifeBuoy, PackageSearch } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { isBuildPhase } from '@/lib/build-phase';
+import { siteDef } from '@/lib/site/defs';
 
 export const metadata = { title: 'Page not found' };
+
+/** Support reply time (Admin → Site content → Response times); the build has no database. */
+async function supportReplyTime(): Promise<string> {
+  const builtIn = siteDef('rules.support_reply_time')?.def.default ?? '1 business day';
+  if (isBuildPhase()) return builtIn;
+  try {
+    const { siteValue } = await import('@/lib/site/content');
+    return await siteValue('rules.support_reply_time');
+  } catch {
+    return builtIn;
+  }
+}
 
 /**
  * Without this file Next serves its own bare "404 / This page could not be
@@ -10,7 +24,8 @@ export const metadata = { title: 'Page not found' };
  * like us. It is the page a mistyped or stale link lands on, which is exactly
  * where a first-time visitor should still find the catalogue.
  */
-export default function NotFound() {
+export default async function NotFound() {
+  const replyTime = await supportReplyTime();
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
       <div className="mx-auto h-16 w-16 rounded-full bg-accent/15 flex items-center justify-center mb-6">
@@ -48,7 +63,7 @@ export default function NotFound() {
           icon={LifeBuoy}
           href="/support"
           title="Ask support"
-          text="Open a ticket and our team replies within 1 business day."
+          text={`Open a ticket and our team replies within ${replyTime}.`}
         />
       </div>
     </div>

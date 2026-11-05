@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { CheckCircle2, LifeBuoy, Mail, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getServerSession } from '@/lib/auth-server';
+import { siteValue } from '@/lib/site/content';
 
 export const metadata = { title: 'Ticket received' };
 export const dynamic = 'force-dynamic';
@@ -10,6 +11,8 @@ export default async function SupportThanksPage(props: { searchParams: Promise<{
   const searchParams = await props.searchParams;
   const session = await getServerSession();
   const signedIn = !!session?.user;
+  // Admin → Site content → Response times & numbers.
+  const replyTime = await siteValue('rules.support_reply_time');
 
   return (
     <div className="container-px py-20 max-w-xl mx-auto text-center">
@@ -28,7 +31,7 @@ export default async function SupportThanksPage(props: { searchParams: Promise<{
 
       <p className="mt-3 text-muted-foreground">
         {signedIn
-          ? 'Our team replies within 1 business day. You can follow the conversation right from your account.'
+          ? `Our team replies within ${replyTime}. You can follow the conversation right from your account.`
           : 'Check your inbox — we sent a confirmation with a magic link so you can read replies and follow up without signing up.'}
       </p>
 

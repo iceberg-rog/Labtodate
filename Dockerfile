@@ -1,7 +1,11 @@
 # syntax=docker/dockerfile:1
 
+# Node 22 LTS: puppeteer-core (server-side PDF documents) needs >= 22.12, and
+# Node 20 is end-of-life.
+ARG NODE_IMAGE=node:22-bookworm-slim
+
 # ---- deps: install all dependencies ----
-FROM node:20-bookworm-slim AS deps
+FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json* ./
@@ -17,7 +21,7 @@ WORKDIR /app
 CMD ["npm", "run", "db:deploy"]
 
 # ---- builder: prisma generate + next build (standalone) ----
-FROM node:20-bookworm-slim AS builder
+FROM ${NODE_IMAGE} AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -28,9 +32,14 @@ RUN npx prisma generate
 RUN npm run build
 
 # ---- runner: lean standalone runtime ----
-FROM node:20-bookworm-slim AS runner
+FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+# Chromium makes the quote / invoice / receipt PDFs (puppeteer-core drives it;
+# no browser download at npm install). It starts only when a PDF is made and
+# stops after 60 s idle. Liberation + DejaVu + Noto fonts cover the documents'
+# Arial-metric layout and non-Latin customer names.
+RUN apt-get update   && apt-get install -y --no-install-recommends openssl ca-certificates chromium fonts-liberation fonts-dejavu-core fonts-noto-core   && rm -rf /var/lib/apt/lists/*
+ENV CHROMIUM_PATH=/usr/bin/chromium
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000

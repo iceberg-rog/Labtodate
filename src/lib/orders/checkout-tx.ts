@@ -1,4 +1,6 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { DEFAULT_NUMBERING, formatNumber } from '@/lib/documents/numbering';
+import { getNumbering } from '@/lib/documents/config';
 
 /**
  * Order-lifecycle state transitions that MUST be atomic. Each takes a
@@ -14,10 +16,19 @@ import { Prisma, type PrismaClient } from '@prisma/client';
  * loop leaks stock if a restock then fails; claim + restock in one tx rolls back.
  */
 
+/**
+ * A new order number from the pattern in Admin → Documents → Numbering
+ * (default L2D-{YYYY}-{RAND:6}). Order numbers are references, not tax
+ * documents; uniqueness is enforced by the DB and callers retry on P2002.
+ * Call loadOrderNumberPattern() first so a pattern change applies at once.
+ */
 export function generateOrderNumber(): string {
-  const year = new Date().getFullYear();
-  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
-  return `L2D-${year}-${rand}`;
+  const pattern = (globalThis as unknown as { __orderPattern?: string }).__orderPattern || DEFAULT_NUMBERING.ORDER.pattern;
+  return formatNumber(pattern, null);
+}
+
+export async function loadOrderNumberPattern(): Promise<void> {
+  await getNumbering().catch(() => undefined);
 }
 
 /** Thrown inside the reservation transaction when a unit is no longer available
@@ -74,6 +85,7 @@ export async function reserveAndCreateOrder(
     cartClear?: { userId: string; items: ReadonlyArray<{ id: string; quantity: number }> };
   },
 ): Promise<ReserveAndCreateResult> {
+  await loadOrderNumberPattern();
   const { reservations, orderData, items, cartClear } = params;
   for (let attempt = 0; attempt < 6; attempt++) {
     try {

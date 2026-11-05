@@ -39,7 +39,18 @@ const MENU_MORE = [
 
 const isActive = (pathname: string, href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
-export function Header({ searchPlaceholder = 'Search instruments…' }: { searchPlaceholder?: string }) {
+export function Header({
+  searchPlaceholder = 'Search instruments…',
+  hiddenHrefs = [],
+}: {
+  searchPlaceholder?: string;
+  /** Sections hidden in Admin → Site content → Menu & footer (or empty while "Automatic"). */
+  hiddenHrefs?: string[];
+}) {
+  const shown = <T extends { href: string }>(items: T[]) => items.filter((i) => !hiddenHrefs.includes(i.href));
+  const nav = shown(NAV);
+  const menuMain = shown(MENU_MAIN);
+  const menuMore = shown(MENU_MORE);
   const [open, setOpen] = useState(false);
   // On md+ the search opens as a full-width row under the header: squeezed
   // inline between the nav and the account buttons it was only 54–78px wide.
@@ -69,7 +80,7 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
 
         <div className="ml-auto flex items-center gap-2">
           <nav className="nav-pill hidden xl:flex mr-1" aria-label="Main">
-            {NAV.map((item) => (
+            {nav.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
@@ -143,7 +154,7 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
                 </div>
                 <p className="site-menu-k">Buy &amp; sell</p>
                 <nav className="grid gap-1" aria-label="Main">
-                  {MENU_MAIN.map(({ label, href, icon: Icon, hint }) => (
+                  {menuMain.map(({ label, href, icon: Icon, hint }) => (
                     <Link key={href} href={href} aria-current={isActive(pathname, href) ? 'page' : undefined} className="site-menu-row" onClick={() => setOpen(false)}>
                       <span className="site-menu-ico"><Icon aria-hidden /></span>
                       <span className="min-w-0 flex-1"><b>{label}</b><small>{hint}</small></span>
@@ -153,7 +164,7 @@ export function Header({ searchPlaceholder = 'Search instruments…' }: { search
                 </nav>
                 <p className="site-menu-k">Resources</p>
                 <nav className="grid grid-cols-2 gap-1" aria-label="Resources">
-                  {MENU_MORE.map(({ label, href, icon: Icon }) => (
+                  {menuMore.map(({ label, href, icon: Icon }) => (
                     <Link key={href} href={href} aria-current={isActive(pathname, href) ? 'page' : undefined} className="site-menu-tile" onClick={() => setOpen(false)}>
                       <Icon aria-hidden />
                       {label}

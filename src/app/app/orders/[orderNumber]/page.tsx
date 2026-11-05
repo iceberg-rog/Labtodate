@@ -6,6 +6,7 @@ import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
 import { ACTIVE_TICKET_STATUSES } from '@/lib/support/statuses';
 import { formatPrice } from '@/lib/utils';
+import { siteValue } from '@/lib/site/content';
 import { confirmDelivery, requestReturn } from '@/lib/orders/actions';
 import { shippingAddressIsComplete } from '@/lib/orders/display';
 import { buyerSetShippingAddress } from './payment/actions';
@@ -53,6 +54,8 @@ export default async function OrderDetailPage({
   const { orderNumber } = await params;
   const sp = await searchParams;
   const session = await requireSession({ redirectTo: `/app/orders/${orderNumber}` });
+  // Admin → Site content → Response times & numbers.
+  const verifyTime = await siteValue('rules.payment_verify_time');
 
   const order = await prisma.order.findUnique({
     where: { orderNumber: orderNumber },
@@ -212,7 +215,7 @@ export default async function OrderDetailPage({
           </p>
           <p className="mt-1">
             {order.paymentVerificationStatus === 'AWAITING_VERIFICATION' ? (
-              <>We&apos;ll email you when it&apos;s verified — typically within 1 business day.</>
+              <>We&apos;ll email you when it&apos;s verified — typically within {verifyTime}.</>
             ) : order.paymentVerificationStatus === 'REJECTED' ? (
               <>
                 {order.paymentRejectionReason || 'Please upload a corrected receipt.'}{' '}

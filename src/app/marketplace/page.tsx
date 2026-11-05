@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
 import { listProducts, getCategories, getTopBrands } from '@/lib/marketplace/queries';
-import { getMarketing } from '@/lib/marketing';
+import { siteText } from '@/lib/site/content';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import { Filters } from '@/components/marketplace/Filters';
 import { SortDropdown } from '@/components/marketplace/SortDropdown';
@@ -70,7 +70,6 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   // price/page) silently read `undefined` and the page showed all products.
   const sp = parseParams(await searchParams);
   const page = sp.page;
-  const mk = await getMarketing();
 
   const [result, categories, brands] = await Promise.all([
     listProducts({
@@ -99,6 +98,14 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   const activeCategoryName = sp.category
     ? categories.find((c) => c.slug === sp.category)?.name
     : null;
+  // Admin → Site content → Marketplace. {{stats.listings}} is this search's
+  // result count here; the claim part drops out while the claim is off.
+  const resultVars = { 'stats.listings': result.total.toLocaleString() };
+  const [title, subtitle, subtitleClaim] = await Promise.all([
+    siteText('marketplace.title'),
+    siteText('marketplace.subtitle', resultVars),
+    siteText('marketplace.subtitle_claim', resultVars),
+  ]);
 
   return (
     <div className="container-px py-10 md:py-14">
@@ -115,11 +122,13 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
           className="text-3xl md:text-5xl font-bold text-foreground"
           style={{ letterSpacing: '-0.035em' }}
         >
-          {activeCategoryName ? activeCategoryName : 'All lab instruments'}
+          {activeCategoryName ? activeCategoryName : title}
         </h1>
-        <p className="mt-3 text-muted-foreground max-w-2xl">
-          {result.total.toLocaleString()} listings{mk.inspection ? ` · ${mk.inspection} on every refurbished unit` : ''}
-        </p>
+        {(subtitle || subtitleClaim) && (
+          <p className="mt-3 text-muted-foreground max-w-2xl">
+            {[subtitle, subtitleClaim].filter(Boolean).join(' · ')}
+          </p>
+        )}
 
         {/* Inline search */}
         <form action="/marketplace" className="mt-6 max-w-xl">

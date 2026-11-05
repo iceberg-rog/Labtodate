@@ -4,10 +4,13 @@ import { listProducts } from '@/lib/marketplace/queries';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 import { getMarketing } from '@/lib/marketing';
+import { siteText } from '@/lib/site/content';
 
 export async function FeaturedProducts() {
   const { items } = await listProducts({ pageSize: 8, sort: 'newest' });
   const mk = await getMarketing();
+  // "Inspected, warrantied" states both claims: the plain heading is used while either is off.
+  const heading = (await siteText('marketplace.featured_heading')) || (await siteText('marketplace.featured_heading_plain'));
 
   return (
     <section className="container-px py-24">
@@ -18,7 +21,7 @@ export async function FeaturedProducts() {
             className="text-3xl md:text-5xl font-bold text-foreground max-w-2xl"
             style={{ letterSpacing: '-0.035em' }}
           >
-            Hand-picked instruments. Inspected, warrantied, ready to ship.
+            {heading}
           </h2>
         </div>
         <Link
