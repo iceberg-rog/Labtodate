@@ -887,6 +887,11 @@ model OrderItem {
   brandSnapshot      String?
   priceCentsSnapshot Int
   quantity           Int     @default(1)
+  /// Units actually taken off Product.quantity for this line: at checkout for
+  /// cart orders, at payment for quote orders. Lower than `quantity` when a
+  /// quote sold more than was in stock. null = nothing taken yet, or an order
+  /// from before this column existed (then `quantity` is assumed).
+  stockTaken         Int?
 
   @@index([orderId])
 }

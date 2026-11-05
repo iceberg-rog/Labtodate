@@ -85,7 +85,8 @@ export function ReservedPopover({ id, rect, onClose }: { id: string; rect: DOMRe
                 </Link>
                 <span className="text-xs text-muted-foreground truncate">{l.buyer}</span>
                 <span className="text-xs whitespace-nowrap">
-                  {l.quantity} × {l.kind === 'proforma' ? 'proforma, unpaid (not reserved)' : STATUS_LABEL[l.status] ?? l.status}
+                  {l.quantity} × {l.kind === 'proforma' ? 'accepted offer, awaiting payment (not reserved yet)' : STATUS_LABEL[l.status] ?? l.status}
+                  {l.sold !== null && <span className="block text-amber-600 dark:text-amber-400">sold {l.sold}, only {l.quantity} {l.quantity === 1 ? 'was' : 'were'} in stock</span>}
                 </span>
               </li>
             ))}

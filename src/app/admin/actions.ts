@@ -8,6 +8,7 @@ import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/dele
 import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
 import { orderReservedStock, orderHoldsStock } from '@/lib/orders/checkout-tx';
 import { checkLowStock } from '@/lib/inventory/alerts';
+import { unitsHeld } from '@/lib/inventory/units';
 import { consumeStockForPaidQuoteOrder } from '@/lib/orders/stock';
 import { sendOrderInvoice } from '@/lib/orders/internal';
 import { proxyProofUrl } from '@/lib/orders/display';
@@ -1397,7 +1398,7 @@ export async function refundOrder(formData: FormData): Promise<{ ok: boolean; me
       buyer: { select: { id: true, name: true, email: true } },
       totalCents: true,
       currency: true,
-      items: { select: { productId: true, quantity: true } },
+      items: { select: { productId: true, quantity: true, stockTaken: true } },
     },
   });
   if (!order) return { ok: false, message: 'Order not found.' };
@@ -1455,10 +1456,11 @@ export async function refundOrder(formData: FormData): Promise<{ ok: boolean; me
   const restock = orderHoldsStock(order);
   if (restock) {
     for (const it of order.items) {
-      if (it.productId) {
+      // Give back what the line actually took (less than sold when stock was short).
+      if (it.productId && unitsHeld(it) > 0) {
         await prisma.product.updateMany({
           where: { id: it.productId },
-          data: { quantity: { increment: it.quantity } },
+          data: { quantity: { increment: unitsHeld(it) } },
         });
       }
     }

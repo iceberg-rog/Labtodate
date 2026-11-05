@@ -1,4 +1,5 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { unitsHeld } from '@/lib/inventory/units';
 import { DEFAULT_NUMBERING, formatNumber } from '@/lib/documents/numbering';
 import { getNumbering } from '@/lib/documents/config';
 
@@ -87,6 +88,7 @@ export async function reserveAndCreateOrder(
 ): Promise<ReserveAndCreateResult> {
   await loadOrderNumberPattern();
   const { reservations, orderData, items, cartClear } = params;
+  const reservedIds = new Set(reservations.map((r) => r.productId));
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       const order = await db.$transaction(async (tx) => {
@@ -105,7 +107,8 @@ export async function reserveAndCreateOrder(
           if (dec.count !== 1) throw new InsufficientStockError();
         }
         const created = await tx.order.create({
-          data: { ...orderData, orderNumber: generateOrderNumber(), items: { create: items } },
+          // Each reserved line records the units it took (OrderItem.stockTaken).
+          data: { ...orderData, orderNumber: generateOrderNumber(), items: { create: items.map((i) => ({ ...i, stockTaken: i.productId && reservedIds.has(i.productId) ? i.quantity : null })) } },
           select: { id: true, orderNumber: true },
         });
         if (cartClear) {
@@ -121,8 +124,13 @@ export async function reserveAndCreateOrder(
         }
         return created;
       });
-      // Outside the transaction; never throws. Loaded lazily so this module stays free of server-only imports.
-      await (await import('@/lib/inventory/alerts')).checkLowStock(reservations.map((r) => r.productId));
+      // Outside the transaction. Loaded lazily so this module stays free of
+      // server-only imports; an alert problem must never fail a checkout.
+      try {
+        await (await import('@/lib/inventory/alerts')).checkLowStock(reservations.map((r) => r.productId));
+      } catch {
+        /* alerts are best-effort */
+      }
       return { ok: true, order };
     } catch (e) {
       if (e instanceof InsufficientStockError) return { ok: false, reason: 'unavailable' };
@@ -210,18 +218,24 @@ export async function cancelAndRestockOrder(
     if (owner && !orderReservedStock(owner)) return 'canceled';
     const items = await tx.orderItem.findMany({
       where: { orderId },
-      select: { productId: true, quantity: true },
+      select: { productId: true, quantity: true, stockTaken: true },
     });
     for (const it of items) {
-      if (!it.productId) continue;
+      if (!it.productId || unitsHeld(it) === 0) continue;
       await tx.product.updateMany({
         where: { id: it.productId },
-        data: { quantity: { increment: it.quantity } },
+        data: { quantity: { increment: unitsHeld(it) } },
       });
       restocked.push(it.productId);
     }
     return 'canceled' as const;
   });
-  if (restocked.length) await (await import('@/lib/inventory/alerts')).checkLowStock(restocked); // clears a low-stock flag; never throws
+  if (restocked.length) {
+    try {
+      await (await import('@/lib/inventory/alerts')).checkLowStock(restocked); // clears a low-stock flag
+    } catch {
+      /* alerts are best-effort */
+    }
+  }
   return result;
 }

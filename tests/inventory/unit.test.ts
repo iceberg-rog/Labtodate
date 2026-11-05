@@ -15,6 +15,7 @@ import { orderReservesUnits } from '@/lib/inventory/stock';
 import { orderHoldsStock } from '@/lib/orders/checkout-tx';
 import { partNumberFromSpecs } from '@/lib/inventory/rows';
 import { applyShopPricing } from '@/lib/shop-pricing';
+import { unitsHeld } from '@/lib/inventory/units';
 
 const fa = (s: string) => s.replace(/[0-9]/g, (d) => String.fromCharCode(0x06f0 + Number(d))); // Persian digits
 const ar = (s: string) => s.replace(/[0-9]/g, (d) => String.fromCharCode(0x0660 + Number(d))); // Arabic-Indic digits
@@ -267,4 +268,11 @@ test('CSV export -> import round trip', async () => {
   assert.equal(sheet.rows[0][sheet.headers.indexOf('Name')], 'Pump, "big"');
   assert.equal(sheet.rows[0][sheet.headers.indexOf('Selling price')], '100.00');
   assert.equal(COLUMNS.filter((c) => c.editable).every((c) => sheet.headers.includes(c.header)), true);
+});
+
+test('a cancel or refund gives back what the line took', () => {
+  assert.equal(unitsHeld({ quantity: 2, stockTaken: 1 }), 1);
+  assert.equal(unitsHeld({ quantity: 2, stockTaken: 0 }), 0);
+  assert.equal(unitsHeld({ quantity: 2, stockTaken: null }), 2); // older lines: as before
+  assert.equal(unitsHeld({ quantity: 2 }), 2);
 });

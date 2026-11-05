@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import { logError, notifyAdmins } from '@/lib/observability';
 import { checkLowStock } from '@/lib/inventory/alerts';
+import { takeQuoteOrderStock } from '@/lib/inventory/take';
 
 /**
  * BUG-045 — release stock that was atomically reserved for a checkout that did
@@ -54,54 +55,31 @@ import { checkLowStock } from '@/lib/inventory/alerts';
  */
 export async function consumeStockForPaidQuoteOrder(orderId: string, where: string): Promise<void> {
   try {
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      select: {
-        orderNumber: true,
-        sourcingRequestId: true,
-        items: { select: { productId: true, quantity: true } },
-      },
-    });
-    // No order, or a cart order that already reserved at checkout.
-    if (!order || !order.sourcingRequestId) return;
-    for (const item of order.items) {
-      if (!item.productId || !Number.isFinite(item.quantity) || item.quantity <= 0) continue;
-      const dec = await prisma.product.updateMany({
-        where: { id: item.productId, quantity: { gte: item.quantity } },
-        data: { quantity: { decrement: item.quantity } },
-      });
-      if (dec.count !== 1) {
-        // The listing holds fewer units than were sold (edited, sold through
-        // another route, or quoted above stock) or is gone. The sale still
-        // stands. Previously the listing then stayed "in stock" and the same
-        // one-off part could be sold again: take what is left (down to 0) so it
-        // can't, and tell the team by product name.
-        const product = await prisma.product.findUnique({
-          where: { id: item.productId },
-          select: { title: true, quantity: true },
-        });
-        if (product && product.quantity > 0) {
-          await prisma.product.updateMany({
-            where: { id: item.productId, quantity: { lt: item.quantity } },
-            data: { quantity: 0 },
-          });
-        }
-        const title = product?.title ?? `product ${item.productId} (deleted)`;
-        await logError(
-          `${where}.consumeStockForPaidQuoteOrder`,
-          new Error(
-            `order ${order.orderNumber}: sold ${item.quantity} × "${title}" but the listing had ${product ? Math.max(0, product.quantity) : 0} in stock — listing set to 0 (out of stock)`,
-          ),
-        );
-        await notifyAdmins(
-          `Stock check needed — ${title}`,
-          `Order ${order.orderNumber} was paid for ${item.quantity} unit(s), but the listing only had ${product ? Math.max(0, product.quantity) : 0}. The listing is now out of stock; correct the stock if you have more units.`,
-          '/admin/products',
-          'SYSTEM',
-        ).catch(() => {});
-      }
+    // Takes the units and records per line how many were really taken
+    // (OrderItem.stockTaken), so Reserved in the inventory and a later refund
+    // use the real number. Never takes twice for the same line.
+    const res = await takeQuoteOrderStock(orderId);
+    if (!res) return; // no order, or a cart order that already reserved at checkout
+    for (const line of res.lines) {
+      if (line.taken >= line.wanted) continue;
+      // The listing held fewer units than were sold (edited, sold through
+      // another route, or quoted above stock) or is gone. The sale stands; what
+      // was there was taken, so the same one-off part can't be sold again.
+      const title = line.title ?? `product ${line.productId} (deleted)`;
+      await logError(
+        `${where}.consumeStockForPaidQuoteOrder`,
+        new Error(
+          `order ${res.orderNumber}: sold ${line.wanted} × "${title}" but the listing had ${line.before ?? 0} in stock — took ${line.taken}, listing now 0 (out of stock)`,
+        ),
+      );
+      await notifyAdmins(
+        `Stock check needed — ${title}`,
+        `Order ${res.orderNumber} was paid for ${line.wanted} unit(s), but the listing only had ${line.before ?? 0}, so ${line.taken} were taken from stock and the listing is now out of stock. If you have more units, set On hand in the inventory.`,
+        line.title ? `/admin/inventory?focus=${line.productId}` : '/admin/inventory',
+        'SYSTEM',
+      ).catch(() => {});
     }
-    await checkLowStock(order.items.map((i) => i.productId));
+    await checkLowStock(res.lines.map((l) => l.productId));
   } catch (e) {
     await logError(`${where}.consumeStockForPaidQuoteOrder`, e);
   }

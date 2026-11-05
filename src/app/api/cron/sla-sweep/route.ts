@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { checkLowStock } from '@/lib/inventory/alerts';
+import { unitsHeld } from '@/lib/inventory/units';
 import { prisma } from '@/lib/db';
 import { isDeliverableEmail } from '@/lib/email';
 import { headerText } from '@/lib/email-html';
@@ -266,7 +267,7 @@ export async function POST(req: NextRequest) {
     },
     select: {
       id: true, orderNumber: true, buyerId: true,
-      items: { select: { productId: true, quantity: true } },
+      items: { select: { productId: true, quantity: true, stockTaken: true } },
     },
     take: 100,
   });
@@ -284,10 +285,10 @@ export async function POST(req: NextRequest) {
         canceled = true;
         // Return each reserved unit to stock exactly once.
         for (const it of o.items) {
-          if (!it.productId) continue;
+          if (!it.productId || unitsHeld(it) === 0) continue;
           await tx.product.update({
             where: { id: it.productId },
-            data: { quantity: { increment: it.quantity } },
+            data: { quantity: { increment: unitsHeld(it) } },
           });
         }
       });

@@ -232,3 +232,57 @@ test('importing the real products.csv: 24 new drafts, then a re-import changes n
   preview = await buildPreview('products.csv', sheet, autoMapping(sheet.headers), ctx({ source: 'IMPORT' }));
   assert.equal(preview.counts.unchanged, 24, JSON.stringify(preview.counts));
 });
+
+test('a quote paid for more than is in stock takes what is there and records it', async () => {
+  const { takeQuoteOrderStock } = await import('@/lib/inventory/take');
+  const { unitsHeld } = await import('@/lib/inventory/units');
+  const c = await prisma.product.create({ data: { slug: 'part-c', title: 'Part C', categoryId: catId, sellerId, mode: 'QUOTE_ONLY', status: 'PUBLISHED', quantity: 1, images: [] } });
+  const sr = await prisma.sourcingRequest.create({ data: { buyerName: 'Buyer', buyerEmail: 'qa.inv.buyer@labtodate.com', description: 'Two of part C', productId: c.id } });
+  const order = await prisma.order.create({
+    data: { orderNumber: 'LTD-T-3', buyerId, sourcingRequestId: sr.id, status: 'PAID', subtotalCents: 2, totalCents: 2, items: { create: [{ productId: c.id, titleSnapshot: 'C', priceCentsSnapshot: 1, quantity: 2 }] } },
+    include: { items: true },
+  });
+  const res = await takeQuoteOrderStock(order.id);
+  assert.deepEqual(res?.lines.map((l) => [l.wanted, l.taken, l.before]), [[2, 1, 1]]);
+  assert.equal((await prisma.product.findUniqueOrThrow({ where: { id: c.id } })).quantity, 0);
+  const item = await prisma.orderItem.findUniqueOrThrow({ where: { id: order.items[0].id } });
+  assert.equal(item.stockTaken, 1);
+  // Reserved is what was really taken, so On hand is the true shelf count (1, not 2).
+  let r = await row(c.id);
+  assert.deepEqual([r.onHand, r.reserved, r.available], [1, 1, 0]);
+  // Paying twice (a webhook retry) never takes twice.
+  assert.deepEqual((await takeQuoteOrderStock(order.id))?.lines, []);
+  assert.equal((await prisma.product.findUniqueOrThrow({ where: { id: c.id } })).quantity, 0);
+  // The owner can now correct the stock in the sheet (this used to be refused).
+  const fix = await applyInventoryChanges(c.id, [{ field: 'onHand', value: 3, base: 1 }], ctx());
+  assert.equal(fix.ok, true, JSON.stringify(fix.issues));
+  r = await row(c.id);
+  assert.deepEqual([r.onHand, r.reserved, r.available], [3, 1, 2]);
+  // A refund gives back the 1 unit taken, not the 2 sold (no phantom unit).
+  assert.equal(unitsHeld(item), 1);
+  // A listing that is gone: the line records 0 taken.
+  const d = await prisma.product.create({ data: { slug: 'part-d', title: 'Part D', categoryId: catId, sellerId, mode: 'QUOTE_ONLY', status: 'PUBLISHED', quantity: 0, images: [] } });
+  const sr2 = await prisma.sourcingRequest.create({ data: { buyerName: 'Buyer', buyerEmail: 'qa.inv.buyer@labtodate.com', description: 'Part D', productId: d.id } });
+  const o2 = await prisma.order.create({ data: { orderNumber: 'LTD-T-4', buyerId, sourcingRequestId: sr2.id, status: 'PAID', subtotalCents: 1, totalCents: 1, items: { create: [{ productId: d.id, titleSnapshot: 'D', priceCentsSnapshot: 1, quantity: 1 }] } } });
+  assert.deepEqual((await takeQuoteOrderStock(o2.id))?.lines.map((l) => l.taken), [0]);
+  assert.equal((await row(d.id)).reserved, 0);
+});
+
+test('checkout records the units each line took; cancel gives exactly those back', async () => {
+  const { reserveAndCreateOrder, cancelAndRestockOrder } = await import('@/lib/orders/checkout-tx');
+  const e = await prisma.product.create({ data: { slug: 'pump-e', title: 'Pump E', categoryId: catId, sellerId, mode: 'BUY_NOW', status: 'PUBLISHED', priceCents: 5000, quantity: 3, images: [] } });
+  const res = await reserveAndCreateOrder(prisma, {
+    reservations: [{ productId: e.id, quantity: 2, expectedPriceCents: 5000, expectedCurrency: 'EUR' }],
+    orderData: { buyerId, status: 'PENDING_PAYMENT', subtotalCents: 10000, totalCents: 10000 },
+    items: [{ productId: e.id, titleSnapshot: 'Pump E', priceCentsSnapshot: 5000, quantity: 2 }],
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  if (!res.ok) return;
+  const items = await prisma.orderItem.findMany({ where: { orderId: res.order.id } });
+  assert.deepEqual(items.map((i) => i.stockTaken), [2]);
+  let r = await row(e.id);
+  assert.deepEqual([r.onHand, r.reserved, r.available], [3, 2, 1]);
+  assert.equal(await cancelAndRestockOrder(prisma, res.order.id), 'canceled');
+  r = await row(e.id);
+  assert.deepEqual([r.onHand, r.reserved, r.available], [3, 0, 3]);
+});
