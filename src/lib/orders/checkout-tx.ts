@@ -109,6 +109,8 @@ export async function reserveAndCreateOrder(
         }
         return created;
       });
+      // Outside the transaction; never throws. Loaded lazily so this module stays free of server-only imports.
+      await (await import('@/lib/inventory/alerts')).checkLowStock(reservations.map((r) => r.productId));
       return { ok: true, order };
     } catch (e) {
       if (e instanceof InsufficientStockError) return { ok: false, reason: 'unavailable' };
@@ -181,7 +183,8 @@ export async function cancelAndRestockOrder(
   orderId: string,
   opts: { requireNoProof?: boolean; expectedStripeSessionId?: string | null } = {},
 ): Promise<CancelAndRestockResult> {
-  return db.$transaction(async (tx) => {
+  const restocked: string[] = [];
+  const result = await db.$transaction(async (tx) => {
     const where: Prisma.OrderWhereInput = { id: orderId, status: 'PENDING_PAYMENT' };
     if (opts.requireNoProof) where.paymentSubmittedAt = null;
     if ('expectedStripeSessionId' in opts) where.stripeSessionId = opts.expectedStripeSessionId;
@@ -203,7 +206,10 @@ export async function cancelAndRestockOrder(
         where: { id: it.productId },
         data: { quantity: { increment: it.quantity } },
       });
+      restocked.push(it.productId);
     }
-    return 'canceled';
+    return 'canceled' as const;
   });
+  if (restocked.length) await (await import('@/lib/inventory/alerts')).checkLowStock(restocked); // clears a low-stock flag; never throws
+  return result;
 }

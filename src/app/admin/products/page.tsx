@@ -150,6 +150,9 @@ export default async function AdminProductsPage(
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Button asChild variant="outline" size="sm" className="rounded-full font-semibold">
+            <Link href="/admin/inventory">Inventory sheet</Link>
+          </Button>
+          <Button asChild variant="outline" size="sm" className="rounded-full font-semibold">
             <Link href="/admin/companies">Manage shops</Link>
           </Button>
           <Button asChild variant="outline" size="sm" className="rounded-full font-semibold">

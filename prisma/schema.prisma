@@ -599,6 +599,9 @@ model Product {
   wishlistedBy     WishlistItem[]
   cartItems        CartItem[]        @relation("ProductCartItems")
   reviews          Review[]          @relation("ProductReviews")
+  // Private stock record (SKU, supplier, purchase cost, location). A relation
+  // field only: no public query loads it unless it asks for it by name.
+  inventory        ProductInventory?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -606,6 +609,76 @@ model Product {
   @@index([status])
   @@index([categoryId])
   @@index([sellerId])
+}
+
+// ─── Inventory (admin only) ─────────────────────────────────
+//
+// Kept in tables of their own, never as columns on Product, so that the
+// purchase cost and supplier can not leak through any existing product query:
+// the public site never names these relations. Stock itself stays on
+// Product.quantity (= units available to sell), which checkout already uses.
+
+/// Who a part was bought from. Private: unlike Company (public shops), a
+/// supplier never has a page and is never shown to buyers.
+model Supplier {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  contactName String?
+  email       String?
+  phone       String?
+  website     String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items ProductInventory[]
+}
+
+/// One row per product that has inventory data. Created on the first edit, so
+/// the migration adds tables only and writes no data.
+model ProductInventory {
+  productId       String    @id
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sku             String?   @unique
+  mpn             String?
+  supplierId      String?
+  supplier        Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  costCents       Int?
+  /// Selling price of a QUOTE_ONLY item. Internal: kept here and not in
+  /// Product.priceCents so it can never show on a card, in search or in the
+  /// structured data. Moves to Product.priceCents if the item becomes buyable.
+  quotePriceCents Int?
+  location        String?
+  notes           String?
+  /// Low-stock threshold for this item; null = the default in settings.
+  lowStockAt      Int?
+  /// Set when a low-stock alert went out, cleared once stock is back above the
+  /// threshold, so one dip sends one alert.
+  lowStockAlertedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([supplierId])
+  @@index([mpn])
+}
+
+/// Change history: one row per changed field (grid, bulk edit or import).
+/// productId is a plain column (no FK) so history survives a deleted product.
+model InventoryEvent {
+  id         String   @id @default(cuid())
+  productId  String?
+  label      String?
+  field      String
+  oldValue   String?
+  newValue   String?
+  source     String // GRID | BULK | IMPORT | SYSTEM
+  batchId    String?
+  actorEmail String?
+  createdAt  DateTime @default(now())
+
+  @@index([productId, createdAt])
+  @@index([batchId])
+  @@index([createdAt])
 }
 
 // ─── Sourcing / Quotes ──────────────────────────────────────

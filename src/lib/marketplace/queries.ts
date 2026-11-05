@@ -3,6 +3,7 @@ import type { Prisma, ProductCondition, ProductMode } from '@prisma/client';
 import { applyShopPricing, type ShopPricingMode } from '@/lib/shop-pricing';
 import { productTextWhere } from '@/lib/search/where';
 import { pickCardImage } from '@/lib/card-image-pick';
+import { liveProductWhere } from '@/lib/inventory/public';
 
 export interface MarketplaceFilters {
   q?: string;
@@ -30,6 +31,8 @@ export interface MarketplaceResult {
     yearMade: number | null;
     summary: string | null;
     priceHidden: boolean;
+    /** False when nothing is available (only listed with the zero-stock rule "label"). */
+    inStock: boolean;
     brand: { name: string; slug: string } | null;
     category: { name: string; slug: string };
     company: { name: string; slug: string } | null;
@@ -42,11 +45,12 @@ export interface MarketplaceResult {
 
 const DEFAULT_PAGE_SIZE = 24;
 
-/** What a buyer can browse: the same rule for listings, facets and headline counts. */
-export const LIVE_PRODUCT_WHERE = {
-  status: 'PUBLISHED',
-  quantity: { gt: 0 },
-} satisfies Prisma.ProductWhereInput;
+/**
+ * What a buyer can browse: the same rule for listings, facets and headline
+ * counts. Whether an item with nothing available stays listed is the inventory
+ * setting "When an item has nothing available" (src/lib/inventory/public.ts).
+ */
+export { liveProductWhere };
 
 /**
  * Listings that show a Buy now button: a buyable mode with a price that the
@@ -95,7 +99,10 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
       },
     });
   }
-  const where: Prisma.ProductWhereInput = { ...LIVE_PRODUCT_WHERE, ...(and.length ? { AND: and } : {}) };
+  const live = await liveProductWhere();
+  const where: Prisma.ProductWhereInput = { ...live, ...(and.length ? { AND: and } : {}) };
+  // When sold-out items stay listed, they follow every available one (in any sort).
+  const splitByStock = !('quantity' in live);
 
   // Products with real photography always lead within any sort. Quote-only
   // items have no price: keep them after the priced ones in both directions
@@ -107,28 +114,45 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
         ? [{ hasImages: 'desc' }, { priceCents: { sort: 'desc', nulls: 'last' } }]
         : [{ hasImages: 'desc' }, { createdAt: 'desc' }];
 
-  const [items, total] = await Promise.all([
-    prisma.product.findMany({
-      where,
+  const select = {
+    slug: true,
+    title: true,
+    illustration: true,
+    images: true,
+    condition: true,
+    mode: true,
+    priceCents: true,
+    currency: true,
+    yearMade: true,
+    summary: true,
+    quantity: true,
+    brand: { select: { name: true, slug: true } },
+    category: { select: { name: true, slug: true } },
+    company: { select: { name: true, slug: true, pricingMode: true, pricingMarkupBp: true } },
+  } satisfies Prisma.ProductSelect;
+  const offset = (page - 1) * pageSize;
+  const pageItems = async () => {
+    if (!splitByStock) return prisma.product.findMany({ where, orderBy, skip: offset, take: pageSize, select });
+    const inStockWhere: Prisma.ProductWhereInput = { AND: [where, { quantity: { gt: 0 } }] };
+    const soldOutWhere: Prisma.ProductWhereInput = { AND: [where, { quantity: { lte: 0 } }] };
+    const inStockCount = await prisma.product.count({ where: inStockWhere });
+    const first = offset < inStockCount
+      ? await prisma.product.findMany({ where: inStockWhere, orderBy, skip: offset, take: pageSize, select })
+      : [];
+    const remaining = pageSize - first.length;
+    if (remaining <= 0) return first;
+    const rest = await prisma.product.findMany({
+      where: soldOutWhere,
       orderBy,
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-      select: {
-        slug: true,
-        title: true,
-        illustration: true,
-        images: true,
-        condition: true,
-        mode: true,
-        priceCents: true,
-        currency: true,
-        yearMade: true,
-        summary: true,
-        brand: { select: { name: true, slug: true } },
-        category: { select: { name: true, slug: true } },
-        company: { select: { name: true, slug: true, pricingMode: true, pricingMarkupBp: true } },
-      },
-    }),
+      skip: Math.max(0, offset - inStockCount),
+      take: remaining,
+      select,
+    });
+    return [...first, ...rest];
+  };
+
+  const [items, total] = await Promise.all([
+    pageItems(),
     prisma.product.count({ where }),
   ]);
 
@@ -149,6 +173,7 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
       yearMade: p.yearMade,
       summary: p.summary,
       priceHidden: dp.priceHidden,
+      inStock: p.quantity > 0,
       brand: p.brand,
       category: p.category,
       company: p.company ? { name: p.company.name, slug: p.company.slug } : null,
@@ -167,7 +192,8 @@ export async function listProducts(filters: MarketplaceFilters = {}): Promise<Ma
 /** How many live listings `/marketplace?q=<query>` would show. */
 export async function countSearchMatches(query: string): Promise<number> {
   if (!query.trim()) return 0;
-  return prisma.product.count({ where: { ...LIVE_PRODUCT_WHERE, ...productTextWhere(query) } });
+  const live = await liveProductWhere();
+  return prisma.product.count({ where: { ...live, ...productTextWhere(query) } });
 }
 
 export async function getProductBySlug(slug: string) {
@@ -217,12 +243,13 @@ export async function getSimilarProducts(categoryId: string, excludeSlug: string
 }
 
 export async function getTopCategories(limit = 10) {
+  const live = await liveProductWhere();
   const cats = await prisma.category.findMany({
-    where: { products: { some: LIVE_PRODUCT_WHERE } },
+    where: { products: { some: live } },
     select: {
       slug: true,
       name: true,
-      _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } },
+      _count: { select: { products: { where: live } } },
     },
   });
   return cats
@@ -232,12 +259,13 @@ export async function getTopCategories(limit = 10) {
 }
 
 export async function getTopCategoriesWithImage(limit = 10) {
+  const live = await liveProductWhere();
   const cats = await prisma.category.findMany({
-    where: { products: { some: LIVE_PRODUCT_WHERE } },
+    where: { products: { some: live } },
     select: {
       slug: true,
       name: true,
-      _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } },
+      _count: { select: { products: { where: live } } },
     },
   });
   const top = cats
@@ -287,16 +315,18 @@ export async function getTopCategoriesWithImage(limit = 10) {
 }
 
 export async function getCategories() {
+  const live = await liveProductWhere();
   return prisma.category.findMany({
     orderBy: { sortOrder: 'asc' },
-    select: { slug: true, name: true, _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } } },
+    select: { slug: true, name: true, _count: { select: { products: { where: live } } } },
   });
 }
 
 export async function getTopBrands(limit: number = 12) {
+  const live = await liveProductWhere();
   // Order brands by their live (published, in-stock) product count (desc).
   const brands = await prisma.brand.findMany({
-    select: { slug: true, name: true, _count: { select: { products: { where: LIVE_PRODUCT_WHERE } } } },
+    select: { slug: true, name: true, _count: { select: { products: { where: live } } } },
   });
   return brands
     .filter((b) => b._count.products > 0)

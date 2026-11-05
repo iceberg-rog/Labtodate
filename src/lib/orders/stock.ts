@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
 import { logError } from '@/lib/observability';
+import { checkLowStock } from '@/lib/inventory/alerts';
 
 /**
  * BUG-045 — release stock that was atomically reserved for a checkout that did
@@ -80,6 +81,7 @@ export async function consumeStockForPaidQuoteOrder(orderId: string, where: stri
         );
       }
     }
+    await checkLowStock(order.items.map((i) => i.productId));
   } catch (e) {
     await logError(`${where}.consumeStockForPaidQuoteOrder`, e);
   }
@@ -103,4 +105,5 @@ export async function releaseReservedStock(
       await logError(`${where}.releaseReservedStock`, e);
     }
   }
+  await checkLowStock(reserved.map((r) => r.productId));
 }

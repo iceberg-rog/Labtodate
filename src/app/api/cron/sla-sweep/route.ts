@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { checkLowStock } from '@/lib/inventory/alerts';
 import { prisma } from '@/lib/db';
 import { isDeliverableEmail, sendEmail } from '@/lib/email';
 import { escapeHtml } from '@/lib/email-html';
@@ -273,6 +274,7 @@ export async function POST(req: NextRequest) {
       continue;
     }
     if (!canceled) continue;
+    await checkLowStock(o.items.map((it) => it.productId)); // stock came back; never throws
     if (o.buyerId) {
       await notifyUser(
         o.buyerId,

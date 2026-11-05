@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db';
-import { LIVE_PRODUCT_WHERE } from '@/lib/marketplace/queries';
+import { liveProductWhere } from '@/lib/marketplace/queries';
 import type { HomeStat } from '@/lib/home-sections';
 
 /** Live hero counts (published listings, suppliers, countries) — what the
@@ -7,9 +7,10 @@ import type { HomeStat } from '@/lib/home-sections';
 export async function getLiveHeroStats(): Promise<HomeStat[]> {
   // Count what a buyer can actually browse (same rule as /marketplace), and
   // only suppliers that have such a listing — not sold units or empty shops.
-  const withListings = { products: { some: LIVE_PRODUCT_WHERE } };
+  const live = await liveProductWhere();
+  const withListings = { products: { some: live } };
   const [listings, suppliers, countriesRow] = await Promise.all([
-    prisma.product.count({ where: LIVE_PRODUCT_WHERE }),
+    prisma.product.count({ where: live }),
     prisma.company.count({ where: withListings }),
     prisma.company.findMany({
       where: { country: { not: null }, ...withListings },

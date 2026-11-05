@@ -33,6 +33,13 @@ export function applyShopPricing(
     priceHidden: false,
     appliedMarkupBp: 0,
   };
+  // A quote-only listing never shows a price, whatever is stored (the
+  // inventory keeps a quote-only item's selling price private anyway).
+  if (base.mode === 'QUOTE_ONLY') {
+    out.priceCents = null;
+    out.priceHidden = true;
+    return out;
+  }
   if (!company || !company.pricingMode || company.pricingMode === 'PASS_THROUGH') return out;
 
   if (company.pricingMode === 'FORCE_QUOTE') {

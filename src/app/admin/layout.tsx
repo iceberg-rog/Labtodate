@@ -19,6 +19,7 @@ import {
   Quote,
   Briefcase,
   FlaskConical,
+  Boxes,
 } from 'lucide-react';
 import { requireSession, getAdminCaps } from '@/lib/auth-server';
 import { capsAllow, capsAllowSection } from '@/lib/capabilities';
@@ -29,6 +30,7 @@ import { AdminTopBar } from '@/components/admin/AdminTopBar';
 import { NewOrderToast } from '@/components/admin/NewOrderToast';
 import { AdminResultToast } from '@/components/admin/AdminResultToast';
 import { MobileDrawer } from '@/components/util/MobileDrawer';
+import { countLowStock } from '@/lib/inventory/low-count';
 
 export const dynamic = 'force-dynamic';
 // Each admin page sets its own title ("Orders · Admin"); every tab used to read
@@ -44,7 +46,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   // Live counts for actionable badges so the operator sees what needs work
   // without going to Overview first.
   const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const [pendingApprovals, pendingQuotes, pendingSells, openTickets, errors24h, unreadNotifs] =
+  const [pendingApprovals, pendingQuotes, pendingSells, openTickets, errors24h, unreadNotifs, lowStock] =
     await Promise.all([
       prisma.product.count({ where: { status: 'PENDING_REVIEW' } }).catch(() => 0),
       prisma.sourcingRequest.count({ where: { status: 'PENDING' } }).catch(() => 0),
@@ -54,6 +56,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         .catch(() => 0),
       prisma.errorLog.count({ where: { createdAt: { gte: since24h } } }).catch(() => 0),
       prisma.notification.count({ where: { userId: session.user.id, readAt: null } }).catch(() => 0),
+      can('inventory:view') ? countLowStock().catch(() => 0) : Promise.resolve(0),
     ]);
 
   // The full nav tree — rendered TWICE: once inside the desktop aside, once
@@ -104,7 +107,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             </NavSection>
           )}
 
-          {(canSection('products') || can('categories:manage')) && (
+          {(canSection('products') || can('categories:manage') || can('inventory:view')) && (
             <NavSection title="Catalog">
               {can('products:view') && (
                 <AdminNavLink
@@ -113,6 +116,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                   label="Products"
                   badge={pendingApprovals}
                 />
+              )}
+              {can('inventory:view') && (
+                <AdminNavLink href="/admin/inventory" icon={<Boxes className="h-4 w-4" />} label="Inventory" badge={lowStock} />
               )}
               {can('products:edit') && (
                 <AdminNavLink href="/admin/brands" icon={<Tag className="h-4 w-4" />} label="Brands" />

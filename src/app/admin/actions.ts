@@ -7,6 +7,7 @@ import { prisma } from '@/lib/db';
 import { deleteOrArchiveProduct, productDeleteDbFrom } from '@/lib/products/delete-guard';
 import { cancelOrderSaga, cancelOrdersBatch, type StripeSessionApi } from '@/lib/orders/stripe-handoff';
 import { orderReservedStock, orderHoldsStock } from '@/lib/orders/checkout-tx';
+import { checkLowStock } from '@/lib/inventory/alerts';
 import { consumeStockForPaidQuoteOrder } from '@/lib/orders/stock';
 import { sendOrderInvoice } from '@/lib/orders/internal';
 import { proxyProofUrl } from '@/lib/orders/display';
@@ -1459,6 +1460,7 @@ export async function refundOrder(formData: FormData): Promise<{ ok: boolean; me
         });
       }
     }
+    await checkLowStock(order.items.map((it) => it.productId)); // never throws
   }
   await sendEmail({
     to: order.buyer.email,

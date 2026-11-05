@@ -8,6 +8,7 @@
 
 import { prisma } from '@/lib/db';
 import { productTextWhere } from '@/lib/search/where';
+import { liveProductWhere } from '@/lib/inventory/public';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 
 export interface SearchHit {
@@ -34,8 +35,7 @@ class PostgresSearchProvider implements SearchProvider {
       // Same text match as the marketplace `q` filter (listProducts), so every
       // hit shown here is also on the "See all matches" page.
       where: {
-        status: 'PUBLISHED',
-        quantity: { gt: 0 },
+        ...(await liveProductWhere()),
         ...productTextWhere(q),
       },
       take: limit,

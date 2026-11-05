@@ -1,5 +1,6 @@
 import type { MetadataRoute } from 'next';
 import { prisma } from '@/lib/db';
+import { getInventorySettings } from '@/lib/inventory/settings';
 
 const BASE = process.env.BETTER_AUTH_URL ?? 'https://labtodate.com';
 
@@ -8,8 +9,10 @@ export const dynamic = 'force-dynamic'; // DB-backed; render on request, not at 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   // NOTE: /suppliers/[slug] is intentionally disabled (always 404s), so supplier
   // micro-sites are deliberately NOT in the sitemap — never list 404 URLs.
+  // With the zero-stock rule "unpublish" a sold-out item's page 404s, so it is left out here too.
+  const hideSoldOut = (await getInventorySettings()).INVENTORY_ZERO_STOCK === 'unpublish';
   const [products, categories, posts, articles, cases, facilities] = await Promise.all([
-    prisma.product.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
+    prisma.product.findMany({ where: { status: 'PUBLISHED', ...(hideSoldOut ? { quantity: { gt: 0 } } : {}) }, select: { slug: true, updatedAt: true } }),
     prisma.category.findMany({ select: { slug: true, updatedAt: true } }),
     prisma.blogPost.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),
     prisma.wikiArticle.findMany({ where: { status: 'PUBLISHED' }, select: { slug: true, updatedAt: true } }),

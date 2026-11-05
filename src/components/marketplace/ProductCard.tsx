@@ -20,6 +20,8 @@ export interface ProductCardData {
   currency: string;
   yearMade?: number | null;
   badge?: string | null;
+  /** Set when nothing is available: the out-of-stock label from Inventory settings. */
+  outOfStock?: string | null;
 }
 
 const CONDITION_LABEL: Record<ProductCondition, string> = {
@@ -42,15 +44,19 @@ export function ProductCard({ p }: { p: ProductCardData }) {
           alt={p.title}
           fill
           sizes="(min-width:1024px) 25vw, (min-width:640px) 50vw, 100vw"
-          className="object-cover transition-transform duration-700 group-hover:scale-110"
+          className={`object-cover transition-transform duration-700 group-hover:scale-110${p.outOfStock ? ' opacity-60 grayscale' : ''}`}
         />
         {/* Gradient scrim for legibility */}
         <div className="absolute inset-0 bg-gradient-to-t from-foreground/45 via-transparent to-foreground/10" />
-        {p.badge && (
+        {p.outOfStock ? (
+          <div className="absolute top-3 left-3" data-stock="out">
+            <Badge variant="secondary" className="bg-foreground text-background">{p.outOfStock}</Badge>
+          </div>
+        ) : p.badge ? (
           <div className="absolute top-3 left-3">
             <Badge variant={p.badge === 'New' ? 'success' : 'accent'}>{p.badge}</Badge>
           </div>
-        )}
+        ) : null}
         <div className="absolute top-3 right-3">
           <Badge variant="secondary">{CONDITION_LABEL[p.condition]}</Badge>
         </div>
@@ -69,7 +75,9 @@ export function ProductCard({ p }: { p: ProductCardData }) {
           {p.yearMade && ` · ${p.yearMade}`}
         </p>
         <div className="flex items-center justify-between pt-3 border-t mt-auto">
-          {p.priceCents ? (
+          {p.outOfStock ? (
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-[0.12em] data">{p.outOfStock}</span>
+          ) : p.priceCents && p.mode !== 'QUOTE_ONLY' ? (
             <span className="text-base font-bold text-foreground data">
               {formatPrice(p.priceCents, p.currency)}
             </span>

@@ -46,6 +46,13 @@ export const CAPABILITIES = [
   'products:approve',
   'products:edit',
   'categories:manage',
+  // Inventory (stock sheet, suppliers, Excel import/export). The purchase
+  // cost is its own capability: without it the cost and margin are never sent
+  // to the browser or written into an export.
+  'inventory:view',
+  'inventory:edit',
+  'inventory:import',
+  'inventory:cost',
   // People
   'users:view',
   'users:manage', // change role / grant caps
@@ -99,7 +106,7 @@ export const CAPABILITY_PRESETS: Record<string, { label: string; caps: string[] 
   },
   CATALOG: {
     label: 'Catalog (products + categories)',
-    caps: ['products:view', 'products:approve', 'products:edit', 'categories:manage'],
+    caps: ['products:view', 'products:approve', 'products:edit', 'categories:manage', 'inventory:view', 'inventory:edit', 'inventory:import'],
   },
 };
 

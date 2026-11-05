@@ -4,6 +4,7 @@ import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
 import { listProducts, getCategories, getTopBrands } from '@/lib/marketplace/queries';
 import { getMarketing } from '@/lib/marketing';
+import { getInventorySettings } from '@/lib/inventory/settings';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import { Filters } from '@/components/marketplace/Filters';
 import { SortDropdown } from '@/components/marketplace/SortDropdown';
@@ -71,6 +72,7 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   const sp = parseParams(await searchParams);
   const page = sp.page;
   const mk = await getMarketing();
+  const outLabel = (await getInventorySettings()).INVENTORY_OOS_LABEL || 'Out of stock';
 
   const [result, categories, brands] = await Promise.all([
     listProducts({
@@ -187,6 +189,7 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
                     priceCents: p.priceCents,
                     currency: p.currency,
                     yearMade: p.yearMade,
+                    outOfStock: p.inStock ? null : outLabel,
                   }}
                 />
               ))}

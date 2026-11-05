@@ -29,6 +29,7 @@ import { isWishlisted } from '@/lib/wishlist/actions';
 import { getServerSession } from '@/lib/auth-server';
 import { formatPrice } from '@/lib/utils';
 import { sanitizeRichHtml } from '@/lib/sanitize';
+import { publicStock } from '@/lib/inventory/public';
 
 interface PageProps {
   params: Promise<{ slug: string }>;
@@ -80,6 +81,10 @@ export default async function ProductDetailPage(props: PageProps) {
   const canPreviewUnpublished =
     viewerRole === 'ADMIN' || (!!session?.user.id && session.user.id === product.sellerId);
   if (product.status !== 'PUBLISHED' && !canPreviewUnpublished) notFound();
+  // What buyers see when nothing is available is an inventory setting
+  // (label / hide from lists / hide the page too).
+  const stock = await publicStock(product.quantity);
+  if (stock.hidePage && !canPreviewUnpublished) notFound();
 
   const saved = await isWishlisted(session?.user.id ?? null, product.id);
   // Only verified buyers may review (submitReview enforces it). Show the form
@@ -145,7 +150,7 @@ export default async function ProductDetailPage(props: PageProps) {
           '@type': 'Offer',
           priceCurrency: product.currency,
           price: (product.priceCents / 100).toFixed(2),
-          availability: 'https://schema.org/InStock',
+          availability: stock.inStock ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
           itemCondition:
             product.condition === 'NEW'
               ? 'https://schema.org/NewCondition'
@@ -272,14 +277,15 @@ export default async function ProductDetailPage(props: PageProps) {
               </div>
             )}
 
+            {stock.inStock && stock.qtyText && (
+              <p className="mt-4 text-sm font-semibold text-primary" data-stock="qty">{stock.qtyText}</p>
+            )}
             <div className="mt-5 flex flex-col gap-2.5">
               {product.quantity <= 0 ? (
                 <>
-                  <div className="rounded-2xl border border-border bg-muted/40 p-4 text-center">
-                    <p className="text-sm font-bold text-foreground">Sold</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      This unit is no longer available. We can source a similar one.
-                    </p>
+                  <div className="rounded-2xl border border-border bg-muted/40 p-4 text-center" data-stock="out">
+                    <p className="text-sm font-bold text-foreground">{stock.outLabel}</p>
+                    {stock.outNote && <p className="text-xs text-muted-foreground mt-1">{stock.outNote}</p>}
                   </div>
                   <Button size="lg" variant="accent" className="rounded-2xl font-semibold w-full" asChild>
                     <Link href={`/let-us-find-it?product=${encodeURIComponent(product.slug)}`}>Source a similar unit</Link>
@@ -361,7 +367,7 @@ export default async function ProductDetailPage(props: PageProps) {
               Item details
             </h2>
             <dl className="grid sm:grid-cols-2 gap-x-10 rounded-2xl border border-border bg-card p-6">
-              <DetailRow label="Status" value={product.quantity > 0 ? 'For sale · in stock' : 'Sold'} />
+              <DetailRow label="Status" value={stock.inStock ? `For sale · ${stock.qtyText ? stock.qtyText.toLowerCase() : 'in stock'}` : stock.outLabel} />
               <DetailRow label="Condition" value={conditionLabel} />
               <DetailRow label="Brand" value={product.brand?.name ?? '—'} />
               <DetailRow label="Category" value={product.category.name} />

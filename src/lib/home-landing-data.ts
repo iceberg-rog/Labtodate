@@ -1,5 +1,8 @@
 import { prisma } from '@/lib/db';
-import { LIVE_PRODUCT_WHERE, getTopCategoriesWithImage } from '@/lib/marketplace/queries';
+import { liveProductWhere, getTopCategoriesWithImage } from '@/lib/marketplace/queries';
+
+/** The buying-panel demo shows a listing a buyer could order right now. */
+const AVAILABLE_WHERE = { status: 'PUBLISHED', quantity: { gt: 0 } } as const;
 
 // importer placeholders that are not real brands (never shown as a category's leading brands)
 const PLACEHOLDER_BRANDS = /^(other|others|unknown|various|generic|n\/?a|none|no brand|unbranded|misc(ellaneous)?)$/i;
@@ -18,12 +21,12 @@ export interface StationCategory {
  * as "Other" left out).
  */
 export async function getStationCategories(limit = 9): Promise<StationCategory[]> {
-  const categories = await getTopCategoriesWithImage(limit);
+  const [categories, live] = await Promise.all([getTopCategoriesWithImage(limit), liveProductWhere()]);
   return Promise.all(
     categories.map(async (c) => {
       const rows = await prisma.product.groupBy({
         by: ['brandId'],
-        where: { ...LIVE_PRODUCT_WHERE, category: { slug: c.slug }, brandId: { not: null } },
+        where: { ...live, category: { slug: c.slug }, brandId: { not: null } },
         _count: { _all: true },
         orderBy: { _count: { brandId: 'desc' } },
         take: 6,
@@ -50,11 +53,11 @@ export interface DemoProduct {
 /** A real live listing (with a photo) for the buying-panel demo — shown as sample data. */
 export async function getDemoProduct(): Promise<DemoProduct | null> {
   const p = await prisma.product.findFirst({
-    where: { ...LIVE_PRODUCT_WHERE, hasImages: true, title: { contains: 'HPLC', mode: 'insensitive' } },
+    where: { ...AVAILABLE_WHERE, hasImages: true, title: { contains: 'HPLC', mode: 'insensitive' } },
     orderBy: { createdAt: 'desc' },
     select: { title: true, images: true, brand: { select: { name: true } }, category: { select: { name: true } } },
   }) ?? await prisma.product.findFirst({
-    where: { ...LIVE_PRODUCT_WHERE, hasImages: true },
+    where: { ...AVAILABLE_WHERE, hasImages: true },
     orderBy: { createdAt: 'desc' },
     select: { title: true, images: true, brand: { select: { name: true } }, category: { select: { name: true } } },
   });
@@ -63,5 +66,5 @@ export async function getDemoProduct(): Promise<DemoProduct | null> {
 }
 
 export async function getLiveListingCount(): Promise<number> {
-  return prisma.product.count({ where: LIVE_PRODUCT_WHERE });
+  return prisma.product.count({ where: await liveProductWhere() });
 }

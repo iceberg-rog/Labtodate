@@ -3,6 +3,7 @@ import { Heart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { requireSession } from '@/lib/auth-server';
 import { prisma } from '@/lib/db';
+import { getInventorySettings } from '@/lib/inventory/settings';
 import { ProductCard } from '@/components/marketplace/ProductCard';
 import type { IllustrationName } from '@/components/illustrations/instruments';
 
@@ -10,6 +11,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function WishlistPage() {
   const session = await requireSession({ redirectTo: '/app/wishlist' });
+  const outLabel = (await getInventorySettings()).INVENTORY_OOS_LABEL || 'Out of stock';
 
   const items = await prisma.wishlistItem.findMany({
     where: { userId: session.user.id },
@@ -70,7 +72,7 @@ export default async function WishlistPage() {
                 yearMade: w.product.yearMade,
                 // A saved unit that sold (or was taken off the marketplace)
                 // must not look buyable at its old price.
-                badge: w.product.status !== 'PUBLISHED' ? 'No longer listed' : w.product.quantity <= 0 ? 'Sold' : null,
+                badge: w.product.status !== 'PUBLISHED' ? 'No longer listed' : w.product.quantity <= 0 ? outLabel : null,
               }}
             />
           ))}
