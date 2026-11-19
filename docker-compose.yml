@@ -90,6 +90,8 @@ services:
       dockerfile: Dockerfile
       target: runner
     image: lab2date-web:${IMAGE_TAG:-latest}
+    # tini as PID 1 reaps orphaned Chromium children (PDF generation).
+    init: true
     restart: unless-stopped
     <<: *app-env
     # Cap the container's RAM so a memory spike (e.g. the WASM image optimizer
