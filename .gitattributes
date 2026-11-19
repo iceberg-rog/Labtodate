@@ -1,0 +1,4 @@
+# Always LF in working trees and archives, whatever core.autocrlf says.
+# Release tarballs built from a Windows checkout used to ship CRLF, which
+# breaks shell scripts on the Linux server. Binary files are auto-detected.
+* text=auto eol=lf
