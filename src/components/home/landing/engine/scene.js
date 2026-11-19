@@ -1954,9 +1954,11 @@ export async function run() {
     if (reduced || posterOn) { u.uAssemble.value = 1; introDone = true; }
     else tween(u.uAssemble, 0.12, 1, 3.6, EASE.sineOut, () => { introDone = true; });
     if (posterOn && !reduced) {
-      wakeAt = Infinity; html.classList.add('poster-off');
+      // the particles wake as the canvas fades in (their shimmer eases in over 1.4 s, so the still poster fading out
+      // over them is not seen to part from them) instead of after the fade: the lockup is never left standing still
+      html.classList.add('poster-off'); wakeAt = performance.now() + 150;
       setTimeout(() => {
-        html.classList.add('poster-gone'); wakeAt = performance.now();
+        html.classList.add('poster-gone');
         const c = $('#poster canvas'); if (c) { c.width = 0; c.height = 0; }   // free its pixels
         if (PST && PST.release) PST.release();                                  // and the entrance's
       }, 760);

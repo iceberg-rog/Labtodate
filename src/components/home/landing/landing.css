@@ -46,10 +46,16 @@ html.no-webgl #gl { display: none; }
 .poster canvas { position: absolute; left: 0; top: 0; display: block; width: 0; height: 0; }
 html.poster-gone .poster { display: none; }
 html.poster-off .poster { opacity: 0; transition: opacity 0.7s ease; }
-html.poster-reveal .poster canvas { animation: poster-in 1.1s cubic-bezier(0.16, 0.84, 0.3, 1) both; }
+/* The reveal is short (the scene is usually ready well before it ends and waits for it); once it is in focus the
+   still frame breathes (transform + opacity only: composited, so it keeps moving while the main thread builds the
+   scene) until the canvas takes over, so the lockup never sits frozen on a slow machine. Durations match poster.js. */
+html.poster-reveal .poster canvas {
+  animation: poster-in 0.65s cubic-bezier(0.16, 0.84, 0.3, 1) both, poster-breathe 2.4s ease-in-out 0.65s infinite alternate;
+}
 @keyframes poster-in { from { opacity: 0; filter: blur(14px) brightness(1.6); transform: scale(1.06); } to { opacity: 1; filter: none; transform: none; } }
+@keyframes poster-breathe { from { opacity: 1; transform: none; } to { opacity: 0.86; transform: scale(1.012); } }
 html.poster-lt .poster { mix-blend-mode: normal; }
-html.poster-lt.poster-reveal .poster canvas { animation-name: poster-in-lt; }
+html.poster-lt.poster-reveal .poster canvas { animation-name: poster-in-lt, poster-breathe; }
 @keyframes poster-in-lt { from { opacity: 0; filter: blur(14px); transform: scale(1.06); } to { opacity: 1; filter: none; transform: none; } }
 /* the server-rendered word holds the first paint until the poster has drawn the lockup (then it gives way) */
 html.poster-drawn .intro-word, html.gl-ready .intro-word { opacity: 0; transition: opacity 0.5s ease; }
