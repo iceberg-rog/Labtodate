@@ -655,8 +655,8 @@ export function InventoryGrid(props: Props) {
 
   const exportForm = useRef<HTMLFormElement>(null);
   const [exportIds, setExportIds] = useState('');
-  const [exportFormat, setExportFormat] = useState<'xlsx' | 'csv'>('xlsx');
-  const doExport = (format: 'xlsx' | 'csv', ids: string[] | null) => {
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('xlsx');
+  const doExport = (format: ExportFormat, ids: string[] | null) => {
     setExportFormat(format);
     setExportIds(ids ? ids.join(',') : '');
     requestAnimationFrame(() => exportForm.current?.submit());
@@ -1308,7 +1308,10 @@ function CellEditor({
 
 // ─── Export menu, bulk bar, help ────────────────────────────
 
-function ExportMenu({ onExport, filteredCount }: { onExport: (f: 'xlsx' | 'csv', ids: string[] | null) => void; filteredCount: number | null }) {
+/** 'xlsx': with each item's main photo at full quality; 'xlsx-plain': no photos (small, for re-importing a large inventory). */
+type ExportFormat = 'xlsx' | 'xlsx-plain' | 'csv';
+
+function ExportMenu({ onExport, filteredCount }: { onExport: (f: ExportFormat, ids: string[] | null) => void; filteredCount: number | null }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative">
@@ -1318,7 +1321,10 @@ function ExportMenu({ onExport, filteredCount }: { onExport: (f: 'xlsx' | 'csv',
       {open && (
         <div className="absolute right-0 z-40 mt-1 w-64 rounded-xl border border-border bg-card p-1.5 shadow-xl text-sm" onMouseLeave={() => setOpen(false)}>
           <button type="button" className="w-full text-left px-3 py-2 rounded-lg hover:bg-muted" onClick={() => { setOpen(false); onExport('xlsx', null); }}>
-            <b>Excel (.xlsx)</b> <span className="text-muted-foreground">all items</span>
+            <b>Excel (.xlsx)</b> <span className="text-muted-foreground">all items, with photos</span>
+          </button>
+          <button type="button" className="w-full text-left px-3 py-2 rounded-lg hover:bg-muted" onClick={() => { setOpen(false); onExport('xlsx-plain', null); }}>
+            <b>Excel, no photos</b> <span className="text-muted-foreground">smaller, for re-importing</span>
           </button>
           <button type="button" className="w-full text-left px-3 py-2 rounded-lg hover:bg-muted" onClick={() => { setOpen(false); onExport('csv', null); }}>
             <b>CSV</b> <span className="text-muted-foreground">all items</span>
@@ -1349,7 +1355,7 @@ function BulkBar({
   categories: { name: string }[];
   locations: string[];
   onRun: (op: BulkOp, label: string) => Promise<void>;
-  onExport: (f: 'xlsx' | 'csv') => void;
+  onExport: (f: ExportFormat) => void;
   onClear: () => void;
 }) {
   const fields: { key: EditableField; label: string }[] = [

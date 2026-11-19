@@ -21,7 +21,9 @@ import {
  * a before -> after preview, apply only what the admin confirms.
  */
 
-export const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
+// just under the server-action body limit (next.config.mjs, 10 MB): an export with photos fits up to ~50 items; a larger
+// inventory is re-imported from the export without photos
+export const MAX_IMPORT_BYTES = 9.5 * 1024 * 1024;
 export const MAX_IMPORT_ROWS = 5000;
 
 export type Cell = string | number | null;
@@ -166,7 +168,7 @@ export function parseCsv(text: string): string[][] {
 }
 
 export async function readUpload(fileName: string, bytes: Buffer): Promise<Sheet> {
-  if (bytes.length > MAX_IMPORT_BYTES) throw new Error('The file is larger than 5 MB.');
+  if (bytes.length > MAX_IMPORT_BYTES) throw new Error('The file is larger than 9.5 MB. If it is an export with photos, export again with "Excel, no photos" and import that file.');
   const isZip = bytes.length > 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
   if (isZip || /\.xlsx$/i.test(fileName)) return readXlsx(bytes);
   if (/\.xls$/i.test(fileName)) throw new Error('Old .xls files are not supported. In Excel choose File → Save as → Excel Workbook (.xlsx).');

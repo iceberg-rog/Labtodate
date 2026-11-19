@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs';
 import { COLUMNS, enumLabel, enumOptions, marginOf, type ColumnDef, type InventoryRow } from './fields';
+import type { ExportPhoto } from './export-photos';
 
 /**
  * Excel / CSV export of the inventory.
@@ -13,6 +14,17 @@ export const BASE_SHEET = '_base';
 export const LISTS_SHEET = '_lists';
 export const DATA_SHEET = 'Inventory';
 export const EXPORT_MARKER = 'labtodate-inventory-export';
+
+/** The .xlsx's photo column (not a data field: read-only, and the import ignores a "Photo" column). */
+const PHOTO_KEY = 'photo' as ColumnDef['key'];
+const PHOTO_COLUMN: ColumnDef = {
+  key: PHOTO_KEY, header: 'Photo', kind: 'readonly', editable: false, width: 0, xlsxWidth: 30, aliases: ['photo'],
+  hint: 'The main photo at full quality (enlarge it, or copy it out of the sheet). Ignored on import.',
+};
+// the photo cell in px (Excel: a 30-character column is ~215 px wide; 120 pt rows are 160 px high), the photo inside it
+const PHOTO_ROW_PT = 120;
+const PHOTO_CELL = { w: 215, h: 160 };
+const PHOTO_BOX = { w: 200, h: 150 };
 
 /** Export column order: ID goes last so the sheet reads naturally from the left. */
 export function exportColumns(canCost: boolean): ColumnDef[] {
@@ -38,16 +50,21 @@ function colLetter(n: number): string {
 
 export async function buildXlsx(
   rows: InventoryRow[],
-  opts: { canCost: boolean; suppliers: string[]; categories: string[]; siteUrl: string; exportedBy: string | null },
+  opts: {
+    canCost: boolean; suppliers: string[]; categories: string[]; siteUrl: string; exportedBy: string | null;
+    /** Each row's main photo (export-photos.ts): when given, a Photo column comes first with the photo in the cell. */
+    photos?: Map<string, ExportPhoto>;
+  },
 ): Promise<Buffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Labtodate';
   wb.created = new Date();
-  const cols = exportColumns(opts.canCost);
+  const cols = opts.photos ? [PHOTO_COLUMN, ...exportColumns(opts.canCost)] : exportColumns(opts.canCost);
   const idx = new Map(cols.map((c, i) => [c.key, i + 1]));
   const L = (k: string) => colLetter(idx.get(k as never) ?? 0);
 
-  const ws = wb.addWorksheet(DATA_SHEET, { views: [{ state: 'frozen', xSplit: 2, ySplit: 1 }] });
+  // (the first columns stay in view while scrolling: SKU and Name, and the photo before them when there is one)
+  const ws = wb.addWorksheet(DATA_SHEET, { views: [{ state: 'frozen', xSplit: opts.photos ? 3 : 2, ySplit: 1 }] });
   ws.columns = cols.map((c) => ({
     header: c.key === 'id' ? 'ID (do not edit)' : c.header,
     key: c.key,
@@ -106,11 +123,28 @@ export async function buildXlsx(
       const cell = xr.getCell(ci + 1);
       if (c.kind === 'money' || c.key === 'margin') cell.numFmt = '#,##0.00';
       if (c.key === 'marginPct') cell.numFmt = '0.0%';
-      if (!c.editable) {
+      if (!c.editable && c.key !== PHOTO_KEY) {
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
         cell.font = { color: { argb: c.key === 'link' ? 'FF0F4F40' : 'FF555555' }, underline: c.key === 'link' ? true : undefined };
       }
+      if (c.kind !== 'readonly' || c.key === 'link') cell.alignment = { vertical: 'middle', wrapText: c.key === 'title' };
     });
+    // the photo: the original file embedded as it is (full quality: enlarge it in Excel, or copy it out), shown scaled
+    // to fit the cell with its proportions kept
+    const ph = opts.photos?.get(row.id);
+    if (opts.photos) xr.height = PHOTO_ROW_PT;
+    if (ph) {
+      const k = Math.min(PHOTO_BOX.w / ph.width, PHOTO_BOX.h / ph.height);
+      const w = Math.round(ph.width * k), h = Math.round(ph.height * k);
+      const img = wb.addImage({ buffer: ph.buffer as unknown as ExcelJS.Buffer, extension: ph.extension });
+      // offsets in EMU (9525 per px) centre the photo in its cell
+      const ox = ((PHOTO_CELL.w - w) / 2) * 9525, oy = ((PHOTO_CELL.h - h) / 2) * 9525;
+      ws.addImage(img, {
+        tl: { nativeCol: 0, nativeColOff: Math.round(ox), nativeRow: r - 1, nativeRowOff: Math.round(oy) } as unknown as ExcelJS.Anchor,
+        ext: { width: w, height: h },
+        editAs: 'oneCell',
+      });
+    }
   });
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: cols.length } };
 
