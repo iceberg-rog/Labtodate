@@ -16,9 +16,9 @@ export const DATA_SHEET = 'Inventory';
 export const EXPORT_MARKER = 'labtodate-inventory-export';
 
 /** The .xlsx's photo column (not a data field: read-only, and the import ignores a "Photo" column). */
-const PHOTO_KEY = 'photo';
+const PHOTO_KEY = 'photo' as ColumnDef['key'];
 const PHOTO_COLUMN: ColumnDef = {
-  key: PHOTO_KEY as ColumnDef['key'], header: 'Photo', kind: 'readonly', editable: false, width: 0, xlsxWidth: 30, aliases: ['photo'],
+  key: PHOTO_KEY, header: 'Photo', kind: 'readonly', editable: false, width: 0, xlsxWidth: 30, aliases: ['photo'],
   hint: 'The main photo at full quality (enlarge it, or copy it out of the sheet). Ignored on import.',
 };
 // the photo cell in px (Excel: a 30-character column is ~215 px wide; 120 pt rows are 160 px high), the photo inside it
