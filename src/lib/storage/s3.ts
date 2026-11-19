@@ -194,6 +194,34 @@ export async function presignSupportAttachmentUrl(key: string, ttlSeconds = 60):
 }
 
 /**
+ * The bucket key of one of our own media URLs (S3_PUBLIC_URL/<key>, or any URL or path with /<bucket>/<key>), or null
+ * for anything else: callers read only our own objects, never a URL from elsewhere.
+ */
+export function bucketKeyFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  let key: string | null = null;
+  if (url.startsWith(`${PUBLIC_URL}/`)) key = url.slice(PUBLIC_URL.length + 1);
+  else {
+    let path = url;
+    try { path = new URL(url, 'http://local').pathname; } catch { return null; }
+    const at = path.indexOf(`/${BUCKET}/`);
+    if (at >= 0) key = path.slice(at + BUCKET.length + 2);
+  }
+  if (!key) return null;
+  key = key.split(/[?#]/)[0];
+  try { key = decodeURIComponent(key); } catch { return null; }
+  return /^[A-Za-z0-9._\-/]+$/.test(key) && !key.includes('..') && !key.startsWith('/') ? key : null;
+}
+
+/** An object's bytes from the INTERNAL endpoint, or null when it is missing or larger than maxBytes. */
+export async function readObjectBytes(key: string, maxBytes: number): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  const out = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+  if (!out.Body || (out.ContentLength !== undefined && out.ContentLength > maxBytes)) return null;
+  const bytes = await (out.Body as unknown as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
+  return bytes.length > maxBytes ? null : { bytes, contentType: out.ContentType ?? '' };
+}
+
+/**
  * Fetch a private S3 object from the INTERNAL endpoint and return its body
  * + content-type. Used by the auth-gated proxy route to stream attachment
  * bytes to the requester without ever exposing the S3 host to the browser.
