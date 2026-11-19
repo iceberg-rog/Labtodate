@@ -33,8 +33,10 @@ export const introMobile = (vw) => vw < 860 || PHONE.test(navigator.userAgent) |
    share, margin = cells of room all round). */
 import { LT } from './theme-light.mjs';
 export const LOOK = {
-  word: { n: [30000, 12000], size: [2.0, 2.3], a: 0xf4ffe0, b: 0xc8fbf2, alpha: 1, core: 0.2, gain: 1, spark: 0.55, edge: 0.24, op: 1,
-    glow: { k: 0.16, a: 0xbdf05f, b: 0x5fe3cf, cells: 175, margin: 14, s: [1.6, 6], mix: 0.35 } },
+  // (2026-11-19: softened, it was near-white with sparks and glared on a dark screen: the same lime -> aqua, a step
+  // down in light, fewer sparks, a fainter glow)
+  word: { n: [30000, 12000], size: [2.0, 2.3], a: 0xc8e6a0, b: 0x92d8cb, alpha: 1, core: 0.2, gain: 0.74, spark: 0.25, edge: 0.24, op: 1,
+    glow: { k: 0.11, a: 0xbdf05f, b: 0x5fe3cf, cells: 175, margin: 14, s: [1.6, 6], mix: 0.35 } },
   roof: { n: [17000, 6600], size: [1.9, 2.25], a: 0xa4e335, b: 0x2fd6c3, alpha: 1, core: 0.16, gain: 0.95, spark: 0, edge: 0.32, op: 0.82,
     glow: { k: 0.2, a: 0x7fd11f, b: 0x1fb8a6, cells: 150, margin: 18, s: [2.2, 8], mix: 0.4 } },
 };
@@ -89,7 +91,7 @@ export const themeLight = () => typeof document !== 'undefined' && !document.doc
 
 // the share of the scene's bloom kept while the lockup is on screen (the poster cannot draw a bloom: the lockup's glow is
 // its own, LOOK.glow, drawn alike by both)
-export const INTRO_BLOOM = 0.3;
+export const INTRO_BLOOM = 0.2;
 
 /* world layout of the lockup for a viewport (the scene's camera sits at z = D looking down -z at the station) */
 export function introLayout(vw, vh) {

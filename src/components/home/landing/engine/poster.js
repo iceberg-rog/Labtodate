@@ -45,7 +45,8 @@ export function initPoster() {
   const reveal = () => {
     if (!P.drawn) P.draw();
     if (reduced || !P.drawn) { done(); return; }
-    P.flying = true; html.classList.add('poster-reveal'); near(); setTimeout(done, 1150);
+    // settles with the CSS reveal (0.65 s, landing.css): the scene waits for this before it takes the lockup over
+    P.flying = true; html.classList.add('poster-reveal'); near(); setTimeout(done, 700);
   };
   const first = () => { if (html.classList.contains('poster-gone')) { done(); return; } reveal(); };
 
@@ -62,7 +63,11 @@ export function initPoster() {
   const draw0 = () => {
     // the word is drawn in the page's font: wait for it (briefly) so the poster and the scene sample the same letters
     const f = document.fonts && document.fonts.load ? document.fonts.load(`800 100px ${family}`).catch(() => null) : Promise.resolve();
-    Promise.race([f, new Promise((r) => setTimeout(r, 400))]).then(() => { setWord(word, family); requestAnimationFrame(first); });
+    // the particle shapes are sampled in a task of their own, so the frame that draws the still frame only draws
+    Promise.race([f, new Promise((r) => setTimeout(r, 400))]).then(() => {
+      setWord(word, family);
+      setTimeout(() => { P.shapes(); requestAnimationFrame(first); }, 0);
+    });
   };
   if ('ResizeObserver' in window) {
     let firstR = true;
