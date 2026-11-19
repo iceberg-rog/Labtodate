@@ -91,6 +91,10 @@ html.at-end .lnd-meta, html.in-foot .lnd-meta, html.in-foot .lnd-rail, html.in-f
 #lnd-cur.hot { width: 58px; height: 58px; margin: -29px 0 0 -29px; }
 #lnd-cur.hot::before { border-color: var(--l-lime); background: hsl(82 76% 55% / 0.08); }
 html.cursor #lnd-cur { opacity: 1; }
+/* over an instruments card (a link to its category, scene.js) */
+html.card-hover, html.card-hover body { cursor: pointer; }
+html.card-hover #lnd-cur { width: 58px; height: 58px; margin: -29px 0 0 -29px; }
+html.card-hover #lnd-cur::before { border-color: var(--l-lime); background: hsl(82 76% 55% / 0.08); }
 
 /* ---------- stations ---------- */
 .lnd-main { position: relative; z-index: 10; }

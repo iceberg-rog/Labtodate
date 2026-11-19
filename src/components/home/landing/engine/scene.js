@@ -1234,7 +1234,8 @@ export async function run() {
   /* the card's art: the category's photo whole and sharp in a rounded frame on the right (product photos come in every
      shape and size: cropping them to the card zoomed portraits until they broke up), over an ambient fill of the same
      photo blurred and dark; the left side shaded for the title. No photo: a structural formula in the category's colour */
-  const FACE_W = mobile ? 768 : 1024;
+  // (desktop: a card fills much of a large screen at DPR 2, so its face is drawn at 1536 for a sharp photo)
+  const FACE_W = mobile ? 768 : 1536;
   const texAniso = () => Math.min(8, renderer.capabilities.getMaxAnisotropy());
   function cardTexture(game, i, img) {
     const W = FACE_W, H = Math.round(W * (CARD_H / CARD_W)), u = W / 1024;
@@ -1251,13 +1252,15 @@ export async function run() {
       const sh = g.createLinearGradient(0, 0, W, 0);
       sh.addColorStop(0, 'rgba(3,14,12,.94)'); sh.addColorStop(0.42, 'rgba(3,14,12,.72)'); sh.addColorStop(0.62, 'rgba(3,14,12,.18)'); sh.addColorStop(1, 'rgba(3,14,12,.05)');
       g.fillStyle = sh; g.fillRect(0, 0, W, H);
-      // the photo itself, contained (never upscaled past 1.6x), in a rounded frame
-      const bx = W * 0.45, by = H * 0.08, bw = W * 0.5, bh = H * 0.84;
-      const k = Math.min(bw / iw, bh / ih, 1.6), dw = iw * k, dh = ih * k, dx = bx + (bw - dw) / 2, dy = by + (bh - dh) / 2, rr = 16 * u;
+      // the photo in a frame of one fixed size and shape on every card (4:3, the light "photo stage" the product cards
+      // use, #f6f6f6): the photo contained in it with a margin, never cropped, so cards never differ in frame
+      const ax = W * 0.45, ay = H * 0.08, aw = W * 0.5, ah = H * 0.84;
+      const fw = Math.min(aw, ah * 4 / 3), fh = fw * 3 / 4, fx = ax + (aw - fw) / 2, fy = ay + (ah - fh) / 2, rr = 16 * u;
       g.save(); g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = 30 * u; g.shadowOffsetY = 10 * u;
-      g.beginPath(); g.roundRect(dx, dy, dw, dh, rr); g.fillStyle = '#0a1513'; g.fill(); g.restore();
-      g.save(); g.beginPath(); g.roundRect(dx, dy, dw, dh, rr); g.clip(); g.drawImage(img, dx, dy, dw, dh); g.restore();
-      g.strokeStyle = 'rgba(255,255,255,.1)'; g.lineWidth = 1.5 * u; g.beginPath(); g.roundRect(dx, dy, dw, dh, rr); g.stroke();
+      g.beginPath(); g.roundRect(fx, fy, fw, fh, rr); g.fillStyle = '#f6f6f6'; g.fill(); g.restore();
+      const pad = fw * 0.04, k = Math.min((fw - 2 * pad) / iw, (fh - 2 * pad) / ih), dw = iw * k, dh = ih * k;
+      g.save(); g.beginPath(); g.roundRect(fx, fy, fw, fh, rr); g.clip(); g.drawImage(img, fx + (fw - dw) / 2, fy + (fh - dh) / 2, dw, dh); g.restore();
+      g.strokeStyle = 'rgba(255,255,255,.1)'; g.lineWidth = 1.5 * u; g.beginPath(); g.roundRect(fx, fy, fw, fh, rr); g.stroke();
     } else {
       g.save(); g.strokeStyle = game.c[0]; g.globalAlpha = 0.28; g.lineWidth = 3 * u; g.lineJoin = 'round';
       const hex = (cx, cy, r) => { g.beginPath(); for (let k = 0; k <= 6; k++) { const an = Math.PI / 6 + (k * Math.PI) / 3; g[k ? 'lineTo' : 'moveTo'](cx + Math.cos(an) * r, cy + Math.sin(an) * r); } g.stroke(); };
@@ -1936,6 +1939,34 @@ export async function run() {
     if (state.active !== 0 && state.active !== 6) return;
     state.tmx = state.mx = (e.clientX / VW()) * 2 - 1; state.tmy = state.my = -((e.clientY / VH()) * 2 - 1); shock = 1;
   });
+
+  /* ---------- the instruments' cards are links: a click (or tap) on one opens its category in the marketplace; the
+     pointer shows it over a card. Only at that station, never through the page's own links and buttons, and a drag
+     or scroll that ends over a card is not a click (the browser fires none). */
+  const cardRay = new THREE.Raycaster(); const cardNdc = new THREE.Vector2();
+  const cardAt = (x, y) => {
+    if (state.active !== IDX.categories || !cards.length) return -1;
+    cardNdc.set((x / VW()) * 2 - 1, -((y / VH()) * 2 - 1)); cardRay.setFromCamera(cardNdc, camera);
+    const h = cardRay.intersectObjects(cards, false)[0];
+    return h ? cards.indexOf(h.object) : -1;
+  };
+  const overUi = (t) => !!(t && t.closest && t.closest('a,button,input,select,textarea,label,[role="button"]'));
+  on(window, 'click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || overUi(e.target)) return;
+    const i = cardAt(e.clientX, e.clientY); const g = GAMES[i];
+    if (g && g.slug) location.assign(`/marketplace?category=${encodeURIComponent(g.slug)}`);
+  });
+  let cardHover = false, cardHoverPend = false, hx = 0, hy = 0, hTarget = null;
+  on(window, 'pointermove', (e) => {
+    if (e.pointerType === 'touch') return;
+    hx = e.clientX; hy = e.clientY; hTarget = e.target;
+    if (cardHoverPend) return; cardHoverPend = true;
+    requestAnimationFrame(() => {
+      cardHoverPend = false;
+      const over = !overUi(hTarget) && cardAt(hx, hy) >= 0;
+      if (over !== cardHover) { cardHover = over; document.documentElement.classList.toggle('card-hover', over); }
+    });
+  }, { passive: true });
 
   /* ---------- intro choreography: the hand-off from the poster.
      The particles start where the poster drew them, assembled and still. The canvas fades in as the poster fades out
