@@ -32,22 +32,26 @@ const CONDITION_LABEL: Record<ProductCondition, string> = {
 
 export function ProductCard({ p }: { p: ProductCardData }) {
   const img = p.imageUrl || productImage(p.illustration, p.slug, 600);
+  // A real product photo is shown whole on a light "photo stage" (same tone as a
+  // cleaned white-background photo, in both themes): never cropped, never dimmed.
+  // The generated illustration keeps the full-bleed look with its scrim.
+  const photo = Boolean(p.imageUrl);
   return (
     <Link
       href={`/marketplace/${p.slug}`}
       className="group rounded-2xl border border-border bg-card overflow-hidden hover:border-primary/30 transition-all hover:shadow-[0_20px_50px_-20px_rgba(15,79,64,0.35)] flex flex-col"
     >
-      <div className="relative aspect-[4/3] overflow-hidden bg-muted">
+      <div className={`relative aspect-[4/3] overflow-hidden ${photo ? 'bg-[#f6f6f6]' : 'bg-muted'}`}>
         <Image
           src={img}
           unoptimized={loadDirectly(img)}
           alt={p.title}
           fill
           sizes="(min-width:1024px) 25vw, (min-width:640px) 50vw, 100vw"
-          className={`object-cover transition-transform duration-700 group-hover:scale-110${p.outOfStock ? ' opacity-60 grayscale' : ''}`}
+          className={`${photo ? 'object-contain group-hover:scale-105' : 'object-cover group-hover:scale-110'} transition-transform duration-700${p.outOfStock ? ' opacity-60 grayscale' : ''}`}
         />
-        {/* Gradient scrim for legibility */}
-        <div className="absolute inset-0 bg-gradient-to-t from-foreground/45 via-transparent to-foreground/10" />
+        {/* Gradient scrim for legibility (illustrations only; badges are solid) */}
+        {!photo && <div className="absolute inset-0 bg-gradient-to-t from-foreground/45 via-transparent to-foreground/10" />}
         {p.outOfStock ? (
           <div className="absolute top-3 left-3" data-stock="out">
             <Badge variant="secondary" className="bg-foreground text-background">{p.outOfStock}</Badge>
