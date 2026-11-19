@@ -35,7 +35,7 @@ import { LT } from './theme-light.mjs';
 export const LOOK = {
   // (2026-11-19: softened, it was near-white with sparks and glared on a dark screen: the same lime -> aqua, a step
   // down in light, fewer sparks, a fainter glow)
-  word: { n: [30000, 12000], size: [2.0, 2.3], a: 0xdcefc0, b: 0xaee5da, alpha: 1, core: 0.2, gain: 0.8, spark: 0.3, edge: 0.24, op: 1,
+  word: { n: [30000, 12000], size: [2.0, 2.3], a: 0xc8e6a0, b: 0x92d8cb, alpha: 1, core: 0.2, gain: 0.74, spark: 0.25, edge: 0.24, op: 1,
     glow: { k: 0.11, a: 0xbdf05f, b: 0x5fe3cf, cells: 175, margin: 14, s: [1.6, 6], mix: 0.35 } },
   roof: { n: [17000, 6600], size: [1.9, 2.25], a: 0xa4e335, b: 0x2fd6c3, alpha: 1, core: 0.16, gain: 0.95, spark: 0, edge: 0.32, op: 0.82,
     glow: { k: 0.2, a: 0x7fd11f, b: 0x1fb8a6, cells: 150, margin: 18, s: [2.2, 8], mix: 0.4 } },

@@ -1253,12 +1253,13 @@ export async function run() {
       sh.addColorStop(0, 'rgba(3,14,12,.94)'); sh.addColorStop(0.42, 'rgba(3,14,12,.72)'); sh.addColorStop(0.62, 'rgba(3,14,12,.18)'); sh.addColorStop(1, 'rgba(3,14,12,.05)');
       g.fillStyle = sh; g.fillRect(0, 0, W, H);
       // the photo in a frame of one fixed size and shape on every card (4:3, the light "photo stage" the product cards
-      // use, #f6f6f6): the photo contained in it with a margin, never cropped, so cards never differ in frame
+      // use, #f6f6f6): the photo contained in it, never cropped, so cards never differ in frame (a cleaned product photo
+      // is 4:3 on that same white with its own margin, so it fills the frame edge to edge with no seam)
       const ax = W * 0.45, ay = H * 0.08, aw = W * 0.5, ah = H * 0.84;
       const fw = Math.min(aw, ah * 4 / 3), fh = fw * 3 / 4, fx = ax + (aw - fw) / 2, fy = ay + (ah - fh) / 2, rr = 16 * u;
       g.save(); g.shadowColor = 'rgba(0,0,0,.55)'; g.shadowBlur = 30 * u; g.shadowOffsetY = 10 * u;
       g.beginPath(); g.roundRect(fx, fy, fw, fh, rr); g.fillStyle = '#f6f6f6'; g.fill(); g.restore();
-      const pad = fw * 0.04, k = Math.min((fw - 2 * pad) / iw, (fh - 2 * pad) / ih), dw = iw * k, dh = ih * k;
+      const k = Math.min(fw / iw, fh / ih), dw = iw * k, dh = ih * k;
       g.save(); g.beginPath(); g.roundRect(fx, fy, fw, fh, rr); g.clip(); g.drawImage(img, fx + (fw - dw) / 2, fy + (fh - dh) / 2, dw, dh); g.restore();
       g.strokeStyle = 'rgba(255,255,255,.1)'; g.lineWidth = 1.5 * u; g.beginPath(); g.roundRect(fx, fy, fw, fh, rr); g.stroke();
     } else {
